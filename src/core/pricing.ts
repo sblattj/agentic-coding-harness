@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import type { CanonicalTokenRecord } from './types.js';
 
@@ -20,16 +21,23 @@ export interface Pricer {
 }
 
 // Embedded fallback: LiteLLM-verified (flagships) plus plausible per-1M USD
-// prices for the newer entries, all subject to override by an external map.
-// cache_creation for Claude is the 5m-TTL blended default (1.25x base).
+// prices for the newer entries, all subject to override by the bundled
+// pricing-data.json extract and any external map. cache_creation for Claude
+// is the 5m-TTL blended default (1.25x base).
 const FALLBACK_PRICES: Record<string, ModelPrice> = {
   'claude-sonnet-4': { input: 3, output: 15, cache_read: 0.3, cache_creation: 3.75 },
+  'claude-sonnet-4-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5 },
+  'claude-sonnet-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5 },
   'claude-haiku-4-5': { input: 1, output: 5, cache_read: 0.1, cache_creation: 1.25 },
   'claude-opus-4': { input: 15, output: 75, cache_read: 1.5, cache_creation: 18.75 },
-  'claude-fable-5-1': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
+  'claude-opus-4-8': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
+  'claude-opus-5': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
+  'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_creation: 12.5 },
   'gpt-5': { input: 1.25, output: 10, cache_read: 0.125, cache_creation: 0 },
-  'gemini-2.5-pro': { input: 1.25, output: 10, cache_read: 0.31, cache_creation: 0 },
-  'gemini-3-pro': { input: 2, output: 12, cache_read: 0.5, cache_creation: 0 },
+  'gpt-5.6': { input: 4, output: 20, cache_read: 0.4, cache_creation: 5 },
+  'gemini-2.5-pro': { input: 1.25, output: 10, cache_read: 0.125, cache_creation: 0 },
+  'gemini-3-pro': { input: 2, output: 12, cache_read: 0.2, cache_creation: 0 },
+  'gemini-3-flash': { input: 0.5, output: 3, cache_read: 0.05, cache_creation: 0 },
 };
 
 /**
@@ -81,8 +89,25 @@ function loadExternalMap(path: string): Record<string, ModelPrice> {
   return map;
 }
 
+/**
+ * Bundled LiteLLM extract (claude / gpt / gemini prefixed entries from
+ * model_prices_and_context_window.json). Loaded as the base price map;
+ * returns {} when the file is absent so the embedded fallback still covers
+ * the flagships.
+ */
+function loadBundledData(): Record<string, ModelPrice> {
+  try {
+    return loadExternalMap(fileURLToPath(new URL('./pricing-data.json', import.meta.url)));
+  } catch {
+    return {};
+  }
+}
+
 export function createPricer(costMapPath?: string): Pricer {
-  let prices = { ...FALLBACK_PRICES };
+  // Base map: embedded fallback, layered with the bundled LiteLLM extract
+  // (src/core/pricing-data.json) when it is present — a missing file (e.g.
+  // in the standalone bun build) silently keeps the embedded fallback.
+  let prices = { ...FALLBACK_PRICES, ...loadBundledData() };
   const warnings: string[] = [];
 
   if (costMapPath !== undefined) {

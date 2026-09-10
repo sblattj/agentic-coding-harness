@@ -523,6 +523,8 @@ export interface RunOptions {
   cwd?: string;
   /** Extra env vars layered over process.env. */
   env?: Record<string, string>;
+  /** Model override; adapters pass it as their native flag (e.g. -m). */
+  model?: string;
 }
 
 /**

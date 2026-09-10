@@ -202,9 +202,10 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
   }
 
   spawn(prompt: string, opts: RunOptions = {}): RunHandle {
+    const modelArgs = opts.model !== undefined ? ['-m', opts.model] : [];
     const spec: JsonlRunSpec = {
       command: this.#command,
-      args: ['exec', '--json', ...this.#extraArgs, prompt],
+      args: ['exec', '--json', ...modelArgs, ...this.#extraArgs, prompt],
       cwd: opts.cwd,
       env: opts.env,
     };

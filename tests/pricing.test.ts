@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createPricer, resolveAlias } from '../src/core/pricing.js';
-import type { CanonicalTokenRecord } from '../src/core/types.js';
+import { AGENTS, type CanonicalTokenRecord } from '../src/core/types.js';
 
 const rec = (model: string, inputTokens: number, outputTokens: number, cacheReadTokens = 0, cacheWriteTokens = 0): CanonicalTokenRecord => ({
   agent: 'test',
@@ -15,6 +15,15 @@ const rec = (model: string, inputTokens: number, outputTokens: number, cacheRead
   cacheWriteTokens,
   timestamp: 0,
 });
+
+/** Flagship model each harness agent runs by default (AGENTS order). */
+const AGENT_DEFAULT_MODELS: Record<(typeof AGENTS)[number], string> = {
+  claude: 'claude-sonnet-5',
+  opencode: 'anthropic/claude-sonnet-5',
+  kiro: 'claude-sonnet-4-5',
+  codex: 'gpt-5.6',
+  gemini: 'gemini-3-flash',
+};
 
 describe('embedded fallback map', () => {
   it('prices a claude-sonnet-4 record cache-aware (per 1M)', () => {
@@ -37,10 +46,39 @@ describe('embedded fallback map', () => {
 
   it('prices the expanded entries: claude-fable-5-1 and gemini-3-pro', () => {
     const p = createPricer();
-    // fable: 5 / 25 / 0.5 / 6.25 per 1M
-    assert.equal(p.price(rec('claude-fable-5-1', 1_000_000, 500_000, 1_000_000, 1_000_000)), 5 + 12.5 + 0.5 + 6.25);
-    // gemini-3-pro: 2 / 12 / 0.5 / 0 per 1M (no cache-write charge)
-    assert.equal(p.price(rec('gemini-3-pro', 1_000_000, 1_000_000, 2_000_000)), 2 + 12 + 1);
+    // fable (LiteLLM): 10 / 50 / 0.25 / 12.5 per 1M
+    assert.equal(p.price(rec('claude-fable-5-1', 1_000_000, 500_000, 1_000_000, 1_000_000)), 10 + 25 + 0.25 + 12.5);
+    // gemini-3-pro (LiteLLM gemini-3-pro-preview): 2 / 12 / 0.2 / 0 per 1M (no cache-write charge)
+    assert.equal(p.price(rec('gemini-3-pro', 1_000_000, 1_000_000, 2_000_000)), 2 + 12 + 0.4);
+  });
+
+  it('prices the new flagships: claude-sonnet-5, claude-opus-5, claude-opus-4-8, gpt-5.6, gemini-3-flash', () => {
+    const p = createPricer();
+    // LiteLLM per 1M: sonnet-5 2/10/0.2/2.5; opus-5 & opus-4-8 5/25/0.5/6.25;
+    // gpt-5.6 4/20/0.4/5; gemini-3-flash (flash-preview) 0.5/3/0.05/0.
+    assert.equal(p.price(rec('claude-sonnet-5', 1_000_000, 1_000_000, 1_000_000, 1_000_000)), 2 + 10 + 0.2 + 2.5);
+    assert.equal(p.price(rec('claude-opus-5', 1_000_000, 0)), 5);
+    assert.equal(p.price(rec('claude-opus-4-8', 0, 1_000_000)), 25);
+    assert.equal(p.price(rec('gpt-5.6', 1_000_000, 1_000_000, 0, 1_000_000)), 4 + 20 + 5);
+    assert.equal(p.price(rec('gemini-3-flash', 1_000_000, 1_000_000, 1_000_000)), 0.5 + 3 + 0.05);
+  });
+
+  it('prices every AGENTS default model to a finite number — never NaN', () => {
+    const p = createPricer();
+    for (const agent of AGENTS) {
+      const model = AGENT_DEFAULT_MODELS[agent];
+      const cost = p.price(rec(model, 1_000, 1_000, 1_000, 1_000));
+      assert.ok(Number.isFinite(cost), `${agent} default model "${model}" resolved to ${cost}`);
+    }
+  });
+
+  it('loads the bundled LiteLLM extract as the base map (beyond-fallback models resolve)', () => {
+    const p = createPricer();
+    // 'claude-3-haiku' prices only via src/core/pricing-data.json (dated
+    // LiteLLM entry claude-3-haiku-20240307 + derived alias); the embedded
+    // fallback has no entry.
+    const cost = p.price(rec('claude-3-haiku', 1_000_000, 0));
+    assert.ok(Number.isFinite(cost) && cost > 0, `cost=${cost}`);
   });
 });
 

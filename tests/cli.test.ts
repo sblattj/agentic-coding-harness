@@ -194,6 +194,28 @@ describe("harness cli", () => {
     });
   });
 
+  test("stats --state-only skips machine transcripts and returns only stateDir records", () => {
+    const r = runCli(["stats", "--json", "--state-only"], env());
+    assert.equal(r.code, 0);
+    assert.doesNotMatch(r.stderr, /harness:/);
+    const out = JSON.parse(r.stdout);
+    // The 4 seeded stateDir records (sess-a ×2, old codex sess-b, dup
+    // sess-aaa); the fake-HOME claude transcript that the full scan would
+    // add is NOT present, so no dedupe against it either.
+    assert.deepEqual(out.total, {
+      records: 4,
+      inputTokens: 315,
+      outputTokens: 81,
+      cacheReadTokens: 12,
+      cacheWriteTokens: 6,
+      reasoningTokens: 4,
+      costUsd: 0.030109,
+    });
+    assert.equal(out.byAgent.claude.records, 3);
+    assert.equal(out.byAgent.claude.inputTokens, 310);
+    assert.equal(out.byAgent.codex.records, 1);
+  });
+
   test("run --agent nonexistent exits 1 with a clean message", () => {
     const r = runCli(["run", "--agent", "nonexistent", "hello"], env());
     assert.equal(r.code, 1);

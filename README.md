@@ -52,5 +52,10 @@ State lives under `~/.agent-harness` (override with `AGENT_HARNESS_STATE_DIR`).
 
 ```sh
 npm run typecheck   # tsc --noEmit
-npm test            # tsx --test tests/*.test.ts
+npm test            # tsx --test (canonical runner)
+bun test            # same suite under bun
 ```
+
+Both runners execute the identical suite. `tests/` re-export shims are not
+allowed: `node:test` counts an imported suite again while `bun test`
+deduplicates it by qualified name, silently skewing the counts.

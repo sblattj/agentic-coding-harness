@@ -35,8 +35,9 @@ usage:
   harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--json] "<prompt>"
   harness watch [--dir <transcriptDir>]
-  harness stats [--agent A] [--days N] [--json]
-                (machine claude/codex/gemini transcripts + harness state)
+  harness stats [--agent A] [--days N] [--json] [--state-only]
+                (machine claude/codex/gemini transcripts + harness state;
+                 --state-only skips machine transcript dirs)
   harness emit --input <events.json> --format <atif|otel> [--out path]
                [--agent A] [--model M] [--session-id SID]
 
@@ -382,6 +383,7 @@ async function cmdStats(rest: string[]): Promise<number> {
       agent: { type: "string" },
       days: { type: "string" },
       json: { type: "boolean", default: false },
+      "state-only": { type: "boolean", default: false },
     },
     allowPositionals: true,
   });
@@ -414,37 +416,41 @@ async function cmdStats(rest: string[]): Promise<number> {
   // ... plus machine CLI transcripts (claude/codex/gemini), priced with the
   // shared core pricer. costUsd is set only when the record has a model the
   // pricer knows; undefined costs contribute nothing to the sums.
+  // --state-only skips this scan entirely: stateDir records only (e.g. on a
+  // machine whose transcript dirs are huge or being rotated).
   const pricer = createPricer();
-  for await (const rec of scanAll()) {
-    if (agent && rec.agent !== agent) continue;
-    const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
-    if (sinceTs !== undefined && (!Number.isFinite(tsMs) || tsMs < sinceTs)) continue;
-    const row = {
-      ts: Number.isFinite(tsMs) ? new Date(tsMs).toISOString() : null,
-      agent: rec.agent,
-      sessionId: rec.sessionId ?? "unknown",
-      model: rec.model ?? undefined,
-      inputTokens: rec.input,
-      outputTokens: rec.output,
-      cacheReadTokens: rec.cacheRead,
-      cacheWriteTokens: rec.cacheWrite,
-      reasoningTokens: rec.reasoning,
-    };
-    const key = dedupeKey(row);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    let costUsd: number | undefined;
-    if (rec.model) {
-      const cost = pricer.price({
-        model: rec.model,
-        inputTokens: row.inputTokens,
-        outputTokens: row.outputTokens,
-        cacheReadTokens: row.cacheReadTokens,
-        cacheWriteTokens: row.cacheWriteTokens,
-      });
-      if (!Number.isNaN(cost)) costUsd = cost;
+  if (!args.values["state-only"]) {
+    for await (const rec of scanAll()) {
+      if (agent && rec.agent !== agent) continue;
+      const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
+      if (sinceTs !== undefined && (!Number.isFinite(tsMs) || tsMs < sinceTs)) continue;
+      const row = {
+        ts: Number.isFinite(tsMs) ? new Date(tsMs).toISOString() : null,
+        agent: rec.agent,
+        sessionId: rec.sessionId ?? "unknown",
+        model: rec.model ?? undefined,
+        inputTokens: rec.input,
+        outputTokens: rec.output,
+        cacheReadTokens: rec.cacheRead,
+        cacheWriteTokens: rec.cacheWrite,
+        reasoningTokens: rec.reasoning,
+      };
+      const key = dedupeKey(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let costUsd: number | undefined;
+      if (rec.model) {
+        const cost = pricer.price({
+          model: rec.model,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          cacheReadTokens: row.cacheReadTokens,
+          cacheWriteTokens: row.cacheWriteTokens,
+        });
+        if (!Number.isNaN(cost)) costUsd = cost;
+      }
+      records.push(costUsd === undefined ? { ...row } : { ...row, costUsd });
     }
-    records.push(costUsd === undefined ? { ...row } : { ...row, costUsd });
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
 

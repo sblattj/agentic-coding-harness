@@ -201,6 +201,26 @@ describe('codex spawn integration (fake child, real plumbing)', () => {
     assert.equal(child.stdinEnded, true);
   });
 
+  it('spawn() passes -m <model> on fresh runs when opts.model is set', async () => {
+    const child = new FakeChild();
+    const calls: FakeSpawnCall[] = [];
+    const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child, calls) });
+    const handle = adapter.spawn('list the files', { model: 'gpt-5.2-codex' });
+    child.close(0);
+    await handle.wait();
+    assert.deepEqual(calls[0]!.args, ['exec', '--json', '-m', 'gpt-5.2-codex', 'list the files']);
+  });
+
+  it('spawn() omits -m when no model is given', async () => {
+    const child = new FakeChild();
+    const calls: FakeSpawnCall[] = [];
+    const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child, calls) });
+    const handle = adapter.spawn('list the files');
+    child.close(0);
+    await handle.wait();
+    assert.ok(!calls[0]!.args.includes('-m'));
+  });
+
   it('resume runs `codex exec resume <sessionId> --json <prompt>`', async () => {
     const child = new FakeChild();
     const calls: FakeSpawnCall[] = [];
@@ -336,6 +356,24 @@ describe('codex launch (driver contract)', () => {
       '-m',
       'gpt-5.2-codex',
       'continue',
+    ]);
+  });
+
+  it('launch() passes -m <model> on fresh runs (no resume) too', async () => {
+    const child = new FakeChild();
+    const calls: FakeSpawnCall[] = [];
+    const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child, calls) });
+
+    const launchPromise = adapter.launch({ prompt: 'fresh start', model: 'gpt-5.2-codex' });
+    child.close(0);
+    await launchPromise;
+
+    assert.deepEqual(calls[0]!.args, [
+      'exec',
+      '--json',
+      '-m',
+      'gpt-5.2-codex',
+      'fresh start',
     ]);
   });
 
