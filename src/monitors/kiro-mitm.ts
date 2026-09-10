@@ -8,7 +8,7 @@
 //
 //   HTTPS_PROXY=http://127.0.0.1:8888 \
 //   SSL_CERT_FILE=~/.mitmproxy/mitmproxy-ca-cert.pem \
-//   kiro-cli chat --no-interactive --trust-all-tools --output-format stream-json --engine v3 "<prompt>"
+//   kiro-cli chat --no-interactive --trust-all-tools --output-format stream-json --v3 "<prompt>"
 //
 // tapEnv() below builds exactly that env. Create the CA first: `mitmproxy`
 // writes it on first run.

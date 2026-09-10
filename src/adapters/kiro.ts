@@ -1,7 +1,7 @@
 // Kiro CLI driver adapter (adapter-lane contract, src/adapters/types.ts).
 //
 // Headless invocation:
-//   kiro-cli chat --no-interactive --trust-all-tools --output-format stream-json --engine v3 "<prompt>"
+//   kiro-cli chat --no-interactive --trust-all-tools --output-format stream-json --v3 "<prompt>"
 // Resume: `--resume` (last session) or `--resume-id <sessionId>`.
 // KIRO_API_KEY passes through to the child process, never stripped, so
 // kiro-cli authenticates headless with the caller's ambient credentials.
@@ -45,7 +45,7 @@ export interface KiroRunSpec extends RunOptions {
 
 /**
  * Build argv for `kiro-cli chat --no-interactive --trust-all-tools
- * --output-format stream-json --engine v3 [--resume | --resume-id <id>]
+ * --output-format stream-json --v3 [--resume | --resume-id <id>]
  * "<prompt>"`. Pure; exported for tests. The prompt is always the final
  * positional argument.
  */
@@ -56,8 +56,7 @@ export function buildKiroArgs(spec: KiroRunSpec): string[] {
     '--trust-all-tools',
     '--output-format',
     'stream-json',
-    '--engine',
-    'v3',
+    '--v3',
   ];
   if (spec.resume && typeof spec.resume === 'object' && spec.resume.sessionId) {
     args.push('--resume-id', spec.resume.sessionId);

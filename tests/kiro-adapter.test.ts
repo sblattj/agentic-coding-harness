@@ -32,15 +32,14 @@ describe('kiro adapter', () => {
       '--trust-all-tools',
       '--output-format',
       'stream-json',
-      '--engine',
-      'v3',
+      '--v3',
       'hello world',
     ]);
   });
 
   it('maps resume to --resume / --resume-id and keeps the prompt last', () => {
-    assert.deepEqual(buildKiroArgs({ prompt: 'p', resume: 'continue' }).slice(7), ['--resume', 'p']);
-    assert.deepEqual(buildKiroArgs({ prompt: 'p', resume: { sessionId: 'abc123' } }).slice(7), [
+    assert.deepEqual(buildKiroArgs({ prompt: 'p', resume: 'continue' }).slice(6), ['--resume', 'p']);
+    assert.deepEqual(buildKiroArgs({ prompt: 'p', resume: { sessionId: 'abc123' } }).slice(6), [
       '--resume-id',
       'abc123',
       'p',
@@ -141,14 +140,13 @@ describe('kiro launch (driver contract)', () => {
     assert.equal(await handle.wait(), 'success');
 
     assert.equal(calls[0]!.command, 'kiro-cli');
-    assert.deepEqual(calls[0]!.args.slice(0, 7), [
+    assert.deepEqual(calls[0]!.args.slice(0, 6), [
       'chat',
       '--no-interactive',
       '--trust-all-tools',
       '--output-format',
       'stream-json',
-      '--engine',
-      'v3',
+      '--v3',
     ]);
     assert.equal(calls[0]!.args.at(-1), 'hello kiro');
     assert.equal(handle.sessionId, 'sess-k-1');
