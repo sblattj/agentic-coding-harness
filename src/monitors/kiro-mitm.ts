@@ -319,6 +319,7 @@ Direct run supports a selftest: python3 <this file> --selftest <hex-encoded fram
 from __future__ import annotations
 
 import json
+import os
 import re
 import struct
 import sys
@@ -422,6 +423,11 @@ def handle_frames(data, url=""):
         event_type = headers.get(":event-type")
         if event_type not in METADATA_EVENTS:
             continue
+        if os.environ.get("KIRO_MITM_DEBUG"):
+            sys.stderr.write(
+                f"FRAME {event_type} {url} {payload[:400]!r}\n"
+            )
+            sys.stderr.flush()
         try:
             obj = json.loads(payload.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
@@ -438,7 +444,7 @@ def handle_frames(data, url=""):
                 "outputTokens": int(_num(tu.get("outputTokens"))),
                 "totalTokens": int(_num(tu.get("totalTokens", tu.get("total")))),
             },
-            "credits": obj.get("credits", obj.get("units")),
+            "credits": obj.get("credits", obj.get("usage", obj.get("units"))),
             "contextUsagePercentage": obj.get(
                 "contextUsagePercentage", obj.get("contextUsage")
             ),
@@ -495,6 +501,7 @@ export interface KiroMitmHandle extends EventEmitter {
 export interface KiroMitmOptions {
   scriptPath?: string;
   mitmdumpBin?: string;
+  env?: Record<string, string>;
 }
 
 // Emits: 'record' (CanonicalTokenRecord), 'line' (raw stdout line),
@@ -504,6 +511,7 @@ export function startKiroMitm(port: number = DEFAULT_MITM_PORT, opts: KiroMitmOp
   const bin = opts.mitmdumpBin ?? process.env.MITMDUMP_BIN ?? 'mitmdump';
   const child = nodeSpawn(bin, ['-p', String(port), '-s', scriptPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...(opts.env ?? {}) },
   });
   const handle = new EventEmitter() as KiroMitmHandle;
   handle.port = port;
