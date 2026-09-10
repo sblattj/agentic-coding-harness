@@ -1,0 +1,27 @@
+{
+  "sessionId": "sess-alpha-1",
+  "agent": "alpha",
+  "events": [
+    { "type": "step", "agent": "alpha", "sessionId": "sess-alpha-1", "model": "test-model-1", "timestamp": 1789046400000 },
+    { "type": "message", "agent": "alpha", "source": "user", "model": "test-model-1", "content": "List the files and summarize", "timestamp": 1789046400100 },
+    { "type": "tool_call", "agent": "alpha", "toolCallId": "tc1", "functionName": "Bash", "arguments": { "cmd": "ls" }, "timestamp": 1789046401000 },
+    { "type": "message", "agent": "alpha", "source": "agent", "model": "test-model-1", "content": "Here is the listing:\n- README.md\n- src\n\n<script>alert('xss')</script> and <img src=x onerror=alert(1)> stay escaped.", "timestamp": 1789046402000 }
+  ],
+  "tokens": [
+    {
+      "agent": "alpha",
+      "model": "test-model-1",
+      "inputTokens": 1200,
+      "outputTokens": 340,
+      "cacheReadTokens": 5600,
+      "cacheWriteTokens": 210,
+      "reasoningTokens": 88,
+      "costUsd": 0.0123,
+      "timestamp": 1789046402000
+    }
+  ],
+  "totalCost": 0.0123,
+  "durationMs": 8200,
+  "exitStatus": "success",
+  "warnings": []
+}

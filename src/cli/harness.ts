@@ -28,6 +28,7 @@ import {
 import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
+import { cmdReport } from "./report.ts";
 
 const USAGE = `harness — unified agent run harness
 
@@ -40,6 +41,8 @@ usage:
                  --state-only skips machine transcript dirs)
   harness emit --input <events.json> --format <atif|otel> [--out path]
                [--agent A] [--model M] [--session-id SID]
+  harness report <trials-dir> [--out path]
+                 (single-file HTML comparison; a trials/ root scans subdirs)
 
 env:
   AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)`;
@@ -582,6 +585,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdStats(rest);
     case "emit":
       return cmdEmit(rest);
+    case "report":
+      return cmdReport(rest);
     case "help":
     case "--help":
     case "-h":

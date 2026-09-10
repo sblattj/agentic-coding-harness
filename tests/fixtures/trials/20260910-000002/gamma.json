@@ -1,0 +1,12 @@
+{
+  "sessionId": "sess-gamma-1",
+  "agent": "gamma",
+  "events": [
+    { "type": "session", "agent": "gamma", "sessionId": "sess-gamma-1", "timestamp": 1789132800000 },
+    { "type": "error", "agent": "gamma", "message": "CLI exited before producing usage", "timestamp": 1789132801000 }
+  ],
+  "tokens": [],
+  "durationMs": 1500,
+  "exitStatus": "error",
+  "warnings": ["no token records captured"]
+}

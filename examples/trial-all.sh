@@ -85,3 +85,7 @@ for a in "${RUN[@]}"; do
 done
 echo
 echo "raw outputs: $OUT/  (per agent: .json run result · .stderr event stream · .secs wall time)"
+
+# --- single-file HTML report (tolerant when the report subcommand is absent) ----
+# shellcheck disable=SC2086
+$HARNESS report "$OUT" --out "$OUT/report.html" || true

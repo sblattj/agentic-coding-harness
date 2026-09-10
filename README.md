@@ -25,6 +25,9 @@ examples/monitor-live.sh
 
 # smallest end-to-end path: run an agent, emit an ATIF trajectory, validate it
 bun examples/emit-atif.ts   # → trajectory.json
+
+# compare a finished trial as a single-file HTML dashboard (charts + timelines)
+bun src/cli/harness.ts report trials/20260910-091011   # → trials/20260910-091011/report.html
 ```
 
 ## CLI
@@ -36,6 +39,7 @@ bun src/cli/harness.ts run --agent claude [--model M] [--budget-usd N] [--max-tu
 bun src/cli/harness.ts watch [--dir ~/.claude/projects]   # live per-session token deltas
 bun src/cli/harness.ts stats [--agent A] [--days N] [--json]
 bun src/cli/harness.ts emit --input events.json --format atif|otel [--out path]
+bun src/cli/harness.ts report <trials-dir> [--out path]   # single-file HTML comparison
 ```
 
 State lives under `~/.agent-harness` (override with `AGENT_HARNESS_STATE_DIR`).
