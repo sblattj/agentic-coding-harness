@@ -190,8 +190,11 @@ explicitly not billing-grade figure.
   cost; tool spans stay `span`-typed with the tool name in `gen_ai.tool.name`. CLI:
   `harness emit --format langfuse --input <events.json> --langfuse-url/--langfuse-public-key/
   --langfuse-secret-key` (env fallbacks `LANGFUSE_URL`/`LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`,
-  `LANGFUSE_SECRET_KEY`). Verified live against a local Langfuse v4 docker-compose instance:
-  ingest + `GET /api/public/traces` read-back of the trace, generations, and usage buckets.
+  `LANGFUSE_SECRET_KEY`). Verified live against a local Langfuse v4 docker-compose instance
+  (v4.33.0): OTLP ingest (HTTP 200), then read-back of trace + observations — root SPAN and
+  child GENERATION with the exclusive usage buckets — via `GET /api/public/v2/observations`
+  (the legacy `GET /api/public/traces` list endpoint is disabled on v4 events-only deployments)
+  and the v4 events store itself.
 - **State store** (`core/store.ts`, JSONL not SQLite): root at `~/.agent-harness`
   (`AGENT_HARNESS_STATE_DIR` overrides). Canonical records append to `<stateDir>/raw/<agent>/<sessionId>.jsonl`;
   `harness watch` keeps byte offsets in `offsets.json` so restarts resume without replay;

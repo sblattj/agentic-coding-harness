@@ -30,6 +30,10 @@ bun examples/emit-atif.ts   # → trajectory.json
 
 # compare a finished trial as a single-file HTML dashboard (charts + timelines)
 bun src/cli/harness.ts report trials/20260910-091011   # → trials/20260910-091011/report.html
+
+# ship a recorded run to a Langfuse instance (trace + generations + tool spans)
+bun src/cli/harness.ts emit --format langfuse --input trials/20260910-091011/claude.json \
+  --langfuse-url http://localhost:3000 --langfuse-public-key pk-lf-... --langfuse-secret-key sk-lf-...
 ```
 
 ## CLI
@@ -41,6 +45,8 @@ bun src/cli/harness.ts run --agent claude [--model M] [--budget-usd N] [--max-tu
 bun src/cli/harness.ts watch [--dir ~/.claude/projects]   # live per-session token deltas
 bun src/cli/harness.ts stats [--agent A] [--days N] [--json]
 bun src/cli/harness.ts emit --input events.json --format atif|otel [--out path]
+bun src/cli/harness.ts emit --input events.json --format langfuse \
+  --langfuse-url http://localhost:3000 --langfuse-public-key pk --langfuse-secret-key sk   # POSTs OTLP
 bun src/cli/harness.ts report <trials-dir> [--out path]   # single-file HTML comparison
 ```
 

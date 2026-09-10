@@ -19,6 +19,7 @@ import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { stateDir, loadOffsets, saveOffsets, appendRecords, readAllRecords, type StatRecord } from "../core/store.ts";
 import { AtifWriter } from "../emitters/atif.ts";
 import { toOtlpJson } from "../emitters/otel.ts";
+import { emitToLangfuse } from "../emitters/langfuse.ts";
 import {
   parseClaudeTranscript,
   parseCodexRollout,
@@ -39,8 +40,12 @@ usage:
   harness stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
                  --state-only skips machine transcript dirs)
-  harness emit --input <events.json> --format <atif|otel> [--out path]
+  harness emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
+               (langfuse POSTs OTLP to the Langfuse instance; auth via
+                --langfuse-url/--langfuse-public-key/--langfuse-secret-key or
+                env LANGFUSE_URL|LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY,
+                LANGFUSE_SECRET_KEY)
   harness report <trials-dir> [--out path]
                  (single-file HTML comparison; a trials/ root scans subdirs)
 
@@ -517,14 +522,17 @@ async function cmdEmit(rest: string[]): Promise<number> {
       agent: { type: "string" },
       model: { type: "string" },
       "session-id": { type: "string" },
+      "langfuse-url": { type: "string" },
+      "langfuse-public-key": { type: "string" },
+      "langfuse-secret-key": { type: "string" },
     },
     allowPositionals: true,
   });
   const input = args.values.input;
   if (!input) throw new HarnessError("emit requires --input <events.json>", "USAGE");
   const format = args.values.format;
-  if (!format || (format !== "atif" && format !== "otel")) {
-    throw new HarnessError(`emit requires --format <atif|otel> (got '${format ?? ""}')`, "USAGE");
+  if (!format || (format !== "atif" && format !== "otel" && format !== "langfuse")) {
+    throw new HarnessError(`emit requires --format <atif|otel|langfuse> (got '${format ?? ""}')`, "USAGE");
   }
   let raw: string;
   try {
@@ -562,6 +570,52 @@ async function cmdEmit(rest: string[]): Promise<number> {
     } else {
       body = JSON.stringify(writer.toTrajectory(), null, 2) + "\n";
     }
+  } else if (format === "langfuse") {
+    const baseUrl =
+      args.values["langfuse-url"] ??
+      process.env.LANGFUSE_URL ??
+      process.env.LANGFUSE_HOST ??
+      "http://localhost:3000";
+    const publicKey = args.values["langfuse-public-key"] ?? process.env.LANGFUSE_PUBLIC_KEY;
+    const secretKey = args.values["langfuse-secret-key"] ?? process.env.LANGFUSE_SECRET_KEY;
+    if (!publicKey || !secretKey) {
+      throw new HarnessError(
+        "emit --format langfuse requires --langfuse-public-key/--langfuse-secret-key " +
+          "or env LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY",
+        "USAGE",
+      );
+    }
+    let result;
+    try {
+      result = await emitToLangfuse(events, {
+        baseUrl,
+        publicKey,
+        secretKey,
+        sessionId: args.values["session-id"] ?? "unknown-session",
+        agentName: args.values.agent ?? "unknown-agent",
+        model: args.values.model ?? "unknown-model",
+      });
+    } catch (e) {
+      throw new HarnessError(
+        `langfuse ingest to '${baseUrl}' failed: ${e instanceof Error ? e.message : e}`,
+        "EMIT",
+      );
+    }
+    if (!result.ok) {
+      throw new HarnessError(
+        `langfuse ingest failed (HTTP ${result.status}) at ${result.url}: ${result.body.slice(0, 500)}`,
+        "EMIT",
+      );
+    }
+    if (args.values.out) {
+      await fs.writeFile(args.values.out, JSON.stringify(result.payload, null, 2) + "\n");
+    }
+    process.stdout.write(
+      `langfuse: posted ${result.spanCount} spans to ${result.url} — trace ${result.traceId} (HTTP ${result.status})` +
+        (args.values.out ? `, wrote ${args.values.out}` : "") +
+        "\n",
+    );
+    return 0;
   } else {
     const doc = toOtlpJson(events, {
       sessionId: args.values["session-id"] ?? "unknown-session",
