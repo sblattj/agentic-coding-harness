@@ -75,6 +75,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       resume: { type: "string" },
       "budget-usd": { type: "string" },
       "max-turns": { type: "string" },
+      "extra-args": { type: "string" },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -108,6 +109,7 @@ async function cmdRun(rest: string[]): Promise<number> {
         usd: optNum(args.values["budget-usd"], "--budget-usd"),
         maxTurns: optInt(args.values["max-turns"], "--max-turns"),
       },
+      extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -1,0 +1,223 @@
+{
+  "sessionId": "ses_f73e9aeeeffeUK4TjkclpvthqD",
+  "events": [
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f73e9aeeeffeUK4TjkclpvthqD",
+      "timestamp": 1789056676889
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789056676889
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 15839,
+        "outputTokens": 56,
+        "cacheReadTokens": 37632,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 13,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 53540,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 53540,
+              "input": 15839,
+              "output": 56,
+              "reasoning": 13,
+              "cache": {
+                "read": 37632,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 53540,
+          "input": 15839,
+          "output": 56,
+          "reasoning": 13,
+          "cache": {
+            "read": 37632,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789056678050
+    },
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f73e9aeeeffeUK4TjkclpvthqD",
+      "timestamp": 1789056683101
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789056683101
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 172,
+        "outputTokens": 112,
+        "cacheReadTokens": 53248,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 53532,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 53532,
+              "input": 172,
+              "output": 112,
+              "reasoning": 0,
+              "cache": {
+                "read": 53248,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 53532,
+          "input": 172,
+          "output": 112,
+          "reasoning": 0,
+          "cache": {
+            "read": 53248,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789056684646
+    },
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f73e9aeeeffeUK4TjkclpvthqD",
+      "timestamp": 1789056688209
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789056688209
+    },
+    {
+      "type": "message",
+      "agent": "opencode",
+      "source": "agent",
+      "content": "**Files:** .git, .opencode, bun.lock, docs/, examples/, node_modules, package.json, README.md, src/, tests/, trials/, tsconfig.json\n\n**Summary:**\n- **agent-harness**: a headless orchestration/observability layer over coding-agent CLIs (Claude Code, Codex, OpenCode, Gemini, Kiro) with a normalized event model, cache-aware token accounting, and cost tracking.\n- Emits standard telemetry artifacts: ATIF trajectory files and OpenTelemetry `gen_ai` spans, plus per-agent state detection; CLI (`harness run/watch/stats/emit`) with state under `~/.agent-harness`.\n- TypeScript (ESM) project, tested with both tsx/node:test and bun; still WIP with `src/` populated by parallel workstreams per `docs/ARCHITECTURE.md`.",
+      "timestamp": 1789056690949
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 1470,
+        "outputTokens": 191,
+        "cacheReadTokens": 53504,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 55165,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 55165,
+              "input": 1470,
+              "output": 191,
+              "reasoning": 0,
+              "cache": {
+                "read": 53504,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 55165,
+          "input": 1470,
+          "output": 191,
+          "reasoning": 0,
+          "cache": {
+            "read": 53504,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789056691007
+    }
+  ],
+  "tokens": [
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 15839,
+      "outputTokens": 56,
+      "cacheReadTokens": 37632,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 13,
+      "costUsd": 0,
+      "timestamp": 1789056678050
+    },
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 172,
+      "outputTokens": 112,
+      "cacheReadTokens": 53248,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "timestamp": 1789056684646
+    },
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 1470,
+      "outputTokens": 191,
+      "cacheReadTokens": 53504,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "timestamp": 1789056691007
+    }
+  ],
+  "totalCost": 0,
+  "durationMs": 24227,
+  "exitStatus": "success",
+  "warnings": [
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed",
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed",
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed"
+  ]
+}

@@ -1,0 +1,336 @@
+{
+  "sessionId": "44ad2954-2659-4daa-a6af-bf62ba1393ff",
+  "events": [
+    {
+      "type": "step",
+      "agent": "claude",
+      "sessionId": "44ad2954-2659-4daa-a6af-bf62ba1393ff",
+      "model": "claude-opus-5[1m]",
+      "data": {
+        "sessionId": "44ad2954-2659-4daa-a6af-bf62ba1393ff",
+        "model": "claude-opus-5[1m]"
+      },
+      "timestamp": 1789056614264
+    },
+    {
+      "type": "message",
+      "agent": "claude",
+      "source": "agent",
+      "model": "claude-opus-5",
+      "content": "I'll take a look at the directory contents.",
+      "usage": {
+        "agent": "claude",
+        "model": "claude-opus-5",
+        "inputTokens": 2,
+        "outputTokens": 1,
+        "cacheReadTokens": 10203,
+        "cacheWriteTokens": 6078,
+        "reasoningTokens": 0,
+        "extra": {
+          "totalTokens": null,
+          "durationMs": null,
+          "raw": {
+            "input": 2,
+            "output": 1,
+            "cacheRead": 10203,
+            "cacheWrite": 6078,
+            "reasoning": 0,
+            "models": [
+              {
+                "model": "claude-opus-5",
+                "input": 2,
+                "output": 1,
+                "cacheRead": 10203,
+                "cacheWrite": 6078,
+                "reasoning": 0
+              }
+            ]
+          }
+        }
+      },
+      "timestamp": 1789056615991
+    },
+    {
+      "type": "message",
+      "agent": "claude",
+      "source": "agent",
+      "model": "claude-opus-5",
+      "content": "",
+      "usage": {
+        "agent": "claude",
+        "model": "claude-opus-5",
+        "inputTokens": 2,
+        "outputTokens": 1,
+        "cacheReadTokens": 10203,
+        "cacheWriteTokens": 6078,
+        "reasoningTokens": 0,
+        "extra": {
+          "totalTokens": null,
+          "durationMs": null,
+          "raw": {
+            "input": 2,
+            "output": 1,
+            "cacheRead": 10203,
+            "cacheWrite": 6078,
+            "reasoning": 0,
+            "models": [
+              {
+                "model": "claude-opus-5",
+                "input": 2,
+                "output": 1,
+                "cacheRead": 10203,
+                "cacheWrite": 6078,
+                "reasoning": 0
+              }
+            ]
+          }
+        }
+      },
+      "timestamp": 1789056616855
+    },
+    {
+      "type": "message",
+      "agent": "claude",
+      "source": "agent",
+      "model": "claude-opus-5",
+      "content": "",
+      "usage": {
+        "agent": "claude",
+        "model": "claude-opus-5",
+        "inputTokens": 2,
+        "outputTokens": 1,
+        "cacheReadTokens": 10203,
+        "cacheWriteTokens": 6078,
+        "reasoningTokens": 0,
+        "extra": {
+          "totalTokens": null,
+          "durationMs": null,
+          "raw": {
+            "input": 2,
+            "output": 1,
+            "cacheRead": 10203,
+            "cacheWrite": 6078,
+            "reasoning": 0,
+            "models": [
+              {
+                "model": "claude-opus-5",
+                "input": 2,
+                "output": 1,
+                "cacheRead": 10203,
+                "cacheWrite": 6078,
+                "reasoning": 0
+              }
+            ]
+          }
+        }
+      },
+      "timestamp": 1789056618975
+    },
+    {
+      "type": "message",
+      "agent": "claude",
+      "source": "agent",
+      "model": "claude-opus-5",
+      "content": "",
+      "usage": {
+        "agent": "claude",
+        "model": "claude-opus-5",
+        "inputTokens": 2,
+        "outputTokens": 21,
+        "cacheReadTokens": 16281,
+        "cacheWriteTokens": 1327,
+        "reasoningTokens": 0,
+        "extra": {
+          "totalTokens": null,
+          "durationMs": null,
+          "raw": {
+            "input": 2,
+            "output": 21,
+            "cacheRead": 16281,
+            "cacheWrite": 1327,
+            "reasoning": 0,
+            "models": [
+              {
+                "model": "claude-opus-5",
+                "input": 2,
+                "output": 21,
+                "cacheRead": 16281,
+                "cacheWrite": 1327,
+                "reasoning": 0
+              }
+            ]
+          }
+        }
+      },
+      "timestamp": 1789056621179
+    },
+    {
+      "type": "message",
+      "agent": "claude",
+      "source": "agent",
+      "model": "claude-opus-5",
+      "content": "",
+      "usage": {
+        "agent": "claude",
+        "model": "claude-opus-5",
+        "inputTokens": 2,
+        "outputTokens": 21,
+        "cacheReadTokens": 16281,
+        "cacheWriteTokens": 1327,
+        "reasoningTokens": 0,
+        "extra": {
+          "totalTokens": null,
+          "durationMs": null,
+          "raw": {
+            "input": 2,
+            "output": 21,
+            "cacheRead": 16281,
+            "cacheWrite": 1327,
+            "reasoning": 0,
+            "models": [
+              {
+                "model": "claude-opus-5",
+                "input": 2,
+                "output": 21,
+                "cacheRead": 16281,
+                "cacheWrite": 1327,
+                "reasoning": 0
+              }
+            ]
+          }
+        }
+      },
+      "timestamp": 1789056622639
+    },
+    {
+      "type": "message",
+      "agent": "claude",
+      "source": "agent",
+      "model": "claude-opus-5",
+      "content": "## Files in `/Users/sblatt/projects/agent-harness`\n\n```\n.gitignore          bun.lock            package.json        tsconfig.json\nREADME.md           package-lock.json\n.opencode/          docs/               examples/           src/\ntests/              trials/  (untracked)\n```\n\n- `src/` — `adapters/` (claude, codex, gemini, kiro, opencode), `core/` (driver, normalize, pricing, store, types), `cli/` (harness.ts, lib.ts), `emitters/` (atif, otel), `monitors/` (transcripts, tmux-driver, kiro-mitm)\n- `docs/` — ARCHITECTURE.md, TOKEN-COUNTING.md\n- `examples/` — trial-all.sh, monitor-live.sh, emit-atif.ts\n- `tests/` — 12 test files plus `fixtures/` and `helpers/`\n\n## Summary\n\n- **What it is:** a headless-first orchestration and observability layer that wraps coding-agent CLIs (Claude Code, Codex CLI, OpenCode, Gemini CLI, Kiro) behind one adapter interface, so a single `harness run --agent X \"prompt\"` drives any of them via headless, ACP, or tmux lanes.\n\n- **What it produces:** a normalized event model with cache-aware token accounting and cost math (`core/pricing.ts` + `pricing-data.json`), exported as ATIF trajectory artifacts or OpenTelemetry `gen_ai` spans, plus per-agent state detection and live per-session token deltas via `harness watch`.\n\n- **Status/tooling:** TypeScript, v0.1.0, runs under both `tsx --test` and `bun test` on an identical suite (re-export shims deliberately banned to avoid skewed test counts); README flags `src/` as work-in-progress with open interface merges tracked in ARCHITECTURE.md §9. State persists in `~/.agent-harness`.",
+      "usage": {
+        "agent": "claude",
+        "model": "claude-opus-5",
+        "inputTokens": 2,
+        "outputTokens": 1,
+        "cacheReadTokens": 17608,
+        "cacheWriteTokens": 2130,
+        "reasoningTokens": 0,
+        "extra": {
+          "totalTokens": null,
+          "durationMs": null,
+          "raw": {
+            "input": 2,
+            "output": 1,
+            "cacheRead": 17608,
+            "cacheWrite": 2130,
+            "reasoning": 0,
+            "models": [
+              {
+                "model": "claude-opus-5",
+                "input": 2,
+                "output": 1,
+                "cacheRead": 17608,
+                "cacheWrite": 2130,
+                "reasoning": 0
+              }
+            ]
+          }
+        }
+      },
+      "timestamp": 1789056632236
+    },
+    {
+      "type": "usage",
+      "agent": "claude",
+      "usage": {
+        "agent": "claude",
+        "model": "claude-haiku-4-5-20251001",
+        "inputTokens": 916,
+        "outputTokens": 1106,
+        "cacheReadTokens": 44092,
+        "cacheWriteTokens": 9535,
+        "reasoningTokens": 0,
+        "costUsd": 0.10996974999999999,
+        "extra": {
+          "totalTokens": null,
+          "durationMs": null,
+          "raw": {
+            "input": 916,
+            "output": 1106,
+            "cacheRead": 44092,
+            "cacheWrite": 9535,
+            "reasoning": 0,
+            "models": [
+              {
+                "model": "claude-haiku-4-5-20251001",
+                "input": 910,
+                "output": 13,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "reasoning": 0,
+                "costUsd": 0.000975
+              },
+              {
+                "model": "claude-opus-5[1m]",
+                "input": 6,
+                "output": 1093,
+                "cacheRead": 44092,
+                "cacheWrite": 9535,
+                "reasoning": 0,
+                "costUsd": 0.10899475
+              }
+            ],
+            "costUsd": 0.10996974999999999
+          }
+        }
+      },
+      "data": {
+        "input": 916,
+        "output": 1106,
+        "cacheRead": 44092,
+        "cacheWrite": 9535,
+        "reasoning": 0,
+        "models": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input": 910,
+            "output": 13,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "costUsd": 0.000975
+          },
+          {
+            "model": "claude-opus-5[1m]",
+            "input": 6,
+            "output": 1093,
+            "cacheRead": 44092,
+            "cacheWrite": 9535,
+            "reasoning": 0,
+            "costUsd": 0.10899475
+          }
+        ],
+        "costUsd": 0.10996974999999999
+      },
+      "timestamp": 1789056632244
+    }
+  ],
+  "tokens": [
+    {
+      "agent": "claude",
+      "model": "claude-haiku-4-5-20251001",
+      "inputTokens": 916,
+      "outputTokens": 1106,
+      "cacheReadTokens": 44092,
+      "cacheWriteTokens": 9535,
+      "reasoningTokens": 0,
+      "costUsd": 0.10996974999999999,
+      "timestamp": 1789056632244
+    }
+  ],
+  "totalCost": 0.02277395,
+  "durationMs": 21345,
+  "exitStatus": "success",
+  "warnings": []
+}

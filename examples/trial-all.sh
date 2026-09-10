@@ -56,17 +56,18 @@ for a in "${RUN[@]}"; do
 done
 
 # --- comparison table ----------------------------------------------------------
-# RunResult envelope (formatSummary + recordFromRunResult contract):
-#   .sessionId .tokens.{input,output,cacheRead,cacheWrite,reasoning} .costUsd .durationMs .exitStatus
+# RunResult envelope: .tokens is an ARRAY of CanonicalTokenRecord; cost is per-record .costUsd
+# (summed here; driver-level .totalCostUsd may be null when a record is unpriced).
 row() {
   f="$1"; a="$2"
   if command -v jq >/dev/null 2>&1 && [ -s "$f" ]; then
     jq -r --arg a "$a" '
-      (.tokens // {}) as $t |
-      [($t.input // $t.inputTokens // 0),
-       ($t.output // $t.outputTokens // 0),
-       (($t.cacheRead // $t.cacheReadTokens // 0) + ($t.cacheWrite // $t.cacheWriteTokens // 0)),
-       (.costUsd // .totalCost // "n/a"),
+      def sumf(k): [(.tokens // [])[] | (.[k] // 0)] | add // 0;
+      def sumcost: ([(.tokens // [])[] | (.costUsd // empty)] | add) // .totalCostUsd // "n/a";
+      [sumf("inputTokens"),
+       sumf("outputTokens"),
+       (sumf("cacheReadTokens") + sumf("cacheWriteTokens")),
+       (sumcost | if type=="number" then (.*10000|round/10000) else . end),
        (.durationMs // "n/a"),
        (.exitStatus // .status // "error")] | @tsv' "$f" 2>/dev/null
   else

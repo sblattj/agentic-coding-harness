@@ -1,0 +1,269 @@
+{
+  "sessionId": "e0eebb34-b724-4dad-9d43-a200b930a774",
+  "events": [
+    {
+      "type": "progress",
+      "agent": "gemini",
+      "text": "YOLO mode is enabled. All tool calls will be automatically approved.",
+      "timestamp": 1789056862868
+    },
+    {
+      "type": "progress",
+      "agent": "gemini",
+      "text": "YOLO mode is enabled. All tool calls will be automatically approved.",
+      "timestamp": 1789056862868
+    },
+    {
+      "type": "progress",
+      "agent": "gemini",
+      "text": "[STARTUP] Phase 'cleanup_ops' was started but never ended. Skipping metrics.",
+      "timestamp": 1789056862868
+    },
+    {
+      "type": "session",
+      "agent": "gemini",
+      "sessionId": "e0eebb34-b724-4dad-9d43-a200b930a774",
+      "timestamp": 1789056862869
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "user",
+      "content": "List the files in the current directory and summarize the project in 3 bullet points",
+      "timestamp": 1789056862869
+    },
+    {
+      "type": "progress",
+      "agent": "gemini",
+      "text": "[STARTUP] Cannot measure phase 'cleanup_ops': start mark 'startup:cleanup_ops:start' not found (likely cleared by reset).",
+      "timestamp": 1789056862879
+    },
+    {
+      "type": "tool_call",
+      "agent": "gemini",
+      "toolCallId": "list_directory__call_1372942",
+      "functionName": "list_directory",
+      "arguments": {
+        "dir_path": "."
+      },
+      "timestamp": 1789056877525
+    },
+    {
+      "type": "tool_result",
+      "agent": "gemini",
+      "toolCallId": "list_directory__call_1372942",
+      "content": "",
+      "isError": false,
+      "timestamp": 1789056877532
+    },
+    {
+      "type": "tool_call",
+      "agent": "gemini",
+      "toolCallId": "read_file__call_1665747",
+      "functionName": "read_file",
+      "arguments": {
+        "end_line": 100,
+        "file_path": "README.md",
+        "start_line": 1
+      },
+      "timestamp": 1789056878852
+    },
+    {
+      "type": "tool_result",
+      "agent": "gemini",
+      "toolCallId": "read_file__call_1665747",
+      "content": "",
+      "isError": false,
+      "timestamp": 1789056878934
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "### Current Directory Files\n\nThe root",
+      "timestamp": 1789056881974
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": " directory contains the following files and folders:\n\n*   **Directories:**\n    *   `docs/` — Contains technical",
+      "timestamp": 1789056882079
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": " architecture and token-counting documentation.\n    *   `examples/` — Scripts and examples for running, monitoring, and emitting trajectories.\n",
+      "timestamp": 1789056882178
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "    *   `src/` — Main codebase including adapters, CLI logic, core driver, token/pricing data, and emitters.\n    ",
+      "timestamp": 1789056882328
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "*   `tests/` — Comprehensive test suite for adapters, normalizers, CLI, and pricing.\n    *   ",
+      "timestamp": 1789056882368
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "`trials/` — Captured logs, stderr, and execution duration files per agent.\n    *   `.opencode/`,",
+      "timestamp": 1789056882454
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": " `node_modules/` — Hidden configurations and dependency folders.\n*   **Files:**\n    *   `.",
+      "timestamp": 1789056882519
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "gitignore`\n    *   `bun.lock`\n    *   `package-lock.json`\n    ",
+      "timestamp": 1789056882605
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "*   `package.json`\n    *   `README.md`\n    *   `tsconfig.json",
+      "timestamp": 1789056882646
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "`\n\n---\n\n### Project Summary\n\n*   **Multi-Agent Orchestration & Observability:** Acts as a headless-",
+      "timestamp": 1789056882724
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "first harness and monitoring layer over prominent coding-agent CLIs (Claude Code, Codex CLI, OpenCode, Gemini CLI,",
+      "timestamp": 1789056882814
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": " and Kiro) to manage, execute, and compare their performance.\n*   **Normalized Metrics & Token Tracking:** Capt",
+      "timestamp": 1789056882919
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": "ures fine-grained, cache-aware token usage and cost analysis, preventing double-counting traps and standardizing agent metrics",
+      "timestamp": 1789056883028
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": " across providers.\n*   **Standardized Trajectory & Telemetry Output:** Implements a normalized event model that translates agent actions",
+      "timestamp": 1789056883186
+    },
+    {
+      "type": "message",
+      "agent": "gemini",
+      "source": "agent",
+      "content": " into standard OpenTelemetry (`gen_ai` spans) and ATIF (Agent Trajectory Interchange Format) trajectory files.",
+      "timestamp": 1789056883262
+    },
+    {
+      "type": "usage",
+      "agent": "gemini",
+      "usage": {
+        "agent": "gemini",
+        "model": "unknown",
+        "inputTokens": 29017,
+        "outputTokens": 463,
+        "cacheReadTokens": 32588,
+        "cacheWriteTokens": 0,
+        "extra": {
+          "totalTokens": 64652,
+          "durationMs": 20429,
+          "raw": {
+            "total_tokens": 64652,
+            "input_tokens": 61605,
+            "output_tokens": 463,
+            "cached": 32588,
+            "input": 29017,
+            "duration_ms": 20429,
+            "tool_calls": 2,
+            "models": {
+              "gemini-3.1-flash-lite": {
+                "total_tokens": 3639,
+                "input_tokens": 1674,
+                "output_tokens": 49,
+                "cached": 0,
+                "input": 1674
+              },
+              "gemini-3.5-flash": {
+                "total_tokens": 61013,
+                "input_tokens": 59931,
+                "output_tokens": 414,
+                "cached": 32588,
+                "input": 27343
+              }
+            }
+          }
+        }
+      },
+      "data": {
+        "total_tokens": 64652,
+        "input_tokens": 61605,
+        "output_tokens": 463,
+        "cached": 32588,
+        "input": 29017,
+        "duration_ms": 20429,
+        "tool_calls": 2,
+        "models": {
+          "gemini-3.1-flash-lite": {
+            "total_tokens": 3639,
+            "input_tokens": 1674,
+            "output_tokens": 49,
+            "cached": 0,
+            "input": 1674
+          },
+          "gemini-3.5-flash": {
+            "total_tokens": 61013,
+            "input_tokens": 59931,
+            "output_tokens": 414,
+            "cached": 32588,
+            "input": 27343
+          }
+        }
+      },
+      "timestamp": 1789056883298
+    }
+  ],
+  "tokens": [
+    {
+      "agent": "gemini",
+      "model": "unknown",
+      "inputTokens": 29017,
+      "outputTokens": 463,
+      "cacheReadTokens": 32588,
+      "cacheWriteTokens": 0,
+      "timestamp": 1789056883298
+    }
+  ],
+  "totalCost": 0,
+  "durationMs": 21070,
+  "exitStatus": "success",
+  "warnings": [
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed"
+  ]
+}

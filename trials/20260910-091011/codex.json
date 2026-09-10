@@ -1,0 +1,151 @@
+{
+  "sessionId": "01a08c15-c958-78d3-a242-89a8548ebfab",
+  "events": [
+    {
+      "type": "progress",
+      "agent": "codex",
+      "text": "Reading additional input from stdin...",
+      "timestamp": 1789056633171
+    },
+    {
+      "type": "session",
+      "agent": "codex",
+      "sessionId": "01a08c15-c958-78d3-a242-89a8548ebfab",
+      "timestamp": 1789056633248
+    },
+    {
+      "type": "progress",
+      "agent": "codex",
+      "text": "2026-09-10T16:10:38.176227Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit",
+      "timestamp": 1789056638176
+    },
+    {
+      "type": "message",
+      "agent": "codex",
+      "source": "agent",
+      "content": "I’ll list the directory contents and check the project’s README and configuration for a brief summary.",
+      "timestamp": 1789056644635
+    },
+    {
+      "type": "tool_call",
+      "agent": "codex",
+      "toolCallId": "item_1",
+      "functionName": "shell",
+      "arguments": "/bin/zsh -lc 'ls -la'",
+      "timestamp": 1789056648631
+    },
+    {
+      "type": "tool_result",
+      "agent": "codex",
+      "toolCallId": "item_1",
+      "content": "total 120\ndrwxr-xr-x@ 16 sblatt  staff    512 Sep 10 09:10 .\ndrwxr-xr-x@  3 sblatt  staff     96 Sep  9 21:25 ..\ndrwxr-xr-x@ 12 sblatt  staff    384 Sep 10 09:09 .git\n-rw-r--r--@  1 sblatt  staff     31 Sep 10 08:11 .gitignore\ndrwx------@  7 sblatt  staff    224 Sep  9 21:49 .opencode\n-rw-r--r--@  1 sblatt  staff   2441 Sep 10 09:06 README.md\n-rw-r--r--@  1 sblatt  staff  12860 Sep  9 21:53 bun.lock\ndrwxr-xr-x@  4 sblatt  staff    128 Sep  9 21:32 docs\ndrwxr-xr-x@  5 sblatt  staff    160 Sep  9 21:33 examples\ndrwxr-xr-x@ 15 sblatt  staff    480 Sep  9 21:46 node_modules\n-rw-r--r--@  1 sblatt  staff  26087 Sep  9 21:46 package-lock.json\n-rw-r--r--@  1 sblatt  staff    768 Sep 10 08:07 package.json\ndrwxr-xr-x@  7 sblatt  staff    224 Sep  9 21:33 src\ndrwxr-xr-x@ 17 sblatt  staff    544 Sep 10 09:06 tests\ndrwxr-xr-x@  3 sblatt  staff     96 Sep 10 09:10 trials\n-rw-r--r--@  1 sblatt  staff    398 Sep 10 07:54 tsconfig.json\n",
+      "isError": false,
+      "timestamp": 1789056648631
+    },
+    {
+      "type": "tool_call",
+      "agent": "codex",
+      "toolCallId": "item_2",
+      "functionName": "shell",
+      "arguments": "/bin/zsh -lc \"pwd && rg --files -g 'AGENTS.md' -g 'README*' -g 'package.json' -g 'pyproject.toml' -g 'Cargo.toml' -g 'go.mod' -g 'Makefile' -g '\"'!node_modules'\"' -g '\"'!vendor'\"' -g '\"'!dist'\"' -g '\"'!build'\"'\"",
+      "timestamp": 1789056648650
+    },
+    {
+      "type": "tool_result",
+      "agent": "codex",
+      "toolCallId": "item_2",
+      "content": "/Users/sblatt/projects/agent-harness\npackage.json\nREADME.md\n",
+      "isError": false,
+      "timestamp": 1789056648651
+    },
+    {
+      "type": "tool_call",
+      "agent": "codex",
+      "toolCallId": "item_3",
+      "functionName": "shell",
+      "arguments": "/bin/zsh -lc 'cat README.md package.json'",
+      "timestamp": 1789056653135
+    },
+    {
+      "type": "tool_call",
+      "agent": "codex",
+      "toolCallId": "item_4",
+      "functionName": "shell",
+      "arguments": "/bin/zsh -lc 'rg --files src docs examples tests'",
+      "timestamp": 1789056653135
+    },
+    {
+      "type": "tool_result",
+      "agent": "codex",
+      "toolCallId": "item_3",
+      "content": "# agent-harness\n\nHeadless-first orchestration and observability layer over coding-agent CLIs (Claude Code, Codex\nCLI, OpenCode, Gemini CLI, Kiro): one normalized event model, cache-aware token accounting,\nATIF trajectory artifacts, OTel `gen_ai` spans, and per-agent state detection.\n\n**Work in progress** — `src/` is being populated by parallel workstreams; see\n`docs/ARCHITECTURE.md` §9 for the open interface merges.\n\n## Docs\n\n- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — adapter pattern (headless / ACP / tmux lanes),\n  token taps, canonical token record, ATIF, OTel transport, state manifests, data-flow diagram.\n- [`docs/TOKEN-COUNTING.md`](docs/TOKEN-COUNTING.md) — per-agent usage field reference,\n  double-counting traps, cost formula.\n\n## Quickstart\n\n```sh\n# one small task on every installed agent, side-by-side comparison table\nexamples/trial-all.sh\n\n# live deltas: run `harness watch` in the background, fire a run, watch it land\nexamples/monitor-live.sh\n\n# smallest end-to-end path: run an agent, emit an ATIF trajectory, validate it\nbun examples/emit-atif.ts   # → trajectory.json\n```\n\n## CLI\n\n`src/cli/harness.ts` (run it with `bun`):\n\n```sh\nbun src/cli/harness.ts run --agent claude [--model M] [--budget-usd N] [--max-turns N] [--json] \"prompt\"\nbun src/cli/harness.ts watch [--dir ~/.claude/projects]   # live per-session token deltas\nbun src/cli/harness.ts stats [--agent A] [--days N] [--json]\nbun src/cli/harness.ts emit --input events.json --format atif|otel [--out path]\n```\n\nState lives under `~/.agent-harness` (override with `AGENT_HARNESS_STATE_DIR`).\n\n## Examples\n\n| Script | What it shows |\n|---|---|\n| [`examples/trial-all.sh`](examples/trial-all.sh) | trials every agent with both CLI and adapter installed; prints agent / tokens / cost / duration / status; skips the rest |\n| [`examples/monitor-live.sh`](examples/monitor-live.sh) | `watch` in background + sample `run` + the delta lines appearing + `stats` |\n| [`examples/emit-atif.ts`](examples/emit-atif.ts) | run → `AtifWriter.fromEvents` → `trajectory.json` → validate |\n\n## Develop\n\n```sh\nnpm run typecheck   # tsc --noEmit\nnpm test            # tsx --test (canonical runner)\nbun test            # same suite under bun\n```\n\nBoth runners execute the identical suite. `tests/` re-export shims are not\nallowed: `node:test` counts an imported suite again while `bun test`\ndeduplicates it by qualified name, silently skewing the counts.\n{\n  \"name\": \"agent-harness\",\n  \"version\": \"0.1.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"bin\": {\n    \"harness\": \"./src/cli/harness.ts\"\n  },\n  \"scripts\": {\n    \"test\": \"tsx --test tests/*.test.ts src/adapters/*.test.ts\",\n    \"test:bun\": \"bun test\",\n    \"typecheck\": \"tsc --noEmit && tsc --noEmit -p tests/tsconfig.json\",\n    \"build\": \"bun build src/cli/harness.ts --outdir dist --target bun\"\n  },\n  \"dependencies\": {\n    \"@opentelemetry/api\": \"^1.9.1\",\n    \"@opentelemetry/exporter-trace-otlp-http\": \"^0.222.0\",\n    \"@opentelemetry/resources\": \"^2.11.0\",\n    \"@opentelemetry/sdk-trace-node\": \"^2.11.0\",\n    \"zod\": \"^4.6.1\"\n  },\n  \"devDependencies\": {\n    \"@types/node\": \"^22.15.0\",\n    \"bun-types\": \"^1.3.0\",\n    \"tsx\": \"^4.23.13\",\n    \"typescript\": \"^5.8.0\"\n  }\n}\n",
+      "isError": false,
+      "timestamp": 1789056653135
+    },
+    {
+      "type": "tool_result",
+      "agent": "codex",
+      "toolCallId": "item_4",
+      "content": "docs/TOKEN-COUNTING.md\nexamples/monitor-live.sh\ntests/codex.test.ts\ntests/driver.test.ts\ntests/cli.test.ts\ndocs/ARCHITECTURE.md\ntests/kiro-adapter.test.ts\ntests/normalize.test.ts\ntests/atif.test.ts\ntests/state-detector.test.ts\ntests/transcripts.test.ts\ntests/kiro-mitm.test.ts\ntests/tsconfig.json\ntests/pricing.test.ts\ntests/otel.test.ts\nexamples/trial-all.sh\nexamples/emit-atif.ts\ntests/helpers/fake-child.ts\ntests/gemini.test.ts\nsrc/monitors/transcripts.ts\nsrc/emitters/atif.ts\nsrc/monitors/kiro-mitm.ts\nsrc/monitors/tmux-driver.ts\nsrc/emitters/otel.ts\nsrc/cli/harness.ts\nsrc/cli/lib.ts\ntests/fixtures/codex-session.ndjson\ntests/fixtures/gemini-session.ndjson\ntests/fixtures/codex/rollout-test.jsonl\nsrc/core/store.ts\nsrc/core/normalize.ts\nsrc/core/pricing-data.json\nsrc/core/types.ts\nsrc/core/pricing.ts\nsrc/core/driver.ts\nsrc/adapters/opencode.test.ts\nsrc/adapters/claude.test.ts\nsrc/adapters/codex.ts\ntests/fixtures/claude/session-abc.jsonl\nsrc/adapters/fixtures/claude-ndjson-sample.ndjson\nsrc/adapters/claude.ts\nsrc/adapters/gemini.ts\nsrc/adapters/types.ts\nsrc/adapters/opencode.ts\nsrc/adapters/shared.ts\nsrc/adapters/kiro.ts\ntests/fixtures/claude-session/session-xyz.jsonl\ntests/fixtures/gemini/chats/chat-test.json\ntests/fixtures/claude-session/session-xyz/subagents/agent-1.jsonl\n",
+      "isError": false,
+      "timestamp": 1789056653136
+    },
+    {
+      "type": "message",
+      "agent": "codex",
+      "source": "agent",
+      "content": "The current directory is `/Users/sblatt/projects/agent-harness`. Its top-level contents are below; `/` marks directories, and hidden entries are included.\n\n```text\n.git/\n.gitignore\n.opencode/\nREADME.md\nbun.lock\ndocs/\nexamples/\nnode_modules/\npackage-lock.json\npackage.json\nsrc/\ntests/\ntrials/\ntsconfig.json\n```\n\n- **Purpose:** `agent-harness` provides a common orchestration and monitoring layer for coding-agent CLIs, with adapters for Claude Code, Codex, OpenCode, Gemini, and Kiro.\n- **Capabilities:** Its CLI runs agent tasks, watches session activity, reports token usage and costs, and exports normalized events as ATIF trajectories or OpenTelemetry traces.\n- **Structure and status:** A private TypeScript project using Bun, marked as a work in progress in the [README](/Users/sblatt/projects/agent-harness/README.md). It includes architecture documentation, runnable examples, and tests covering adapters, token accounting, state detection, CLI behavior, and exports.",
+      "timestamp": 1789056665110
+    },
+    {
+      "type": "usage",
+      "agent": "codex",
+      "usage": {
+        "agent": "codex",
+        "model": "unknown",
+        "inputTokens": 24577,
+        "outputTokens": 506,
+        "cacheReadTokens": 44032,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 35,
+        "extra": {
+          "totalTokens": null,
+          "durationMs": null,
+          "raw": {
+            "input_tokens": 68609,
+            "cached_input_tokens": 44032,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 506,
+            "reasoning_output_tokens": 35
+          }
+        }
+      },
+      "data": {
+        "input_tokens": 68609,
+        "cached_input_tokens": 44032,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 506,
+        "reasoning_output_tokens": 35
+      },
+      "timestamp": 1789056665139
+    }
+  ],
+  "tokens": [
+    {
+      "agent": "codex",
+      "model": "unknown",
+      "inputTokens": 24577,
+      "outputTokens": 506,
+      "cacheReadTokens": 44032,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 35,
+      "timestamp": 1789056665139
+    }
+  ],
+  "totalCost": 0,
+  "durationMs": 34179,
+  "exitStatus": "success",
+  "warnings": [
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed"
+  ]
+}

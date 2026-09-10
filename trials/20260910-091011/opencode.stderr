@@ -1,0 +1,13 @@
+[09:11:16] session
+[09:11:16] step
+[09:11:18] usage
+[09:11:23] session
+[09:11:23] step
+[09:11:24] usage
+[09:11:28] session
+[09:11:28] step
+[09:11:30] text    **Files:** .git, .opencode, bun.lock, docs/, examples/, nod…
+[09:11:31] usage
+[warn] pricing: unknown model "unknown" (alias "unknown"); cost not computed
+[warn] pricing: unknown model "unknown" (alias "unknown"); cost not computed
+[warn] pricing: unknown model "unknown" (alias "unknown"); cost not computed
