@@ -1,0 +1,5 @@
+{"type":"init","session_id":"sess-g-9f31c2","model":"gemini-2.5-pro","auth_type":"oauth-personal","timestamp":"2026-09-09T21:00:00.000Z"}
+{"type":"tool_use","tool_name":"read_file","tool_id":"toolu_1","parameters":{"path":"notes.txt"}}
+{"type":"tool_result","tool_name":"read_file","tool_id":"toolu_1","output":"hello world","status":"success"}
+{"type":"message","role":"assistant","content":[{"type":"text","text":"Done: notes.txt contains 'hello world'."}]}
+{"type":"result","status":"success","response":"Done: notes.txt contains 'hello world'.","stats":{"total_tokens":3105,"input_tokens":2000,"output_tokens":300,"cached":700,"input":1250,"thoughts":100,"duration_ms":5432}}

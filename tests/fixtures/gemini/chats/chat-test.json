@@ -1,0 +1,18 @@
+{
+  "messages": [
+    { "type": "user", "text": "hi" },
+    {
+      "type": "gemini",
+      "text": "hello",
+      "model": "gemini-2.5-pro",
+      "timestamp": "2026-09-09T10:00:00.000Z",
+      "tokens": { "input": 100, "output": 50, "cached": 20, "thoughts": 10 }
+    },
+    {
+      "type": "gemini",
+      "text": "more",
+      "model": "gemini-2.5-flash",
+      "tokens": { "input": 80, "output": 30, "cached": 0, "thoughts": 0 }
+    }
+  ]
+}

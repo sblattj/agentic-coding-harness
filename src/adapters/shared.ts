@@ -1,0 +1,450 @@
+import { randomUUID } from 'node:crypto';
+import { spawn as nodeSpawn } from 'node:child_process';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { Readable, Writable } from 'node:stream';
+import type { CanonicalEvent, RunHandle, RunOptions } from './types.ts';
+import type {
+  AdapterExit,
+  AgentEvent as CoreAgentEvent,
+  AgentHandle as CoreAgentHandle,
+  CanonicalTokenRecord as CoreTokenRecord,
+} from '../core/types.js';
+
+/**
+ * Injectable child-process factory. Tests supply a fake that replays recorded
+ * NDJSON fixtures through the exact same stdout/stderr plumbing production
+ * uses; the default is node's spawn with shell:false.
+ */
+export type SpawnFn = (
+  command: string,
+  args: string[],
+  opts: SpawnOptions,
+) => ChildProcessLike;
+
+export interface ChildProcessLike {
+  stdout: Readable | null;
+  stderr: Readable | null;
+  stdin: Writable | null;
+  kill(signal?: NodeJS.Signals | number): boolean;
+  once(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+  once(event: 'error', listener: (err: Error) => void): this;
+}
+
+export const defaultSpawnFn: SpawnFn = (command, args, opts) =>
+  nodeSpawn(command, args, { ...opts, shell: false });
+
+/** Accumulates stdout chunks and yields complete newline-terminated lines. */
+export class LineAssembler {
+  #buf = '';
+
+  push(chunk: string): string[] {
+    this.#buf += chunk;
+    const lines: string[] = [];
+    let idx: number;
+    while ((idx = this.#buf.indexOf('\n')) !== -1) {
+      lines.push(this.#buf.slice(0, idx).replace(/\r$/, ''));
+      this.#buf = this.#buf.slice(idx + 1);
+    }
+    return lines;
+  }
+
+  /** Flush any trailing unterminated line (crash mid-line still yields data). */
+  flush(): string[] {
+    const rest = this.#buf.replace(/\r$/, '');
+    this.#buf = '';
+    return rest.length > 0 ? [rest] : [];
+  }
+}
+
+type QueueState<T> =
+  | { kind: 'open'; buffered: T[]; wake: (() => void) | null }
+  | { kind: 'closed'; buffered: T[] };
+
+/** Push-based async iterable of events (house CanonicalEvent by default). */
+export class EventQueue<T = CanonicalEvent> implements AsyncIterable<T> {
+  #state: QueueState<T> = { kind: 'open', buffered: [], wake: null };
+
+  push(...events: T[]): void {
+    // A zero-event push (e.g. a parsed line that maps to nothing) must not
+    // wake a parked consumer: the wake closure treats "woken with an empty
+    // buffer" as end-of-stream, which only close() may signal.
+    if (events.length === 0) return;
+    const s = this.#state;
+    if (s.kind !== 'open') return;
+    s.buffered.push(...events);
+    const wake = s.wake;
+    s.wake = null;
+    wake?.();
+  }
+
+  /** Stop accepting events; consumers may still drain what was buffered. */
+  close(): void {
+    const s = this.#state;
+    if (s.kind !== 'open') return;
+    this.#state = { kind: 'closed', buffered: s.buffered };
+    s.wake?.();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: (): Promise<IteratorResult<T>> => {
+        const s = this.#state;
+        if (s.buffered.length > 0) {
+          return Promise.resolve({ value: s.buffered.shift()!, done: false });
+        }
+        if (s.kind === 'closed') {
+          return Promise.resolve({ value: undefined, done: true });
+        }
+        return new Promise<IteratorResult<T>>((resolve) => {
+          s.wake = () => {
+            s.wake = null;
+            if (s.buffered.length > 0) {
+              resolve({ value: s.buffered.shift()!, done: false });
+            } else {
+              // Woken by close() with nothing buffered.
+              resolve({ value: undefined, done: true });
+            }
+          };
+        });
+      },
+    };
+  }
+}
+
+export interface JsonlRunSpec {
+  command: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface JsonlRunConfig {
+  spec: JsonlRunSpec;
+  /** Parse one stdout JSONL record into zero or more canonical events. */
+  parseLine: (line: string) => CanonicalEvent[];
+  spawnFn?: SpawnFn;
+  /** Grace period between SIGTERM and SIGKILL on abort. */
+  killGraceMs?: number;
+}
+
+/**
+ * Shared run loop: spawn the CLI, feed stdout JSONL through parseLine, forward
+ * stderr as progress events, and surface a non-zero exit as an error event.
+ */
+export function runJsonlCli(config: JsonlRunConfig): RunHandle {
+  const { spec, parseLine } = config;
+  const spawnFn = config.spawnFn ?? defaultSpawnFn;
+  const killGraceMs = config.killGraceMs ?? 5000;
+
+  const queue = new EventQueue();
+  let child: ChildProcessLike | null = null;
+  let killed = false;
+  let resolveExit: ((code: number) => void) | null = null;
+  const exitPromise = new Promise<number>((resolve) => {
+    resolveExit = resolve;
+  });
+
+  const settleExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    resolveExit?.(code !== null ? code : signal ? -1 : 0);
+  };
+
+  const start = (): ChildProcessLike => {
+    const opts: SpawnOptions = {
+      cwd: spec.cwd,
+      env: spec.env ? { ...process.env, ...spec.env } : process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    };
+    const proc = spawnFn(spec.command, spec.args, opts);
+    child = proc;
+
+    proc.once('error', (err: Error) => {
+      queue.push({ type: 'error', message: `failed to spawn ${spec.command}: ${err.message}` });
+    });
+
+    const assembler = new LineAssembler();
+    proc.stdout?.on('data', (chunk: Buffer | string) => {
+      for (const line of assembler.push(String(chunk))) {
+        if (line.trim() === '') continue;
+        try {
+          queue.push(...parseLine(line));
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          queue.push({ type: 'error', message: `unparseable stdout line: ${message}` });
+        }
+      }
+    });
+    proc.stdout?.on('end', () => {
+      for (const line of assembler.flush()) {
+        if (line.trim() === '') continue;
+        try {
+          queue.push(...parseLine(line));
+        } catch {
+          queue.push({ type: 'error', message: 'unparseable trailing stdout line' });
+        }
+      }
+    });
+
+    const stderrAsm = new LineAssembler();
+    proc.stderr?.on('data', (chunk: Buffer | string) => {
+      for (const line of stderrAsm.push(String(chunk))) {
+        if (line.trim() !== '') queue.push({ type: 'progress', text: line });
+      }
+    });
+    proc.stderr?.on('end', () => {
+      for (const line of stderrAsm.flush()) {
+        if (line.trim() !== '') queue.push({ type: 'progress', text: line });
+      }
+    });
+
+    proc.stdin?.end();
+
+    proc.once('close', (code, signal) => {
+      settleExit(code, signal);
+      if (!killed && code !== null && code !== 0) {
+        queue.push({
+          type: 'error',
+          message: `${spec.command} exited with code ${code}${signal ? ` (signal ${signal})` : ''}`,
+        });
+      }
+      queue.close();
+    });
+
+    return proc;
+  };
+
+  // Spawn eagerly: constructing a run starts the process, so abort() works
+  // immediately and wait() cannot double-start.
+  start();
+
+  const abort = (): void => {
+    if (!child || killed) return;
+    killed = true;
+    child.kill('SIGTERM');
+    const dying = child;
+    const timer = setTimeout(() => {
+      try {
+        dying.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }, killGraceMs);
+    timer.unref?.();
+  };
+
+  const wait = (): Promise<number> => exitPromise;
+
+  return { events: queue, wait, abort };
+}
+
+// ---------------------------------------------------------------------------
+// Driver-contract bridge (src/core/types.ts)
+//
+// Maps the adapter-lane vocabulary (CanonicalEvent / CanonicalTokenRecord from
+// ./types.ts, plus the per-adapter `step` / `usage.cost` extensions) onto the
+// core AgentEvent union and AgentHandle shape consumed by src/core/driver.ts.
+// ---------------------------------------------------------------------------
+
+/** House token record (adapters/types.ts) — input is UNCACHED input only. */
+export interface HouseTokens {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  reasoningTokens: number | null;
+  totalTokens: number | null;
+  durationMs: number | null;
+  raw: unknown;
+}
+
+/** House event or a lane extension ({type:'step'} from opencode, {type:'step',
+ *  payload} from kiro, {type:'usage', cost} from opencode). */
+export type HouseEventLike =
+  | CanonicalEvent
+  | { type: 'step'; payload?: unknown }
+  | { type: 'usage'; tokens: HouseTokens; cost?: number | null };
+
+export function toCoreTokenRecord(
+  agent: string,
+  tokens: HouseTokens,
+  opts: { model?: string; costUsd?: number } = {},
+): CoreTokenRecord {
+  return {
+    agent,
+    model: opts.model ?? 'unknown',
+    inputTokens: tokens.inputTokens,
+    outputTokens: tokens.outputTokens,
+    cacheReadTokens: tokens.cacheReadTokens ?? 0,
+    cacheWriteTokens: tokens.cacheWriteTokens ?? 0,
+    ...(tokens.reasoningTokens !== null && tokens.reasoningTokens !== undefined
+      ? { reasoningTokens: tokens.reasoningTokens }
+      : {}),
+    ...(opts.costUsd !== undefined ? { costUsd: opts.costUsd } : {}),
+    extra: { totalTokens: tokens.totalTokens, durationMs: tokens.durationMs, raw: tokens.raw },
+  };
+}
+
+/**
+ * Map one house event onto the core AgentEvent union (mirrors the bridging in
+ * src/core/driver.ts). Session ids ride the top-level `sessionId` field so
+ * launchDriverHandle can capture them; usage events carry a pre-normalized
+ * CanonicalTokenRecord on `usage` (the driver prices from that without
+ * re-normalizing). Unknown event types are dropped (returns null).
+ */
+export function houseEventToCore(agent: string, event: HouseEventLike): CoreAgentEvent | null {
+  const timestamp = Date.now();
+  switch (event.type) {
+    case 'session':
+      return { type: 'session', agent, sessionId: event.sessionId, timestamp };
+    case 'step': {
+      const ext = event as { type: 'step'; payload?: unknown };
+      return {
+        type: 'step',
+        agent,
+        ...(ext.payload !== undefined ? { data: ext.payload } : {}),
+        timestamp,
+      };
+    }
+    case 'message':
+      return {
+        type: 'message',
+        agent,
+        source: event.role === 'assistant' ? 'agent' : event.role,
+        content: event.text,
+        ...(event.reasoning === true ? { reasoning: true } : {}),
+        timestamp,
+      };
+    case 'tool': {
+      if (event.phase === 'start') {
+        return {
+          type: 'tool_call',
+          agent,
+          toolCallId: event.toolCallId ?? '',
+          functionName: event.toolName,
+          arguments: (event.input as Record<string, unknown> | string | undefined) ?? '',
+          timestamp,
+        };
+      }
+      return {
+        type: 'tool_result',
+        agent,
+        toolCallId: event.toolCallId ?? '',
+        content: (event.output as string | Record<string, unknown> | undefined) ?? '',
+        ...(event.status !== undefined ? { isError: event.status === 'error' } : {}),
+        timestamp,
+      };
+    }
+    case 'usage': {
+      const ext = event as { type: 'usage'; tokens: HouseTokens; cost?: number | null };
+      const costUsd = ext.cost ?? undefined;
+      return {
+        type: 'usage',
+        agent,
+        usage: toCoreTokenRecord(agent, ext.tokens, { costUsd }),
+        data: ext.tokens.raw,
+        timestamp,
+      };
+    }
+    case 'progress':
+      return { type: 'progress', agent, text: event.text, timestamp };
+    case 'error':
+      return { type: 'error', agent, message: event.message, timestamp };
+    default:
+      return null;
+  }
+}
+
+/** Adapter exit verdict from the child's exit code and the abort flag. */
+export function exitCodeToStatus(code: number, aborted: boolean): AdapterExit {
+  if (aborted) return 'aborted';
+  return code === 0 ? 'success' : 'error';
+}
+
+export interface DriverLaunchConfig<TEvent> {
+  agent: string;
+  /** House event stream; completes when the run ends. */
+  events: AsyncIterable<TEvent>;
+  /** One house event to zero+ core events. */
+  mapEvent: (event: TEvent) => CoreAgentEvent | CoreAgentEvent[] | null | undefined;
+  /** Resolves with the child's exit code (-1 on signal). */
+  exit: Promise<number>;
+  /** Kill the in-flight run (SIGTERM, existing escalation logic OK). */
+  abort: () => void;
+  /** True once abort() was requested out-of-band (e.g. adapter-level sweep). */
+  isAborted?: () => boolean;
+  /** Session id captured so far, when the source tracks it out-of-band. */
+  liveSessionId?: () => string | undefined;
+  fallbackSessionId?: string;
+  /** How long launch() waits for a stream-captured session id (default 2s). */
+  sessionIdWaitMs?: number;
+}
+
+/**
+ * Wrap a house run (events + exit code + abort) in the core AgentHandle
+ * contract: attach() yields mapped core events, wait() resolves the adapter
+ * exit verdict, and sessionId settles to the first id the stream reports (or
+ * the fallback / spec.resume id when the CLI never emits one).
+ */
+export async function launchDriverHandle<TEvent>(config: DriverLaunchConfig<TEvent>): Promise<CoreAgentHandle> {
+  const { agent, events, mapEvent, exit, sessionIdWaitMs } = config;
+  const queue = new EventQueue<CoreAgentEvent>();
+  let liveId: string | undefined;
+  let resolveCaptured: (() => void) | undefined;
+  const captured = new Promise<void>((resolve) => {
+    resolveCaptured = resolve;
+  });
+
+  const noteSession = (event: CoreAgentEvent): void => {
+    if (!liveId && typeof event.sessionId === 'string' && event.sessionId !== '') {
+      liveId = event.sessionId;
+      resolveCaptured?.();
+    }
+  };
+
+  // Pump eagerly so events buffer while the caller is still awaiting launch(),
+  // and so sessionId capture starts immediately.
+  void (async () => {
+    try {
+      for await (const houseEvent of events) {
+        const mapped = mapEvent(houseEvent);
+        if (!mapped) continue;
+        for (const coreEvent of Array.isArray(mapped) ? mapped : [mapped]) {
+          noteSession(coreEvent);
+          queue.push(coreEvent);
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      queue.push({ type: 'error', agent, content: `event stream failed: ${message}`, timestamp: Date.now() });
+    } finally {
+      queue.close();
+    }
+  })();
+
+  const fallback = config.fallbackSessionId ?? `${agent}-${randomUUID()}`;
+  let aborted = false;
+  const handle: CoreAgentHandle = {
+    get sessionId() {
+      return config.liveSessionId?.() ?? liveId ?? fallback;
+    },
+    attach: (): AsyncIterable<CoreAgentEvent> => queue,
+    abort: (): void => {
+      if (aborted) return;
+      aborted = true;
+      config.abort();
+    },
+    wait: (): Promise<AdapterExit> =>
+      exit.then((code) => exitCodeToStatus(code, aborted || (config.isAborted?.() ?? false))),
+  };
+
+  if ((sessionIdWaitMs ?? 2000) > 0) {
+    await Promise.race([
+      captured,
+      exit.then(() => undefined),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, sessionIdWaitMs ?? 2000);
+        timer.unref?.();
+      }),
+    ]);
+  }
+  return handle;
+}

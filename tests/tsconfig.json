@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": false
+  },
+  "include": [
+    "../tests",
+    "../src/adapters/claude.test.ts",
+    "../src/adapters/opencode.test.ts"
+  ]
+}

@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"0199c0de-7a10-7b20-a1c0-4f9e2d6b8a11"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"ls -la","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"ls -la","aggregated_output":"total 0\ndrwxr-xr-x  2 sblatt staff 64 Sep  9 21:00 .","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_1","type":"reasoning","text":"The listing shows an empty directory; summarizing for the user."}}
+{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"The listing shows an empty directory; summarizing for the user."}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The directory is empty (no entries besides . and ..)."}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":800,"output_tokens":150,"reasoning_output_tokens":42}}
