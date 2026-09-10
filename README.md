@@ -2,7 +2,9 @@
 
 Headless-first orchestration and observability layer over coding-agent CLIs (Claude Code, Codex
 CLI, OpenCode, Gemini CLI, Kiro): one normalized event model, cache-aware token accounting,
-ATIF trajectory artifacts, OTel `gen_ai` spans, and per-agent state detection.
+ATIF trajectory artifacts, OTel `gen_ai` spans, per-agent state detection, and per-run Kiro
+credit capture via an auto-started MITM tap (`harness run --agent kiro` — needs `mitmdump`
+on PATH; credits are metering units, printed on their own summary line).
 
 **Work in progress** — `src/` is being populated by parallel workstreams; see
 `docs/ARCHITECTURE.md` §9 for the open interface merges.

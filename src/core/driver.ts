@@ -37,6 +37,10 @@ function fromPreNormalized(agent: string, u: CanonicalTokenRecord, timestamp: nu
     cacheWriteTokens: u.cacheWriteTokens ?? 0,
     ...(u.reasoningTokens !== undefined ? { reasoningTokens: u.reasoningTokens } : {}),
     ...(u.costUsd !== undefined ? { costUsd: u.costUsd } : {}),
+    // Producer extras ride through untouched: the kiro MITM tap carries its
+    // metering credits in extra.credits (not USD — never priced), and the
+    // CLI run summary sums them from RunResult.tokens.
+    ...(u.extra !== undefined ? { extra: u.extra } : {}),
     timestamp,
   };
 }

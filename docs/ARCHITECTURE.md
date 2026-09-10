@@ -1,8 +1,8 @@
 # agent-harness — Architecture
 
 > **STATUS (2026-09-09):** written against the actual `src/` tree (`core/`, `adapters/`, `cli/`,
-> `emitters/`, `monitors/`). Items that exist only by name (kiro adapter, LiteLLM tap) are marked
-> `[planned]`. Known cross-file interface conflicts are flagged `⚠` and listed in the build report
+> `emitters/`, `monitors/`). Items that exist only by name are marked `[planned]` (the kiro
+> adapter and its MITM tap shipped; see §2). Known cross-file interface conflicts are flagged `⚠` and listed in the build report
 > to the orchestrator — this doc describes the interfaces as they stand, not as they should be.
 
 agent-harness is a headless-first orchestration and observability layer over coding-agent CLIs
@@ -82,11 +82,14 @@ mismatch, never fabricated zeros):
 | Headless stream parsing | native JSONL lines mapped by each adapter's `parse*Line`; usage payloads re-normalized by `core/normalize.ts` (`normalizeClaude`, `normalizeOpencode`, `normalizeCodex`, `normalizeGemini`, `normalizeKiro`) | `src/adapters/*.ts`, `src/core/normalize.ts` |
 | Transcript files | Claude Code transcripts tailed byte-exactly by offset (`cli/lib.ts extractClaudeRecordFromLine`; `cli/harness.ts watch` grows-only over `~/.claude/projects/**/*.jsonl`) | `src/cli/lib.ts` |
 | Agent SQLite | opencode's local store via `statsFromDb` (stub: schema probe returns `[]` until the real mapping lands; `bun:sqlite` readonly) | `src/adapters/opencode.ts` |
-| kiro MITM `[planned]` | transparent proxy observing `tokenUsage` / `meteringEvent` payloads for the closed Kiro desktop client; `normalizeKiro` already parses the shape | `src/core/normalize.ts` (parser ready) |
+| kiro MITM | `KiroAdapter.launch()` auto-starts `mitmdump` with the inline EventStream addon (default: on when `mitmdump` is on PATH — probe cached; explicit `mitm` option overrides), binds the first free port in 8900-8999, routes kiro-cli through `HTTPS_PROXY`/`SSL_CERT_FILE` (`tapEnv`), and interleaves the tap's records with stdout events; metering credits land in `extra.credits` (metering units, **not USD** — never priced), token counts stay on the stdout usage events (tap events carry zeros). Parser handles both the pre-2.10 `tokenUsage` wire shape and the 2.21 AWS EventStream frames. Degrades gracefully (stderr warning, untapped run) when `mitmdump` is missing or no port binds | `src/monitors/kiro-mitm.ts`, `src/adapters/kiro.ts` |
 | LiteLLM proxy `[planned]` | model-agnostic spend ledger for calls routed through it | — |
 
 Rule: **tap one layer per run.** Others are reconciliation sources, never additive
-(`docs/TOKEN-COUNTING.md` §2 for the double-counting traps).
+(`docs/TOKEN-COUNTING.md` §2 for the double-counting traps). The kiro MITM tap is
+the exception that proves the rule safe: its events carry zero token counts, so the
+stdout usage events remain the single token source — the tap adds only the credits
+dimension (`extra.credits`, summed by `harness run` into the `credits` summary line).
 
 ## 3. Canonical token record
 
@@ -171,8 +174,24 @@ explicitly not billing-grade figure.
 ## 7. Sinks and storage
 
 - **ATIF file** — durable per-run artifact (§4).
-- **OTel spans** — live OTLP transport (§5); any OTLP endpoint works as a sink, e.g. Langfuse
-  (`/api/public/otel/v1/traces`) or an OpenLIT collector `[planned wiring]`.
+- **OTel spans** — live OTLP transport (§5); any OTLP endpoint works as a sink, e.g. an OpenLIT
+  collector `[planned wiring]`.
+- **Langfuse** — verified live sink (`emitters/langfuse.ts`). `emitToLangfuse()` reuses the §5
+  `toOtlpJson()` gen_ai payload, layers the `langfuse.*` namespace on top, and POSTs OTLP/HTTP
+  JSON to `{baseUrl}/api/public/otel/v1/traces` with Basic auth (pk:sk) and
+  `x-langfuse-ingestion-version: 4` (real-time ingest onto the v4 data model). Mapping: every
+  span carries `langfuse.session.id`; the root `invoke_agent` span becomes a `span`-typed
+  observation + trace name; chat spans become `generation` observations with
+  `langfuse.observation.model.name` (usage record's model, falling back to `--model`) and
+  `langfuse.observation.usage_details` — Langfuse's mutually-exclusive bucket contract
+  (`input` EXCLUDES cache slices; `cacheReadTokens` → `cache_read_input_tokens`,
+  `cacheWriteTokens` → `cache_creation_input_tokens`; `total` is derived server-side as the
+  bucket sum); `langfuse.observation.cost_details` `{total: costUsd}` when the record carries
+  cost; tool spans stay `span`-typed with the tool name in `gen_ai.tool.name`. CLI:
+  `harness emit --format langfuse --input <events.json> --langfuse-url/--langfuse-public-key/
+  --langfuse-secret-key` (env fallbacks `LANGFUSE_URL`/`LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`,
+  `LANGFUSE_SECRET_KEY`). Verified live against a local Langfuse v4 docker-compose instance:
+  ingest + `GET /api/public/traces` read-back of the trace, generations, and usage buckets.
 - **State store** (`core/store.ts`, JSONL not SQLite): root at `~/.agent-harness`
   (`AGENT_HARNESS_STATE_DIR` overrides). Canonical records append to `<stateDir>/raw/<agent>/<sessionId>.jsonl`;
   `harness watch` keeps byte offsets in `offsets.json` so restarts resume without replay;
@@ -191,7 +210,7 @@ flowchart LR
     EVT --> ATIF["AtifWriter<br/>trajectory.json (ATIF-v1.7)"]
     EVT --> OTEL["emitters/otel<br/>gen_ai spans → OTLP :4318"]
     PRICE --> STORE[("store<br/>~/.agent-harness/raw/**.jsonl")]
-    OTEL --> SINKS["Langfuse / OpenLIT"]
+    OTEL --> SINKS["Langfuse (langfuse emitter) / OpenLIT"]
     STORE --> STATS["harness stats<br/>totals · byAgent · byDay"]
     ATIF --> EVAL["eval / replay / diff"]
 ```

@@ -178,6 +178,23 @@ describe('success path and transcripts', () => {
     assert.ok(Math.abs(result.totalCost - (0.0001875 + 0.0003 + 0.00000625)) < 1e-12);
   });
 
+  it('preserves producer extras (kiro tap credits in extra.credits) on collected records', async () => {
+    const driver = mockDriver(new MockAdapter());
+    const result: RunResult = await driver.run('mock', {
+      prompt: 'hi',
+      scriptedEvents: [
+        ev.preNormalized({ inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, extra: { credits: 0.05, event: 'meteringEvent' } }),
+        ev.preNormalized({ inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, extra: { credits: 0.07 } }),
+      ],
+    });
+    assert.equal(result.exitStatus, 'success');
+    assert.equal(result.tokens.length, 2);
+    assert.equal(result.tokens[0]?.extra?.credits, 0.05);
+    assert.equal(result.tokens[1]?.extra?.credits, 0.07);
+    // Credits are metering units, never priced into totalCost.
+    assert.equal(result.totalCost, 0);
+  });
+
   it('warns but keeps running on unpriced models (cost contributes 0, never silent)', async () => {
     const driver = mockDriver(new MockAdapter());
     const result = await driver.run('mock', {

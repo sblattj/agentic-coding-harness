@@ -225,6 +225,42 @@ describe("harness cli", () => {
     assert.equal(r.stdout, "");
   });
 
+  test("run --agent kiro auto-taps credits via the MITM proxy and prints the credits summary", async () => {
+    const meteringLine = JSON.stringify({
+      event: "meteringEvent",
+      tokenUsage: {
+        uncachedInputTokens: 1200,
+        cacheReadInputTokens: 3400,
+        cacheWriteInputTokens: 500,
+        outputTokens: 210,
+        totalTokens: 5310,
+      },
+      credits: 0.05,
+      ts: 1_700_000_000,
+    });
+    const fakeMitmdump = path.join(tmpExtra, "fake-mitmdump.sh");
+    await fs.writeFile(
+      fakeMitmdump,
+      `#!/bin/sh\necho '${meteringLine}'\nsleep 30 &\nchild=$!\ntrap 'kill "$child" 2>/dev/null; exit 0' TERM INT\nwait $!\n`,
+    );
+    await fs.chmod(fakeMitmdump, 0o755);
+    const fakeKiroCli = path.join(tmpExtra, "fake-kiro-cli.sh");
+    await fs.writeFile(
+      fakeKiroCli,
+      `#!/bin/sh\necho '{"type":"session_start","sessionId":"sess-cli-tap"}'\necho '{"type":"assistant","text":"done"}'\nexit 0\n`,
+    );
+    await fs.chmod(fakeKiroCli, 0o755);
+
+    const r = runCli(["run", "--agent", "kiro", "hello tap"], {
+      ...env(),
+      KIRO_CLI_BIN: fakeKiroCli,
+      MITMDUMP_BIN: fakeMitmdump,
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /^exit       success$/m);
+    assert.match(r.stdout, /^credits    0\.05$/m);
+  });
+
   test("emit produces ATIF and OTel documents from an event stream", async () => {
     const eventsFile = path.join(tmpExtra, "events.json");
     await fs.writeFile(

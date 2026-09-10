@@ -19,9 +19,10 @@
 // credits, contextUsagePercentage, event, url, raw line) ride in `extra` —
 // canonical semantics keep no stored total (derive at render time).
 
-import { spawn as nodeSpawn, type ChildProcessByStdio } from 'node:child_process';
+import { spawn as nodeSpawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -483,6 +484,49 @@ export function writeAddonScript(dir: string = os.tmpdir()): string {
   return file;
 }
 
+// ---------------------------------------------------------------------------
+// Auto-tap helpers (used by KiroAdapter.launch; src/adapters/kiro.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * First bindable TCP port in [from, to] on 127.0.0.1, or null when the whole
+ * range is taken. Each candidate is bound and immediately released; a race
+ * between release and mitmdump's own bind is possible but harmless (mitmdump
+ * errors out, the tap yields no records, the run itself is unaffected).
+ */
+export async function findKiroMitmPort(
+  from = 8900,
+  to = 8999,
+  host = '127.0.0.1',
+): Promise<number | null> {
+  const canBind = (port: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      const srv = net.createServer();
+      srv.once('error', () => resolve(false));
+      srv.listen(port, host, () => srv.close(() => resolve(true)));
+    });
+  for (let port = from; port <= to; port++) {
+    if (await canBind(port)) return port;
+  }
+  return null;
+}
+
+let mitmdumpProbe: { bin: string; available: boolean } | null = null;
+
+/**
+ * Cached existence probe for the mitmdump binary: paths containing '/' are
+ * checked with existsSync, bare names via `command -v` through /bin/sh.
+ * Probed at most once per binary per process.
+ */
+export function mitmdumpAvailable(bin: string = process.env.MITMDUMP_BIN ?? 'mitmdump'): boolean {
+  if (mitmdumpProbe?.bin === bin) return mitmdumpProbe.available;
+  const available = bin.includes('/')
+    ? existsSync(bin)
+    : spawnSync('/bin/sh', ['-c', `command -v ${bin}`], { stdio: 'ignore' }).status === 0;
+  mitmdumpProbe = { bin, available };
+  return available;
+}
+
 // Env to launch kiro-cli through the tap (see module comment).
 export function tapEnv(
   port: number = DEFAULT_MITM_PORT,
@@ -532,12 +576,22 @@ export function startKiroMitm(port: number = DEFAULT_MITM_PORT, opts: KiroMitmOp
   handle.stop = () =>
     new Promise((resolve) => {
       if (child.exitCode !== null || child.signalCode !== null) return resolve();
-      child.once('close', () => resolve());
+      let settled = false;
+      const settle = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      child.once('close', settle);
       child.kill('SIGTERM');
       const t = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }, 2000);
       t.unref();
+      // Hard ceiling: a grandchild inheriting the stdio pipes can hold
+      // 'close' open; never let stop() hang run resolution.
+      const ceiling = setTimeout(settle, 3000);
+      ceiling.unref();
     });
 
   return handle;

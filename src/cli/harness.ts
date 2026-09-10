@@ -122,6 +122,7 @@ async function cmdRun(rest: string[]): Promise<number> {
 
   const sum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
   let lastModel: string | undefined;
+  let totalCredits: number | undefined;
   for (const t of result.tokens) {
     sum.input += t.inputTokens;
     sum.output += t.outputTokens;
@@ -129,6 +130,12 @@ async function cmdRun(rest: string[]): Promise<number> {
     sum.cacheWrite += t.cacheWriteTokens;
     sum.reasoning += t.reasoningTokens ?? 0;
     if (t.model) lastModel = t.model;
+    // Kiro metering credits (MITM tap, extra.credits): metering units, not
+    // USD — summed separately, never into totalCost.
+    const credits = t.extra?.credits;
+    if (typeof credits === "number" && Number.isFinite(credits)) {
+      totalCredits = (totalCredits ?? 0) + credits;
+    }
   }
 
   if (args.values.json) {
@@ -136,17 +143,17 @@ async function cmdRun(rest: string[]): Promise<number> {
     // exitStatus, warnings.
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
   } else {
-    process.stdout.write(
-      formatSummary({
-        agent,
-        sessionId: result.sessionId,
-        model: args.values.model ?? lastModel,
-        tokens: sum,
-        costUsd: result.totalCost,
-        durationMs: result.durationMs,
-        exitStatus: result.exitStatus,
-      }) + "\n",
-    );
+    let summary = formatSummary({
+      agent,
+      sessionId: result.sessionId,
+      model: args.values.model ?? lastModel,
+      tokens: sum,
+      costUsd: result.totalCost,
+      durationMs: result.durationMs,
+      exitStatus: result.exitStatus,
+    });
+    if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
+    process.stdout.write(summary + "\n");
   }
   return result.exitStatus === "success" ? 0 : 1;
 }
