@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
+    "agh": "./src/cli/harness.ts",
     "harness": "./src/cli/harness.ts"
   },
   "scripts": {

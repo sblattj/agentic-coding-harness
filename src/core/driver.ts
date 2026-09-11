@@ -1,9 +1,11 @@
 import { createWriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { normalizeAuto } from './normalize.js';
 import { createPricer, type Pricer } from './pricing.js';
+import { writeRunRecord, type RunRecord } from './registry.ts';
 import type { AdapterExit, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, RunResult, RunSpec } from './types.js';
 import { ClaudeCodeAdapter } from '../adapters/claude.js';
 import { OpenCodeAdapter } from '../adapters/opencode.js';
@@ -18,6 +20,16 @@ function toMs(ts: EventTimestamp): number {
   if (typeof ts === 'number') return ts;
   const parsed = Date.parse(ts);
   return Number.isNaN(parsed) ? Date.now() : parsed;
+}
+
+/** One-line registry preview: event type + first 80 chars of the most descriptive text/name field. */
+function eventPreview(e: AgentEvent): string {
+  for (const value of [e.text, e.content, e.name, e.toolName, e.functionName, e.message]) {
+    if (typeof value === 'string' && value.trim()) {
+      return `${e.type} ${value.slice(0, 80)}`;
+    }
+  }
+  return e.type;
 }
 
 /**
@@ -66,6 +78,14 @@ export interface DriverOptions {
   pricer?: Pricer;
   /** Optional streaming tap: called for every event as it is consumed. */
   onEvent?: (event: AgentEvent) => void;
+  /**
+   * Optional run registry (dash live view, src/dash/PLAN.md): when present,
+   * run() writes a RunRecord under <registry.stateDir>/runs/ at spawn,
+   * heartbeats totals/lastEvent per event (writes throttled to >= 500ms), and
+   * finalizes status/exitStatus at exit. Registry failures never break a run —
+   * they drain into run warnings.
+   */
+  registry?: { stateDir: string };
 }
 
 export interface Driver {
@@ -136,7 +156,8 @@ export function createDriver(options: DriverOptions): Driver {
 
       const rawDir = join(stateDir, 'raw');
       await mkdir(rawDir, { recursive: true });
-      const transcript = createWriteStream(join(rawDir, `${agentName}-${sessionId}.jsonl`), { flags: 'a' });
+      const transcriptPath = join(rawDir, `${agentName}-${sessionId}.jsonl`);
+      const transcript = createWriteStream(transcriptPath, { flags: 'a' });
 
       const events: AgentEvent[] = [];
       const tokens: CanonicalTokenRecord[] = [];
@@ -150,50 +171,131 @@ export function createDriver(options: DriverOptions): Driver {
 
       const drainPricerWarnings = () => warnings.push(...pricer.drainWarnings());
 
-      for await (const event of handle.attach()) {
-        events.push(event);
-        transcript.write(`${JSON.stringify(event)}\n`);
-        onEvent?.(event);
+      // --- run registry hook (dash live view; contract in src/dash/PLAN.md) ---
+      // Every registry call is best-effort: failures drain into `warnings`
+      // and never break the run. Heartbeat writes are throttled to one per
+      // 500ms; the final write is always forced through.
+      const registryStateDir = options.registry?.stateDir;
+      let rec: RunRecord | null = null;
+      let lastRegistryWrite = 0;
+      const registryWarn = (err: unknown): void => {
+        warnings.push(`registry: ${err instanceof Error ? err.message : String(err)}`);
+      };
+      const writeRunRecordThrottled = (force: boolean): void => {
+        if (!registryStateDir || !rec) return;
+        const now = Date.now();
+        if (!force && now - lastRegistryWrite < 500) return;
+        lastRegistryWrite = now;
+        rec.updatedAt = now;
+        rec.totals.costUsd = cumulativeCost;
+        try {
+          writeRunRecord(registryStateDir, rec);
+        } catch (err) {
+          registryWarn(err);
+        }
+      };
+      if (registryStateDir) {
+        rec = {
+          runId: randomUUID(),
+          agent: agentName,
+          sessionId,
+          pid: process.pid,
+          cwd: typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd(),
+          promptPreview: parsed.prompt.slice(0, 120),
+          startedAt: start,
+          updatedAt: Date.now(),
+          status: 'running',
+          totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+          rawTranscript: transcriptPath,
+        };
+        writeRunRecordThrottled(true);
+      }
+      // Same summing rule as cmdRun (src/cli/harness.ts): canonical token
+      // fields summed per usage record; extra.credits (kiro MITM metering
+      // units, not USD) kept separate from costUsd.
+      const bumpRegistryTotals = (c: CanonicalTokenRecord): void => {
+        if (!rec) return;
+        rec.totals.inputTokens += c.inputTokens;
+        rec.totals.outputTokens += c.outputTokens;
+        rec.totals.cacheReadTokens += c.cacheReadTokens;
+        rec.totals.cacheWriteTokens += c.cacheWriteTokens;
+        const credits = c.extra?.credits;
+        if (typeof credits === 'number' && Number.isFinite(credits)) {
+          rec.totals.credits = (rec.totals.credits ?? 0) + credits;
+        }
+      };
+      const finalizeRunRecord = (exit: ExitStatus): void => {
+        if (!rec) return;
+        rec.status =
+          exit === 'success'
+            ? 'success'
+            : exit === 'aborted' || exit === 'cancelled' || exit === 'budget_exceeded' || exit === 'turn_limit'
+              ? 'aborted'
+              : 'error';
+        rec.exitStatus = exit;
+        // Bridged handles resolve the real session id late; prefer it when
+        // the stream never carried a session event.
+        if (handle.sessionId) rec.sessionId = handle.sessionId;
+        writeRunRecordThrottled(true);
+      };
 
-        if (event.type === 'usage_raw' || event.type === 'usage') {
-          const ts = toMs(event.timestamp);
-          let normalized: CanonicalTokenRecord | null = null;
-          if (event.type === 'usage_raw') {
-            normalized = normalizeAuto(agentName, event.data, ts);
-          } else {
-            const pre = event.usage;
-            if (pre) {
-              normalized = fromPreNormalized(agentName, pre, ts);
-            } else if (event.data !== undefined) {
-              // Legacy shape: {type:'usage', data:<raw provider payload>}.
+      try {
+        for await (const event of handle.attach()) {
+          events.push(event);
+          transcript.write(`${JSON.stringify(event)}\n`);
+          onEvent?.(event);
+
+          if (rec) {
+            rec.lastEvent = eventPreview(event);
+            if (typeof event.sessionId === 'string' && event.sessionId) rec.sessionId = event.sessionId;
+          }
+
+          if (event.type === 'usage_raw' || event.type === 'usage') {
+            const ts = toMs(event.timestamp);
+            let normalized: CanonicalTokenRecord | null = null;
+            if (event.type === 'usage_raw') {
               normalized = normalizeAuto(agentName, event.data, ts);
-            }
-          }
-          if (normalized) {
-            tokens.push(normalized);
-            const cost = pricer.price(normalized);
-            if (Number.isNaN(cost)) {
-              drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
             } else {
-              cumulativeCost += cost;
+              const pre = event.usage;
+              if (pre) {
+                normalized = fromPreNormalized(agentName, pre, ts);
+              } else if (event.data !== undefined) {
+                // Legacy shape: {type:'usage', data:<raw provider payload>}.
+                normalized = normalizeAuto(agentName, event.data, ts);
+              }
+            }
+            if (normalized) {
+              tokens.push(normalized);
+              bumpRegistryTotals(normalized);
+              const cost = pricer.price(normalized);
+              if (Number.isNaN(cost)) {
+                drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
+              } else {
+                cumulativeCost += cost;
+              }
+            }
+            if (budgetUsd !== undefined && cumulativeCost > budgetUsd) {
+              enforcedStatus = 'budget_exceeded';
+              await handle.abort();
+              break;
             }
           }
-          if (budgetUsd !== undefined && cumulativeCost > budgetUsd) {
-            enforcedStatus = 'budget_exceeded';
-            await handle.abort();
-            break;
-          }
-        }
 
-        if (event.type === 'step') {
-          steps++;
-          // Enforce the turn ceiling only when the adapter doesn't do it itself.
-          if (maxTurns !== undefined && !adapter.enforcesBudget && steps > maxTurns) {
-            enforcedStatus = 'turn_limit';
-            await handle.abort();
-            break;
+          if (event.type === 'step') {
+            steps++;
+            // Enforce the turn ceiling only when the adapter doesn't do it itself.
+            if (maxTurns !== undefined && !adapter.enforcesBudget && steps > maxTurns) {
+              enforcedStatus = 'turn_limit';
+              await handle.abort();
+              break;
+            }
           }
+
+          writeRunRecordThrottled(false);
         }
+      } catch (err) {
+        finalizeRunRecord('error');
+        throw err;
       }
 
       // Await full flush so the NDJSON transcript is on disk when run() resolves.
@@ -209,6 +311,7 @@ export function createDriver(options: DriverOptions): Driver {
 
       // Driver enforcement verdicts override whatever the adapter reported.
       const exitStatus: ExitStatus = enforcedStatus ?? adapterExit;
+      finalizeRunRecord(exitStatus);
 
       // Read the sessionId late: bridged handles expose a getter that reports
       // the agent's real session id once the stream has carried it.

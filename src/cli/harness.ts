@@ -30,6 +30,7 @@ import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
 import { cmdReport } from "./report.ts";
+import { cmdDash } from "./dash.ts";
 
 const USAGE = `harness — unified agent run harness
 
@@ -48,6 +49,8 @@ usage:
                 LANGFUSE_SECRET_KEY)
   harness report <trials-dir> [--out path]
                  (single-file HTML comparison; a trials/ root scans subdirs)
+  harness dash [--json] [--all] [--dir <stateDir>]
+               (live run dashboard; --json dumps RunRecords and exits)
 
 env:
   AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)`;
@@ -105,6 +108,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     stateDir: stateDir(),
     pricer: createPricer(),
     onEvent,
+    registry: { stateDir: stateDir() },
   });
 
   let result: RunResult;
@@ -648,6 +652,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdEmit(rest);
     case "report":
       return cmdReport(rest);
+    case "dash":
+      return cmdDash(rest);
     case "help":
     case "--help":
     case "-h":

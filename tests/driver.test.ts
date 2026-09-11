@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createDriver, defaultAdapters } from '../src/core/driver.js';
+import { listRunRecords } from '../src/core/registry.js';
 import type { AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, RunResult, RunSpec } from '../src/core/types.js';
 
 type ScriptedEvent =
@@ -275,5 +276,70 @@ describe('registry', () => {
     }
     // claude passes --max-turns itself, so its bridge must declare it.
     assert.equal(adapters.claude?.enforcesBudget, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Driver → run registry hook (seat D2 owns the wiring; expected to fail until
+// createDriver honors options.registry). The stub adapter is constructed
+// locally: a session event (sessionId), one usage event (token totals), and a
+// clean success exit — the minimal stream that finalizes a RunRecord.
+// ---------------------------------------------------------------------------
+
+class RegistryStubHandle implements AgentHandle {
+  readonly sessionId = 'regstub-session-1';
+  aborted = false;
+
+  async *attach(): AsyncIterable<AgentEvent> {
+    const ts = Date.now();
+    yield { type: 'session', sessionId: this.sessionId, timestamp: ts };
+    yield {
+      type: 'usage',
+      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      sessionId: this.sessionId,
+      timestamp: ts,
+    };
+  }
+
+  abort(): void {
+    this.aborted = true;
+  }
+
+  async wait(): Promise<'aborted' | 'success'> {
+    return this.aborted ? 'aborted' : 'success';
+  }
+}
+
+class RegistryStubAdapter implements AgentAdapter {
+  readonly name = 'regstub';
+
+  async launch(): Promise<AgentHandle> {
+    return new RegistryStubHandle();
+  }
+}
+
+describe('driver → run registry hook', () => {
+  it('finalizes a RunRecord file with status success and token totals when registry.stateDir is set', async () => {
+    const regDir = tmpStateDir();
+    const driver = createDriver({
+      adapters: { regstub: new RegistryStubAdapter() },
+      stateDir: tmpStateDir(),
+      registry: { stateDir: regDir },
+    });
+    const result: RunResult = await driver.run('regstub', { prompt: 'record me' });
+    assert.equal(result.exitStatus, 'success');
+
+    const files = readdirSync(join(regDir, 'runs')).filter((f) => f.endsWith('.json'));
+    assert.equal(files.length, 1, `expected exactly one run record, got: ${files.join(', ')}`);
+    const recs = listRunRecords(regDir);
+    assert.equal(recs.length, 1);
+    const record = recs[0];
+    assert.equal(record.runId, files[0].replace(/\.json$/, ''));
+    assert.equal(record.agent, 'regstub');
+    assert.equal(record.status, 'success');
+    assert.equal(record.exitStatus, 'success');
+    assert.equal(record.totals.inputTokens, 100);
+    assert.equal(record.totals.outputTokens, 20);
+    assert.ok(record.rawTranscript.endsWith('.jsonl'), `rawTranscript: ${record.rawTranscript}`);
   });
 });
