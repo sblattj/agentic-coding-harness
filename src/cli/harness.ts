@@ -568,7 +568,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
   if (format === "atif") {
     const writer = AtifWriter.fromEvents(events, {
       agent: args.values.agent ?? "unknown-agent",
-      version: "0.2.1",
+      version: "0.2.2",
       modelName: args.values.model ?? "unknown-model",
       sessionId: args.values["session-id"],
     });
