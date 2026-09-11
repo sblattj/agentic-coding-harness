@@ -113,6 +113,64 @@ describe('unknown models', () => {
   });
 });
 
+describe('credit-metered records (kiro v2 MITM tap carriers)', () => {
+  // Real kiro v2 shape: the wire exposes no model id, so parseMitmLine() omits
+  // model (driver fills the 'unknown' sentinel) and the metering signal rides
+  // in extra.credits (kiro units, NOT USD — nothing to price).
+  const kiroRec = (model: string | undefined, credits: number): CanonicalTokenRecord => ({
+    agent: 'kiro',
+    ...(model !== undefined ? { model } : {}),
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    extra: { credits, totalTokens: 1234, raw: { event: 'meteringEvent' } },
+    timestamp: 0,
+  });
+
+  it('prices 0 with no warning when the model is the unknown sentinel plus credits', () => {
+    const p = createPricer();
+    assert.equal(p.price(kiroRec('unknown', 0.42)), 0);
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+
+  it('prices 0 with no warning when the model field is absent plus credits', () => {
+    const p = createPricer();
+    assert.equal(p.price(kiroRec(undefined, 1.25)), 0);
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+
+  it('a full run of 8 tap records contributes 0 cost, never NaN, zero warnings', () => {
+    const p = createPricer();
+    let total = 0;
+    for (let i = 0; i < 8; i++) {
+      const cost = p.price(kiroRec('unknown', 0.1 * (i + 1)));
+      assert.ok(!Number.isNaN(cost), `record ${i} priced NaN`);
+      total += cost;
+    }
+    assert.equal(total, 0);
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+
+  it('still warns unknown-model when there is no credits signal (guard is credits-scoped)', () => {
+    const p = createPricer();
+    const noCredits: CanonicalTokenRecord = { ...kiroRec('unknown', 0.42), extra: { raw: {} } };
+    assert.ok(Number.isNaN(p.price(noCredits)));
+    assert.equal(p.drainWarnings().length, 1);
+  });
+
+  it('a known model with credits still prices normally (guard only covers missing/unknown)', () => {
+    const p = createPricer();
+    const known: CanonicalTokenRecord = {
+      ...kiroRec('claude-sonnet-4', 0.42),
+      inputTokens: 1_000_000,
+      outputTokens: 100_000,
+    };
+    assert.equal(p.price(known), 3 + 1.5); // priced at sonnet-4 rates, credits ignored
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+});
+
 describe('multi-model records (extra.raw.models per-model breakdown)', () => {
   // Real shapes from a claude opus-5 run (2026-09): the CLI routed a probe
   // call through haiku and the main turn through opus-5[1m]. The aggregated
