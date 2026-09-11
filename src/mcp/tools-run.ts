@@ -1,0 +1,126 @@
+// harness MCP run tools: harness_run (drive one agent to completion) and
+// harness_agents (list known agents with CLI availability and capabilities).
+// Contracts: src/mcp/contract.ts, src/core/driver.ts, src/core/types.ts.
+import { spawnSync } from "node:child_process";
+import { z } from "zod";
+import type { McpServer } from "./contract.ts";
+import {
+  AGENTS,
+  type AdapterCapabilities,
+  type RunSpec as CoreRunSpec,
+} from "../core/types.ts";
+import { createDriver, defaultAdapters } from "../core/driver.ts";
+import { createPricer } from "../core/pricing.ts";
+import { capabilities as claudeCapabilities } from "../adapters/claude.ts";
+import { OPENCODE_CAPABILITIES } from "../adapters/opencode.ts";
+import { KIRO_CAPABILITIES } from "../adapters/kiro.ts";
+import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
+import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
+
+const RunArgsSchema = z.object({
+  agent: z
+    .string()
+    .refine((v) => (AGENTS as readonly string[]).includes(v), {
+      message: "unknown agent (expected one of: " + AGENTS.join(", ") + ")",
+    }),
+  prompt: z.string().min(1),
+  model: z.string().optional(),
+  cwd: z.string().optional(),
+  budgetUsd: z.number().positive().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  extraArgs: z.array(z.string()).optional(),
+});
+
+// Mirrors each concrete adapter's own command resolution (e.g. kiro.ts reads
+// $KIRO_CLI_BIN or 'kiro-cli'); the driver-registry wrappers returned by
+// defaultAdapters() carry only name/launch, not capabilities.
+function agentInfo(name: string): { command: string; capabilities?: AdapterCapabilities } {
+  switch (name) {
+    case "claude":
+      return { command: "claude", capabilities: claudeCapabilities() };
+    case "opencode":
+      return { command: "opencode", capabilities: OPENCODE_CAPABILITIES };
+    case "kiro":
+      return { command: process.env.KIRO_CLI_BIN ?? "kiro-cli", capabilities: KIRO_CAPABILITIES };
+    case "codex":
+      return { command: "codex", capabilities: CODEX_CAPABILITIES };
+    case "gemini":
+      return { command: "gemini", capabilities: GEMINI_CAPABILITIES };
+    default:
+      return { command: name };
+  }
+}
+
+function isOnPath(command: string): boolean {
+  return spawnSync("which", [command], { stdio: "ignore" }).status === 0;
+}
+
+export function registerRunTools(server: McpServer, opts: { stateDir: string }): void {
+  server.registerTool({
+    name: "harness_run",
+    description:
+      "Run one harness agent (claude|opencode|kiro|codex|gemini) with a prompt and optional model/cwd/budget/turn limits; resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent: { type: "string", enum: [...AGENTS], description: "Agent to run" },
+        prompt: { type: "string", description: "Prompt sent to the agent" },
+        model: { type: "string", description: "Model override" },
+        cwd: { type: "string", description: "Working directory for the agent subprocess" },
+        budgetUsd: { type: "number", description: "Abort the run once cumulative cost exceeds this USD amount" },
+        maxTurns: { type: "integer", description: "Abort the run after this many agent turns" },
+        extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
+      },
+      required: ["agent", "prompt"],
+    },
+    handler: async (args) => {
+      const parsed = RunArgsSchema.safeParse(args);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        if (!issue) throw new Error("invalid harness_run arguments");
+        const field = issue.path.join(".") || "(root)";
+        const received = field === "agent" ? ` (received '${String(args.agent)}')` : "";
+        throw new Error(`invalid harness_run arguments: bad field '${field}': ${issue.message}${received}`);
+      }
+      const a = parsed.data;
+      const budget: CoreRunSpec["budget"] = {
+        ...(a.budgetUsd !== undefined ? { usd: a.budgetUsd } : {}),
+        ...(a.maxTurns !== undefined ? { maxTurns: a.maxTurns } : {}),
+      };
+      const spec: CoreRunSpec = {
+        prompt: a.prompt,
+        ...(a.model !== undefined ? { model: a.model } : {}),
+        ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
+        ...(budget.usd !== undefined || budget.maxTurns !== undefined ? { budget } : {}),
+        ...(a.extraArgs !== undefined ? { extraArgs: a.extraArgs } : {}),
+      };
+      const driver = createDriver({
+        adapters: await defaultAdapters(),
+        stateDir: opts.stateDir,
+        pricer: createPricer(),
+      });
+      return driver.run(a.agent, spec);
+    },
+  });
+
+  server.registerTool({
+    name: "harness_agents",
+    description:
+      "List known harness agents with their backing CLI command, whether the binary is resolvable on PATH, and the adapter's capability flags.",
+    inputSchema: { type: "object", properties: {} },
+    handler: async () => {
+      const adapters = await defaultAdapters();
+      return {
+        agents: Object.keys(adapters).map((name) => {
+          const info = agentInfo(name);
+          return {
+            name,
+            command: info.command,
+            available: isOnPath(info.command),
+            capabilities: info.capabilities,
+          };
+        }),
+      };
+    },
+  });
+}
