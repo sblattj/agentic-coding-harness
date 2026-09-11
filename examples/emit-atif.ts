@@ -9,7 +9,7 @@ const run = JSON.parse(proc.stdout.toString());
 
 const writer = AtifWriter.fromEvents(run.events ?? [], {
   agent: "claude",
-  version: "0.2.0",
+  version: "0.2.1",
   modelName: run.model ?? "unknown-model",
   sessionId: run.sessionId,
 });
