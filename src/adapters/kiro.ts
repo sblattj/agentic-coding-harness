@@ -279,6 +279,14 @@ export interface KiroRunHandle {
   abort(): void;
   /** Resolves once the run ends with the captured sessionId (for resume). */
   sessionId(): Promise<string | undefined>;
+  /**
+   * Kiro's native (bare) session id as captured so far from any stdout line
+   * carrying sessionId/session_id/sessionID. This is the id kiro-cli writes
+   * on disk (~/.kiro/sessions/cli/<uuid>.jsonl); the driver-lane
+   * AgentHandle.sessionId stays namespaced (`kiro-<uuid>`) for transcript
+   * naming and multi-agent uniqueness, so correlation needs this bare form.
+   */
+  nativeSessionId(): string | undefined;
   /** Full exit state: exit code plus captured sessionId/usage. */
   result(): Promise<KiroRunResult>;
 }
@@ -357,6 +365,7 @@ export class KiroAdapter implements CoreAgentAdapter {
       wait: handle.wait,
       abort: handle.abort,
       sessionId: () => handle.wait().then(() => state.sessionId),
+      nativeSessionId: () => state.sessionId,
       result: () => handle.wait().then((exitCode) => ({ exitCode, ...state })),
     };
     this.#current = enriched;
@@ -369,6 +378,26 @@ export class KiroAdapter implements CoreAgentAdapter {
   /** House-style resume: continue a prior session (`--resume-id <sessionId>`). */
   resume(sessionId: string, prompt: string, opts: RunOptions = {}): KiroRunHandle {
     return this.spawn({ prompt, resume: { sessionId }, ...opts });
+  }
+
+  /**
+   * Wrap a kiro core-event mapper so every usage record carries the run's
+   * native (bare) session id in `extra.kiroSessionId` — the id kiro-cli writes
+   * on disk — while AgentHandle.sessionId stays namespaced (`kiro-<uuid>`).
+   * Covers both stdout usage events and MITM tap carriers (extra.credits).
+   */
+  #mapWithNativeSession(
+    handle: KiroRunHandle,
+    map: (event: KiroLaneEvent) => CoreAgentEvent | null,
+  ): (event: KiroLaneEvent) => CoreAgentEvent | null {
+    return (event) => {
+      const core = map(event);
+      const native = handle.nativeSessionId();
+      if (core?.type === 'usage' && native) {
+        core.usage.extra = { ...core.usage.extra, kiroSessionId: native };
+      }
+      return core;
+    };
   }
 
   /** Resolve the mitm option: explicit wins; the default is auto — the PATH
@@ -453,7 +482,7 @@ export class KiroAdapter implements CoreAgentAdapter {
     return launchDriverHandle({
       agent: 'kiro',
       events: merged,
-      mapEvent: (event) => kiroEventToCore(event),
+      mapEvent: this.#mapWithNativeSession(handle, (event) => kiroEventToCore(event)),
       // Stop the tap once the run settles (wait) or is aborted, before the
       // exit verdict resolves — no mitmdump outlives the run.
       exit: handle.wait().then(async (code) => {
@@ -480,7 +509,9 @@ export class KiroAdapter implements CoreAgentAdapter {
       events: handle.events,
       // KiroEvent is a structural superset of HouseEventLike (step payload
       // extension); the bridge maps both.
-      mapEvent: (event) => houseEventToCore('kiro', event as HouseEventLike),
+      mapEvent: this.#mapWithNativeSession(handle, (event) =>
+        houseEventToCore('kiro', event as HouseEventLike),
+      ),
       exit: handle.wait(),
       abort: () => handle.abort(),
       fallbackSessionId: spec.resume,

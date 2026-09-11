@@ -132,6 +132,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   const sum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
   let lastModel: string | undefined;
   let totalCredits: number | undefined;
+  let kiroSession: string | undefined;
   for (const t of result.tokens) {
     sum.input += t.inputTokens;
     sum.output += t.outputTokens;
@@ -144,6 +145,12 @@ async function cmdRun(rest: string[]): Promise<number> {
     const credits = t.extra?.credits;
     if (typeof credits === "number" && Number.isFinite(credits)) {
       totalCredits = (totalCredits ?? 0) + credits;
+    }
+    // Kiro native session id (extra.kiroSessionId): the bare uuid kiro-cli
+    // writes on disk, kept for grep correlation against the namespaced
+    // harness sessionId (`kiro-<uuid>`).
+    if (kiroSession === undefined && typeof t.extra?.kiroSessionId === "string" && t.extra.kiroSessionId !== "") {
+      kiroSession = t.extra.kiroSessionId;
     }
   }
 
@@ -162,6 +169,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       exitStatus: result.exitStatus,
     });
     if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
+    if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
     process.stdout.write(summary + "\n");
   }
   return result.exitStatus === "success" ? 0 : 1;

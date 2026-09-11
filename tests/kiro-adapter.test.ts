@@ -193,4 +193,50 @@ describe('kiro launch (driver contract)', () => {
     }
     assert.equal(await handle.wait(), 'error');
   });
+
+  it('keeps the namespaced sessionId but stamps usage records with extra.kiroSessionId', async () => {
+    // Live-verified kiro shape: no session_start/session event — the native id
+    // rides an untyped line, so the driver handle reports the `kiro-` prefixed
+    // fallback while the bare on-disk uuid is only captured out-of-band.
+    const bare = 'e547cd92-1111-2222-3333-444455556666';
+    const lines = [
+      `{"type":"step_start","sessionId":"${bare}"}`,
+      '{"type":"assistant","text":"hi there"}',
+      '{"type":"metering","tokenUsage":{"inputTokens":3,"outputTokens":4,"totalTokens":7}}',
+    ];
+    const child = new FakeChild();
+    const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn: fakeSpawnFn(child, []) });
+
+    const launchPromise = adapter.launch({ prompt: 'correlate me' });
+    child.writeStdout(lines.join('\n') + '\n');
+    child.close(0);
+    const handle = await launchPromise;
+    const events: { type: string; [key: string]: unknown }[] = [];
+    for await (const event of handle.attach()) {
+      events.push(event as { type: string; [key: string]: unknown });
+    }
+    assert.equal(await handle.wait(), 'success');
+
+    // The harness sessionId stays namespaced (transcript naming + uniqueness).
+    assert.match(handle.sessionId, /^kiro-/);
+    assert.notEqual(handle.sessionId, bare);
+
+    // The usage record carries the bare native id in extra (same pattern as
+    // extra.credits) — the id ~/.kiro/sessions/cli/<uuid>.jsonl uses.
+    const usage = events.find((e) => e.type === 'usage');
+    assert.ok(usage, 'no usage event');
+    assert.equal((usage!.usage as { extra?: { kiroSessionId?: string } }).extra?.kiroSessionId, bare);
+  });
+
+  it('spawn() exposes the captured bare session id via nativeSessionId()', async () => {
+    const child = new FakeChild();
+    const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn: fakeSpawnFn(child, []) });
+    const runHandle = adapter.spawn({ prompt: 'native id' });
+    child.writeStdout('{"type":"step_start","sessionId":"bare-spawn-1"}\n');
+    child.writeStdout('{"type":"metering","tokenUsage":{"inputTokens":1,"outputTokens":2}}\n');
+    child.close(0);
+    await runHandle.wait();
+    assert.equal(runHandle.nativeSessionId(), 'bare-spawn-1');
+    assert.equal(await runHandle.sessionId(), 'bare-spawn-1');
+  });
 });

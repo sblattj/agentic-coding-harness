@@ -420,6 +420,11 @@ export async function launchDriverHandle<TEvent>(config: DriverLaunchConfig<TEve
     }
   })();
 
+  // Namespaced fallback (`<agent>-<uuid>`): load-bearing for transcript file
+  // naming (<stateDir>/raw/<agent>-<sessionId>.jsonl) and multi-agent
+  // uniqueness — adapters must NOT replace it with their native id. Kiro
+  // surfaces its bare on-disk id alongside, via extra.kiroSessionId on usage
+  // records (KiroAdapter.#mapWithNativeSession) and KiroRunHandle.nativeSessionId().
   const fallback = config.fallbackSessionId ?? `${agent}-${randomUUID()}`;
   let aborted = false;
   const handle: CoreAgentHandle = {
