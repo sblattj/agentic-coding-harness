@@ -56,7 +56,11 @@ export function buildKiroArgs(spec: KiroRunSpec): string[] {
     '--trust-all-tools',
     '--output-format',
     'stream-json',
-    '--v3',
+    // TODO(v3): `--v3` fails through the MITM tap — v3's model-catalog fetch
+    // to management.us-east-1.kiro.dev dies under mitmproxy with
+    // ModelRegistryUnavailableError. v2 verified working through the tap.
+    '--agent-engine',
+    'v2',
   ];
   if (spec.resume && typeof spec.resume === 'object' && spec.resume.sessionId) {
     args.push('--resume-id', spec.resume.sessionId);
