@@ -178,6 +178,44 @@ describe('success path and transcripts', () => {
     assert.ok(Math.abs(result.totalCost - (0.0001875 + 0.0003 + 0.00000625)) < 1e-12);
   });
 
+  it('prices a multi-model claude record via its per-model breakdown ($0.1028, not haiku-priced $0.0214)', async () => {
+    const driver = mockDriver(new MockAdapter());
+    // Real aggregate from a claude opus-5 run: label/first model was haiku
+    // (a 950-token probe), but opus-5[1m] carried ~99% of the cost.
+    const result = await driver.run('mock', {
+      prompt: 'hi',
+      scriptedEvents: [
+        ev.preNormalized({
+          agent: 'claude',
+          model: 'claude-haiku-4-5-20251001',
+          inputTokens: 954,
+          outputTokens: 1671,
+          cacheReadTokens: 26282,
+          cacheWriteTokens: 7544,
+          reasoningTokens: 55,
+          extra: {
+            raw: {
+              input: 954,
+              output: 1671,
+              cacheRead: 26282,
+              cacheWrite: 7544,
+              reasoning: 55,
+              models: [
+                { model: 'claude-haiku-4-5-20251001', input: 950, output: 11, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0.001005 },
+                { model: 'claude-opus-5[1m]', input: 4, output: 1660, cacheRead: 26282, cacheWrite: 7544, reasoning: 55, costUsd: 0.101811 },
+              ],
+            },
+          },
+        }),
+      ],
+    });
+    assert.equal(result.exitStatus, 'success');
+    assert.equal(result.tokens.length, 1);
+    // Aggregate tokens stay intact (the haiku probe was a real API call) but
+    // totalCost is the per-model sum, never the aggregate priced as haiku.
+    assert.ok(Math.abs(result.totalCost - 0.102816) < 1e-12, `totalCost=${result.totalCost}`);
+  });
+
   it('preserves producer extras (kiro tap credits in extra.credits) on collected records', async () => {
     const driver = mockDriver(new MockAdapter());
     const result: RunResult = await driver.run('mock', {

@@ -359,6 +359,55 @@ describe('ClaudeCodeAdapter.launch (driver contract)', () => {
     cleanup(stateDir);
   });
 
+  it('labels a multi-model run by the dominant model (by cost), not the first modelUsage key', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+    // Real opus-5 run shape: haiku (a probe call) sorts first in modelUsage
+    // but opus carries ~99% of the cost.
+    const resultLine = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      session_id: 'sess-multi',
+      is_error: false,
+      total_cost_usd: 0.102816,
+      usage: {
+        input_tokens: 954,
+        output_tokens: 1671,
+        cache_creation_input_tokens: 7544,
+        cache_read_input_tokens: 26282,
+        reasoning_tokens: 55,
+      },
+      modelUsage: {
+        'claude-haiku-4-5-20251001': { inputTokens: 950, outputTokens: 11, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, reasoningTokens: 0, costUSD: 0.001005 },
+        'claude-opus-5[1m]': { inputTokens: 4, outputTokens: 1660, cacheCreationInputTokens: 7544, cacheReadInputTokens: 26282, reasoningTokens: 55, costUSD: 0.101811 },
+      },
+    });
+    const launchPromise = adapter.launch({ prompt: 'x' });
+    captured.child.feed(resultLine + '\n');
+    captured.child.end(0);
+    const handle = await launchPromise;
+
+    const events: { type: string; [key: string]: unknown }[] = [];
+    for await (const event of handle.attach()) {
+      events.push(event as { type: string; [key: string]: unknown });
+    }
+    const usageEvent = events.find((e) => e.type === 'usage')!;
+    const usage = usageEvent.usage as Record<string, unknown>;
+    assert.ok(usage, 'expected a usage event with a canonical record');
+    // Dominant BY COST (opus), not first/last in the provider's map order.
+    assert.equal(usage.model, 'claude-opus-5[1m]');
+    assert.equal(usage.costUsd, 0.102816);
+    // Aggregate tokens keep the probe call's tokens; the per-model breakdown
+    // rides through for the pricer.
+    assert.equal(usage.inputTokens, 954);
+    const models = (usage.extra as { raw: { models: { model: string; costUsd?: number }[] } }).raw.models;
+    assert.equal(models.length, 2);
+    assert.equal(models[0]!.model, 'claude-haiku-4-5-20251001');
+    assert.equal(models[0]!.costUsd, 0.001005);
+    assert.equal(models[1]!.model, 'claude-opus-5[1m]');
+    assert.equal(models[1]!.costUsd, 0.101811);
+    cleanup(stateDir);
+  });
+
   it('launch() abort() yields an aborted verdict via wait()', async () => {
     const { adapter, captured, stateDir } = makeAdapter();
 

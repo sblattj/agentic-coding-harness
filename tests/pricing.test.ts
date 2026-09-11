@@ -91,6 +91,7 @@ describe('alias resolution', () => {
     assert.equal(resolveAlias('CLAUDE-SONNET-4'), 'claude-sonnet-4');
     assert.equal(resolveAlias('google/gemini-3-pro-preview'), 'gemini-3-pro');
     assert.equal(resolveAlias('claude-fable-5-1'), 'claude-fable-5-1'); // no date/channel suffix to strip
+    assert.equal(resolveAlias('claude-opus-5[1m]'), 'claude-opus-5'); // context-window tag
   });
 
   it('prices through aliases without a separate entry', () => {
@@ -109,6 +110,81 @@ describe('unknown models', () => {
     assert.equal(warnings.length, 1);
     assert.match(warnings[0]!, /unknown model "mystery-model-v9"/);
     assert.deepEqual(p.drainWarnings(), []); // drained
+  });
+});
+
+describe('multi-model records (extra.raw.models per-model breakdown)', () => {
+  // Real shapes from a claude opus-5 run (2026-09): the CLI routed a probe
+  // call through haiku and the main turn through opus-5[1m]. The aggregated
+  // record kept the first modelUsage key (haiku) as its label, and pricing
+  // the mixed aggregate at haiku rates reported $0.0214 vs the true $0.1028.
+  const multi = (slices: unknown[]): CanonicalTokenRecord => ({
+    agent: 'claude',
+    model: 'claude-haiku-4-5-20251001', // first-model label (pre-fix behavior)
+    inputTokens: 954,
+    outputTokens: 1671,
+    cacheReadTokens: 26282,
+    cacheWriteTokens: 7544,
+    reasoningTokens: 55,
+    extra: {
+      raw: {
+        input: 954,
+        output: 1671,
+        cacheRead: 26282,
+        cacheWrite: 7544,
+        reasoning: 55,
+        models: slices,
+      },
+    },
+    timestamp: 0,
+  });
+
+  const bugSlices = [
+    // The 950-token haiku probe: a real API call that never appears in the
+    // session JSONL — kept in the aggregate, billed at haiku rates via this
+    // breakdown.
+    { model: 'claude-haiku-4-5-20251001', input: 950, output: 11, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0.001005 },
+    { model: 'claude-opus-5[1m]', input: 4, output: 1660, cacheRead: 26282, cacheWrite: 7544, reasoning: 55, costUsd: 0.101811 },
+  ];
+
+  it('sums CLI-reported per-model costUsd: the opus-5 run prices $0.1028, not the haiku-priced $0.0214', () => {
+    const p = createPricer();
+    const cost = p.price(multi(bugSlices));
+    assert.ok(Math.abs(cost - 0.102816) < 1e-12, `cost=${cost}`);
+    assert.ok(Math.abs(cost - 0.0213672) > 0.01, 'must not price the aggregate as one model');
+  });
+
+  it('prices each slice by its own model when costUsd is absent (claude-opus-5[1m] resolves via alias)', () => {
+    const p = createPricer();
+    const cost = p.price(multi(bugSlices.map(({ costUsd: _drop, ...s }) => s)));
+    // haiku: (950*1 + 11*5)/1M = 0.001005;
+    // opus-5: (4*5 + 26282*0.5 + 7544*6.25 + 1660*25)/1M = 0.101811.
+    assert.ok(Math.abs(cost - 0.102816) < 1e-12, `cost=${cost}`);
+  });
+
+  it('one unpriceable slice voids the record: NaN plus a warning, never a silent partial sum', () => {
+    const p = createPricer();
+    const cost = p.price(
+      multi([
+        { model: 'claude-haiku-4-5-20251001', input: 950, output: 11, cacheRead: 0, cacheWrite: 0, costUsd: 0.001005 },
+        { model: 'mystery-model-v9', input: 4, output: 1660, cacheRead: 0, cacheWrite: 0 },
+      ]),
+    );
+    assert.ok(Number.isNaN(cost));
+    const warnings = p.drainWarnings();
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /unknown model "mystery-model-v9".*per-model breakdown/);
+  });
+
+  it('single-model behavior unchanged: no breakdown, or a one-entry one, still prices the aggregate', () => {
+    const p = createPricer();
+    assert.equal(p.price(rec('claude-haiku-4-5', 954, 1671, 26282, 7544)), 0.0213672);
+    const oneEntry = multi([
+      { model: 'claude-haiku-4-5-20251001', input: 954, output: 1671, cacheRead: 26282, cacheWrite: 7544, reasoning: 55, costUsd: 9 },
+    ]);
+    // A 1-entry breakdown is ignored (the aggregate IS that model's usage);
+    // the per-entry costUsd is NOT substituted in.
+    assert.equal(p.price(oneEntry), 0.0213672);
   });
 });
 

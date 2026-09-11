@@ -244,9 +244,35 @@ function canonicalFromModelUsage(
 }
 
 /**
+ * Model label for the aggregated core record: the model itself when only one
+ * appears; otherwise the dominant one BY COST (reported costUsd), falling
+ * back to the 'multi' sentinel when no slice carries a cost. Never first/last
+ * — the provider's modelUsage key order is not usage order (the haiku
+ * sub-agent probe can sort first while opus carries ~99% of the cost).
+ */
+function modelLabel(models: ModelTokenUsage[]): string | undefined {
+  if (models.length === 0) return undefined;
+  if (models.length === 1) return models[0]!.model;
+  let dominant: ModelTokenUsage | undefined;
+  for (const m of models) {
+    if (typeof m.costUsd !== 'number') continue;
+    if (dominant === undefined || m.costUsd > dominant.costUsd!) dominant = m;
+  }
+  return dominant?.model ?? 'multi';
+}
+
+/**
  * Claude-local usage record → core CanonicalTokenRecord. Anthropic's
  * input_tokens is already UNCACHED input (cache reads/writes are separate
  * fields), so it maps 1:1 onto inputTokens/cacheReadTokens/cacheWriteTokens.
+ *
+ * Aggregate totals deliberately KEEP every reported token — including
+ * sub-agent/probe calls that never appear in the session JSONL (observed: 950
+ * haiku input tokens present in modelUsage but absent from the transcript;
+ * kept because they were real API calls). Pricing must therefore never treat
+ * the aggregate as a single model: the pricer sums the per-model breakdown
+ * carried in extra.raw.models, billing the probe at haiku rates and the
+ * main-model tokens at theirs.
  */
 function claudeUsageToCore(record: CanonicalTokenRecord): CoreTokenRecord {
   const tokens: HouseTokens = {
@@ -259,7 +285,7 @@ function claudeUsageToCore(record: CanonicalTokenRecord): CoreTokenRecord {
     durationMs: null,
     raw: record,
   };
-  const model = record.models[0]?.model;
+  const model = modelLabel(record.models);
   return toCoreTokenRecord('claude', tokens, {
     ...(model !== undefined ? { model } : {}),
     ...(record.costUsd !== undefined ? { costUsd: record.costUsd } : {}),

@@ -67,6 +67,8 @@ export function resolveAlias(model: string): string {
   m = m.replace(/-(?:19|20)\d{6}$/, '');
   // Strip rolling/preview channels.
   m = m.replace(/-(?:latest|preview|stable)$/, '');
+  // Strip a trailing context-window tag: claude-opus-5[1m] -> claude-opus-5.
+  m = m.replace(/\[[^\]]*\]$/, '');
   return m;
 }
 
@@ -103,6 +105,49 @@ function loadBundledData(): Record<string, ModelPrice> {
   }
 }
 
+/**
+ * Per-model usage slice as embedded by the adapters under extra.raw.models
+ * (claude result.modelUsage via canonicalFromModelUsage). Field names are the
+ * adapter-lane camelCase spellings; costUsd is the CLI-reported per-model cost.
+ */
+interface ModelUsageSlice {
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd?: number;
+}
+
+/**
+ * Extract a multi-model breakdown from extra.raw.models. Returns null unless
+ * the array holds ≥2 well-formed entries — single-entry arrays (assistant
+ * message usage) stay on the unchanged single-model path, where the aggregate
+ * IS that model's usage.
+ */
+function modelSlices(rec: CanonicalTokenRecord): ModelUsageSlice[] | null {
+  const rawModels = (rec.extra as { raw?: { models?: unknown } } | undefined)?.raw?.models;
+  if (!Array.isArray(rawModels) || rawModels.length < 2) return null;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const slices: ModelUsageSlice[] = [];
+  for (const entry of rawModels) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.model !== 'string' || e.model === '') return null;
+    slices.push({
+      model: e.model,
+      input: num(e.input),
+      output: num(e.output),
+      cacheRead: num(e.cacheRead),
+      cacheWrite: num(e.cacheWrite),
+      ...(typeof e.costUsd === 'number' && Number.isFinite(e.costUsd)
+        ? { costUsd: e.costUsd }
+        : {}),
+    });
+  }
+  return slices;
+}
+
 export function createPricer(costMapPath?: string): Pricer {
   // Base map: embedded fallback, layered with the bundled LiteLLM extract
   // (src/core/pricing-data.json) when it is present — a missing file (e.g.
@@ -125,6 +170,38 @@ export function createPricer(costMapPath?: string): Pricer {
 
   return {
     price(rec: CanonicalTokenRecord): number {
+    // Multi-model record (claude runs route sub-agent/probe turns through a
+    // second model): the aggregate token counts mix models, so pricing them
+    // at any single model's rates is wrong — observed a haiku-labeled
+    // aggregate underprice an opus-dominant run at $0.0214 vs the true
+    // $0.1028. Sum per-model costs instead: the CLI-reported costUsd when
+    // present, else the slice's own tokens priced at its own model's rates.
+    // One unpriceable slice voids the whole record (NaN + warning), never a
+    // silent partial sum.
+    const slices = modelSlices(rec);
+    if (slices) {
+      let total = 0;
+      for (const s of slices) {
+        if (s.costUsd !== undefined) {
+          total += s.costUsd;
+          continue;
+        }
+        const p = lookup(s.model);
+        if (!p) {
+          warnings.push(
+            `pricing: unknown model "${s.model}" (alias "${resolveAlias(s.model)}") in per-model breakdown; cost not computed`,
+          );
+          return NaN;
+        }
+        total +=
+          (s.input * p.input +
+            s.cacheRead * p.cache_read +
+            s.cacheWrite * p.cache_creation +
+            s.output * p.output) /
+          1_000_000;
+      }
+      return total;
+    }
     const model = rec.model;
     if (!model) {
       warnings.push('pricing: record has no model field; cost not computed');
