@@ -39,6 +39,7 @@ export interface RunSpec {
   resume?: string;
   cwd?: string;
   env?: Record<string, string>;
+  extraArgs?: string[];
 }
 
 export interface ModelTokenUsage {
@@ -376,6 +377,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       maxTurns: spec.budget?.maxTurns,
       cwd: spec.cwd,
       env: spec.env,
+      extraArgs: spec.extraArgs,
     });
     this.launchedRunners.add(runner);
     void runner.waitExit().finally(() => this.launchedRunners.delete(runner));
@@ -422,6 +424,9 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     ];
     if (task.resume) {
       args.push('--resume', task.resume);
+    }
+    if (task.extraArgs?.length) {
+      args.push(...task.extraArgs);
     }
 
     const spawnFn: SpawnFn = this.opts.spawnFn ?? ((cmd, a, o) => nodeSpawn(cmd, a, o) as never);
