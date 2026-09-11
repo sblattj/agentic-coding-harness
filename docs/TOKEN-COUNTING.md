@@ -26,7 +26,7 @@ informational. No stored grand total — derive at render time.
 
 **→ canonical:**
 - Transcript tap (`cli/lib.ts extractClaudeRecordFromLine`): use fields as-is (input already
-  uncached), `costUSD` preferred, else `estimateCostUsd` from the prefix price table.
+  uncached), `costUSD` preferred, else priced through the shared `Pricer` (`core/pricing.ts`).
 - Stream tap (`normalizeClaude`): accepts three shapes — a flattened `ClaudeModelUsage` entry
   (`model` + camelCase fields), a snake_case assistant-usage block, or the whole `result.modelUsage`
   map (entries summed into one record; model degrades to `"a+b"` when multiple models ran).
@@ -67,13 +67,10 @@ Event: `codex exec --json` → `turn.completed` with `usage`.
 | `usage.reasoning_output_tokens` | same | the reasoning slice |
 | `usage.total_tokens` | same | CLI grand total |
 
-**→ canonical (two code paths, ⚠ they disagree):**
-- `normalizeCodex` (raw-payload path): `inputTokens = max(0, input_tokens − cached_input_tokens)`,
-  `cacheReadTokens = cached_input_tokens` — uncached-input convention applied.
-- `adapters/codex.ts` (stream path): emits `inputTokens = input_tokens` **unadjusted** with
-  `cacheReadTokens = cached_input_tokens` — cache stays double-billed inside input until the two
-  paths merge. Flagged as a live instance of Trap 3; do not trust cross-tap input comparisons
-  for codex until then.
+**→ canonical (the former two-path split is closed — both paths now apply the same rule):**
+`inputTokens = max(0, input_tokens − cached_input_tokens)`, `cacheReadTokens =
+cached_input_tokens` — uncached-input convention applied in `normalizeCodex` and in the adapter
+stream path alike.
 
 The session-cumulative counterpart (`info.total_token_usage` / `info.last_token_usage` in the
 protocol) is not yet handled — see Trap 2 for why it must stay delta-based when it lands.
@@ -99,7 +96,7 @@ reports no write count); reasoning kept in `reasoningTokens` without re-joining 
 re-joined into output) — while the adapter parses the flat `stats` above. Same CLI, two wire
 shapes; reconcile on merge.
 
-### Kiro (MITM tap `[planned]` for collection, parser ready)
+### Kiro (stream tap + auto-started MITM tap, both shipped)
 
 | Native field | Where | Meaning |
 |---|---|---|
@@ -107,8 +104,8 @@ shapes; reconcile on merge.
 | `meteringEvent` | observed events | credits consumed |
 
 **→ canonical:** `normalizeKiro` maps `tokenUsage` fields as-is (Kiro's taxonomy already treats
-input as uncached); `meteringEvent` credits × published credit price is the authoritative cost
-figure once the MITM lands.
+input as uncached); the MITM tap's `meteringEvent` credits land in `extra.credits` — metering
+units, **not USD**, never priced (see §3).
 
 ---
 
@@ -135,9 +132,9 @@ Use the per-turn delta, or delta consecutive cumulative records. The current cod
 | Gemini | **Yes** (`cached ⊆ input_tokens`) | `input` field if present, else `input_tokens − cached` |
 
 Adding cache reads on top of an input that already contains them double counts; forgetting to
-subtract for codex overcounts fresh input. ⚠ Live instance: `adapters/codex.ts` currently emits
-unadjusted input while `normalizeCodex` subtracts (§1). Also never compare raw `input` across
-providers without normalizing first.
+subtract for codex overcounts fresh input. The former live instance (`adapters/codex.ts` emitting
+unadjusted input) is closed — both codex paths subtract now (§1). Also never compare raw `input`
+across providers without normalizing first.
 
 **Trap 4 — reasoning-token placement.** Codex bills reasoning inside `output_tokens` (with the
 slice repeated in `reasoning_output_tokens`); Gemini reports `thoughts` separately from
@@ -167,8 +164,25 @@ cost_usd = ( inputTokens        × price.input
 - External LiteLLM-style cost maps are accepted via `createPricer(costMapPath)`, in per-1M fields
   or per-token fields (auto-scaled ×1e6); `resolveAlias` strips provider prefixes, date stamps,
   and `-latest/-preview` so `anthropic/claude-sonnet-4-20250514` matches `claude-sonnet-4`.
-- Unknown model → `NaN` + warning surfaced in `RunResult.warnings` — cost is never silently 0.
+- Unknown model → `NaN` + warning surfaced in `RunResult.warnings` — cost is never silently 0
+  (exception: credit-metered kiro records, below).
 - **Reported beats computed:** the transcript tap prefers `costUSD` when the row carries it;
   the driver accumulates computed cost otherwise. Provider-reported figures always win.
-- The CLI transcript fallback (`cli/lib.ts estimateCostUsd`) uses a simpler model-prefix table —
-  ⚠ a second, diverging price source; consolidate on `Pricer` at merge.
+- The CLI transcript tap prices unpriced rows through this same `Pricer` (`cli/harness.ts`) — the
+  old `cli/lib.ts estimateCostUsd` prefix table is gone (that merge is closed).
+
+### Credit metering (kiro) and multi-model runs
+
+- **Kiro: credits are the only signal.** Under the tap kiro-cli runs `--agent-engine v2` (v3's
+  model-catalog fetch dies behind mitmproxy); the v2 wire exposes no model id and no usable token
+  counts, so `meteringEvent` credits are the metering unit. They ride `extra.credits` — kiro
+  units, **never USD** (the pricer returns 0 silently for credit-metered records instead of
+  spamming an unknown-model warning). A/A-verified: the tap's records match kiro's own session
+  file (`~/.kiro/sessions/cli/<uuid>.json`, `metering_usage`) bit-for-bit; credits surface in the `harness run`
+  summary, the registry `totals.credits`, and dash's CREDITS column.
+- **Multi-model records price per-slice.** Claude aggregates mix models (a haiku sub-agent probe
+  inside an opus run), and pricing the aggregate at one rate underprices (observed $0.0214 vs the
+  true $0.1028). The pricer sums per-model slices from `extra.raw.models` — each slice's
+  CLI-reported `costUsd` when present, else its tokens at its own model's rates; one unpriceable
+  slice voids the record (NaN + warning, never a partial sum). The record's model label is the
+  dominant slice by cost (fallback `multi`), never first/last key order.

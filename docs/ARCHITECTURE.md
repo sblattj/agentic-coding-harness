@@ -2,8 +2,9 @@
 
 > **STATUS (2026-09-09):** written against the actual `src/` tree (`core/`, `adapters/`, `cli/`,
 > `emitters/`, `monitors/`). Items that exist only by name are marked `[planned]` (the kiro
-> adapter and its MITM tap shipped; see §2). Known cross-file interface conflicts are flagged `⚠` and listed in the build report
-> to the orchestrator — this doc describes the interfaces as they stand, not as they should be.
+> adapter and its MITM tap shipped; see §2). The cross-file interface conflicts flagged ⚠ in
+> earlier revisions are closed (§9); anything still diverging in `docs/TOKEN-COUNTING.md` keeps
+> its flag — this doc describes the interfaces as they stand, not as they should be.
 
 agent-harness is a headless-first orchestration and observability layer over coding-agent CLIs
 (Claude Code, Codex CLI, OpenCode, Gemini CLI, Kiro). One harness, many agents: normalized events,
@@ -59,17 +60,46 @@ provides `runJsonlCli` (spawn → `LineAssembler` → `parseLine` → `EventQueu
 `AgentEvent` (`core/types.ts`) is the core/domain event model the emitters consume:
 `session_start | message{source,content,reasoningContent?} | model_call_start | model_call_end{usage?}
 | tool_call{toolCallId,functionName,arguments} | tool_result{toolCallId,content,isError?} | usage{usage} | session_end`.
-⚠ Two event vocabularies currently coexist (see §9 merge note).
+Both vocabularies are members of the single `AgentEvent` union in `core/types.ts` (the former
+split is closed — see §9).
 
 ### Driver
 
 `core/driver.ts` (`createDriver`) is the run orchestrator: resolves the adapter from a registry
-(`defaultAdapters()` lazy-imports `adapters/{claude,opencode,kiro,codex,gemini}.js`, skipping
-missing ones with a warning), attaches to the event stream, writes a raw NDJSON transcript under
-`<stateDir>/raw/`, normalizes usage through `normalizeUsage`, prices each record via the `Pricer`,
-and enforces budgets — `budget.usd` aborts mid-run with `exitStatus: "budget_exceeded"`;
-`budget.maxTurns` aborts with `"turn_limit"` when the adapter doesn't enforce it itself
-(`adapter.enforcesBudget`). Driver enforcement verdicts override the adapter's own exit verdict.
+(`defaultAdapters()` instantiates the bundled `adapters/{claude,opencode,kiro,codex,gemini}.js`
+classes, skipping missing ones with a warning), attaches to the event stream, writes a raw NDJSON
+transcript to `<stateDir>/raw/<agent>-<sessionId>.jsonl`, normalizes usage (`normalizeAuto` /
+`fromPreNormalized`), prices each record via the `Pricer`, and enforces budgets inside the event
+loop. All four `budget` fields of `RunSpec`: `budget.usd` aborts with `exitStatus:
+"budget_exceeded"` once cumulative cost passes it (checked per usage event); `budget.maxTurns`
+aborts with `"turn_limit"` on the crossing step, only when the adapter doesn't enforce it itself
+(`adapter.enforcesBudget`); `budget.wallMs` and `budget.idleMs` abort with `"timeout"` when total
+run time — or the gap since the last event — exceeds the ceiling. Driver enforcement verdicts
+override the adapter's own exit verdict.
+
+### Run registry
+
+`core/registry.ts` keeps one JSON file per run at `<stateDir>/runs/<runId>.json`
+(driver-generated uuid): identity (`agent`, `sessionId` once reported, `pid`, `cwd`,
+`promptPreview`), lifecycle (`status`, `exitStatus`, `startedAt`/`updatedAt` heartbeat), running
+totals (token classes + `costUsd`, kiro `credits` kept separate), a one-line `lastEvent` preview,
+and the `rawTranscript` path. Writes are atomic — temp file (`*.tmp-<pid>`) + rename, synchronous,
+safe on hot event paths; the driver heartbeats totals/lastEvent throttled to one write per ≥500ms
+and forces the final write at exit. `isLive` requires all three: `status === "running"`, a
+heartbeat ≤15s fresh, and a pid that answers `kill(pid, 0)`. Failure isolation is by design:
+readers skip corrupt/partial files (never throw), and registry write failures drain into run
+warnings — a broken registry never breaks a run.
+
+### Dash and MCP consumers
+
+`cli/dash.ts` (`harness dash`) is the registry's live reader: `listRunRecords` + `isLive` feed an
+ANSI full-screen table redrawn every 500ms — live runs plus finished runs from the last hour;
+`--all` widens to every record on disk (dash prunes display, never files). Non-TTY stdout falls
+back to a `--json` dump (records plus a `live` flag) for tools and tests. The MCP stdio server
+(`mcp/index.ts`, protocol 2025-06-18) works the driver seam instead: `harness_run` builds
+`createDriver` + `defaultAdapters()` per call (`mcp/tools-run.ts`), `harness_agents` lists the
+adapter registry, and `harness_report`/`harness_emit`/`harness_stats` expose the CLI's inspect
+path over the same `stateDir` (`mcp/tools-inspect.ts`); client config lives in `docs/MCP.md`.
 
 ## 2. Token taps
 
@@ -94,15 +124,13 @@ dimension (`extra.credits`, summed by `harness run` into the `credits` summary l
 ## 3. Canonical token record
 
 The canonical shape is `CanonicalTokenRecord` — cache-aware, with the uncached-input convention.
-⚠ Two variants currently coexist (flagged to the orchestrator):
-
-- `core/normalize.ts` records (the stream-tap output): `{agent, model, inputTokens, outputTokens,
-  cacheReadTokens, cacheWriteTokens, reasoningTokens?, timestamp}` — **`inputTokens` is
-  uncached-only by convention**; codex/gemini entries are adjusted at extraction time
-  (`input − cached`).
-- `core/types.ts` `CanonicalTokenRecord` (the domain shape consumed by emitters): optional
-  `{promptTokens, completionTokens, cachedTokens, cacheReadTokens, cacheWriteTokens,
-  reasoningTokens, costUsd, extra}`.
+The two historical variants are merged (2026-09-10): `core/types.ts` hosts the single record —
+`{agent?, model?, timestamp?, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+reasoningTokens?, costUsd?, extra?}` — **`inputTokens` is uncached-only by convention**;
+codex/gemini entries are adjusted at extraction time (`input − cached`). The legacy aliases
+(`promptTokens`/`completionTokens`/`cachedTokens`) survive as optional fields read defensively by
+the driver, store, and emitters (`fromLegacy()` converts legacy producers); `adapters/types.ts`
+re-exports the same record for the CLI adapters.
 
 `sumTokens()` sums each class exactly once; `reasoningTokens` is informational (a subset of
 output for providers that bill it inside output). No stored grand total: dashboards derive
@@ -111,9 +139,10 @@ output for providers that bill it inside output). No stored grand total: dashboa
 Cost: `core/pricing.ts` — cache-aware per-1M pricing with an embedded fallback table
 (claude-sonnet-4/opus-4, gpt-5, gemini-2.5-pro), LiteLLM-style external map loading (accepts
 per-1M or per-token fields), and `resolveAlias` (strips provider prefixes, date stamps,
-`-latest/-preview`). Unknown model → `NaN` + a drained warning, **never a silent 0**. The CLI's
-transcript tap uses the simpler `cli/lib.ts estimateCostUsd` prefix table when a row carries no
-`costUSD` of its own.
+`-latest/-preview`). Unknown model → `NaN` + a drained warning, **never a silent 0** (sole
+exception: credit-metered kiro records with no model — silent 0 by design,
+`docs/TOKEN-COUNTING.md` §3). The CLI's transcript tap prices rows without their own `costUSD`
+through the same `Pricer` (the old `cli/lib.ts estimateCostUsd` prefix table is gone).
 
 ## 4. ATIF as persisted artifact
 
@@ -128,9 +157,9 @@ transcript tap uses the simpler `cli/lib.ts estimateCostUsd` prefix table when a
   observation result references a known `tool_call_id`.
 - `addSubagent()` nests child trajectories under `extra.subagents`.
 
-The CLI also exposes `harness emit --input events.json --format atif|otel [--out path]`, which
-today routes through the `core/emitters.ts` envelope stub (`schemaVersion: "atif/0.1"`). ATIF is
-the durable per-run artifact for eval, replay, and diff.
+The CLI also exposes `harness emit --input events.json --format atif|otel|langfuse [--out path]`,
+routing straight through the real emitters (the `core/emitters.ts` envelope stub is deleted). ATIF
+is the durable per-run artifact for eval, replay, and diff.
 
 ## 5. OTel gen_ai spans as live transport
 
@@ -221,11 +250,19 @@ flowchart LR
 CLI → driver → adapter → events; events fan out to the ATIF file, OTel spans, and the normalized,
 priced token record in the JSONL state store; dashboards and `stats` read the sinks or the store.
 
-## 9. Known interface conflicts (for the merge, not for readers of this doc)
+## 9. Interface merges (resolved)
 
-Flagged `⚠` above; full list in the build report: dual `AgentEvent` vocabularies (core vs
-adapters vs cli/lib formatter), dual `CanonicalTokenRecord` shapes (normalize vs core/types vs
-store schema), dual emitter trees (`core/emitters.ts` stub vs `emitters/{atif,otel}.ts`), driver's
-`launch`-style adapter registry vs `adapters/types.ts` `spawn`-style contract, and
-`cli/harness.ts` importing `AGENTS`/`HarnessError`/`isKnownAgent`/`RunResult` that
-`core/types.ts` does not yet export.
+The cross-file conflicts flagged ⚠ in earlier revisions of this doc are closed as of 2026-09-10;
+`core/types.ts` is the single source of truth and `adapters/types.ts` re-exports from it:
+
+- dual `AgentEvent` vocabularies → one union of all lanes' events (driver `step`/`usage`/
+  `usage_raw`, transcript `message`/`tool_call`/`tool_result`/`model_call_*`/`session_*`,
+  adapter `tool`/`session`/`progress`).
+- dual `CanonicalTokenRecord` shapes → one record: normalize.ts semantics plus optional legacy
+  aliases, with `fromLegacy()` for legacy producers.
+- dual emitter trees → the `core/emitters.ts` envelope stub is deleted; the CLI routes straight
+  to `emitters/{atif,otel,langfuse}.ts`.
+- driver `launch`-style vs adapter `spawn`-style contract → all five adapters implement
+  `launch()` natively (bridged via `launchDriverHandle`, `adapters/shared.ts`).
+- `cli/harness.ts` imports → `core/types.ts` exports `AGENTS`/`isKnownAgent`/`RunResult`/
+  `HarnessError`, and the CLI transcript fallback prices through `core/pricing.ts`.
