@@ -64,6 +64,8 @@ const RunSpecSchema = z.object({
     .object({
       usd: z.number().positive().optional(),
       maxTurns: z.number().int().positive().optional(),
+      wallMs: z.number().positive().optional(),
+      idleMs: z.number().positive().optional(),
     })
     .optional(),
   // Adapter-specific keys pass through untouched.
@@ -149,6 +151,8 @@ export function createDriver(options: DriverOptions): Driver {
       const parsed = RunSpecSchema.parse(spec);
       const budgetUsd = parsed.budget?.usd;
       const maxTurns = parsed.budget?.maxTurns;
+      const wallMs = parsed.budget?.wallMs;
+      const idleMs = parsed.budget?.idleMs;
 
       const start = Date.now();
       const handle = await adapter.launch(parsed);
@@ -170,6 +174,36 @@ export function createDriver(options: DriverOptions): Driver {
       let enforcedStatus: ExitStatus | null = null;
 
       const drainPricerWarnings = () => warnings.push(...pricer.drainWarnings());
+
+      // --- wall-clock / idle budget timers ---
+      // Armed right after launch (wallMs measures from launch) and the idle
+      // timer is reset on every AgentEvent. Tripping aborts the handle and
+      // forces the 'timeout' verdict with a distinguishing warning; both
+      // timers are cleared in the loop's finally below so a dangling timeout
+      // can never hold the process open after run() settles.
+      let wallTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let budgetTripped = false;
+      const tripBudget = (warning: string): void => {
+        if (budgetTripped) return;
+        budgetTripped = true;
+        enforcedStatus = 'timeout';
+        warnings.push(warning);
+        if (wallTimer !== null) clearTimeout(wallTimer);
+        if (idleTimer !== null) clearTimeout(idleTimer);
+        wallTimer = null;
+        idleTimer = null;
+        void Promise.resolve(handle.abort()).catch(() => {});
+      };
+      if (wallMs !== undefined) {
+        wallTimer = setTimeout(() => tripBudget(`budget: wall-clock ${wallMs}ms exceeded`), wallMs);
+      }
+      const armIdleTimer = (): void => {
+        if (idleMs === undefined) return;
+        if (idleTimer !== null) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => tripBudget(`budget: idle ${idleMs}ms exceeded (no events)`), idleMs);
+      };
+      armIdleTimer();
 
       // --- run registry hook (dash live view; contract in src/dash/PLAN.md) ---
       // Every registry call is best-effort: failures drain into `warnings`
@@ -226,10 +260,12 @@ export function createDriver(options: DriverOptions): Driver {
       };
       const finalizeRunRecord = (exit: ExitStatus): void => {
         if (!rec) return;
+        // timeout (driver wall/idle budget enforcement, adapter timeouts)
+        // counts as aborted, not errored: the run was cut short on purpose.
         rec.status =
           exit === 'success'
             ? 'success'
-            : exit === 'aborted' || exit === 'cancelled' || exit === 'budget_exceeded' || exit === 'turn_limit'
+            : exit === 'aborted' || exit === 'cancelled' || exit === 'budget_exceeded' || exit === 'turn_limit' || exit === 'timeout'
               ? 'aborted'
               : 'error';
         rec.exitStatus = exit;
@@ -241,6 +277,7 @@ export function createDriver(options: DriverOptions): Driver {
 
       try {
         for await (const event of handle.attach()) {
+          armIdleTimer(); // every AgentEvent defers the idle deadline
           events.push(event);
           transcript.write(`${JSON.stringify(event)}\n`);
           onEvent?.(event);
@@ -296,6 +333,13 @@ export function createDriver(options: DriverOptions): Driver {
       } catch (err) {
         finalizeRunRecord('error');
         throw err;
+      } finally {
+        // Timer-leak safety: whatever way the stream ends (natural, abort,
+        // break, or throw), no budget timer outlives run().
+        if (wallTimer !== null) clearTimeout(wallTimer);
+        if (idleTimer !== null) clearTimeout(idleTimer);
+        wallTimer = null;
+        idleTimer = null;
       }
 
       // Await full flush so the NDJSON transcript is on disk when run() resolves.

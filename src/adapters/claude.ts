@@ -169,7 +169,7 @@ const ResultLineSchema = z.object({
 // Helpers
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_MAX_TURNS = 10;
+export const DEFAULT_MAX_TURNS = 250;
 const ABORT_ESCALATE_MS = 5_000;
 const STDERR_TAIL_LIMIT = 8 * 1024;
 

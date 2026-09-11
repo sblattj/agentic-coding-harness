@@ -450,7 +450,7 @@ export interface RunSpec {
   cwd?: string;
   model?: string;
   resume?: string;
-  budget?: { usd?: number; maxTurns?: number };
+  budget?: { usd?: number; maxTurns?: number; wallMs?: number; idleMs?: number };
   /** Extra env vars layered over process.env. */
   env?: Record<string, string>;
   /** Extra CLI args appended verbatim (escape hatch for provider flags). */
@@ -471,6 +471,8 @@ export const RunSpecSchema = z
       .object({
         usd: z.number().positive().optional(),
         maxTurns: z.number().int().positive().optional(),
+        wallMs: z.number().positive().optional(),
+        idleMs: z.number().positive().optional(),
       })
       .optional(),
     env: z.record(z.string(), z.string()).optional(),

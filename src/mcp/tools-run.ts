@@ -28,6 +28,8 @@ const RunArgsSchema = z.object({
   cwd: z.string().optional(),
   budgetUsd: z.number().positive().optional(),
   maxTurns: z.number().int().positive().optional(),
+  wallMs: z.number().positive().optional(),
+  idleMs: z.number().positive().optional(),
   extraArgs: z.array(z.string()).optional(),
 });
 
@@ -69,6 +71,8 @@ export function registerRunTools(server: McpServer, opts: { stateDir: string }):
         cwd: { type: "string", description: "Working directory for the agent subprocess" },
         budgetUsd: { type: "number", description: "Abort the run once cumulative cost exceeds this USD amount" },
         maxTurns: { type: "integer", description: "Abort the run after this many agent turns" },
+        wallMs: { type: "number", description: "Abort the run if it exceeds this wall-clock duration in milliseconds from launch" },
+        idleMs: { type: "number", description: "Abort the run if no agent events arrive for this many milliseconds" },
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
       },
       required: ["agent", "prompt"],
@@ -86,12 +90,19 @@ export function registerRunTools(server: McpServer, opts: { stateDir: string }):
       const budget: CoreRunSpec["budget"] = {
         ...(a.budgetUsd !== undefined ? { usd: a.budgetUsd } : {}),
         ...(a.maxTurns !== undefined ? { maxTurns: a.maxTurns } : {}),
+        ...(a.wallMs !== undefined ? { wallMs: a.wallMs } : {}),
+        ...(a.idleMs !== undefined ? { idleMs: a.idleMs } : {}),
       };
       const spec: CoreRunSpec = {
         prompt: a.prompt,
         ...(a.model !== undefined ? { model: a.model } : {}),
         ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
-        ...(budget.usd !== undefined || budget.maxTurns !== undefined ? { budget } : {}),
+        ...(budget.usd !== undefined ||
+        budget.maxTurns !== undefined ||
+        budget.wallMs !== undefined ||
+        budget.idleMs !== undefined
+          ? { budget }
+          : {}),
         ...(a.extraArgs !== undefined ? { extraArgs: a.extraArgs } : {}),
       };
       const driver = createDriver({

@@ -36,7 +36,7 @@ const USAGE = `harness — unified agent run harness
 
 usage:
   harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
-              [--budget-usd N] [--max-turns N] [--json] "<prompt>"
+              [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
   harness watch [--dir <transcriptDir>]
   harness stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
@@ -53,7 +53,11 @@ usage:
                (live run dashboard; --json dumps RunRecords and exits)
 
 env:
-  AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)`;
+  AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)
+  AGENT_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
+  AGENT_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
+  AGENT_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
+  AGENT_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)`;
 
 // ---------------------------------------------------------------- helpers
 
@@ -75,6 +79,21 @@ function optInt(v: string | undefined, flag: string): number | undefined {
   return n;
 }
 
+/** CLI flag value wins; otherwise fall back to an env default (parsed like the flag). */
+function optNumWithEnv(flagVal: string | undefined, flag: string, envName: string): number | undefined {
+  if (flagVal !== undefined) return optNum(flagVal, flag);
+  const envVal = process.env[envName];
+  if (envVal === undefined || envVal === "") return undefined;
+  return optNum(envVal, envName);
+}
+
+function optIntWithEnv(flagVal: string | undefined, flag: string, envName: string): number | undefined {
+  if (flagVal !== undefined) return optInt(flagVal, flag);
+  const envVal = process.env[envName];
+  if (envVal === undefined || envVal === "") return undefined;
+  return optInt(envVal, envName);
+}
+
 // ---------------------------------------------------------------- run
 
 async function cmdRun(rest: string[]): Promise<number> {
@@ -86,6 +105,8 @@ async function cmdRun(rest: string[]): Promise<number> {
       resume: { type: "string" },
       "budget-usd": { type: "string" },
       "max-turns": { type: "string" },
+      "wall-ms": { type: "string" },
+      "idle-ms": { type: "string" },
       "extra-args": { type: "string" },
       json: { type: "boolean", default: false },
     },
@@ -118,8 +139,10 @@ async function cmdRun(rest: string[]): Promise<number> {
       model: args.values.model,
       resume: args.values.resume,
       budget: {
-        usd: optNum(args.values["budget-usd"], "--budget-usd"),
-        maxTurns: optInt(args.values["max-turns"], "--max-turns"),
+        usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENT_HARNESS_BUDGET_USD"),
+        maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENT_HARNESS_MAX_TURNS"),
+        wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENT_HARNESS_WALL_MS"),
+        idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENT_HARNESS_IDLE_MS"),
       },
       extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
     });

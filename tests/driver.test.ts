@@ -343,3 +343,133 @@ describe('driver → run registry hook', () => {
     assert.ok(record.rawTranscript.endsWith('.jsonl'), `rawTranscript: ${record.rawTranscript}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Wall-clock / idle budget enforcement (budget.wallMs / budget.idleMs). The
+// stub handles model the two hang shapes: a stream that goes silent after one
+// event (idle trip) and a stream that keeps emitting forever (wall trip).
+// ---------------------------------------------------------------------------
+
+class SilentThenHangHandle implements AgentHandle {
+  readonly sessionId = 'silent-hang-1';
+  aborted = false;
+  #wake?: () => void;
+
+  async *attach(): AsyncIterable<AgentEvent> {
+    yield { type: 'step', sessionId: this.sessionId, timestamp: Date.now() };
+    // Go silent forever; only abort() ends the stream.
+    await new Promise<void>((resolve) => {
+      this.#wake = resolve;
+    });
+  }
+
+  abort(): void {
+    this.aborted = true;
+    this.#wake?.();
+  }
+
+  async wait(): Promise<'aborted' | 'success'> {
+    return this.aborted ? 'aborted' : 'success';
+  }
+}
+
+class SilentThenHangAdapter implements AgentAdapter {
+  readonly name = 'silent-hang';
+  lastHandle?: SilentThenHangHandle;
+
+  async launch(): Promise<AgentHandle> {
+    this.lastHandle = new SilentThenHangHandle();
+    return this.lastHandle;
+  }
+}
+
+class HeartbeatHandle implements AgentHandle {
+  readonly sessionId = 'heartbeat-1';
+  aborted = false;
+  #abortWakers: Array<() => void> = [];
+
+  async *attach(): AsyncIterable<AgentEvent> {
+    while (!this.aborted) {
+      yield { type: 'step', sessionId: this.sessionId, timestamp: Date.now() };
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 50);
+        this.#abortWakers.push(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+  }
+
+  abort(): void {
+    this.aborted = true;
+    for (const wake of this.#abortWakers.splice(0)) wake();
+  }
+
+  async wait(): Promise<'aborted' | 'success'> {
+    return this.aborted ? 'aborted' : 'success';
+  }
+}
+
+class HeartbeatAdapter implements AgentAdapter {
+  readonly name = 'heartbeat';
+  lastHandle?: HeartbeatHandle;
+
+  async launch(): Promise<AgentHandle> {
+    this.lastHandle = new HeartbeatHandle();
+    return this.lastHandle;
+  }
+}
+
+describe('wall/idle budget enforcement', () => {
+  it('aborts a silent stream after idleMs and reports timeout with the idle warning', async () => {
+    const adapter = new SilentThenHangAdapter();
+    const driver = createDriver({ adapters: { 'silent-hang': adapter }, stateDir: tmpStateDir() });
+    const started = Date.now();
+    const result: RunResult = await driver.run('silent-hang', {
+      prompt: 'hi',
+      budget: { idleMs: 200 },
+    });
+
+    assert.equal(result.exitStatus, 'timeout');
+    assert.ok(result.warnings.some((w) => w === 'budget: idle 200ms exceeded (no events)'), result.warnings.join(' | '));
+    assert.ok(adapter.lastHandle!.aborted, 'handle.abort() was called');
+    assert.ok(result.durationMs < 2000, `durationMs ${result.durationMs} should be well under 2s`);
+    assert.ok(Date.now() - started < 2000);
+    assert.equal(result.events.length, 1); // the one event before silence
+  });
+
+  it('aborts an event stream after wallMs and reports timeout with the wall-clock warning', async () => {
+    const adapter = new HeartbeatAdapter();
+    const driver = createDriver({ adapters: { heartbeat: adapter }, stateDir: tmpStateDir() });
+    const result: RunResult = await driver.run('heartbeat', {
+      prompt: 'hi',
+      budget: { wallMs: 300 },
+    });
+
+    assert.equal(result.exitStatus, 'timeout');
+    assert.ok(result.warnings.some((w) => w === 'budget: wall-clock 300ms exceeded'), result.warnings.join(' | '));
+    assert.ok(adapter.lastHandle!.aborted, 'handle.abort() was called');
+    assert.ok(result.durationMs < 2000, `durationMs ${result.durationMs} should be well under 2s`);
+    // Events kept flowing until the wall clock cut the run off (~every 50ms).
+    assert.ok(result.events.length >= 3, `expected several heartbeats, got ${result.events.length}`);
+  });
+
+  it('maps timeout exits to registry status aborted while keeping exitStatus timeout', async () => {
+    const regDir = tmpStateDir();
+    const driver = createDriver({
+      adapters: { 'silent-hang': new SilentThenHangAdapter() },
+      stateDir: tmpStateDir(),
+      registry: { stateDir: regDir },
+    });
+    const result: RunResult = await driver.run('silent-hang', {
+      prompt: 'hi',
+      budget: { idleMs: 200 },
+    });
+    assert.equal(result.exitStatus, 'timeout');
+    const recs = listRunRecords(regDir);
+    assert.equal(recs.length, 1);
+    assert.equal(recs[0]!.status, 'aborted');
+    assert.equal(recs[0]!.exitStatus, 'timeout');
+  });
+});

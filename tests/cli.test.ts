@@ -261,6 +261,40 @@ describe("harness cli", () => {
     assert.match(r.stdout, /^credits    0\.05$/m);
   });
 
+  test("run rejects a non-numeric --wall-ms cleanly before launching any agent", () => {
+    const r = runCli(["run", "--agent", "claude", "--wall-ms", "abc", "hi"], env());
+    assert.equal(r.code, 1);
+    assert.ok(r.stderr.includes("--wall-ms expects a non-negative number"), r.stderr);
+    assert.doesNotMatch(r.stderr, /\n\s+at /);
+    assert.equal(r.stdout, "");
+  });
+
+  test("run honors AGENT_HARNESS_* env defaults and CLI flags win over them", async () => {
+    // Bad env default surfaces a clean usage error naming the env var...
+    let r = runCli(["run", "--agent", "claude", "hi"], { ...env(), AGENT_HARNESS_IDLE_MS: "abc" });
+    assert.equal(r.code, 1);
+    assert.ok(r.stderr.includes("AGENT_HARNESS_IDLE_MS expects a non-negative number"), r.stderr);
+    assert.doesNotMatch(r.stderr, /\n\s+at /);
+
+    // ...and a valid flag suppresses the invalid env default entirely: the
+    // run proceeds (fake kiro CLI, tap off) and completes instead of
+    // erroring on AGENT_HARNESS_MAX_TURNS=abc.
+    const fakeKiroCli = path.join(tmpExtra, "fake-kiro-env-flag.sh");
+    await fs.writeFile(
+      fakeKiroCli,
+      `#!/bin/sh\necho '{"type":"session_start","sessionId":"sess-env-flag"}'\necho '{"type":"assistant","text":"done"}'\nexit 0\n`,
+    );
+    await fs.chmod(fakeKiroCli, 0o755);
+    r = runCli(["run", "--agent", "kiro", "--max-turns", "5", "--wall-ms", "60000", "hi"], {
+      ...env(),
+      KIRO_CLI_BIN: fakeKiroCli,
+      MITMDUMP_BIN: "/nonexistent/mitmdump", // deterministic tap-off degrade
+      AGENT_HARNESS_MAX_TURNS: "abc", // would fail if the flag did not win
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /^exit       success$/m);
+  });
+
   test("emit produces ATIF and OTel documents from an event stream", async () => {
     const eventsFile = path.join(tmpExtra, "events.json");
     await fs.writeFile(

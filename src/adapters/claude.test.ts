@@ -99,7 +99,7 @@ describe('ClaudeCodeAdapter.spawn', () => {
     assert.equal(captured.args[captured.args.indexOf('--output-format') + 1], 'stream-json');
     assert.ok(captured.args.includes('--verbose'));
     assert.ok(captured.args.includes('--max-turns'));
-    assert.equal(captured.args[captured.args.indexOf('--max-turns') + 1], '10');
+    assert.equal(captured.args[captured.args.indexOf('--max-turns') + 1], '250');
     assert.ok(!captured.args.includes('--resume'));
 
     const configDir = captured.options.env?.CLAUDE_CONFIG_DIR;
@@ -116,7 +116,7 @@ describe('ClaudeCodeAdapter.spawn', () => {
 
     assert.ok(captured.args.includes('--resume'));
     assert.equal(captured.args[captured.args.indexOf('--resume') + 1], 'sess-abc-123');
-    assert.equal(captured.args[captured.args.indexOf('--max-turns') + 1], '10');
+    assert.equal(captured.args[captured.args.indexOf('--max-turns') + 1], '250');
     cleanup(stateDir);
   });
 
