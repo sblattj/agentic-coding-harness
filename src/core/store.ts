@@ -162,17 +162,26 @@ function fromEventLine(line: Record<string, unknown>, fallbackAgent: string): Ca
       cacheWriteTokens: usage.cacheWriteTokens ?? 0,
       reasoningTokens: usage.reasoningTokens,
       costUsd: usage.costUsd ?? 0,
+      extra: usage.extra,
     };
   }
   return null;
 }
 
+/** Wrap an event-line record into a StatRecord with path-based agent fallback. */
+function eventLineToStatRecord(line: Record<string, unknown>, relPath: string): StatRecord | null {
+  const rec = fromEventLine(line, agentFromPath(relPath) ?? "unknown");
+  if (!rec) return null;
+  return { ...rec, agent: rec.agent ?? agentFromPath(relPath) ?? "unknown", ts: isoTs(rec.timestamp) };
+}
+
 function toStatRecord(parsed: z.infer<typeof RecordLineSchema>, relPath: string, line: Record<string, unknown>): StatRecord | null {
-  // Driver event line (has a type we understand as an event).
-  if (typeof parsed.type === "string" && parsed.type !== "usage" && parsed.inputTokens === undefined) {
-    const rec = fromEventLine(line, agentFromPath(relPath) ?? "unknown");
-    if (!rec) return null;
-    return { ...rec, agent: rec.agent ?? agentFromPath(relPath) ?? "unknown", ts: isoTs(rec.timestamp) };
+  // Driver event line (has a type we understand as an event). Pure event
+  // lines are routed before RecordLineSchema in readAllRecords (the schema
+  // requires top-level inputTokens/outputTokens, which they never carry);
+  // typed hybrids that pass the schema route here.
+  if (typeof parsed.type === "string" && parsed.inputTokens === undefined) {
+    return eventLineToStatRecord(line, relPath);
   }
   // Canonical record line.
   const agent = parsed.agent ?? agentFromPath(relPath) ?? "unknown";
@@ -235,9 +244,23 @@ export async function readAllRecords(opts: ReadRecordsOptions = {}): Promise<Sta
         continue;
       }
       if (typeof json !== "object" || json === null) continue;
+      const obj = json as Record<string, unknown>;
+      // Driver NDJSON event line: top-level `type`, no top-level token fields,
+      // so RecordLineSchema (inputTokens/outputTokens required) rejects it and
+      // the line used to be silently dropped. Route typed lines to the event
+      // path before schema validation; everything else parses as canonical.
+      if (typeof obj.type === "string" && obj.inputTokens === undefined) {
+        const rec = eventLineToStatRecord(obj, path.relative(root, f));
+        if (rec) {
+          if (opts.agent && rec.agent !== opts.agent) continue;
+          if (opts.sinceTs !== undefined && Date.parse(rec.ts) < opts.sinceTs) continue;
+          records.push(rec);
+        }
+        continue;
+      }
       const parsed = RecordLineSchema.safeParse(json);
       if (!parsed.success) continue;
-      const rec = toStatRecord(parsed.data, path.relative(root, f), json as Record<string, unknown>);
+      const rec = toStatRecord(parsed.data, path.relative(root, f), obj);
       if (!rec) continue;
       if (opts.agent && rec.agent !== opts.agent) continue;
       if (opts.sinceTs !== undefined && Date.parse(rec.ts) < opts.sinceTs) continue;
