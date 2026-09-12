@@ -30,6 +30,7 @@ import {
 import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
+import { kiroPreflight } from "../adapters/kiro-preflight.ts";
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
@@ -39,6 +40,10 @@ const USAGE = `harness — unified agent run harness
 usage:
   harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
+  harness preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
+                    [--cwd DIR] [--json]
+                    (proves binary/auth/agent/model/set_model-ack/MCP over a real
+                     ACP handshake; sends NO prompt, so it spends no tokens)
   harness watch [--dir <transcriptDir>]
   harness stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
@@ -202,6 +207,61 @@ async function cmdRun(rest: string[]): Promise<number> {
     process.stdout.write(summary + "\n");
   }
   return result.exitStatus === "success" ? 0 : 1;
+}
+
+// ------------------------------------------------------------ preflight
+
+/** `harness preflight --agent kiro` — see src/adapters/kiro-preflight.ts.
+ *  Exit 0 only when no check failed. Kiro is the only agent with a preflight
+ *  today; another agent is a USAGE error, never a silent pass. */
+async function cmdPreflight(rest: string[]): Promise<number> {
+  const args = parseArgs({
+    args: rest,
+    options: {
+      agent: { type: "string" },
+      model: { type: "string" },
+      cwd: { type: "string" },
+      "kiro-agent": { type: "string" },
+      "kiro-transport": { type: "string" },
+      "extra-args": { type: "string" },
+      json: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+  const agent = args.values.agent;
+  if (agent !== "kiro") {
+    throw new HarnessError(
+      `preflight supports --agent kiro only (got '${agent ?? "<missing>"}')`,
+      "USAGE",
+    );
+  }
+  const transport = args.values["kiro-transport"] ?? "acp";
+  if (transport !== "acp") {
+    throw new HarnessError(
+      `preflight requires --kiro-transport acp (got '${transport}'): the checks are ACP handshake observations`,
+      "USAGE",
+    );
+  }
+  const extraArgs = args.values["extra-args"]?.split(" ").filter(Boolean);
+  const receipt = await kiroPreflight({
+    cwd: args.values.cwd ?? process.cwd(),
+    ...(args.values.model !== undefined ? { model: args.values.model } : {}),
+    kiro: {
+      transport: "acp",
+      ...(args.values["kiro-agent"] !== undefined ? { agent: args.values["kiro-agent"] } : {}),
+    },
+    ...(extraArgs !== undefined ? { extraArgs } : {}),
+  });
+  if (args.values.json) {
+    process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");
+  } else {
+    for (const c of receipt.checks) {
+      process.stdout.write(`${c.status.padEnd(8)} ${c.name.padEnd(11)} ${c.detail} (${c.ms}ms)\n`);
+    }
+    process.stdout.write(`ok       ${String(receipt.ok)}\n`);
+    for (const u of receipt.unproven) process.stdout.write(`unproven ${u}\n`);
+  }
+  return receipt.ok ? 0 : 1;
 }
 
 // ---------------------------------------------------------------- watch
@@ -681,6 +741,8 @@ async function main(argv: string[]): Promise<number> {
   switch (cmd) {
     case "run":
       return cmdRun(rest);
+    case "preflight":
+      return cmdPreflight(rest);
     case "watch":
       return cmdWatch(rest);
     case "stats":

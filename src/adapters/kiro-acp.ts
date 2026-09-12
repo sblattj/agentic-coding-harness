@@ -71,7 +71,9 @@ export type KiroAcpPhase =
   | 'initialize'
   | 'session/new'
   | 'session/set_model'
-  | 'session/prompt';
+  | 'session/prompt'
+  /** Not a request phase: the MCP-startup gate in kiro-acp-launch.ts (PLAN § ACP client). */
+  | 'mcp';
 
 export class KiroAcpError extends Error {
   readonly phase: KiroAcpPhase;

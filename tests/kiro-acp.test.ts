@@ -216,6 +216,14 @@ describe('KiroAcpClient handshake (fixture replay)', () => {
     const { seen } = collectNotifications(client);
     const receipt = await client.handshake({ cwd: TMP });
     await client.prompt(receipt.sessionId, 'ping');
+    // The prompt result and the notifications that precede it arrive in the
+    // same stdout chunk, and the collector drains the queue one microtask per
+    // item — so `await prompt()` does NOT imply the collector has caught up.
+    // Poll to a bounded deadline instead of racing it (observed failing ~1 run
+    // in 3 under full-suite load).
+    for (let i = 0; i < 100 && !seen.some((n) => n.method === '_kiro.dev/metadata'); i++) {
+      await sleep(10);
+    }
     const methods = seen.map((n) => n.method);
     assert.ok(methods.includes('session/update'));
     assert.ok(methods.includes('_kiro.dev/session/update'));

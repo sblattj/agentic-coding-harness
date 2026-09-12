@@ -29,6 +29,7 @@ const EXPECTED_TOOLS = [
   'harness_run_status',
   'harness_run_events',
   'harness_run_cancel',
+  'harness_kiro_preflight',
 ] as const;
 
 // bun runs .ts natively; node needs the tsx loader (same rule as mcp.test.ts).
@@ -180,7 +181,7 @@ describe('harness serve (HTTP MCP subprocess)', () => {
     assert.ok(json.error, `expected a JSON-RPC error body, got: ${JSON.stringify(json)}`);
   });
 
-  it('tools/list shows exactly the 9 harness tools', { timeout: 30_000 }, async () => {
+  it('tools/list shows exactly the 10 harness tools', { timeout: 30_000 }, async () => {
     const { status, json } = await postRpc({ jsonrpc: '2.0', id: 3, method: 'tools/list' });
     assert.equal(status, 200, `body: ${JSON.stringify(json)}`);
     assert.equal(json.error, undefined, `tools/list failed: ${JSON.stringify(json.error)}`);

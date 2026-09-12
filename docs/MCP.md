@@ -68,6 +68,34 @@ The same `kiro` object is accepted by `harness_run_async` (docs/TOOLHIVE.md).
 
 Returns the run summary: agent, status, tokens, cost, duration, run/trial dir.
 
+### harness_kiro_preflight
+
+Prove a Kiro run's configuration **without spending a token**: it runs
+`kiro-cli --version` and `kiro-cli whoami`, then a real ACP handshake
+(`initialize` → `session/new` → `session/set_model`) and closes the session.
+It never sends `session/prompt`.
+
+| name | type | required | description |
+|---|---|---|---|
+| cwd | string | no | working directory for the kiro-cli subprocess |
+| model | string | no | model whose availability and `set_model` ack to verify |
+| kiro | object | no | same Kiro config object as `harness_run` |
+| extraArgs | string[] | no | passthrough CLI flags (gateway-filtered) |
+
+Returns `{ ok, checks[], unproven[], receipt }`. Each check is
+`{ name, status, detail, ms }` with `name` one of `executable`, `version`,
+`auth`, `agent`, `model`, `modelAck`, `mcp`, `extraArgs` and `status` one of
+`verified` / `failed` / `unproven`; `ok` is true only when nothing failed.
+`unproven` always lists `task success` and `downstream tool dependencies` — a
+green preflight is a statement about configuration, never about outcome.
+
+Note on `mcp`: kiro-cli 2.21.2 emits `_kiro.dev/mcp/governance_disabled` on
+every session, including healthy ones with no MCP servers, so the notice alone
+reports `unproven`. It only fails the check when the caller asked for MCP to
+matter (`kiro.requireMcpStartup`, or `kiro.mcpServers` actually forwarded).
+
+CLI equivalent: `harness preflight --agent kiro [--model M] [--kiro-agent A] [--json]`.
+
 ### harness_report
 
 Render a finished trial as the single-file HTML comparison report.

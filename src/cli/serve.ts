@@ -9,6 +9,7 @@ import { stateDir } from "../core/store.ts";
 import { createMcpServer } from "../mcp/server.ts";
 import { startHttpServer, type HttpServerHandle } from "../mcp/http.ts";
 import { registerRunTools } from "../mcp/tools-run.ts";
+import { registerPreflightTools } from "../mcp/tools-preflight.ts";
 import { registerInspectTools } from "../mcp/tools-inspect.ts";
 import { registerJobTools } from "../mcp/tools-jobs.ts";
 import { gatewayConfigFromFlags } from "../serve/gateway.ts";
@@ -89,6 +90,7 @@ export async function cmdServe(rest: string[]): Promise<number> {
   registerRunTools(server, opts);
   registerInspectTools(server, opts);
   registerJobTools(server, opts);
+  registerPreflightTools(server, { ...(gateway ? { gateway } : {}) });
   const http: HttpServerHandle = await startHttpServer({ server, port, host, token });
   process.stderr.write(`serve: http://${host}:${http.port}/mcp (auth ${token === undefined ? "off" : "on"})\n`);
 

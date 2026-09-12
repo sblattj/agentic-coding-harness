@@ -26,6 +26,7 @@ import type {
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
 import { runJsonlCli, launchDriverHandle, houseEventToCore, EventQueue, type HouseEventLike, type SpawnFn } from './shared.ts';
+import { launchKiroAcp } from './kiro-acp-launch.ts';
 import { findKiroMitmPort, mitmdumpAvailable, startKiroMitm, tapEnv, type KiroMitmHandle } from '../monitors/kiro-mitm.js';
 
 export const KIRO_CAPABILITIES: AdapterCapabilities = {
@@ -523,6 +524,7 @@ export class KiroAdapter implements CoreAgentAdapter {
    * routed through the MITM proxy so per-run credit/token records are
    * captured; failures degrade to the untapped path with a warning. */
   async launch(spec: CoreRunSpec): Promise<CoreAgentHandle> {
+    if (spec.kiro?.transport === 'acp') return launchKiroAcp(spec, { command: this.#command, ...(this.#spawnFn ? { spawnFn: this.#spawnFn } : {}) });
     if (!this.#mitmRequested()) return this.#launchPlain(spec);
     const mitm = await this.#startMitmTap();
     if (!mitm) return this.#launchPlain(spec);
