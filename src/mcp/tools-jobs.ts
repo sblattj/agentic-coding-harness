@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "./contract.ts";
-import { RunArgsSchema } from "./tools-run.ts";
+import { KIRO_INPUT_SCHEMA, RunArgsSchema } from "./tools-run.ts";
 import type { RunSpec as CoreRunSpec } from "../core/types.ts";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { createPricer } from "../core/pricing.ts";
@@ -55,7 +55,7 @@ function parseArgs<T extends z.ZodTypeAny>(
 /** Build the driver RunSpec from validated tool args (mirrors tools-run.ts).
  *  extraArgsOverride carries the gateway-filtered allowlist (undefined →
  *  pass through untouched). */
-function toSpec(a: RunArgs, runId: string, extraArgsOverride?: string[]): CoreRunSpec {
+export function toSpec(a: RunArgs, runId: string, extraArgsOverride?: string[]): CoreRunSpec {
   const budget: CoreRunSpec["budget"] = {
     ...(a.budgetUsd !== undefined ? { usd: a.budgetUsd } : {}),
     ...(a.maxTurns !== undefined ? { maxTurns: a.maxTurns } : {}),
@@ -76,6 +76,7 @@ function toSpec(a: RunArgs, runId: string, extraArgsOverride?: string[]): CoreRu
       ? { budget }
       : {}),
     ...(extraArgs !== undefined ? { extraArgs } : {}),
+    ...(a.kiro !== undefined ? { kiro: a.kiro } : {}),
   };
 }
 
@@ -125,6 +126,7 @@ export function registerJobTools(
         wallMs: { type: "number", description: "Abort the run if it exceeds this wall-clock duration in milliseconds from launch" },
         idleMs: { type: "number", description: "Abort the run if no agent events arrive for this many milliseconds" },
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
+        kiro: KIRO_INPUT_SCHEMA,
       },
       required: ["agent", "prompt"],
     },

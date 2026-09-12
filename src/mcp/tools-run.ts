@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { McpServer } from "./contract.ts";
 import {
   AGENTS,
+  KiroConfigSchema,
   type AdapterCapabilities,
   type RunSpec as CoreRunSpec,
 } from "../core/types.ts";
@@ -33,7 +34,73 @@ export const RunArgsSchema = z.object({
   wallMs: z.number().positive().optional(),
   idleMs: z.number().positive().optional(),
   extraArgs: z.array(z.string()).optional(),
+  kiro: KiroConfigSchema.optional(),
 });
+
+/** JSON Schema for the `kiro` tool param — shared by harness_run and
+ *  harness_run_async so the two tool contracts cannot drift. */
+export const KIRO_INPUT_SCHEMA = {
+  type: "object",
+  description: "Kiro-specific run configuration (ignored by other agents)",
+  additionalProperties: false,
+  properties: {
+    transport: {
+      type: "string",
+      enum: ["headless", "acp"],
+      description: "Transport: headless CLI chat (default) or the ACP JSON-RPC protocol",
+    },
+    agent: { type: "string", description: "Native Kiro agent / ACP mode id" },
+    engine: {
+      type: "string",
+      enum: ["v1", "v2", "v3"],
+      description: "Agent engine version (default v2)",
+    },
+    effort: {
+      type: "string",
+      enum: ["low", "medium", "high", "xhigh", "max"],
+      description: "Reasoning effort passed to the CLI",
+    },
+    tools: {
+      description: "Tool trust policy; omit to leave the native agent config in charge",
+      oneOf: [
+        { type: "string", enum: ["all"], description: "Trust every tool" },
+        { type: "string", enum: ["none"], description: "Trust no tool" },
+        { type: "array", items: { type: "string" }, description: "Trust exactly these tool names" },
+      ],
+    },
+    requireMcpStartup: {
+      type: "boolean",
+      description: "Fail the run unless every configured MCP server starts before the prompt",
+    },
+    mcpServers: {
+      type: "array",
+      description: "ACP only: MCP servers forwarded to session/new",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: { type: "string", description: "Server name reported to the agent" },
+          command: { type: "string", description: "Executable launched for the server" },
+          args: { type: "array", items: { type: "string" }, description: "Arguments passed to the command" },
+          env: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description: "Environment variables layered over the server process env",
+          },
+        },
+        required: ["name", "command"],
+      },
+    },
+    startupMs: {
+      type: "number",
+      description: "Milliseconds allowed for CLI startup/handshake before failing (default 60000)",
+    },
+    requireModelAck: {
+      type: "boolean",
+      description: "ACP: fail before prompting if the model request is not acknowledged",
+    },
+  },
+} as const;
 
 // Mirrors each concrete adapter's own command resolution (e.g. kiro.ts reads
 // $KIRO_CLI_BIN or 'kiro-cli'); the driver-registry wrappers returned by
@@ -53,6 +120,33 @@ function agentInfo(name: string): { command: string; capabilities?: AdapterCapab
     default:
       return { command: name };
   }
+}
+
+/** Build the driver RunSpec from validated harness_run args. extraArgsAllowed
+ *  is the gateway-filtered allowlist (only used when the caller sent any). */
+export function toRunSpec(
+  a: z.infer<typeof RunArgsSchema>,
+  extraArgsAllowed: string[],
+): CoreRunSpec {
+  const budget: CoreRunSpec["budget"] = {
+    ...(a.budgetUsd !== undefined ? { usd: a.budgetUsd } : {}),
+    ...(a.maxTurns !== undefined ? { maxTurns: a.maxTurns } : {}),
+    ...(a.wallMs !== undefined ? { wallMs: a.wallMs } : {}),
+    ...(a.idleMs !== undefined ? { idleMs: a.idleMs } : {}),
+  };
+  return {
+    prompt: a.prompt,
+    ...(a.model !== undefined ? { model: a.model } : {}),
+    ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
+    ...(budget.usd !== undefined ||
+    budget.maxTurns !== undefined ||
+    budget.wallMs !== undefined ||
+    budget.idleMs !== undefined
+      ? { budget }
+      : {}),
+    ...(a.extraArgs !== undefined ? { extraArgs: extraArgsAllowed } : {}),
+    ...(a.kiro !== undefined ? { kiro: a.kiro } : {}),
+  };
 }
 
 function isOnPath(command: string): boolean {
@@ -79,6 +173,7 @@ export function registerRunTools(
         wallMs: { type: "number", description: "Abort the run if it exceeds this wall-clock duration in milliseconds from launch" },
         idleMs: { type: "number", description: "Abort the run if no agent events arrive for this many milliseconds" },
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
+        kiro: KIRO_INPUT_SCHEMA,
       },
       required: ["agent", "prompt"],
     },
@@ -97,24 +192,7 @@ export function registerRunTools(
         if (!cwdCheck.ok) throw new Error(cwdCheck.error);
       }
       const extra = filterExtraArgs(opts.gateway, a.extraArgs);
-      const budget: CoreRunSpec["budget"] = {
-        ...(a.budgetUsd !== undefined ? { usd: a.budgetUsd } : {}),
-        ...(a.maxTurns !== undefined ? { maxTurns: a.maxTurns } : {}),
-        ...(a.wallMs !== undefined ? { wallMs: a.wallMs } : {}),
-        ...(a.idleMs !== undefined ? { idleMs: a.idleMs } : {}),
-      };
-      const spec: CoreRunSpec = {
-        prompt: a.prompt,
-        ...(a.model !== undefined ? { model: a.model } : {}),
-        ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
-        ...(budget.usd !== undefined ||
-        budget.maxTurns !== undefined ||
-        budget.wallMs !== undefined ||
-        budget.idleMs !== undefined
-          ? { budget }
-          : {}),
-        ...(a.extraArgs !== undefined ? { extraArgs: extra.allowed } : {}),
-      };
+      const spec = toRunSpec(a, extra.allowed);
       const strippedWarning =
         extra.stripped.length > 0
           ? `gateway: stripped extraArgs not in allowlist: ${extra.stripped.map((s) => `'${s}'`).join(", ")}`

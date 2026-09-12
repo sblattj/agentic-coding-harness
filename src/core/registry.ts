@@ -6,6 +6,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import {
+  KiroEffectiveSchema,
+  UsageAvailabilitySchema,
+  type KiroEffective,
+  type UsageAvailability,
+} from "./types.ts";
 
 export interface RunRecord {
   runId: string; // driver-generated uuid
@@ -29,6 +35,10 @@ export interface RunRecord {
   };
   lastEvent?: string; // one-line preview of the latest event
   rawTranscript: string; // absolute path to <stateDir>/raw/<agent>-<session>.jsonl
+  /** Dashboard mirror of RunResult.kiro (kiro runs only). */
+  kiro?: Pick<KiroEffective, "transport" | "modelAck" | "nativeSessionId" | "cliVersion">;
+  /** Dashboard mirror of RunResult.usage. */
+  usage?: UsageAvailability;
 }
 
 const TotalsSchema = z.object({
@@ -40,7 +50,7 @@ const TotalsSchema = z.object({
   credits: z.number().optional(),
 });
 
-const RunRecordSchema = z.object({
+export const RunRecordSchema = z.object({
   runId: z.string(),
   agent: z.string(),
   sessionId: z.string().optional(),
@@ -54,6 +64,13 @@ const RunRecordSchema = z.object({
   totals: TotalsSchema,
   lastEvent: z.string().optional(),
   rawTranscript: z.string(),
+  kiro: KiroEffectiveSchema.pick({
+    transport: true,
+    modelAck: true,
+    nativeSessionId: true,
+    cliVersion: true,
+  }).optional(),
+  usage: UsageAvailabilitySchema.optional(),
 });
 
 export function registryDir(stateDir: string): string {
