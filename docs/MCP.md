@@ -54,6 +54,17 @@ Run one task on one agent.
 | budgetUsd | number | no | spend cap |
 | maxTurns | number | no | turn cap |
 | extraArgs | string[] | no | passthrough CLI flags |
+| kiro | object | no | Kiro-only config (see below); ignored by other agents |
+
+`kiro` accepts: `transport` (`headless` \| `acp`), `agent` (native agent / ACP
+mode id), `engine` (`v1` \| `v2` \| `v3`), `effort` (`low` \| `medium` \|
+`high` \| `xhigh` \| `max`), `tools` (`"all"` \| `"none"` \| `string[]`;
+omit to leave the native agent config in charge), `requireMcpStartup`
+(boolean), `mcpServers` (ACP only: `{name, command, args?, env?}[]` forwarded
+to `session/new`), `startupMs` (number, default 60000) and `requireModelAck`
+(boolean). Unknown keys are rejected by name.
+
+The same `kiro` object is accepted by `harness_run_async` (docs/TOOLHIVE.md).
 
 Returns the run summary: agent, status, tokens, cost, duration, run/trial dir.
 

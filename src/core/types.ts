@@ -443,6 +443,133 @@ export type ExitStatus =
 /** What an adapter's handle.wait() may report. Driver verdicts override. */
 export type AdapterExit = "success" | "error" | "timeout" | "aborted" | "cancelled";
 
+// ---------------------------------------------------------------- kiro config
+
+/**
+ * One MCP server forwarded to the Kiro ACP `session/new` request.
+ * Shape derived from src/adapters/PLAN-kiro-acp.md (`mcpServers`); not
+ * re-derived from the ACP specification here — UNVERIFIED against acp docs.
+ */
+export interface AcpMcpServer {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export const AcpMcpServerSchema = z
+  .object({
+    name: z.string(),
+    command: z.string(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
+/** Kiro-specific run configuration (RunSpec.kiro). See PLAN-kiro-acp.md. */
+export interface KiroConfig {
+  /** Transport: 'headless' (kiro-cli chat) or 'acp' (JSON-RPC). Default 'headless'. */
+  transport?: "headless" | "acp";
+  /** Native agent / ACP mode id. */
+  agent?: string;
+  /** Agent engine version. Default 'v2'. */
+  engine?: "v1" | "v2" | "v3";
+  /** Reasoning effort passed to the CLI. */
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** Trust policy. Undefined → no trust flag at all (never implicit trust-all). */
+  tools?: "all" | "none" | string[];
+  /** Require MCP servers to start before the prompt is sent. */
+  requireMcpStartup?: boolean;
+  /** ACP only: MCP servers forwarded to session/new. */
+  mcpServers?: AcpMcpServer[];
+  /** Startup/handshake budget in ms. Default 60_000. */
+  startupMs?: number;
+  /** ACP: fail before prompting if set_model is not acknowledged. */
+  requireModelAck?: boolean;
+}
+
+export const KiroConfigSchema = z
+  .object({
+    transport: z.enum(["headless", "acp"]).optional(),
+    agent: z.string().optional(),
+    engine: z.enum(["v1", "v2", "v3"]).optional(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    tools: z.union([z.literal("all"), z.literal("none"), z.array(z.string())]).optional(),
+    requireMcpStartup: z.boolean().optional(),
+    mcpServers: z.array(AcpMcpServerSchema).optional(),
+    startupMs: z.number().positive().optional(),
+    requireModelAck: z.boolean().optional(),
+  })
+  .strict();
+
+/** Whether the model request was acknowledged by the agent process. */
+export type KiroModelAck = "acknowledged" | "rejected" | "unsupported" | "not-requested";
+
+/** What the run actually did with the requested Kiro config (RunResult.kiro). */
+export interface KiroEffective {
+  cliVersion: string;
+  transport: "headless" | "acp";
+  requested: KiroConfig;
+  /** Sanitized effective config (no env); the source of configHash. */
+  effective: Record<string, unknown>;
+  nativeSessionId?: string;
+  modelAck: KiroModelAck;
+  configHash: string;
+}
+
+export const KiroEffectiveSchema = z.object({
+  cliVersion: z.string(),
+  transport: z.enum(["headless", "acp"]),
+  requested: KiroConfigSchema,
+  effective: z.record(z.string(), z.unknown()),
+  nativeSessionId: z.string().optional(),
+  modelAck: z.enum(["acknowledged", "rejected", "unsupported", "not-requested"]),
+  configHash: z.string(),
+});
+
+/** Truthful usage reporting: what is known, from where — never fabricated zeros. */
+export interface UsageAvailability {
+  tokens: {
+    available: boolean;
+    source?: "native" | "tap";
+    scope?: "run" | "turn" | "call";
+    cumulative?: boolean;
+    complete?: boolean;
+  };
+  credits: {
+    available: boolean;
+    source?: "native" | "tap" | "reconciled";
+    scope?: "run" | "turn" | "call";
+    cumulative?: boolean;
+    complete?: boolean;
+    value?: number;
+  };
+  usd: { available: boolean; source?: "pricer"; value?: number };
+}
+
+export const UsageAvailabilitySchema = z.object({
+  tokens: z.object({
+    available: z.boolean(),
+    source: z.enum(["native", "tap"]).optional(),
+    scope: z.enum(["run", "turn", "call"]).optional(),
+    cumulative: z.boolean().optional(),
+    complete: z.boolean().optional(),
+  }),
+  credits: z.object({
+    available: z.boolean(),
+    source: z.enum(["native", "tap", "reconciled"]).optional(),
+    scope: z.enum(["run", "turn", "call"]).optional(),
+    cumulative: z.boolean().optional(),
+    complete: z.boolean().optional(),
+    value: z.number().optional(),
+  }),
+  usd: z.object({
+    available: z.boolean(),
+    source: z.literal("pricer").optional(),
+    value: z.number().optional(),
+  }),
+});
+
 /** Run request as accepted by Driver.run(). Extra keys pass through. */
 export interface RunSpec {
   prompt: string;
@@ -463,6 +590,8 @@ export interface RunSpec {
   extraArgs?: string[];
   /** Per-run state directory override (transcripts land under <stateDir>/raw). */
   stateDir?: string;
+  /** Kiro-specific configuration (ignored by other adapters). */
+  kiro?: KiroConfig;
   [key: string]: unknown;
 }
 
@@ -485,6 +614,7 @@ export const RunSpecSchema = z
     env: z.record(z.string(), z.string()).optional(),
     extraArgs: z.array(z.string()).optional(),
     stateDir: z.string().optional(),
+    kiro: KiroConfigSchema.optional(),
   })
   .passthrough();
 
@@ -572,6 +702,10 @@ export interface RunResult {
   durationMs: number;
   exitStatus: ExitStatus;
   warnings: string[];
+  /** Requested vs effective Kiro config (kiro runs only). */
+  kiro?: KiroEffective;
+  /** What token/credit/usd numbers are actually known for this run. */
+  usage?: UsageAvailability;
 }
 
 /** Zod mirror of RunResult (events/tokens kept structurally tolerant). */
@@ -593,6 +727,8 @@ export const RunResultSchema = z.object({
     "turn_limit",
   ]),
   warnings: z.array(z.string()),
+  kiro: KiroEffectiveSchema.optional(),
+  usage: UsageAvailabilitySchema.optional(),
 });
 
 // ---------------------------------------------------------------- errors
