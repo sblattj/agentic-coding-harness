@@ -350,6 +350,20 @@ export interface ClaudeAdapterOptions {
   command?: string;
   /** Injectable spawn for tests. Default: node child_process.spawn. */
   spawnFn?: SpawnFn;
+  /**
+   * Do NOT set a per-run CLAUDE_CONFIG_DIR; let the child use Claude Code's
+   * default config so a keychain-bound OAuth login (macOS, no
+   * ~/.claude/.credentials.json) authenticates. Also enabled by the env var
+   * AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1. Trade-off: the transcript file
+   * lands under ~/.claude/projects instead of the state dir, and concurrent
+   * runs share one config. Issue #3.
+   */
+  useDefaultClaudeConfig?: boolean;
+}
+
+/** True when the run should use the default (authenticated) Claude config. */
+export function useDefaultClaudeConfig(opts: ClaudeAdapterOptions, env: NodeJS.ProcessEnv = process.env): boolean {
+  return opts.useDefaultClaudeConfig === true || env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG === '1';
 }
 
 export class ClaudeCodeAdapter implements CoreAgentAdapter {
@@ -435,9 +449,18 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     if (this.child) throw new Error('claude adapter: spawn called twice on the same adapter');
 
     const runId = task.resume ?? randomUUID();
-    const configDir = path.join(this.opts.stateDir, 'claude-runs', runId);
-    mkdirSync(configDir, { recursive: true });
-    this.configDir = configDir;
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, ...task.env };
+    if (useDefaultClaudeConfig(this.opts)) {
+      // Default config: a custom CLAUDE_CONFIG_DIR cannot see a keychain-bound
+      // OAuth token ("Not logged in · Please run /login"), so drop any
+      // inherited override too and leave configDir null.
+      delete childEnv.CLAUDE_CONFIG_DIR;
+    } else {
+      const configDir = path.join(this.opts.stateDir, 'claude-runs', runId);
+      mkdirSync(configDir, { recursive: true });
+      this.configDir = configDir;
+      childEnv.CLAUDE_CONFIG_DIR = configDir;
+    }
 
     const args: string[] = [
       '-p',
@@ -459,7 +482,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     const child = spawnFn(this.opts.command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: task.cwd,
-      env: { ...process.env, ...task.env, CLAUDE_CONFIG_DIR: configDir },
+      env: childEnv,
     });
     this.child = child;
 

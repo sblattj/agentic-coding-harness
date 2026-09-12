@@ -1,13 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { SpawnOptions } from 'node:child_process';
 import {
   ClaudeCodeAdapter,
+  type ClaudeAdapterOptions,
   capabilities,
   type HarnessChildProcess,
   type SpawnFn,
@@ -60,7 +61,7 @@ interface Captured {
   child: FakeChild;
 }
 
-function makeAdapter(): { adapter: ClaudeCodeAdapter; captured: Captured; stateDir: string } {
+function makeAdapter(extra: Partial<ClaudeAdapterOptions> = {}): { adapter: ClaudeCodeAdapter; captured: Captured; stateDir: string } {
   const stateDir = mkdtempSync(path.join(tmpdir(), 'agent-harness-test-'));
   const captured = {} as Captured;
   const spawnFn: SpawnFn = (command, args, opts) => {
@@ -71,7 +72,7 @@ function makeAdapter(): { adapter: ClaudeCodeAdapter; captured: Captured; stateD
     captured.child = child;
     return child;
   };
-  const adapter = new ClaudeCodeAdapter({ stateDir, spawnFn });
+  const adapter = new ClaudeCodeAdapter({ stateDir, spawnFn, ...extra });
   return { adapter, captured, stateDir };
 }
 
@@ -118,6 +119,39 @@ describe('ClaudeCodeAdapter.spawn', () => {
     assert.equal(captured.args[captured.args.indexOf('--resume') + 1], 'sess-abc-123');
     assert.equal(captured.args[captured.args.indexOf('--max-turns') + 1], '250');
     cleanup(stateDir);
+  });
+
+  it('useDefaultClaudeConfig option: no per-run CLAUDE_CONFIG_DIR, inherited override dropped, configDir null', async () => {
+    const { adapter, captured, stateDir } = makeAdapter({ useDefaultClaudeConfig: true });
+    adapter.spawn({ prompt: 'x', env: { CLAUDE_CONFIG_DIR: '/inherited/should/be/dropped' } });
+    captured.child.end(0);
+
+    assert.equal(captured.options.env?.CLAUDE_CONFIG_DIR, undefined);
+    assert.equal(adapter.configDir, null);
+    assert.ok(!existsSync(path.join(stateDir, 'claude-runs')), 'no per-run dir is created');
+    cleanup(stateDir);
+  });
+
+  it('AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1 has the same effect; any other value keeps the per-run dir', async () => {
+    const prev = process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG;
+    try {
+      process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG = '1';
+      const a = makeAdapter();
+      a.adapter.spawn({ prompt: 'x' });
+      a.captured.child.end(0);
+      assert.equal(a.captured.options.env?.CLAUDE_CONFIG_DIR, undefined);
+      cleanup(a.stateDir);
+
+      process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG = '0';
+      const b = makeAdapter();
+      b.adapter.spawn({ prompt: 'x' });
+      b.captured.child.end(0);
+      assert.ok(b.captured.options.env?.CLAUDE_CONFIG_DIR, 'control: per-run dir still set');
+      cleanup(b.stateDir);
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG;
+      else process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG = prev;
+    }
   });
 
   it('honors explicit maxTurns and env merge', async () => {

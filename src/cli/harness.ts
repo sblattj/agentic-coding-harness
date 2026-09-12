@@ -45,6 +45,9 @@ const USAGE = `harness — unified agent run harness
 usage:
   harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
+              claude only: [--claude-default-config]  (use the default, authenticated
+                           CLAUDE_CONFIG_DIR instead of a per-run one; or env
+                           AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
               kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                          [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                          [--kiro-startup-ms MS] [--kiro-require-model-ack]
@@ -216,6 +219,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       "kiro-require-mcp-startup": { type: "boolean", default: false },
       "kiro-startup-ms": { type: "string" },
       "kiro-require-model-ack": { type: "boolean", default: false },
+      "claude-default-config": { type: "boolean", default: false },
       "kiro-mcp-server": { type: "string", multiple: true },
       json: { type: "boolean", default: false },
     },
@@ -231,6 +235,10 @@ async function cmdRun(rest: string[]): Promise<number> {
   }
   const prompt = args.positionals.join(" ").trim();
   if (!prompt) throw new HarnessError("run requires a prompt argument", "USAGE");
+
+  // The adapter registry takes no options (driver.ts defaultAdapters), so the
+  // flag travels as the env var the Claude adapter already honours.
+  if (args.values["claude-default-config"]) process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
 
   const onEvent = (e: AgentEvent) => process.stderr.write(formatEventLine(e) + "\n");
   const driver = createDriver({

@@ -103,6 +103,7 @@ harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SI
             kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                        [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                        [--kiro-startup-ms N] [--kiro-require-model-ack] [--kiro-mcp-server '<json>']...
+            claude only: [--claude-default-config]   # default CLAUDE_CONFIG_DIR (keychain OAuth)
 harness preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 harness watch [--dir <transcriptDir>]              # live per-session token deltas
 harness stats [--agent A] [--days N] [--json] [--state-only]
@@ -117,6 +118,13 @@ harness dash [--json] [--all] [--dir <stateDir>]   # live run dashboard; q quits
 `--wall-ms`, `--idle-ms`) take per-run values; `AGENT_HARNESS_BUDGET_USD`, `AGENT_HARNESS_MAX_TURNS`,
 `AGENT_HARNESS_WALL_MS`, `AGENT_HARNESS_IDLE_MS` supply env defaults. State lives under
 `~/.agent-harness` (`AGENT_HARNESS_STATE_DIR`).
+
+Claude runs get a fresh per-run `CLAUDE_CONFIG_DIR` under the state dir so transcripts are captured
+by construction. On a Mac whose Claude Code login is keychain-bound OAuth (no
+`~/.claude/.credentials.json`) that dir cannot see the token and every run ends `Not logged in`;
+pass `--claude-default-config` (or set `AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1`) to run against the
+default config instead. Transcripts then land under `~/.claude/projects` and concurrent claude runs
+share one config, so pair it with sequential runs when isolation matters.
 
 ## Limits & budgets
 

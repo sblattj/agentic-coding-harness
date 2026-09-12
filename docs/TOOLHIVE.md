@@ -151,6 +151,7 @@ Env defaults (per-run tool args beat these; these beat the built-ins):
 | env var | purpose |
 |---|---|
 | `AGENT_HARNESS_STATE_DIR` | state dir (default `~/.agent-harness`) |
+| `AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG` | `1` = claude runs use the default `CLAUDE_CONFIG_DIR` instead of a per-run one. Required on a Mac whose Claude Code login is keychain-bound OAuth (no `~/.claude/.credentials.json`): a custom config dir cannot see that token and every run ends `Not logged in`. Trade-off: transcripts land under `~/.claude/projects`, and concurrent claude runs share one config. |
 | `AGENT_HARNESS_HTTP_TOKEN` | bearer token for `serve --http` |
 | `AGENT_HARNESS_GATEWAY` | `1` enables the gateway profile |
 | `AGENT_HARNESS_ROOT` | gateway cwd root (mirrors `--root`) |
