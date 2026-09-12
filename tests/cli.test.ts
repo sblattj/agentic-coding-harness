@@ -5,6 +5,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { formatSummary } from "../src/cli/lib.ts";
+
 const CLI = new URL("../src/cli/harness.ts", import.meta.url).pathname;
 
 interface RunOut {
@@ -351,5 +353,82 @@ describe("harness cli", () => {
     r = runCli(["emit", "--input", "/nope.json", "--format", "bogus"], env());
     assert.equal(r.code, 1);
     assert.ok(r.stderr.includes("--format"), r.stderr);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `harness run` summary — truthful usage lines (pure formatSummary, no spawn).
+// ---------------------------------------------------------------------------
+
+describe("run summary — truthful usage", () => {
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+
+  test("prints n/a for tokens and cost, plus a derived context line, for a credits-only run", () => {
+    const summary = formatSummary({
+      agent: "kiro",
+      sessionId: "kiro-abc",
+      tokens,
+      costUsd: 0,
+      durationMs: 1000,
+      exitStatus: "success",
+      usage: {
+        tokens: { available: false },
+        credits: { available: true, value: 0.0247448 },
+        usd: { available: false },
+        context: {
+          available: true,
+          source: "derived",
+          percentage: 5.0080004,
+          windowTokens: 200000,
+          windowSource: "session-store",
+          tokens: 10016,
+        },
+      },
+    });
+    assert.match(summary, /tokens {5}input=n\/a output=n\/a cacheRead=n\/a cacheWrite=n\/a reasoning=n\/a/);
+    assert.match(summary, /cost {7}n\/a/);
+    assert.ok(!summary.includes("$0.0000"), summary);
+    assert.match(summary, /context {4}ctx ~= 10,016 tok \(5\.0%\)/);
+    assert.ok(!summary.includes("assumed window"), summary);
+  });
+
+  test("labels an assumed context window as assumed", () => {
+    const summary = formatSummary({
+      agent: "kiro",
+      sessionId: "s",
+      tokens,
+      costUsd: 0,
+      durationMs: 1,
+      exitStatus: "success",
+      usage: {
+        tokens: { available: false },
+        credits: { available: false },
+        usd: { available: false },
+        context: {
+          available: true,
+          source: "derived",
+          percentage: 10,
+          windowTokens: 200000,
+          windowSource: "assumed",
+          tokens: 20000,
+        },
+      },
+    });
+    assert.match(summary, /context {4}ctx ~= 20,000 tok \(10\.0%\) \(assumed window\)/);
+  });
+
+  test("a summary WITHOUT a usage block renders exactly as before (no context line)", () => {
+    const summary = formatSummary({
+      agent: "claude",
+      sessionId: "s",
+      tokens: { input: 100, output: 20, cacheRead: 1, cacheWrite: 2, reasoning: 3 },
+      costUsd: 0.25,
+      durationMs: 2000,
+      exitStatus: "success",
+    });
+    assert.match(summary, /tokens {5}input=100 output=20 cacheRead=1 cacheWrite=2 reasoning=3/);
+    assert.match(summary, /cost {7}\$0\.2500/);
+    assert.ok(!summary.includes("n/a"), summary);
+    assert.ok(!summary.includes("context"), summary);
   });
 });

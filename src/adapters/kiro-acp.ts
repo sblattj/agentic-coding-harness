@@ -71,7 +71,9 @@ export type KiroAcpPhase =
   | 'initialize'
   | 'session/new'
   | 'session/set_model'
-  | 'session/prompt';
+  | 'session/prompt'
+  /** Not a request phase: the MCP-startup gate in kiro-acp-launch.ts (PLAN § ACP client). */
+  | 'mcp';
 
 export class KiroAcpError extends Error {
   readonly phase: KiroAcpPhase;
@@ -233,7 +235,7 @@ export class KiroAcpClient {
     this.#env = opts.env;
     this.#spawnFn = opts.spawnFn ?? defaultSpawnFn;
     this.#startupMs = opts.startupMs ?? 60_000;
-    this.#clientInfo = opts.clientInfo ?? { name: 'agent-harness', version: '0.3.0' };
+    this.#clientInfo = opts.clientInfo ?? { name: 'agent-harness', version: '0.4.0' };
     this.#onPermission = opts.onPermission ?? denyAllPermissions;
     this.#termGraceMs = opts.termGraceMs ?? 2_000;
     this.#killGraceMs = opts.killGraceMs ?? 3_000;

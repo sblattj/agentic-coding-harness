@@ -1,7 +1,7 @@
 // CLI-local pure helpers: streaming-event formatting, run summary rendering,
 // usage aggregation. Parsing of machine transcripts lives in
 // src/monitors/transcripts.ts; pricing in src/core/pricing.ts.
-import type { AgentEvent } from "../core/types.ts";
+import type { AgentEvent, UsageAvailability } from "../core/types.ts";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -59,17 +59,46 @@ export interface RunSummaryInput {
   costUsd: number;
   durationMs: number;
   exitStatus: string;
+  /** Truthful-usage verdict (RunResult.usage). Absent => render as before. */
+  usage?: UsageAvailability;
 }
 
+/**
+ * Run summary. When RunResult.usage says a lane is unavailable the row reads
+ * `n/a`, never `0` / `$0.0000` — a credits-only agent (kiro on 2.21.x) reports
+ * no token counts at all, and printing zeros there is a fabricated measurement.
+ * A RunResult without `usage` (older artifact) renders exactly as it always did.
+ */
 export function formatSummary(r: RunSummaryInput): string {
   const t = r.tokens;
-  return [
+  const tokensUnavailable = r.usage?.tokens.available === false;
+  const usdUnavailable = r.usage?.usd.available === false;
+  const lines = [
     `sessionId  ${r.sessionId ?? "-"}`,
-    `tokens     input=${fmtInt(t.input)} output=${fmtInt(t.output)} cacheRead=${fmtInt(t.cacheRead)} cacheWrite=${fmtInt(t.cacheWrite)} reasoning=${fmtInt(t.reasoning)}`,
-    `cost       ${fmtUsd(r.costUsd)}`,
-    `duration   ${(r.durationMs / 1000).toFixed(1)}s`,
-    `exit       ${r.exitStatus}`,
-  ].join("\n");
+    tokensUnavailable
+      ? `tokens     input=n/a output=n/a cacheRead=n/a cacheWrite=n/a reasoning=n/a`
+      : `tokens     input=${fmtInt(t.input)} output=${fmtInt(t.output)} cacheRead=${fmtInt(t.cacheRead)} cacheWrite=${fmtInt(t.cacheWrite)} reasoning=${fmtInt(t.reasoning)}`,
+    `cost       ${usdUnavailable ? "n/a" : fmtUsd(r.costUsd)}`,
+  ];
+  const ctx = r.usage?.context;
+  if (ctx?.available === true && ctx.tokens !== undefined) {
+    lines.push(
+      `context    ${formatContextCell(ctx)}${ctx.windowSource === "assumed" ? " (assumed window)" : ""}`,
+    );
+  }
+  lines.push(`duration   ${(r.durationMs / 1000).toFixed(1)}s`, `exit       ${r.exitStatus}`);
+  return lines.join("\n");
+}
+
+/**
+ * Context-window occupancy cell: `ctx ~= 10,016 tok (5.0%)`. DERIVED from a
+ * percentage and a window size — deliberately spelled differently from billed
+ * token counts so the two are never read as the same measurement.
+ */
+export function formatContextCell(ctx: NonNullable<UsageAvailability["context"]>): string {
+  if (ctx.available !== true || ctx.tokens === undefined) return "n/a";
+  const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
+  return `ctx ~= ${fmtInt(ctx.tokens)} tok${pct}`;
 }
 
 // ---------- Aggregation ----------

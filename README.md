@@ -77,9 +77,15 @@ kiro              0          0          0        n/a       44 success
 - **Kiro MITM credit tap** — auto-starts on `harness run --agent kiro` when `mitmdump` is on
   PATH; captures metering credits (`extra.credits`) and the native `kiroSession` id for grep
   correlation; degrades to a warning when absent.
+- **Kiro ACP transport + preflight** — `--kiro-transport acp` drives `kiro-cli acp` over JSON-RPC
+  and records the *proven* mode/model (`result.kiro.modelAck`); `harness preflight --agent kiro`
+  and `harness_kiro_preflight` verify binary, auth, agent, model and MCP state without sending a
+  prompt. Token counts are reported `n/a` when no source carries them (kiro-cli 2.21.x) — never
+  fabricated zeros; credits and derived context tokens are shown instead. See
+  [docs/KIRO.md](docs/KIRO.md).
 - **Run registry + `agh dash`** — live TUI over `<stateDir>/runs` (redraws 2×/s, ANSI status
   glyphs, totals footer); `--json` dumps RunRecords for tools, `--all` widens past the last hour.
-- **MCP server** — stdio JSON-RPC, 5 tools (`harness_run/report/emit/stats/agents`) so any MCP
+- **MCP server** — stdio JSON-RPC, 10 tools (`harness_run{,_async,_status,_events,_cancel}`, `harness_kiro_preflight`, `report/emit/stats/agents`) so any MCP
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
 - **Emitters** — ATIF v1.7 trajectories (self-validating), OTel `gen_ai` spans, Langfuse via OTLP.
 - **Single-file HTML reports** — charts + timelines comparing every agent in a trial dir.
@@ -92,6 +98,9 @@ kiro              0          0          0        n/a       44 success
 ```sh
 harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
             [--budget-usd N] [--max-turns N] [--wall-ms N] [--idle-ms N] [--json] "prompt"
+            kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
+                       [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
+harness preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 harness watch [--dir <transcriptDir>]              # live per-session token deltas
 harness stats [--agent A] [--days N] [--json] [--state-only]
 harness emit --input events.json --format atif|otel|langfuse [--out path]

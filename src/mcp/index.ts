@@ -10,6 +10,7 @@ import { createMcpServer } from './server.ts';
 import { registerRunTools } from './tools-run.ts';
 import { registerInspectTools } from './tools-inspect.ts';
 import { registerJobTools } from './tools-jobs.ts';
+import { registerPreflightTools } from './tools-preflight.ts';
 import { stateDir } from '../core/store.ts';
 
 import { VERSION } from '../version.ts';
@@ -20,6 +21,7 @@ async function main(): Promise<void> {
   registerRunTools(server, opts);
   registerInspectTools(server, opts);
   registerJobTools(server, opts);
+  registerPreflightTools(server);
   await server.serve();
 }
 

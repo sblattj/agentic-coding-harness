@@ -112,6 +112,37 @@ function chatUsageRecords(
   return out;
 }
 
+
+interface ModelSlice {
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  costUsd: number;
+}
+
+/** Read extra.raw.models from a CanonicalTokenRecord; [] when absent. */
+function modelSlices(u: CanonicalTokenRecord): ModelSlice[] {
+  const extra = u.extra as { raw?: { models?: unknown } } | undefined;
+  const list = extra?.raw?.models;
+  if (!Array.isArray(list)) return [];
+  return list.filter((x): x is ModelSlice =>
+    typeof x === 'object' && x !== null &&
+    typeof (x as ModelSlice).model === 'string' &&
+    typeof (x as ModelSlice).input === 'number');
+}
+
+let spanCounter = 0;
+function newSpanId(): string {
+  // 16-hex chars, never all-zero; monotonic within a payload for testability.
+  spanCounter = (spanCounter + 1) & 0xffffffff;
+  const hex = (Date.now() & 0xffffffff).toString(16).padStart(8, '0') +
+    spanCounter.toString(16).padStart(8, '0');
+  return hex.startsWith('0') ? `1${hex.slice(1)}` : hex;
+}
+
 /**
  * Pure function: reuse the gen_ai OTLP payload from otel.ts, then layer the
  * langfuse.* namespace on top (langfuse.* attributes take precedence in
@@ -134,27 +165,73 @@ export function toLangfuseOtlpJson(
   const chats = chatUsageRecords(events, opts);
   let chatIndex = 0;
 
+  const outSpans: OtlpSpanJson[] = [];
   for (const span of spans) {
     const operation = attr(span, 'gen_ai.operation.name');
     if (operation === 'invoke_agent') {
       setAttr(span, 'langfuse.observation.type', 'span');
       setAttr(span, 'langfuse.trace.name', span.name);
+      setAttr(span, 'langfuse.session.id', opts.sessionId);
+      outSpans.push(span);
     } else if (operation === 'chat') {
-      setAttr(span, 'langfuse.observation.type', 'generation');
       const record = chats[chatIndex++];
-      if (record) {
-        setAttr(span, 'langfuse.observation.model.name', record.model);
-        setAttr(span, 'langfuse.observation.usage_details', JSON.stringify(usageBuckets(record.usage)));
-        const cost = effectiveUsage(record.usage).cost;
-        if (cost > 0) {
-          setAttr(span, 'langfuse.observation.cost_details', JSON.stringify({ total: round6(cost) }));
+      const slices = record ? modelSlices(record.usage) : [];
+      if (record && slices.length > 1) {
+        // Multi-model run (e.g. Haiku probe inside an Opus session): replace
+        // the flattened chat span with one generation per slice so Langfuse
+        // prices each model at its own rate instead of lumping into one.
+        for (const slice of slices) {
+          const sliceSpan: OtlpSpanJson = {
+            ...span,
+            spanId: newSpanId(),
+            name: `chat ${slice.model}`,
+            attributes: span.attributes.filter((a) =>
+              !a.key.startsWith('langfuse.observation.') &&
+              a.key !== 'gen_ai.request.model' &&
+              a.key !== 'gen_ai.usage.input_tokens' &&
+              a.key !== 'gen_ai.usage.output_tokens' &&
+              a.key !== 'gen_ai.usage.cache_read.input_tokens' &&
+              a.key !== 'gen_ai.usage.cache_write.input_tokens' &&
+              a.key !== 'gen_ai.usage.reasoning.output_tokens'),
+          };
+          setAttr(sliceSpan, 'gen_ai.operation.name', 'chat');
+          setAttr(sliceSpan, 'gen_ai.request.model', slice.model);
+          const buckets: Record<string, number> = {
+            input: Math.max(0, slice.input),
+            output: slice.output,
+          };
+          if (slice.cacheRead > 0) buckets.cache_read_input_tokens = slice.cacheRead;
+          if (slice.cacheWrite > 0) buckets.cache_creation_input_tokens = slice.cacheWrite;
+          if (slice.reasoning > 0) buckets.reasoning_output_tokens = slice.reasoning;
+          setAttr(sliceSpan, 'langfuse.observation.type', 'generation');
+          setAttr(sliceSpan, 'langfuse.observation.model.name', slice.model);
+          setAttr(sliceSpan, 'langfuse.observation.usage_details', JSON.stringify(buckets));
+          if (slice.costUsd > 0) {
+            setAttr(sliceSpan, 'langfuse.observation.cost_details', JSON.stringify({ total: round6(slice.costUsd) }));
+          }
+          setAttr(sliceSpan, 'langfuse.session.id', opts.sessionId);
+          outSpans.push(sliceSpan);
         }
+      } else {
+        setAttr(span, 'langfuse.observation.type', 'generation');
+        if (record) {
+          setAttr(span, 'langfuse.observation.model.name', record.model);
+          setAttr(span, 'langfuse.observation.usage_details', JSON.stringify(usageBuckets(record.usage)));
+          const cost = effectiveUsage(record.usage).cost;
+          if (cost > 0) {
+            setAttr(span, 'langfuse.observation.cost_details', JSON.stringify({ total: round6(cost) }));
+          }
+        }
+        setAttr(span, 'langfuse.session.id', opts.sessionId);
+        outSpans.push(span);
       }
     } else {
       setAttr(span, 'langfuse.observation.type', 'span');
+      setAttr(span, 'langfuse.session.id', opts.sessionId);
+      outSpans.push(span);
     }
-    setAttr(span, 'langfuse.session.id', opts.sessionId);
   }
+  if (scope) scope.spans = outSpans;
   return doc;
 }
 

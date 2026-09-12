@@ -11,7 +11,9 @@ import {
   AGENTS,
   HarnessError,
   isKnownAgent,
+  KiroConfigSchema,
   type AgentEvent,
+  type KiroConfig,
   type RunResult,
 } from "../core/types.ts";
 import { z } from "zod";
@@ -30,15 +32,23 @@ import {
 import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
+import { kiroPreflight } from "../adapters/kiro-preflight.ts";
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
+import { cmdWeb } from "./web.ts";
 
 const USAGE = `harness — unified agent run harness
 
 usage:
   harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
+              kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
+                         [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
+  harness preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
+                    [--cwd DIR] [--json]
+                    (proves binary/auth/agent/model/set_model-ack/MCP over a real
+                     ACP handshake; sends NO prompt, so it spends no tokens)
   harness watch [--dir <transcriptDir>]
   harness stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
@@ -56,6 +66,10 @@ usage:
   harness serve [--http] [--port N=8399] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENT_HARNESS_HTTP_TOKEN)
+  harness web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
+              [--dir D] [--no-open]
+                (browser dashboard over the live registry; token via --token
+                 or env AGENT_HARNESS_HTTP_TOKEN; --no-open skips the browser)
 
 env:
   AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)
@@ -102,6 +116,34 @@ function optIntWithEnv(flagVal: string | undefined, flag: string, envName: strin
 
 // ---------------------------------------------------------------- run
 
+/** `--kiro-*` flags → KiroConfig (undefined when no flag was given, so the
+ *  driver sees exactly what the caller asked for and nothing implied). */
+function kiroConfigFromFlags(v: {
+  "kiro-transport"?: string;
+  "kiro-agent"?: string;
+  "kiro-engine"?: string;
+  "kiro-effort"?: string;
+  "kiro-tools"?: string;
+  "kiro-require-mcp-startup"?: boolean;
+}): KiroConfig | undefined {
+  const cfg: Record<string, unknown> = {};
+  if (v["kiro-transport"] !== undefined) cfg.transport = v["kiro-transport"];
+  if (v["kiro-agent"] !== undefined) cfg.agent = v["kiro-agent"];
+  if (v["kiro-engine"] !== undefined) cfg.engine = v["kiro-engine"];
+  if (v["kiro-effort"] !== undefined) cfg.effort = v["kiro-effort"];
+  if (v["kiro-tools"] !== undefined) {
+    const t = v["kiro-tools"];
+    cfg.tools = t === "all" || t === "none" ? t : t.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  if (v["kiro-require-mcp-startup"]) cfg.requireMcpStartup = true;
+  if (Object.keys(cfg).length === 0) return undefined;
+  const parsed = KiroConfigSchema.safeParse(cfg);
+  if (!parsed.success) {
+    throw new HarnessError(`invalid --kiro-* flags: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`, "USAGE");
+  }
+  return parsed.data;
+}
+
 async function cmdRun(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
@@ -114,6 +156,14 @@ async function cmdRun(rest: string[]): Promise<number> {
       "wall-ms": { type: "string" },
       "idle-ms": { type: "string" },
       "extra-args": { type: "string" },
+      // Kiro-only typed config (src/core/types.ts KiroConfig). Ignored for
+      // other agents; the driver's RunSpecSchema validates the shape.
+      "kiro-transport": { type: "string" },
+      "kiro-agent": { type: "string" },
+      "kiro-engine": { type: "string" },
+      "kiro-effort": { type: "string" },
+      "kiro-tools": { type: "string" },
+      "kiro-require-mcp-startup": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -151,6 +201,7 @@ async function cmdRun(rest: string[]): Promise<number> {
         idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENT_HARNESS_IDLE_MS"),
       },
       extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
+      ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -196,12 +247,68 @@ async function cmdRun(rest: string[]): Promise<number> {
       costUsd: result.totalCost,
       durationMs: result.durationMs,
       exitStatus: result.exitStatus,
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
     });
     if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
     if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
     process.stdout.write(summary + "\n");
   }
   return result.exitStatus === "success" ? 0 : 1;
+}
+
+// ------------------------------------------------------------ preflight
+
+/** `harness preflight --agent kiro` — see src/adapters/kiro-preflight.ts.
+ *  Exit 0 only when no check failed. Kiro is the only agent with a preflight
+ *  today; another agent is a USAGE error, never a silent pass. */
+async function cmdPreflight(rest: string[]): Promise<number> {
+  const args = parseArgs({
+    args: rest,
+    options: {
+      agent: { type: "string" },
+      model: { type: "string" },
+      cwd: { type: "string" },
+      "kiro-agent": { type: "string" },
+      "kiro-transport": { type: "string" },
+      "extra-args": { type: "string" },
+      json: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+  const agent = args.values.agent;
+  if (agent !== "kiro") {
+    throw new HarnessError(
+      `preflight supports --agent kiro only (got '${agent ?? "<missing>"}')`,
+      "USAGE",
+    );
+  }
+  const transport = args.values["kiro-transport"] ?? "acp";
+  if (transport !== "acp") {
+    throw new HarnessError(
+      `preflight requires --kiro-transport acp (got '${transport}'): the checks are ACP handshake observations`,
+      "USAGE",
+    );
+  }
+  const extraArgs = args.values["extra-args"]?.split(" ").filter(Boolean);
+  const receipt = await kiroPreflight({
+    cwd: args.values.cwd ?? process.cwd(),
+    ...(args.values.model !== undefined ? { model: args.values.model } : {}),
+    kiro: {
+      transport: "acp",
+      ...(args.values["kiro-agent"] !== undefined ? { agent: args.values["kiro-agent"] } : {}),
+    },
+    ...(extraArgs !== undefined ? { extraArgs } : {}),
+  });
+  if (args.values.json) {
+    process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");
+  } else {
+    for (const c of receipt.checks) {
+      process.stdout.write(`${c.status.padEnd(8)} ${c.name.padEnd(11)} ${c.detail} (${c.ms}ms)\n`);
+    }
+    process.stdout.write(`ok       ${String(receipt.ok)}\n`);
+    for (const u of receipt.unproven) process.stdout.write(`unproven ${u}\n`);
+  }
+  return receipt.ok ? 0 : 1;
 }
 
 // ---------------------------------------------------------------- watch
@@ -593,13 +700,35 @@ async function cmdEmit(rest: string[]): Promise<number> {
   }
   const events = stream.data as unknown as AgentEvent[];
 
+  // When --input is a full RunResult (not just an event stream), inherit its
+  // sessionId/agent/model so callers don't have to restate them per-flag.
+  const runResult = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+    ? parsed as { sessionId?: unknown; agent?: unknown; model?: unknown; tokens?: unknown }
+    : {};
+  // RunResult doesn't carry top-level agent/model — fall back to the first
+  // token record's fields so Langfuse span names stay meaningful.
+  const firstToken = Array.isArray(runResult.tokens) && runResult.tokens.length > 0
+    ? runResult.tokens[0] as { agent?: unknown; model?: unknown }
+    : {};
+  const defaultSessionId = typeof runResult.sessionId === "string" && runResult.sessionId !== ""
+    ? runResult.sessionId
+    : "unknown-session";
+  const defaultAgent =
+    (typeof runResult.agent === "string" && runResult.agent !== "" && runResult.agent) ||
+    (typeof firstToken.agent === "string" && firstToken.agent !== "" && firstToken.agent) ||
+    "unknown-agent";
+  const defaultModel =
+    (typeof runResult.model === "string" && runResult.model !== "" && runResult.model) ||
+    (typeof firstToken.model === "string" && firstToken.model !== "" && firstToken.model) ||
+    "unknown-model";
+
   let body: string;
   if (format === "atif") {
     const writer = AtifWriter.fromEvents(events, {
-      agent: args.values.agent ?? "unknown-agent",
+      agent: args.values.agent ?? defaultAgent,
       version: VERSION,
-      modelName: args.values.model ?? "unknown-model",
-      sessionId: args.values["session-id"],
+      modelName: args.values.model ?? defaultModel,
+      sessionId: args.values["session-id"] ?? defaultSessionId,
     });
     if (args.values.out) {
       const doc = writer.finalize(args.values.out);
@@ -632,9 +761,9 @@ async function cmdEmit(rest: string[]): Promise<number> {
         baseUrl,
         publicKey,
         secretKey,
-        sessionId: args.values["session-id"] ?? "unknown-session",
-        agentName: args.values.agent ?? "unknown-agent",
-        model: args.values.model ?? "unknown-model",
+        sessionId: args.values["session-id"] ?? defaultSessionId,
+        agentName: args.values.agent ?? defaultAgent,
+        model: args.values.model ?? defaultModel,
       });
     } catch (e) {
       throw new HarnessError(
@@ -659,9 +788,9 @@ async function cmdEmit(rest: string[]): Promise<number> {
     return 0;
   } else {
     const doc = toOtlpJson(events, {
-      sessionId: args.values["session-id"] ?? "unknown-session",
-      agentName: args.values.agent ?? "unknown-agent",
-      model: args.values.model ?? "unknown-model",
+      sessionId: args.values["session-id"] ?? defaultSessionId,
+      agentName: args.values.agent ?? defaultAgent,
+      model: args.values.model ?? defaultModel,
     });
     body = JSON.stringify(doc, null, 2) + "\n";
     if (args.values.out) await fs.writeFile(args.values.out, body);
@@ -681,6 +810,8 @@ async function main(argv: string[]): Promise<number> {
   switch (cmd) {
     case "run":
       return cmdRun(rest);
+    case "preflight":
+      return cmdPreflight(rest);
     case "watch":
       return cmdWatch(rest);
     case "stats":
@@ -693,6 +824,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdDash(rest);
     case "serve":
       return cmdServe(rest);
+    case "web":
+      return cmdWeb(rest);
     case "help":
     case "--help":
     case "-h":

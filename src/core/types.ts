@@ -531,7 +531,7 @@ export const KiroEffectiveSchema = z.object({
 export interface UsageAvailability {
   tokens: {
     available: boolean;
-    source?: "native" | "tap";
+    source?: "native" | "tap" | "session-store";
     scope?: "run" | "turn" | "call";
     cumulative?: boolean;
     complete?: boolean;
@@ -543,14 +543,30 @@ export interface UsageAvailability {
     cumulative?: boolean;
     complete?: boolean;
     value?: number;
+    /** Every source that reported a credit total, verbatim (audit trail). */
+    sources?: Partial<Record<"stream" | "session-store" | "tap", number>>;
   };
   usd: { available: boolean; source?: "pricer"; value?: number };
+  /**
+   * Context-window occupancy — DERIVED, never billed tokens. `tokens` here is
+   * round(percentage/100 * windowTokens); `windowSource:'assumed'` marks a
+   * window taken from the fallback table rather than kiro's session store.
+   */
+  context?: {
+    available: boolean;
+    source: "derived";
+    percentage?: number;
+    windowTokens?: number;
+    windowSource?: "session-store" | "assumed";
+    tokens?: number;
+    model?: string;
+  };
 }
 
 export const UsageAvailabilitySchema = z.object({
   tokens: z.object({
     available: z.boolean(),
-    source: z.enum(["native", "tap"]).optional(),
+    source: z.enum(["native", "tap", "session-store"]).optional(),
     scope: z.enum(["run", "turn", "call"]).optional(),
     cumulative: z.boolean().optional(),
     complete: z.boolean().optional(),
@@ -562,12 +578,30 @@ export const UsageAvailabilitySchema = z.object({
     cumulative: z.boolean().optional(),
     complete: z.boolean().optional(),
     value: z.number().optional(),
+    sources: z
+      .object({
+        stream: z.number().optional(),
+        "session-store": z.number().optional(),
+        tap: z.number().optional(),
+      })
+      .optional(),
   }),
   usd: z.object({
     available: z.boolean(),
     source: z.literal("pricer").optional(),
     value: z.number().optional(),
   }),
+  context: z
+    .object({
+      available: z.boolean(),
+      source: z.literal("derived"),
+      percentage: z.number().optional(),
+      windowTokens: z.number().optional(),
+      windowSource: z.enum(["session-store", "assumed"]).optional(),
+      tokens: z.number().optional(),
+      model: z.string().optional(),
+    })
+    .optional(),
 });
 
 /** Run request as accepted by Driver.run(). Extra keys pass through. */

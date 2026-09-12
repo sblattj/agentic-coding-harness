@@ -28,6 +28,7 @@ export const SCENARIOS = [
   'permission',
   'mcp-fail',
   'crash-mid-prompt',
+  'slow-prompt',
   'ignore-sigterm',
   'fs-request',
 ] as const;
@@ -93,6 +94,9 @@ function emit(notifications: Json[]): void {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Set by a `session/cancel` notification; read by the `slow-prompt` scenario. */
+let cancelled = false;
 
 /** Server→client requests awaiting a client response, keyed by our own id. */
 const outbound = new Map<number, (msg: Json) => void>();
@@ -174,6 +178,13 @@ async function handle(req: Json): Promise<void> {
         });
         return;
       }
+      if (scenario === 'slow-prompt') {
+        // Stays in flight so a test can cancel it. Answers `cancelled` when
+        // session/cancel arrives, exactly as the real agent does.
+        for (let i = 0; i < 200 && !cancelled; i++) await sleep(10);
+        respond(id, cancelled ? { stopReason: 'cancelled' } : step.result);
+        return;
+      }
       if (scenario === 'permission') {
         const answer = await ask('session/request_permission', {
           sessionId: params.sessionId,
@@ -206,6 +217,7 @@ async function handle(req: Json): Promise<void> {
     }
 
     case 'session/cancel':
+      cancelled = true;
       return; // notification; nothing to answer
 
     default:

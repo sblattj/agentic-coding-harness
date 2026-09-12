@@ -65,6 +65,7 @@ import {
   type SpawnFn,
 } from './shared.ts';
 import { createKiroNormalizer, parseKiroStderrLine, type KiroNormalizer } from './kiro-events.ts';
+import { launchKiroAcp } from './kiro-acp-launch.ts';
 import { findKiroMitmPort, mitmdumpAvailable, startKiroMitm, tapEnv, type KiroMitmHandle } from '../monitors/kiro-mitm.js';
 
 export const KIRO_CAPABILITIES: AdapterCapabilities = {
@@ -783,6 +784,7 @@ export class KiroAdapter implements CoreAgentAdapter {
    * routed through the MITM proxy so per-run credit/token records are
    * captured; failures degrade to the untapped path with a warning. */
   async launch(spec: CoreRunSpec): Promise<CoreAgentHandle> {
+    if (spec.kiro?.transport === 'acp') return launchKiroAcp(spec, { command: this.#command, ...(this.#spawnFn ? { spawnFn: this.#spawnFn } : {}) });
     // The version probe runs CONCURRENTLY with the run: launch() must spawn
     // the child synchronously (driver/test contract — a caller may close the
     // child right after launch() returns), so the run never waits on the
