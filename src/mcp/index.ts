@@ -12,7 +12,7 @@ import { registerInspectTools } from './tools-inspect.ts';
 import { registerJobTools } from './tools-jobs.ts';
 import { stateDir } from '../core/store.ts';
 
-const VERSION = '0.3.0';
+import { VERSION } from '../version.ts';
 
 async function main(): Promise<void> {
   const server = createMcpServer({ name: 'agent-harness', version: VERSION });

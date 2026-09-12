@@ -16,6 +16,7 @@ import {
 } from "../core/types.ts";
 import { z } from "zod";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
+import { VERSION } from "../version.ts";
 import { stateDir, loadOffsets, saveOffsets, appendRecords, readAllRecords, type StatRecord } from "../core/store.ts";
 import { AtifWriter } from "../emitters/atif.ts";
 import { toOtlpJson } from "../emitters/otel.ts";
@@ -596,7 +597,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
   if (format === "atif") {
     const writer = AtifWriter.fromEvents(events, {
       agent: args.values.agent ?? "unknown-agent",
-      version: "0.3.0",
+      version: VERSION,
       modelName: args.values.model ?? "unknown-model",
       sessionId: args.values["session-id"],
     });

@@ -2,6 +2,7 @@
 // Uses the real emitters (src/emitters/atif.ts) and the real CLI (src/cli/harness.ts).
 import { $ } from "bun";
 import { AtifWriter } from "../src/emitters/atif.ts";
+import { VERSION } from "../src/version.ts";
 
 const cli = new URL("../src/cli/harness.ts", import.meta.url).pathname;
 const proc = await $`bun ${cli} run --agent claude --json Say hello and exit`.quiet();
@@ -9,7 +10,7 @@ const run = JSON.parse(proc.stdout.toString());
 
 const writer = AtifWriter.fromEvents(run.events ?? [], {
   agent: "claude",
-  version: "0.3.0",
+  version: VERSION,
   modelName: run.model ?? "unknown-model",
   sessionId: run.sessionId,
 });

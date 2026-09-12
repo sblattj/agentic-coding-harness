@@ -3,8 +3,8 @@
 // §C: POST /mcp accepts a single JSON-RPC message or a batch array and
 // answers plain application/json (no SSE streams for v1); GET /health is an
 // unauthenticated readiness probe; everything else is 404, wrong verb 405.
-import fs from "node:fs/promises";
 import type { JsonRpcRequest, JsonRpcResponse, McpServer } from "./contract.ts";
+import { VERSION } from "../version.ts";
 
 export interface HttpServerHandle {
   /** The actually-bound port (differs from the requested one when port 0). */
@@ -12,18 +12,6 @@ export interface HttpServerHandle {
   /** Stop accepting new connections, wait for in-flight requests, then
    *  force-close idle keep-alive sockets. Resolves once drained. */
   close(): Promise<void>;
-}
-
-// Same source of truth and fallback as src/report/html.ts readVersion.
-async function readVersion(): Promise<string> {
-  try {
-    const raw = await fs.readFile(new URL("../../package.json", import.meta.url), "utf8");
-    const v = (JSON.parse(raw) as { version?: unknown }).version;
-    if (typeof v === "string" && v !== "") return v;
-  } catch {
-    /* bundled/standalone builds fall through */
-  }
-  return "0.3.0";
 }
 
 function json(status: number, body: unknown): Response {
@@ -43,7 +31,6 @@ export async function startHttpServer(opts: {
   host: string;
   token?: string;
 }): Promise<HttpServerHandle> {
-  const version = await readVersion();
   const unauthorized: JsonRpcResponse = {
     jsonrpc: "2.0",
     id: null,
@@ -94,7 +81,7 @@ export async function startHttpServer(opts: {
         const { pathname } = new URL(req.url);
         if (pathname === "/health") {
           if (req.method !== "GET") return notAllowed("GET");
-          return json(200, { status: "ok", version });
+          return json(200, { status: "ok", version: VERSION });
         }
         if (pathname === "/mcp") {
           if (req.method !== "POST") return notAllowed("POST");

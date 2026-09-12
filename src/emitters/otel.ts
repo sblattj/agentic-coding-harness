@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { VERSION } from '../version.ts';
 import { SpanKind, ROOT_CONTEXT, trace } from '@opentelemetry/api';
 import type { Span, Tracer } from '@opentelemetry/api';
 import { BatchSpanProcessor, NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
@@ -280,7 +281,7 @@ export function toOtlpJson(
         },
         scopeSpans: [
           {
-            scope: { name: 'agent-harness', version: '0.3.0' },
+            scope: { name: 'agent-harness', version: VERSION },
             spans: [rootJson, ...childJson],
           },
         ],
