@@ -33,6 +33,7 @@ import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type Aggrega
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
+import { cmdWeb } from "./web.ts";
 
 const USAGE = `harness — unified agent run harness
 
@@ -56,6 +57,10 @@ usage:
   harness serve [--http] [--port N=8399] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENT_HARNESS_HTTP_TOKEN)
+  harness web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
+              [--dir D] [--no-open]
+                (browser dashboard over the live registry; token via --token
+                 or env AGENT_HARNESS_HTTP_TOKEN; --no-open skips the browser)
 
 env:
   AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)
@@ -715,6 +720,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdDash(rest);
     case "serve":
       return cmdServe(rest);
+    case "web":
+      return cmdWeb(rest);
     case "help":
     case "--help":
     case "-h":

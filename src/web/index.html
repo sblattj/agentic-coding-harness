@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>agent-harness</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/vendor/xterm/xterm.css">
+<link rel="stylesheet" href="/vendor/asciinema/asciinema-player.css">
+<style>
+/* ===== theme ===== */
+:root {
+  --bg: #0b0e14;
+  --bg2: #10141d;
+  --bg3: #171e2a;
+  --line: #1d2534;
+  --fg: #c9d4e3;
+  --dim: #5d6b82;
+  --green: #4cc38a;
+  --yellow: #e5c07b;
+  --red: #e06c75;
+  --orange: #e0a26c;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  display: flex;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px/1.5 "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+
+/* ===== sidebar ===== */
+#sidebar {
+  width: 300px;
+  min-width: 300px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+  border-right: 1px solid var(--line);
+}
+#brand {
+  padding: 10px 12px;
+  color: var(--green);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--line);
+}
+#brand .logo { margin-right: 6px; color: var(--dim); }
+#runlist { flex: 1; overflow-y: auto; padding: 4px 0; }
+.row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 8ch 6ch 8ch;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 10px 5px 8px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  white-space: nowrap;
+}
+.row:hover { background: var(--bg3); }
+.row.selected { background: var(--bg3); border-left-color: var(--green); }
+.row .name { overflow: hidden; text-overflow: ellipsis; }
+.row .rid { color: var(--dim); }
+.row .dur, .row .cost { color: var(--dim); text-align: right; }
+.row .glyph { text-align: center; }
+.row.running .glyph { animation: pulse 1.5s ease-in-out infinite; }
+.row.live .name { color: var(--green); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.glyph.running, .status.running { color: var(--green); }
+.glyph.success, .status.success { color: var(--green); opacity: 0.8; }
+.glyph.error, .status.error { color: var(--red); }
+.glyph.aborted, .status.aborted { color: var(--orange); }
+.glyph.interrupted, .status.interrupted { color: var(--yellow); }
+.list-empty { padding: 16px 12px; color: var(--dim); }
+#agg { padding: 8px 12px; color: var(--dim); border-top: 1px solid var(--line); }
+
+/* ===== main pane ===== */
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#metastrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 20px;
+  min-height: 34px;
+  padding: 7px 14px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--line);
+}
+#metastrip .kv { white-space: nowrap; }
+#metastrip .k { color: var(--dim); margin-right: 5px; }
+#termwrap { flex: 1; position: relative; min-height: 0; }
+#terminal { position: absolute; inset: 0; display: none; }
+#player { position: absolute; inset: 0; display: none; padding: 18px; overflow: auto; }
+#empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+}
+.player-msg { color: var(--dim); padding: 8px; }
+#runlist::-webkit-scrollbar, #player::-webkit-scrollbar { width: 8px; height: 8px; }
+#runlist::-webkit-scrollbar-thumb, #player::-webkit-scrollbar-thumb { background: #232d3f; }
+#runlist::-webkit-scrollbar-track, #player::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <header id="brand"><span class="logo">&#9618;</span>agent-harness</header>
+  <div id="runlist"></div>
+  <footer id="agg"></footer>
+</aside>
+
+<main id="main">
+  <div id="metastrip"></div>
+  <div id="termwrap">
+    <div id="terminal"></div>
+    <div id="player"></div>
+    <div id="empty">select a run</div>
+  </div>
+</main>
+
+<script src="/vendor/xterm/xterm.js"></script>
+<script src="/vendor/xterm/addon-fit.js"></script>
+<script src="/vendor/xterm/addon-webgl.js"></script>
+<script src="/vendor/asciinema/asciinema-player.min.js"></script>
+<script>
+(function () {
+"use strict";
+
+/* ===== helpers ===== */
+function $(id) { return document.getElementById(id); }
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+var GLYPH = { running: "\u25b6", success: "\u2714", error: "\u2716", aborted: "\u25a0", interrupted: "\u23f8" };
+var LIVE_WINDOW_MS = 60000;
+var TOKEN = new URLSearchParams(location.search).get("token") || "";
+
+var runs = [];
+var selectedId = null;
+var term = null, fitAddon = null, webglAddon = null;
+var player = null, runSocket = null, runsSocket = null;
+var runsRetry = 0;
+var mode = "empty";
+
+function isLive(r) {
+  return !!r && r.status === "running" && Date.now() - (r.updatedAt || 0) < LIVE_WINDOW_MS;
+}
+function findRun(id) {
+  for (var i = 0; i < runs.length; i++) if (runs[i].runId === id) return runs[i];
+  return null;
+}
+function sortedRuns() {
+  return runs.slice().sort(function (a, b) {
+    var la = isLive(a) ? 0 : a.status === "running" ? 1 : 2;
+    var lb = isLive(b) ? 0 : b.status === "running" ? 1 : 2;
+    if (la !== lb) return la - lb;
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  });
+}
+function elapsed(r) {
+  var end = isLive(r) ? Date.now() : (r.updatedAt || Date.now());
+  return Math.max(0, end - (r.startedAt || end));
+}
+function fmtTok(n) {
+  if (n == null) return "-";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+}
+function fmtCost(n) { return n == null ? "-" : "$" + Number(n).toFixed(4); }
+function fmtDur(ms) {
+  var s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return s + "s";
+  var m = Math.floor(s / 60);
+  if (m < 60) return m + "m" + String(s % 60).padStart(2, "0");
+  return Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0") + "m";
+}
+function fmtAgo(ts) {
+  var s = Math.max(0, Math.floor((Date.now() - (ts || 0)) / 1000));
+  if (s < 5) return "now";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  return Math.floor(s / 3600) + "h ago";
+}
+function wsUrl(params) {
+  var parts = [];
+  Object.keys(params).forEach(function (k) {
+    parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(params[k]));
+  });
+  return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws" +
+    (parts.length ? "?" + parts.join("&") : "");
+}
+function eventText(ev) {
+  if (ev == null) return "";
+  if (typeof ev === "string") return ev;
+  var t = ev.text != null ? ev.text : ev.data != null ? ev.data : ev.output != null ? ev.output : ev.message;
+  return t == null ? "" : String(t);
+}
+
+/* ===== sidebar ===== */
+function buildRow(r) {
+  var row = el("div", "row");
+  row._run = r;
+  row.appendChild(el("span", "glyph " + (r.status || ""), GLYPH[r.status] || "\u00b7"));
+  var name = el("span", "name", r.agent || "unknown");
+  name.title = r.agent || "";
+  row.appendChild(name);
+  var rid = el("span", "rid", String(r.runId || "").slice(0, 8));
+  rid.title = r.runId || "";
+  row.appendChild(rid);
+  var dur = el("span", "dur", fmtDur(elapsed(r)));
+  row.appendChild(dur);
+  row._dur = dur;
+  row.appendChild(el("span", "cost", fmtCost(r.totals && r.totals.costUsd)));
+  row.addEventListener("click", function () { selectRun(r.runId); });
+  return row;
+}
+function refreshRow(row) {
+  var r = row._run;
+  row.className = "row" +
+    (r.status === "running" ? " running" : "") +
+    (isLive(r) ? " live" : "") +
+    (r.runId === selectedId ? " selected" : "");
+  row._dur.textContent = fmtDur(elapsed(r));
+}
+function renderRuns() {
+  var list = $("runlist");
+  list.textContent = "";
+  if (!runs.length) { list.appendChild(el("div", "list-empty", "no runs")); return; }
+  sortedRuns().forEach(function (r) {
+    var row = buildRow(r);
+    refreshRow(row);
+    list.appendChild(row);
+  });
+}
+function renderAggregate() {
+  var live = 0, cost = 0;
+  runs.forEach(function (r) {
+    if (isLive(r)) live++;
+    cost += (r.totals && r.totals.costUsd) || 0;
+  });
+  $("agg").textContent = runs.length + " runs \u00b7 " + live + " live \u00b7 " + fmtCost(cost);
+}
+
+/* ===== metadata strip ===== */
+function renderMeta() {
+  var box = $("metastrip");
+  box.textContent = "";
+  var r = findRun(selectedId);
+  if (!r) { box.appendChild(el("span", "k", "no run selected")); return; }
+  var t = r.totals || {};
+  function kv(k, v) {
+    var s = el("span", "kv");
+    s.appendChild(el("span", "k", k));
+    s.appendChild(el("span", "v", v));
+    return s;
+  }
+  var runKv = kv("run", (r.agent || "?") + " / " + String(r.runId || "").slice(0, 8));
+  runKv.title = r.runId || "";
+  box.appendChild(runKv);
+  box.appendChild(kv("in", fmtTok(t.inputTokens)));
+  box.appendChild(kv("out", fmtTok(t.outputTokens)));
+  box.appendChild(kv("cache", fmtTok(t.cacheReadTokens) + "r " + fmtTok(t.cacheWriteTokens) + "w"));
+  box.appendChild(kv("cost", fmtCost(t.costUsd)));
+  if (t.credits != null) box.appendChild(kv("credits", String(t.credits)));
+  var lastTxt = r.lastEvent != null ? String(r.lastEvent) : "";
+  var shown = lastTxt.length > 64 ? lastTxt.slice(0, 63) + "\u2026" : lastTxt;
+  var lastKv = kv("last", shown || fmtAgo(r.updatedAt));
+  lastKv.title = lastTxt || "";
+  box.appendChild(lastKv);
+  box.appendChild(el("span", "status " + (r.status || ""), (GLYPH[r.status] || "\u00b7") + " " + (r.status || "?")));
+}
+
+/* ===== panes ===== */
+function showMode(m) {
+  mode = m;
+  $("terminal").style.display = m === "live" ? "block" : "none";
+  $("player").style.display = m === "replay" ? "block" : "none";
+  $("empty").style.display = m === "empty" ? "flex" : "none";
+}
+function closeRunSocket() {
+  if (!runSocket) return;
+  var ws = runSocket;
+  runSocket = null;
+  ws.onclose = null;
+  try { ws.close(); } catch (e) {}
+}
+function teardown() {
+  closeRunSocket();
+  if (player) { try { if (player.dispose) player.dispose(); } catch (e) {} player = null; }
+  $("player").textContent = "";
+  if (webglAddon) { try { webglAddon.dispose(); } catch (e) {} webglAddon = null; }
+  if (term) { try { term.dispose(); } catch (e) {} term = null; }
+  fitAddon = null;
+}
+function selectRun(id) {
+  if (id === selectedId) return;
+  selectedId = id;
+  teardown();
+  renderRuns();
+  renderMeta();
+  var r = findRun(id);
+  if (isLive(r)) startLive(r); else startReplay(id);
+}
+
+/* ===== live terminal ===== */
+function startLive(r) {
+  showMode("live");
+  if (!window.Terminal || !window.FitAddon) {
+    $("terminal").appendChild(el("div", "player-msg", "xterm vendor assets failed to load"));
+    return;
+  }
+  term = new window.Terminal({
+    convertEol: true,
+    cursorBlink: true,
+    fontSize: 12,
+    fontFamily: '"SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace',
+    scrollback: 20000,
+    theme: {
+      background: "#0b0e14",
+      foreground: "#c9d4e3",
+      cursor: "#4cc38a",
+      cursorAccent: "#0b0e14",
+      selectionBackground: "#33415e"
+    }
+  });
+  fitAddon = new window.FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open($("terminal"));
+  try {
+    webglAddon = new window.WebglAddon.WebglAddon();
+    term.loadAddon(webglAddon);
+  } catch (e) { webglAddon = null; }
+  try { fitAddon.fit(); } catch (e) {}
+  openRunSocket(r.runId);
+}
+function openRunSocket(id) {
+  var ws = new WebSocket(wsUrl({ runId: id, token: TOKEN }));
+  runSocket = ws;
+  ws.onmessage = function (m) {
+    if (ws !== runSocket) return;
+    var msg;
+    try { msg = JSON.parse(m.data); } catch (e) { return; }
+    if (msg.type === "record" && msg.record) {
+      upsertRun(msg.record);
+    } else if (msg.type === "backlog" && msg.events) {
+      writeEvents(msg.events);
+    } else if (msg.type === "event" && msg.event) {
+      writeEvents([msg.event]);
+    } else if (msg.type === "end") {
+      closeRunSocket();
+      startReplay(selectedId);
+    }
+  };
+  ws.onclose = function () {
+    if (ws !== runSocket) return;
+    runSocket = null;
+    var r = findRun(selectedId);
+    if (mode === "live" && r && r.status !== "running") startReplay(selectedId);
+  };
+  ws.onerror = function () { try { ws.close(); } catch (e) {} };
+}
+function writeEvents(events) {
+  if (!term || !events || !events.length) return;
+  var out = "";
+  for (var i = 0; i < events.length; i++) out += eventText(events[i]);
+  if (out) term.write(out);
+}
+
+/* ===== replay ===== */
+function startReplay(id) {
+  showMode("replay");
+  var box = $("player");
+  box.textContent = "";
+  if (!window.AsciinemaPlayer) {
+    box.appendChild(el("div", "player-msg", "asciinema vendor assets failed to load"));
+    return;
+  }
+  box.appendChild(el("div", "player-msg", "loading replay\u2026"));
+  fetch("/api/runs/" + encodeURIComponent(id) + "/cast").then(function (res) {
+    if (!res.ok) throw new Error("http " + res.status);
+    return res.text();
+  }).then(function (cast) {
+    if (selectedId !== id) return;
+    box.textContent = "";
+    if (cast && cast.trim()) player = window.AsciinemaPlayer.create({ data: cast }, box);
+    else box.appendChild(el("div", "player-msg", "no replay available for this run"));
+  }).catch(function () {
+    if (selectedId !== id) return;
+    box.textContent = "";
+    box.appendChild(el("div", "player-msg", "no replay available for this run"));
+  });
+}
+
+/* ===== data + sockets ===== */
+function upsertRun(rec) {
+  if (!rec || !rec.runId) return;
+  var found = false;
+  for (var i = 0; i < runs.length; i++) {
+    if (runs[i].runId === rec.runId) { runs[i] = rec; found = true; break; }
+  }
+  if (!found) runs.push(rec);
+  renderRuns();
+  renderAggregate();
+  renderMeta();
+}
+function connectRunsSocket() {
+  var ws = new WebSocket(wsUrl({ runs: 1, token: TOKEN }));
+  runsSocket = ws;
+  ws.onmessage = function (m) {
+    if (ws !== runsSocket) return;
+    var msg;
+    try { msg = JSON.parse(m.data); } catch (e) { return; }
+    if (msg.type === "runs" && msg.records) {
+      runs = msg.records;
+      runsRetry = 0;
+      renderRuns();
+      renderAggregate();
+      renderMeta();
+    }
+  };
+  ws.onclose = function () {
+    if (ws !== runsSocket) return;
+    runsSocket = null;
+    var delay = Math.min(15000, 1000 * Math.pow(2, runsRetry));
+    runsRetry += 1;
+    setTimeout(connectRunsSocket, delay);
+  };
+  ws.onerror = function () { try { ws.close(); } catch (e) {} };
+}
+
+/* ===== init ===== */
+function tick() {
+  var rows = $("runlist").children;
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i]._run) refreshRow(rows[i]);
+  }
+  renderAggregate();
+  renderMeta();
+}
+function init() {
+  showMode("empty");
+  renderAggregate();
+  fetch("/api/runs").then(function (res) {
+    if (!res.ok) throw new Error("http " + res.status);
+    return res.json();
+  }).then(function (data) {
+    runs = (data && data.records) || [];
+    renderRuns();
+    renderAggregate();
+    if (!selectedId && runs.length) selectRun(sortedRuns()[0].runId);
+  }).catch(function () {
+    var list = $("runlist");
+    list.textContent = "";
+    list.appendChild(el("div", "list-empty", "failed to load runs (/api/runs)"));
+  });
+  connectRunsSocket();
+  window.addEventListener("resize", function () {
+    if (fitAddon && term) { try { fitAddon.fit(); } catch (e) {} }
+  });
+  setInterval(tick, 1000);
+}
+init();
+})();
+</script>
+</body>
+</html>
