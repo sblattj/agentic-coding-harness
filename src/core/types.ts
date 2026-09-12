@@ -446,6 +446,12 @@ export type AdapterExit = "success" | "error" | "timeout" | "aborted" | "cancell
 /** Run request as accepted by Driver.run(). Extra keys pass through. */
 export interface RunSpec {
   prompt: string;
+  /**
+   * Caller-chosen run id: used as the registry record id when present
+   * (async job tools pass a caller-generated uuid); driver generates one
+   * otherwise. Echoed back on RunResult.
+   */
+  runId?: string;
   /** Working directory for the agent subprocess. */
   cwd?: string;
   model?: string;
@@ -464,6 +470,7 @@ export interface RunSpec {
 export const RunSpecSchema = z
   .object({
     prompt: z.string(),
+    runId: z.string().optional(),
     cwd: z.string().optional(),
     model: z.string().optional(),
     resume: z.string().optional(),
@@ -554,6 +561,8 @@ export interface CliAgentAdapter {
 }
 
 export interface RunResult {
+  /** Run id (caller-chosen via RunSpec.runId, or driver-generated uuid). */
+  runId: string;
   sessionId: string;
   /** Agent name, when the caller echoes it into the result. */
   agent?: string;
@@ -564,6 +573,27 @@ export interface RunResult {
   exitStatus: ExitStatus;
   warnings: string[];
 }
+
+/** Zod mirror of RunResult (events/tokens kept structurally tolerant). */
+export const RunResultSchema = z.object({
+  runId: z.string(),
+  sessionId: z.string(),
+  agent: z.string().optional(),
+  events: z.array(z.record(z.string(), z.unknown())),
+  tokens: z.array(CanonicalTokenRecordSchema),
+  totalCost: z.number(),
+  durationMs: z.number(),
+  exitStatus: z.enum([
+    "success",
+    "error",
+    "timeout",
+    "aborted",
+    "cancelled",
+    "budget_exceeded",
+    "turn_limit",
+  ]),
+  warnings: z.array(z.string()),
+});
 
 // ---------------------------------------------------------------- errors
 

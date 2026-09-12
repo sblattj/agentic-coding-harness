@@ -71,10 +71,17 @@ function runRec(over: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe('agh dash --json (real subprocess, non-TTY)', () => {
-  it('reports live and finished runs, sorted by startedAt desc, with correct live flags', { timeout: 20_000 }, () => {
+  it('reports live, interrupted, and finished runs, sorted by startedAt desc, with correct live flags', { timeout: 20_000 }, () => {
     const state = mkState();
     const now = Date.now();
     const live = runRec({ runId: 'run-live-1', status: 'running', startedAt: now - 5_000, updatedAt: now });
+    const interrupted = runRec({
+      runId: 'run-intr-1',
+      status: 'running', // on-disk status stays running; effectiveStatus derives interrupted
+      pid: 4194303, // dead pid
+      startedAt: now - 2_000,
+      updatedAt: now,
+    });
     const done = runRec({
       runId: 'run-done-1',
       status: 'success',
@@ -83,15 +90,19 @@ describe('agh dash --json (real subprocess, non-TTY)', () => {
       startedAt: now - 3_600_000,
       updatedAt: now - 3_600_000,
     });
-    seedRuns(state, [done, live]); // seeded out of order; dash must sort
+    seedRuns(state, [done, interrupted, live]); // seeded out of order; dash must sort
     const res = runCli(dashArgs(state, ['--json']), state);
     assert.equal(res.code, 0, `exit ${res.code}; stderr: ${res.stderr}`);
-    const rows = JSON.parse(res.stdout) as Array<{ runId: string; live: boolean }>;
+    const rows = JSON.parse(res.stdout) as Array<{ runId: string; live: boolean; effectiveStatus: string }>;
     assert.ok(Array.isArray(rows), `expected a JSON array, got: ${res.stdout.slice(0, 200)}`);
-    assert.equal(rows.length, 2);
-    assert.deepEqual(rows.map((r) => r.runId), ['run-live-1', 'run-done-1']);
-    assert.equal(rows[0].live, true);
-    assert.equal(rows[1].live, false);
+    assert.equal(rows.length, 3);
+    assert.deepEqual(rows.map((r) => r.runId), ['run-intr-1', 'run-live-1', 'run-done-1']);
+    assert.equal(rows[0].live, false);
+    assert.equal(rows[0].effectiveStatus, 'interrupted');
+    assert.equal(rows[1].live, true);
+    assert.equal(rows[1].effectiveStatus, 'running');
+    assert.equal(rows[2].live, false);
+    assert.equal(rows[2].effectiveStatus, 'success');
   });
 
   it('prints [] and exits 0 for an empty state dir', { timeout: 20_000 }, () => {

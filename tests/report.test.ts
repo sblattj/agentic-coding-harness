@@ -27,6 +27,7 @@ function fakeRun(over: Partial<LoadedRun>): LoadedRun {
     trialDir: "/tmp/x",
     trialLabel: "20260910-000000",
     result: {
+      runId: "r1",
       sessionId: "s1",
       events: [{ type: "session", timestamp: 1 } as never],
       tokens: [],

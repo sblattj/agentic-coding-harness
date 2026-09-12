@@ -92,6 +92,12 @@ export interface DriverOptions {
 
 export interface Driver {
   run(agentName: string, spec: RunSpec): Promise<RunResult>;
+  /**
+   * Abort the active run launched with the given RunSpec.runId (no-op for
+   * runs without one or already settled). Returns true when an active run
+   * matched and abort was signalled.
+   */
+  abort(runId: string): boolean;
 }
 
 const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini'] as const;
@@ -142,13 +148,26 @@ export async function defaultAdapters(): Promise<Record<string, AgentAdapter>> {
 export function createDriver(options: DriverOptions): Driver {
   const { adapters, stateDir, onEvent } = options;
 
+  // Active-run abort handles keyed by resolved RunSpec.runId (see abort()).
+  const activeRuns = new Map<string, () => void>();
+
   return {
+    abort(runId: string): boolean {
+      const abort = activeRuns.get(runId);
+      if (!abort) return false;
+      abort();
+      return true;
+    },
+
     async run(agentName: string, spec: RunSpec): Promise<RunResult> {
       const adapter = adapters[agentName];
       if (!adapter) {
         throw new Error(`driver: unknown agent "${agentName}"; registered: ${Object.keys(adapters).join(', ') || 'none'}`);
       }
       const parsed = RunSpecSchema.parse(spec);
+      // Caller-chosen run id (async job tools pass a uuid so the registry
+      // record is addressable before spawn); generated otherwise.
+      const runId = typeof spec.runId === 'string' && spec.runId ? spec.runId : randomUUID();
       const budgetUsd = parsed.budget?.usd;
       const maxTurns = parsed.budget?.maxTurns;
       const wallMs = parsed.budget?.wallMs;
@@ -157,6 +176,10 @@ export function createDriver(options: DriverOptions): Driver {
       const start = Date.now();
       const handle = await adapter.launch(parsed);
       const sessionId = handle.sessionId;
+      // Cancellation hook for driver.abort(runId) until the run settles.
+      activeRuns.set(runId, () => {
+        void Promise.resolve(handle.abort()).catch(() => {});
+      });
 
       const rawDir = join(stateDir, 'raw');
       await mkdir(rawDir, { recursive: true });
@@ -230,7 +253,7 @@ export function createDriver(options: DriverOptions): Driver {
       };
       if (registryStateDir) {
         rec = {
-          runId: randomUUID(),
+          runId,
           agent: agentName,
           sessionId,
           pid: process.pid,
@@ -340,6 +363,7 @@ export function createDriver(options: DriverOptions): Driver {
         if (idleTimer !== null) clearTimeout(idleTimer);
         wallTimer = null;
         idleTimer = null;
+        activeRuns.delete(runId);
       }
 
       // Await full flush so the NDJSON transcript is on disk when run() resolves.
@@ -360,6 +384,7 @@ export function createDriver(options: DriverOptions): Driver {
       // Read the sessionId late: bridged handles expose a getter that reports
       // the agent's real session id once the stream has carried it.
       return {
+        runId,
         sessionId: handle.sessionId,
         events,
         tokens,

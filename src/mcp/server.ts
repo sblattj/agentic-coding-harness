@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { JsonRpcResponse, McpServer, McpToolDef } from './contract.js';
+import type { JsonRpcRequest, JsonRpcResponse, McpServer, McpToolDef } from './contract.js';
 
 const PARSE_ERROR = -32700;
 const INVALID_REQUEST = -32600;
@@ -77,6 +77,73 @@ export function createMcpServer(opts: { name: string; version: string }): McpSer
     writeLine(JSON.stringify(response));
   };
 
+  // Shared by every transport lane (stdio below, HTTP in src/mcp/http.ts).
+  // Notifications (no id, or the notifications/* surface) never get a
+  // response — including unknown notification methods.
+  const dispatch = async (msg: JsonRpcRequest): Promise<JsonRpcResponse | null> => {
+    const method = msg.method;
+    const hasId = 'id' in msg;
+    const id = hasId ? msg.id : null;
+    if (!hasId || method.startsWith('notifications/')) return null;
+
+    switch (method) {
+      case 'initialize':
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: { tools: {} },
+            serverInfo: { name: opts.name, version: opts.version },
+          },
+        };
+      case 'ping':
+        return { jsonrpc: '2.0', id, result: {} };
+      case 'tools/list':
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            tools: [...tools.values()].map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: t.inputSchema,
+            })),
+          },
+        };
+      case 'tools/call': {
+        try {
+          const parsed = ToolCallParamsSchema.safeParse(msg.params);
+          if (!parsed.success) {
+            return errorResponse(id, INVALID_PARAMS, 'Invalid params for tools/call');
+          }
+          const tool = tools.get(parsed.data.name);
+          if (!tool) {
+            return errorResponse(id, INVALID_PARAMS, `Unknown tool: ${parsed.data.name}`);
+          }
+          const result = await tool.handler(parsed.data.arguments ?? {});
+          const text =
+            typeof result === 'string'
+              ? result
+              : (JSON.stringify(result, null, 2) ?? String(result));
+          return {
+            jsonrpc: '2.0',
+            id,
+            result: { content: [{ type: 'text', text }] },
+          };
+        } catch (err) {
+          return errorResponse(
+            id,
+            INTERNAL_ERROR,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+      default:
+        return errorResponse(id, METHOD_NOT_FOUND, `Method not found: ${method}`);
+    }
+  };
+
   const handleMessage = async (text: string): Promise<void> => {
     let raw: unknown;
     try {
@@ -96,69 +163,9 @@ export function createMcpServer(opts: { name: string; version: string }): McpSer
       if (hasId) send(errorResponse(id, INVALID_REQUEST, 'Invalid request'));
       return;
     }
-    const method = req.method;
-    // Notifications (no id, or the notifications/* surface) never get a
-    // response — including unknown notification methods.
-    if (!hasId || method.startsWith('notifications/')) {
-      return;
-    }
 
-    const dispatch = async (): Promise<JsonRpcResponse> => {
-      switch (method) {
-        case 'initialize':
-          return {
-            jsonrpc: '2.0',
-            id,
-            result: {
-              protocolVersion: PROTOCOL_VERSION,
-              capabilities: { tools: {} },
-              serverInfo: { name: opts.name, version: opts.version },
-            },
-          };
-        case 'ping':
-          return { jsonrpc: '2.0', id, result: {} };
-        case 'tools/list':
-          return {
-            jsonrpc: '2.0',
-            id,
-            result: {
-              tools: [...tools.values()].map((t) => ({
-                name: t.name,
-                description: t.description,
-                inputSchema: t.inputSchema,
-              })),
-            },
-          };
-        case 'tools/call': {
-          const parsed = ToolCallParamsSchema.safeParse(req.params);
-          if (!parsed.success) {
-            return errorResponse(id, INVALID_PARAMS, 'Invalid params for tools/call');
-          }
-          const tool = tools.get(parsed.data.name);
-          if (!tool) {
-            return errorResponse(id, INVALID_PARAMS, `Unknown tool: ${parsed.data.name}`);
-          }
-          const result = await tool.handler(parsed.data.arguments ?? {});
-          const text =
-            typeof result === 'string'
-              ? result
-              : (JSON.stringify(result, null, 2) ?? String(result));
-          return {
-            jsonrpc: '2.0',
-            id,
-            result: { content: [{ type: 'text', text }] },
-          };
-        }
-        default:
-          return errorResponse(id, METHOD_NOT_FOUND, `Method not found: ${method}`);
-      }
-    };
-
-    try {
-      send(await dispatch());
-    } catch (err) {
-      send(errorResponse(id, INTERNAL_ERROR, err instanceof Error ? err.message : String(err)));
-    }
+    const response = await dispatch(raw as JsonRpcRequest);
+    if (response) send(response);
   };
 
   const parser = new FramingParser();
@@ -167,6 +174,7 @@ export function createMcpServer(opts: { name: string; version: string }): McpSer
     registerTool(def: McpToolDef): void {
       tools.set(def.name, def);
     },
+    dispatch,
     serve(): Promise<void> {
       const stdin = process.stdin;
       stdin.setEncoding('utf8');

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import {
+  effectiveStatus,
   isLive,
   listRunRecords,
   readRunRecord,
@@ -118,5 +119,29 @@ describe('isLive', () => {
   it('false: dead pid (2^22-ish, outside the macOS pid space)', () => {
     const r = rec({ status: 'running', updatedAt: Date.now(), pid: 4194303 });
     assert.equal(isLive(r), false);
+  });
+});
+
+describe('effectiveStatus', () => {
+  it('running + own pid + fresh heartbeat → running', () => {
+    const r = rec({ status: 'running', updatedAt: Date.now(), pid: process.pid });
+    assert.equal(effectiveStatus(r), 'running');
+  });
+
+  it('running + dead pid (4194303) → interrupted', () => {
+    const r = rec({ status: 'running', updatedAt: Date.now(), pid: 4194303 });
+    assert.equal(effectiveStatus(r), 'interrupted');
+  });
+
+  it('running + stale heartbeat (> 15s) → interrupted despite live pid', () => {
+    const r = rec({ status: 'running', updatedAt: Date.now() - 60_000, pid: process.pid });
+    assert.equal(effectiveStatus(r), 'interrupted');
+  });
+
+  it('terminal statuses pass through unchanged (success/error/aborted)', () => {
+    for (const status of ['success', 'error', 'aborted'] as const) {
+      const r = rec({ status, updatedAt: Date.now() - 60_000, pid: 4194303 });
+      assert.equal(effectiveStatus(r), status);
+    }
   });
 });

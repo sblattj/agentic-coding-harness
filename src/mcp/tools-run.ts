@@ -16,8 +16,10 @@ import { OPENCODE_CAPABILITIES } from "../adapters/opencode.ts";
 import { KIRO_CAPABILITIES } from "../adapters/kiro.ts";
 import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
 import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
+import { checkCwd, filterExtraArgs, type GatewayConfig } from "../serve/gateway.ts";
 
-const RunArgsSchema = z.object({
+// Shared with tools-jobs.ts (harness_run_async mirrors harness_run args).
+export const RunArgsSchema = z.object({
   agent: z
     .string()
     .refine((v) => (AGENTS as readonly string[]).includes(v), {
@@ -57,7 +59,10 @@ function isOnPath(command: string): boolean {
   return spawnSync("which", [command], { stdio: "ignore" }).status === 0;
 }
 
-export function registerRunTools(server: McpServer, opts: { stateDir: string }): void {
+export function registerRunTools(
+  server: McpServer,
+  opts: { stateDir: string; gateway?: GatewayConfig },
+): void {
   server.registerTool({
     name: "harness_run",
     description:
@@ -87,6 +92,11 @@ export function registerRunTools(server: McpServer, opts: { stateDir: string }):
         throw new Error(`invalid harness_run arguments: bad field '${field}': ${issue.message}${received}`);
       }
       const a = parsed.data;
+      if (opts.gateway) {
+        const cwdCheck = checkCwd(opts.gateway, a.cwd);
+        if (!cwdCheck.ok) throw new Error(cwdCheck.error);
+      }
+      const extra = filterExtraArgs(opts.gateway, a.extraArgs);
       const budget: CoreRunSpec["budget"] = {
         ...(a.budgetUsd !== undefined ? { usd: a.budgetUsd } : {}),
         ...(a.maxTurns !== undefined ? { maxTurns: a.maxTurns } : {}),
@@ -103,14 +113,21 @@ export function registerRunTools(server: McpServer, opts: { stateDir: string }):
         budget.idleMs !== undefined
           ? { budget }
           : {}),
-        ...(a.extraArgs !== undefined ? { extraArgs: a.extraArgs } : {}),
+        ...(a.extraArgs !== undefined ? { extraArgs: extra.allowed } : {}),
       };
+      const strippedWarning =
+        extra.stripped.length > 0
+          ? `gateway: stripped extraArgs not in allowlist: ${extra.stripped.map((s) => `'${s}'`).join(", ")}`
+          : undefined;
       const driver = createDriver({
         adapters: await defaultAdapters(),
         stateDir: opts.stateDir,
         pricer: createPricer(),
       });
-      return driver.run(a.agent, spec);
+      const result = await driver.run(a.agent, spec);
+      return strippedWarning === undefined
+        ? result
+        : { ...result, warnings: [...result.warnings, strippedWarning] };
     },
   });
 

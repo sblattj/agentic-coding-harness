@@ -16,7 +16,7 @@ export interface RunRecord {
   promptPreview: string; // first 120 chars of prompt
   startedAt: number; // ms epoch
   updatedAt: number; // ms epoch — heartbeat
-  status: "running" | "success" | "error" | "aborted";
+  status: "running" | "interrupted" | "success" | "error" | "aborted"; // 'interrupted' is derived (effectiveStatus), never written to disk
   exitStatus?: string; // final RunResult.exitStatus
   totals: {
     // running aggregates, updated per usage event
@@ -49,7 +49,7 @@ const RunRecordSchema = z.object({
   promptPreview: z.string(),
   startedAt: z.number(),
   updatedAt: z.number(),
-  status: z.enum(["running", "success", "error", "aborted"]),
+  status: z.enum(["running", "interrupted", "success", "error", "aborted"]),
   exitStatus: z.string().optional(),
   totals: TotalsSchema,
   lastEvent: z.string().optional(),
@@ -127,4 +127,12 @@ export function isLive(rec: RunRecord, now: number = Date.now()): boolean {
     if (isErrnoException(e) && e.code === "ESRCH") return false;
   }
   return true;
+}
+
+/** Consumer view of status: a `running` record whose process is gone (dead
+ *  pid or stale heartbeat — see isLive) reports `interrupted` without the
+ *  file being mutated; terminal states pass through unchanged. */
+export function effectiveStatus(rec: RunRecord, now: number = Date.now()): RunRecord["status"] {
+  if (rec.status !== "running") return rec.status;
+  return isLive(rec, now) ? "running" : "interrupted";
 }

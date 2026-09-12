@@ -9,6 +9,7 @@
 import { createMcpServer } from './server.ts';
 import { registerRunTools } from './tools-run.ts';
 import { registerInspectTools } from './tools-inspect.ts';
+import { registerJobTools } from './tools-jobs.ts';
 import { stateDir } from '../core/store.ts';
 
 const VERSION = '0.2.2';
@@ -18,6 +19,7 @@ async function main(): Promise<void> {
   const opts = { stateDir: stateDir() };
   registerRunTools(server, opts);
   registerInspectTools(server, opts);
+  registerJobTools(server, opts);
   await server.serve();
 }
 

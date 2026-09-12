@@ -12,7 +12,15 @@ import { emitToLangfuse } from "../emitters/langfuse.ts";
 import { loadTrials } from "../report/model.ts";
 import { readVersion, renderReport } from "../report/html.ts";
 import { aggregate, type AggregatableRecord } from "../cli/lib.ts";
+import { checkArtifactPath, type GatewayConfig } from "../serve/gateway.ts";
 import type { McpServer } from "./contract.ts";
+
+/** Opts shared by every register* function: state dir plus the optional
+ *  gateway profile (present only under `harness serve --gateway`). */
+interface ToolOpts {
+  stateDir: string;
+  gateway?: GatewayConfig;
+}
 
 function parseArgs<T extends z.ZodTypeAny>(schema: T, args: Record<string, unknown>): z.infer<T> {
   const parsed = schema.safeParse(args);
@@ -40,8 +48,12 @@ const ReportSchema = z.object({
   open: z.boolean().default(false),
 });
 
-async function harnessReport(args: Record<string, unknown>): Promise<unknown> {
+async function harnessReport(args: Record<string, unknown>, opts: ToolOpts): Promise<unknown> {
   const a = parseArgs(ReportSchema, args);
+  if (opts.gateway) {
+    const artifact = checkArtifactPath(opts.stateDir, a.out, opts.gateway);
+    if (!artifact.ok) throw new Error(artifact.error);
+  }
   let rootDir: string | null = null;
   let runs: Awaited<ReturnType<typeof loadTrials>>["runs"] = [];
   const labels = new Set<string>();
@@ -77,8 +89,15 @@ const EmitSchema = z.object({
   endpoint: z.string().min(1).optional(),
 });
 
-async function harnessEmit(args: Record<string, unknown>): Promise<unknown> {
+async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promise<unknown> {
   const a = parseArgs(EmitSchema, args);
+  if (opts.gateway) {
+    if (opts.gateway.enabled && a.format === "langfuse") {
+      throw new Error("disabled in gateway mode");
+    }
+    const artifact = checkArtifactPath(opts.stateDir, a.out, opts.gateway);
+    if (!artifact.ok) throw new Error(artifact.error);
+  }
   let raw: string;
   try {
     raw = await fs.readFile(a.runFile, "utf8");
@@ -248,7 +267,7 @@ async function harnessStats(args: Record<string, unknown>): Promise<unknown> {
 
 // ---------------------------------------------------------------- registration
 
-export function registerInspectTools(server: McpServer, opts: { stateDir: string }): void {
+export function registerInspectTools(server: McpServer, opts: ToolOpts): void {
   if (opts.stateDir) process.env.AGENT_HARNESS_STATE_DIR = opts.stateDir;
   server.registerTool({
     name: "harness_report",
@@ -263,7 +282,7 @@ export function registerInspectTools(server: McpServer, opts: { stateDir: string
       },
       required: ["dir"],
     },
-    handler: harnessReport,
+    handler: (args) => harnessReport(args, opts),
   });
   server.registerTool({
     name: "harness_emit",
@@ -279,7 +298,7 @@ export function registerInspectTools(server: McpServer, opts: { stateDir: string
       },
       required: ["runFile", "format"],
     },
-    handler: harnessEmit,
+    handler: (args) => harnessEmit(args, opts),
   });
   server.registerTool({
     name: "harness_stats",

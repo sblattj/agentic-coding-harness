@@ -32,6 +32,11 @@ export interface McpServer {
   registerTool(def: McpToolDef): void;
   /** Reads stdin, writes stdout. Resolves when stdin closes. */
   serve(): Promise<void>;
+  /** Handle one parsed JSON-RPC message (any lane). Resolves with the
+   *  response, or null for notifications (no id, or notifications/* method)
+   *  — which get no response at all. Never rejects: handler throws are
+   *  mapped to a -32603 error response naming the message. */
+  dispatch(msg: JsonRpcRequest): Promise<JsonRpcResponse | null>;
 }
 
 /** S1 exports this factory from src/mcp/server.ts. */

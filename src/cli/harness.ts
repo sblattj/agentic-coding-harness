@@ -31,6 +31,7 @@ import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
+import { cmdServe } from "./serve.ts";
 
 const USAGE = `harness — unified agent run harness
 
@@ -51,9 +52,13 @@ usage:
                  (single-file HTML comparison; a trials/ root scans subdirs)
   harness dash [--json] [--all] [--dir <stateDir>]
                (live run dashboard; --json dumps RunRecords and exits)
+  harness serve [--http] [--port N=8399] [--host 127.0.0.1] [--token T]
+                (MCP over streamable HTTP on POST /mcp; GET /health probe;
+                 token via --token or env AGENT_HARNESS_HTTP_TOKEN)
 
 env:
   AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)
+  AGENT_HARNESS_HTTP_TOKEN  default for serve --token (CLI flags win over env)
   AGENT_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
   AGENT_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
   AGENT_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
@@ -685,6 +690,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdReport(rest);
     case "dash":
       return cmdDash(rest);
+    case "serve":
+      return cmdServe(rest);
     case "help":
     case "--help":
     case "-h":

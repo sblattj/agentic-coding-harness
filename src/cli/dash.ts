@@ -1,11 +1,16 @@
 // dash — live run dashboard over the driver registry (src/core/registry.ts).
 // Default view: ANSI full-screen table redrawn ~2/s over <stateDir>/runs.
-// --json dumps RunRecords (+ live flag) for tools and tests; no TTY falls
-// back to that same dump with a hint on stderr.
+// --json dumps RunRecords (+ live flag and effectiveStatus) for tools and
+// tests; no TTY falls back to that same dump with a hint on stderr.
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
-import { isLive, listRunRecords, type RunRecord } from "../core/registry.ts";
+import {
+  effectiveStatus,
+  isLive,
+  listRunRecords,
+  type RunRecord,
+} from "../core/registry.ts";
 
 const REDRAW_MS = 500;
 const HOUR_MS = 3_600_000;
@@ -43,20 +48,23 @@ function padL(s: string, w: number): string {
 }
 
 // STATUS glyphs: plain ASCII base, colored when the terminal allows it
-// (● green running / ✓ success / ✗ red error / ! yellow aborted).
+// (● green running / ✓ success / ✗ red error / ! yellow aborted, and the
+// same ! yellow for interrupted — derived via effectiveStatus, never stored).
 type Status = RunRecord["status"];
 const GLYPHS: Record<Status, string> = {
   running: "*",
   success: "+",
   error: "x",
   aborted: "!",
+  interrupted: "!",
 };
 
 function statusCell(rec: RunRecord, ansi: boolean, w: number): string {
-  const plain = padR(GLYPHS[rec.status], w);
-  if (!ansi || rec.status === "success") return plain;
-  const glyph = rec.status === "running" ? "●" : rec.status === "error" ? "✗" : "!";
-  return `\x1b[${rec.status === "running" ? 32 : rec.status === "error" ? 31 : 33}m${glyph}\x1b[0m` + plain.slice(1);
+  const status = effectiveStatus(rec);
+  const plain = padR(GLYPHS[status], w);
+  if (!ansi || status === "success") return plain;
+  const glyph = status === "running" ? "●" : status === "error" ? "✗" : "!";
+  return `\x1b[${status === "running" ? 32 : status === "error" ? 31 : 33}m${glyph}\x1b[0m` + plain.slice(1);
 }
 
 // ---------------------------------------------------------------- table
@@ -235,7 +243,11 @@ export async function cmdDash(rest: string[]): Promise<number> {
     if (!args.values.json) {
       process.stderr.write("dash: stdout is not a TTY — dumping JSON (pass --json to silence this hint)\n");
     }
-    const recs = listRunRecords(dir).map((r) => ({ ...r, live: isLive(r) }));
+    const recs = listRunRecords(dir).map((r) => ({
+      ...r,
+      live: isLive(r),
+      effectiveStatus: effectiveStatus(r),
+    }));
     process.stdout.write(JSON.stringify(recs, null, 2) + "\n");
     return 0;
   }
