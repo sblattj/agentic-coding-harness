@@ -235,7 +235,7 @@ export class KiroAcpClient {
     this.#env = opts.env;
     this.#spawnFn = opts.spawnFn ?? defaultSpawnFn;
     this.#startupMs = opts.startupMs ?? 60_000;
-    this.#clientInfo = opts.clientInfo ?? { name: 'agent-harness', version: '0.4.1' };
+    this.#clientInfo = opts.clientInfo ?? { name: 'agent-harness', version: '0.4.2' };
     this.#onPermission = opts.onPermission ?? denyAllPermissions;
     this.#termGraceMs = opts.termGraceMs ?? 2_000;
     this.#killGraceMs = opts.killGraceMs ?? 3_000;

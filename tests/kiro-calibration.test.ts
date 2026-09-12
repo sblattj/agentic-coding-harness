@@ -272,13 +272,14 @@ function calibrate(transport: "headless" | "acp"): void {
   );
 
   // --- provenance ---------------------------------------------------------
-  // The harness does NOT normalize cliVersion across transports: headless
-  // parses `kiro-cli --version` stdout (src/adapters/kiro.ts, `#cliVersion`)
-  // and keeps the "kiro-cli " prefix; ACP takes the handshake's
-  // `agentInfo.version` (src/adapters/kiro-acp.ts, `handshake`) which is bare.
-  // Both degrade to the literal 'unknown' on failure, so each regex is a real
-  // assertion; the cross-run test below pins that the NUMBERS agree.
-  const versionRe = transport === "headless" ? /^kiro-cli \d+\.\d+/ : /^\d+\.\d+/;
+  // The harness normalizes cliVersion to the bare version number on both
+  // transports via parseKiroCliVersion (src/adapters/kiro.ts): headless
+  // parses `kiro-cli --version` stdout down to the bare number in
+  // `#cliVersion`, and ACP already reports the handshake's bare
+  // `agentInfo.version`. Both degrade to the literal 'unknown' on failure
+  // (headless only), so this regex is a real assertion; the cross-run test
+  // below pins that the NUMBERS agree.
+  const versionRe = /^\d+\.\d+\.\d+/;
   assert.match(
     json.kiro.cliVersion,
     versionRe,
@@ -385,10 +386,9 @@ describe("kiro paid calibration", () => {
       2,
       `expected both paid runs to have completed, got ${observations.length}`,
     );
-    const numeric = observations.map((o) => o.cliVersion.replace(/^kiro-cli\s+/, ""));
     assert.equal(
-      numeric[0],
-      numeric[1],
+      observations[0]?.cliVersion,
+      observations[1]?.cliVersion,
       `headless reported '${observations[0]?.cliVersion}' and acp reported '${observations[1]?.cliVersion}'`,
     );
     const total = observations.reduce((a, o) => a + o.credits, 0);

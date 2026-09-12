@@ -24,6 +24,7 @@ import {
   type AcpMode,
   type HandshakeReceipt,
 } from './kiro-acp.ts';
+import { parseKiroCliVersion } from './kiro.ts';
 import { defaultSpawnFn, LineAssembler, type SpawnFn } from './shared.ts';
 
 export type PreflightCheckName =
@@ -179,10 +180,10 @@ export async function kiroPreflight(cfg: KiroPreflightConfig): Promise<Preflight
   }
 
   const versionText = String(version.value ?? '');
-  const m = /(\d+\.\d+\.\d+[^\s]*)/.exec(versionText);
-  if (m?.[1]) {
-    receipt.cliVersion = m[1];
-    record('version', 'verified', `kiro-cli ${m[1]}`);
+  const parsed = parseKiroCliVersion(versionText);
+  if (parsed) {
+    receipt.cliVersion = parsed;
+    record('version', 'verified', `kiro-cli ${parsed}`);
   } else {
     record('version', 'unproven', `could not parse a version out of '${versionText.slice(0, 80)}'`);
   }

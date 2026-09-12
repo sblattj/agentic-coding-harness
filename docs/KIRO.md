@@ -141,10 +141,8 @@ Details and the fixture-backed source table are in
 - `--trust-tools` on 2.21.2 did **not** block a `read` and no `session/request_permission`
   arrived, so a tool restriction is recorded per tool from evidence, never asserted from the flag.
 - Fixtures are 2.21.2. The 2.21.4 sample in issue #2 uses the same envelope family; the
-  compatibility check is the `kiro-cli --version` line in `result.kiro.cliVersion`.
-- `kiro.cliVersion` is **not normalized across transports**: headless parses `kiro-cli --version`
-  stdout and keeps the prefix (`kiro-cli 2.21.2`); ACP reports the handshake's bare
-  `agentInfo.version` (`2.21.2`). Strip a leading `kiro-cli ` before comparing the two.
+  compatibility check is the version number in `result.kiro.cliVersion` (`2.21.2` on both
+  transports; `'unknown'` when the probe or handshake failed).
 
 ## Paid calibration (opt-in)
 

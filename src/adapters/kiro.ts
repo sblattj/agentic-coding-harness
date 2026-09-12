@@ -100,6 +100,24 @@ interface VersionProbe {
 /** Ceiling for the `kiro-cli --version` probe; past it the version is 'unknown'. */
 export const KIRO_VERSION_PROBE_MS = 3_000;
 
+/** Matches the bare version number inside raw `kiro-cli --version` output. */
+export const KIRO_VERSION_RE = /(\d+\.\d+\.\d+[^\s]*)/;
+
+/**
+ * Parse a `kiro-cli --version` stdout blob (e.g. `'kiro-cli 2.21.2\n'`) or a
+ * bare version string (e.g. `'2.21.4-beta.1'`) down to the bare version
+ * number. Returns `null` when no version-shaped substring is found (e.g.
+ * `''` or `'no version here'`).
+ *
+ * This is the cross-transport `cliVersion` shape: headless (this file's
+ * `#cliVersion`) and the preflight version check both run raw CLI stdout
+ * through this parser so `result.kiro.cliVersion` reads the same bare number
+ * (`2.21.2`) as ACP's `agentInfo.version`, which is already bare.
+ */
+export function parseKiroCliVersion(raw: string): string | null {
+  return KIRO_VERSION_RE.exec(raw)?.[1] ?? null;
+}
+
 /** Default agent engine when `spec.kiro.engine` is not given. */
 export const KIRO_DEFAULT_ENGINE = 'v2';
 
@@ -646,7 +664,9 @@ export class KiroAdapter implements CoreAgentAdapter {
           out += String(chunk);
         });
         proc.once('error', () => done('unknown'));
-        proc.once('close', () => done(out.trim() === '' ? 'unknown' : out.trim()));
+        proc.once('close', () =>
+          done(parseKiroCliVersion(out) ?? (out.trim() === '' ? 'unknown' : out.trim())),
+        );
         // Ceiling: a binary that ignores --version and hangs (or a fake that
         // does) must never hold wait() open — version.settle() waits on this.
         const ceiling = setTimeout(() => {

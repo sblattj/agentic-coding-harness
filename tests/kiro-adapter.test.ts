@@ -11,6 +11,7 @@ import {
   kiroTrustFlag,
   mapKiroTokens,
   mitmRecordToUsageEvent,
+  parseKiroCliVersion,
   parseKiroLine,
   parseKiroLineRecord,
   tapTokensAvailable,
@@ -191,6 +192,13 @@ describe('kiro adapter', () => {
     assert.equal(tokens.outputTokens, 2);
     assert.equal(tokens.totalTokens, null);
   });
+
+  it('parseKiroCliVersion extracts the bare version number, or null when unparseable', () => {
+    assert.equal(parseKiroCliVersion('kiro-cli 2.21.2\n'), '2.21.2');
+    assert.equal(parseKiroCliVersion('2.21.4-beta.1'), '2.21.4-beta.1');
+    assert.equal(parseKiroCliVersion(''), null);
+    assert.equal(parseKiroCliVersion('no version here'), null);
+  });
 });
 
 describe('kiro launch (driver contract)', () => {
@@ -359,7 +367,7 @@ describe('kiro launch (driver contract)', () => {
     const first = adapter.launch({ prompt: 'a' });
     child1.close(0);
     const handle1 = await first;
-    assert.equal(handle1.kiro?.()?.cliVersion, 'kiro-cli 2.21.2');
+    assert.equal(handle1.kiro?.()?.cliVersion, '2.21.2');
 
     const second = adapter.launch({ prompt: 'b' });
     child1.close(0);
@@ -368,6 +376,18 @@ describe('kiro launch (driver contract)', () => {
     const versionCalls = calls.filter((c) => c.args[0] === '--version');
     assert.equal(versionCalls.length, 1, 'the --version probe must be cached per adapter instance');
     assert.equal(versionCalls[0]!.command, 'kiro-cli');
+  });
+
+  it('an unparseable but non-empty `--version` probe is kept verbatim', async () => {
+    const calls: FakeSpawnCall[] = [];
+    const child = new FakeChild();
+    const spawnFn = versionProbeSpawnFn(child, calls, 'garbage output\n');
+    const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn });
+
+    const launch = adapter.launch({ prompt: 'a' });
+    child.close(0);
+    const handle = await launch;
+    assert.equal(handle.kiro?.()?.cliVersion, 'garbage output');
   });
 
   it('a hung `--version` probe never holds launch()/wait() open: cliVersion falls back to unknown', async () => {
@@ -470,7 +490,7 @@ describe('kiro launch (driver contract)', () => {
     const first = await run('prompt one');
     assert.ok(first);
     assert.equal(first!.transport, 'headless');
-    assert.equal(first!.cliVersion, 'kiro-cli 2.21.2');
+    assert.equal(first!.cliVersion, '2.21.2');
     assert.equal(first!.nativeSessionId, 'sid-eff');
     assert.deepEqual(first!.requested, { agent: 'reviewer', tools: ['fs_read'] });
     assert.deepEqual(first!.effective, {
