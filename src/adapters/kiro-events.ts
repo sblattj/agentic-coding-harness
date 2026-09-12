@@ -104,6 +104,11 @@ export interface KiroStderrModelAck {
   model: string;
 }
 
+export interface KiroStderrNotice {
+  notice: 'mcpRegistrationFailed';
+  warning: string;
+}
+
 // ----------------------------------------------------------------- helpers
 
 const SESSION_TYPES = new Set(['session', 'session_start']);
@@ -169,6 +174,26 @@ export function parseKiroStderrLine(line: string): KiroStderrModelAck | null {
   const m = /^\s*\[warn\]\s+failed to set model\s+'([^']*)'\s*:/.exec(line);
   if (!m) return null;
   return { kind: 'modelAckUnsupported', model: m[1] ?? '' };
+}
+
+/**
+ * Parse a headless stderr notice worth surfacing as a `stderrNotice` step and
+ * a driver warning, distinct from `parseKiroStderrLine`'s model-ack signal.
+ * Currently recognizes kiro-cli's MCP dynamic client registration failure,
+ * e.g. when a `~/.kiro/settings/mcp.json` (or agent `mcpServers`) entry points
+ * at a server that rejects OAuth dynamic registration:
+ *   `Dynamic registration failed: Registration failed: HTTP 400 Bad Request: ...`
+ * The line never names the offending server; do not try to extract one.
+ * Anything else → null. Pure.
+ */
+export function parseKiroStderrNotice(line: string): KiroStderrNotice | null {
+  if (!/^\s*Dynamic registration failed:/.test(line)) return null;
+  return {
+    notice: 'mcpRegistrationFailed',
+    warning:
+      "kiro: MCP dynamic client registration failed (a server in ~/.kiro/settings/mcp.json or the agent's mcpServers rejected registration): " +
+      line,
+  };
 }
 
 // -------------------------------------------------------------- normalizer

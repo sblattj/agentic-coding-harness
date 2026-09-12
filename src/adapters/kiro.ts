@@ -24,6 +24,10 @@
 // `[warn] failed to set model 'X': Method not found` line sets
 // `modelAck:'unsupported'` for the run and emits a `step` with
 // `payload.kind:'modelAck'` so the evidence lands in the transcript.
+// stderr is also scanned with `parseKiroStderrNotice` (kiro-events.ts) for
+// non-fatal notices worth surfacing, e.g. an MCP dynamic-registration
+// failure; a hit emits a `step` with `payload.kind:'stderrNotice'` (headless
+// transport only — see docs/KIRO.md "stderr notices").
 //
 // EFFECTIVE CONFIG. Every run records a `KiroEffective` (requested config,
 // resolved argv minus the prompt, trust flag, engine, agent, model, native
@@ -64,7 +68,7 @@ import {
   type HouseEventLike,
   type SpawnFn,
 } from './shared.ts';
-import { createKiroNormalizer, parseKiroStderrLine, type KiroNormalizer } from './kiro-events.ts';
+import { createKiroNormalizer, parseKiroStderrLine, parseKiroStderrNotice, type KiroNormalizer } from './kiro-events.ts';
 import { launchKiroAcp } from './kiro-acp-launch.ts';
 import { findKiroMitmPort, mitmdumpAvailable, startKiroMitm, tapEnv, type KiroMitmHandle } from '../monitors/kiro-mitm.js';
 
@@ -550,21 +554,38 @@ export class KiroAdapter implements CoreAgentAdapter {
       },
       onStderrLine: (line): CanonicalEvent[] | void => {
         const ack = parseKiroStderrLine(line);
-        if (!ack) return;
-        state.modelAck = 'unsupported';
-        return [
-          {
-            type: 'step',
-            payload: {
-              kind: 'modelAck',
-              transport: 'headless',
-              countsAsTurn: false,
-              modelAck: 'unsupported',
-              model: ack.model,
-              raw: line,
+        if (ack) {
+          state.modelAck = 'unsupported';
+          return [
+            {
+              type: 'step',
+              payload: {
+                kind: 'modelAck',
+                transport: 'headless',
+                countsAsTurn: false,
+                modelAck: 'unsupported',
+                model: ack.model,
+                raw: line,
+              },
             },
-          },
-        ];
+          ];
+        }
+        const notice = parseKiroStderrNotice(line);
+        if (notice) {
+          return [
+            {
+              type: 'step',
+              payload: {
+                kind: 'stderrNotice',
+                transport: 'headless',
+                countsAsTurn: false,
+                notice: notice.notice,
+                warning: notice.warning,
+                raw: line,
+              },
+            },
+          ];
+        }
       },
       spawnFn: this.#spawnFn,
     });

@@ -452,6 +452,37 @@ describe('kiro launch (driver contract)', () => {
     assert.equal(effective!.requested.transport, undefined);
   });
 
+  it('an MCP dynamic-registration-failure stderr line emits a stderrNotice step', async () => {
+    const child = new FakeChild();
+    const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn: versionProbeSpawnFn(child, []) });
+
+    const F3_LINE =
+      'Dynamic registration failed: Registration failed: HTTP 400 Bad Request: malformed payload: invalid message version tag ""; expected "2.0"';
+    const launchPromise = adapter.launch({ prompt: 'ack me' });
+    child.writeStderr(`${F3_LINE}\n`);
+    child.writeStdout('{"type":"runFinished","data":{"sessionId":"sid-notice","status":"success"}}\n');
+    child.close(0);
+    const handle = await launchPromise;
+
+    const events: { type: string; data?: unknown }[] = [];
+    for await (const event of handle.attach()) events.push(event as { type: string; data?: unknown });
+    assert.equal(await handle.wait(), 'success');
+
+    const noticeStep = events.find(
+      (e) => e.type === 'step' && (e.data as { kind?: string } | undefined)?.kind === 'stderrNotice',
+    );
+    assert.ok(noticeStep, `no stderrNotice step: ${JSON.stringify(events.map((e) => e.type))}`);
+    const data = noticeStep!.data as { countsAsTurn?: boolean; transport?: string; warning?: string; raw?: string };
+    assert.equal(data.countsAsTurn, false);
+    assert.equal(data.transport, 'headless');
+    assert.equal(data.raw, F3_LINE);
+    assert.ok(data.warning?.includes(F3_LINE), `warning must contain the raw line: ${data.warning}`);
+
+    // The shared runner still forwards the raw line as `progress` (F2: never suppressed).
+    const progress = events.find((e) => e.type === 'progress' && (e as unknown as { text?: string }).text === F3_LINE);
+    assert.ok(progress, 'stderr line must still surface as a progress event');
+  });
+
   it('a model with no warning is unverified (headless never acknowledges); no model is not-requested', async () => {
     const childA = new FakeChild();
     const a = new KiroAdapter({ command: 'kiro-cli', spawnFn: versionProbeSpawnFn(childA, []) });
