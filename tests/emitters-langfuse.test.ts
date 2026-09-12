@@ -138,6 +138,137 @@ describe('toLangfuseOtlpJson', () => {
   });
 });
 
+describe('toLangfuseOtlpJson multi-model slice split', () => {
+  const multiModelEvents = (): AgentEvent[] => [
+    { type: 'message', source: 'user', content: 'go', timestamp: T0 },
+    {
+      type: 'usage',
+      usage: {
+        inputTokens: 989,
+        outputTokens: 478,
+        cacheReadTokens: 58791,
+        cacheWriteTokens: 6369,
+        reasoningTokens: 0,
+        costUsd: 0.08191275,
+        model: 'claude-opus-5[1m]',
+        extra: {
+          raw: {
+            input: 989,
+            output: 478,
+            cacheRead: 58791,
+            cacheWrite: 6369,
+            reasoning: 0,
+            costUsd: 0.08191275,
+            models: [
+              {
+                model: 'claude-opus-5[1m]',
+                input: 8,
+                output: 465,
+                cacheRead: 58791,
+                cacheWrite: 6369,
+                reasoning: 0,
+                costUsd: 0.08086675,
+              },
+              {
+                model: 'claude-haiku-4-5-20251001',
+                input: 981,
+                output: 13,
+                cacheRead: 0,
+                cacheWrite: 0,
+                reasoning: 0,
+                costUsd: 0.001046,
+              },
+            ],
+          },
+        },
+      },
+      timestamp: T0 + 100,
+    },
+  ];
+
+  it('replaces one flattened chat span with one generation per slice', () => {
+    const spans = toLangfuseOtlpJson(multiModelEvents(), opts).resourceSpans[0].scopeSpans[0].spans;
+    const names = spans.map((s) => s.name);
+    assert.deepEqual(names, [
+      'invoke_agent harness-agent',
+      'chat claude-opus-5[1m]',
+      'chat claude-haiku-4-5-20251001',
+    ]);
+    const generations = spans.filter((s) => attr(s, 'langfuse.observation.type') === 'generation');
+    assert.equal(generations.length, 2);
+    // root span id is the parent for both
+    const root = findSpan(spans, 'invoke_agent harness-agent');
+    for (const g of generations) {
+      assert.equal(g.parentSpanId, root.spanId);
+      assert.equal(g.traceId, root.traceId);
+      assert.equal(attr(g, 'langfuse.session.id'), 'sess-42');
+    }
+  });
+
+  it('each slice carries its own model name, exclusive usage buckets, and cost', () => {
+    const spans = toLangfuseOtlpJson(multiModelEvents(), opts).resourceSpans[0].scopeSpans[0].spans;
+    const opus = findSpan(spans, 'chat claude-opus-5[1m]');
+    assert.equal(attr(opus, 'langfuse.observation.model.name'), 'claude-opus-5[1m]');
+    assert.deepEqual(JSON.parse(attr(opus, 'langfuse.observation.usage_details') as string), {
+      input: 8,
+      output: 465,
+      cache_read_input_tokens: 58791,
+      cache_creation_input_tokens: 6369,
+    });
+    assert.deepEqual(JSON.parse(attr(opus, 'langfuse.observation.cost_details') as string), {
+      total: 0.080867,
+    });
+
+    const haiku = findSpan(spans, 'chat claude-haiku-4-5-20251001');
+    assert.equal(attr(haiku, 'langfuse.observation.model.name'), 'claude-haiku-4-5-20251001');
+    assert.deepEqual(JSON.parse(attr(haiku, 'langfuse.observation.usage_details') as string), {
+      input: 981,
+      output: 13,
+    });
+    assert.deepEqual(JSON.parse(attr(haiku, 'langfuse.observation.cost_details') as string), {
+      total: 0.001046,
+    });
+  });
+
+  it('slice totals add up to the flattened record total (no double count, no loss)', () => {
+    const spans = toLangfuseOtlpJson(multiModelEvents(), opts).resourceSpans[0].scopeSpans[0].spans;
+    const generations = spans.filter((s) => attr(s, 'langfuse.observation.type') === 'generation');
+    const total = generations.reduce((acc, s) => {
+      const c = JSON.parse(attr(s, 'langfuse.observation.cost_details') as string) as { total: number };
+      return acc + c.total;
+    }, 0);
+    assert.equal(Math.round(total * 1e6) / 1e6, 0.081913); // == round6(0.08191275)
+  });
+
+  it('single-model events (1 slice) keep the original span shape', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'usage',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          costUsd: 0.0001,
+          model: 'solo-model',
+          extra: {
+            raw: {
+              models: [
+                { model: 'solo-model', input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0.0001 },
+              ],
+            },
+          },
+        },
+        timestamp: T0,
+      },
+    ];
+    const spans = toLangfuseOtlpJson(events, opts).resourceSpans[0].scopeSpans[0].spans;
+    const names = spans.map((s) => s.name);
+    // 1 slice → no split; falls through to the flat chat span branch
+    assert.deepEqual(names, ['invoke_agent harness-agent', 'chat test-model']);
+  });
+});
+
 describe('emitToLangfuse', () => {
   function mockFetch(status: number, body = ''): typeof fetch & { calls: unknown[] } {
     const calls: unknown[] = [];

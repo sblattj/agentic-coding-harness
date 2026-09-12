@@ -36,6 +36,7 @@ import { kiroPreflight } from "../adapters/kiro-preflight.ts";
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
+import { cmdWeb } from "./web.ts";
 
 const USAGE = `harness — unified agent run harness
 
@@ -65,6 +66,10 @@ usage:
   harness serve [--http] [--port N=8399] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENT_HARNESS_HTTP_TOKEN)
+  harness web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
+              [--dir D] [--no-open]
+                (browser dashboard over the live registry; token via --token
+                 or env AGENT_HARNESS_HTTP_TOKEN; --no-open skips the browser)
 
 env:
   AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)
@@ -695,13 +700,35 @@ async function cmdEmit(rest: string[]): Promise<number> {
   }
   const events = stream.data as unknown as AgentEvent[];
 
+  // When --input is a full RunResult (not just an event stream), inherit its
+  // sessionId/agent/model so callers don't have to restate them per-flag.
+  const runResult = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+    ? parsed as { sessionId?: unknown; agent?: unknown; model?: unknown; tokens?: unknown }
+    : {};
+  // RunResult doesn't carry top-level agent/model — fall back to the first
+  // token record's fields so Langfuse span names stay meaningful.
+  const firstToken = Array.isArray(runResult.tokens) && runResult.tokens.length > 0
+    ? runResult.tokens[0] as { agent?: unknown; model?: unknown }
+    : {};
+  const defaultSessionId = typeof runResult.sessionId === "string" && runResult.sessionId !== ""
+    ? runResult.sessionId
+    : "unknown-session";
+  const defaultAgent =
+    (typeof runResult.agent === "string" && runResult.agent !== "" && runResult.agent) ||
+    (typeof firstToken.agent === "string" && firstToken.agent !== "" && firstToken.agent) ||
+    "unknown-agent";
+  const defaultModel =
+    (typeof runResult.model === "string" && runResult.model !== "" && runResult.model) ||
+    (typeof firstToken.model === "string" && firstToken.model !== "" && firstToken.model) ||
+    "unknown-model";
+
   let body: string;
   if (format === "atif") {
     const writer = AtifWriter.fromEvents(events, {
-      agent: args.values.agent ?? "unknown-agent",
+      agent: args.values.agent ?? defaultAgent,
       version: VERSION,
-      modelName: args.values.model ?? "unknown-model",
-      sessionId: args.values["session-id"],
+      modelName: args.values.model ?? defaultModel,
+      sessionId: args.values["session-id"] ?? defaultSessionId,
     });
     if (args.values.out) {
       const doc = writer.finalize(args.values.out);
@@ -734,9 +761,9 @@ async function cmdEmit(rest: string[]): Promise<number> {
         baseUrl,
         publicKey,
         secretKey,
-        sessionId: args.values["session-id"] ?? "unknown-session",
-        agentName: args.values.agent ?? "unknown-agent",
-        model: args.values.model ?? "unknown-model",
+        sessionId: args.values["session-id"] ?? defaultSessionId,
+        agentName: args.values.agent ?? defaultAgent,
+        model: args.values.model ?? defaultModel,
       });
     } catch (e) {
       throw new HarnessError(
@@ -761,9 +788,9 @@ async function cmdEmit(rest: string[]): Promise<number> {
     return 0;
   } else {
     const doc = toOtlpJson(events, {
-      sessionId: args.values["session-id"] ?? "unknown-session",
-      agentName: args.values.agent ?? "unknown-agent",
-      model: args.values.model ?? "unknown-model",
+      sessionId: args.values["session-id"] ?? defaultSessionId,
+      agentName: args.values.agent ?? defaultAgent,
+      model: args.values.model ?? defaultModel,
     });
     body = JSON.stringify(doc, null, 2) + "\n";
     if (args.values.out) await fs.writeFile(args.values.out, body);
@@ -797,6 +824,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdDash(rest);
     case "serve":
       return cmdServe(rest);
+    case "web":
+      return cmdWeb(rest);
     case "help":
     case "--help":
     case "-h":
