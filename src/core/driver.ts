@@ -224,6 +224,9 @@ export function createDriver(options: DriverOptions): Driver {
 
       let cumulativeCost = 0;
       let steps = 0;
+      // One model warning per run, whichever cause fires first (a rejected ack
+      // wins over the post-hoc session-store mismatch: same cause, one line).
+      let modelAckWarned = false;
       let enforcedStatus: ExitStatus | null = null;
 
       const drainPricerWarnings = () => warnings.push(...pricer.drainWarnings());
@@ -415,6 +418,26 @@ export function createDriver(options: DriverOptions): Driver {
             }
           }
 
+          if (event.type === 'step') {
+            // Same payload accessor as countsAsTurn(): an adapter may emit
+            // `payload` directly, and houseEventToCore renames it to `data`.
+            const raw = (event as { payload?: unknown }).payload ?? (event as { data?: unknown }).data;
+            const p = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : undefined;
+            // A rejected --model is otherwise silent: the run completes on the
+            // CLI default and nothing in the result says the override was lost.
+            if (p?.kind === 'modelAck' && p.modelAck === 'unsupported' && !modelAckWarned) {
+              modelAckWarned = true;
+              const asked = typeof p.model === 'string' && p.model !== '' ? p.model : (parsed.model ?? 'unknown');
+              warnings.push(
+                `kiro: requested model '${asked}' was not applied (kiro-cli rejected --model: Method not found); the run used the CLI default`,
+              );
+            }
+            // Classified stderr notices carry their own operator-facing text.
+            if (p?.kind === 'stderrNotice' && typeof p.warning === 'string') {
+              if (!warnings.includes(p.warning)) warnings.push(p.warning);
+            }
+          }
+
           if (event.type === 'step' && countsAsTurn(agentName, event)) {
             steps++;
             // Enforce the turn ceiling only when the adapter doesn't do it itself.
@@ -500,6 +523,20 @@ export function createDriver(options: DriverOptions): Driver {
             for (const t of tokens) {
               if (!t.model || t.model === 'unknown') t.model = sessionStore.model;
             }
+          }
+          // The ACP transport (and any future CLI that accepts --model and then
+          // ignores it) drops the override with no stderr notice at all. The
+          // store is the only witness. Skipped when the ack already explained it.
+          if (
+            parsed.model !== undefined &&
+            sessionStore.model !== undefined &&
+            sessionStore.model !== parsed.model &&
+            !modelAckWarned
+          ) {
+            modelAckWarned = true;
+            warnings.push(
+              `kiro: requested model '${parsed.model}' but the session store recorded '${sessionStore.model}'`,
+            );
           }
         } else {
           warnings.push(`kiro: ${read.reason}`);

@@ -38,6 +38,9 @@ lane only.
 - `not-requested` — no `--model` was given; `effective.model` is whatever `session/new` reported
   (`auto` on a fresh session).
 
+An `unsupported` ack also surfaces in `result.warnings` (once per run), as does a requested model
+that disagrees with the model the session store recorded.
+
 `configHash` is a stable hash of the sanitized `effective` object so two runs can be compared for
 "same configuration" without diffing artifacts. Credentials are never copied into `effective`.
 

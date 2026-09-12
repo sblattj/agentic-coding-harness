@@ -763,6 +763,85 @@ describe('kiro usage truth', () => {
     assert.deepEqual(result.kiro, { transport: 'acp', modelAck: 'acknowledged' } as never);
   });
 
+  it('surfaces a rejected --model (modelAck unsupported) as exactly one warning', async () => {
+    seedKiroSessionStore('no-such-session');
+    const driver = createDriver({ adapters: { kiro: new KiroMockAdapter('kiro-x') }, stateDir: tmpStateDir() });
+    const ack = (): KiroScripted => ({
+      type: 'step',
+      payload: {
+        kind: 'modelAck',
+        transport: 'headless',
+        countsAsTurn: false,
+        modelAck: 'unsupported',
+        model: 'claude-haiku-4.5',
+        raw: "[warn] failed to set model 'claude-haiku-4.5': Method not found",
+      },
+    });
+    const result = await driver.run('kiro', {
+      prompt: 'ping',
+      model: 'claude-haiku-4.5',
+      kiroEvents: [ack(), kiroChunk(), ack(), kiroUsage(), kiroTurnEnd()],
+    });
+    assert.deepEqual(
+      result.warnings.filter((w) => /requested model/.test(w)),
+      [
+        "kiro: requested model 'claude-haiku-4.5' was not applied (kiro-cli rejected --model: Method not found); the run used the CLI default",
+      ],
+      result.warnings.join(' | '),
+    );
+  });
+
+  it('forwards a stderrNotice warning into result.warnings once even when emitted twice', async () => {
+    seedKiroSessionStore('no-such-session');
+    const driver = createDriver({ adapters: { kiro: new KiroMockAdapter('kiro-x') }, stateDir: tmpStateDir() });
+    const notice = (): KiroScripted => ({
+      type: 'step',
+      payload: {
+        kind: 'stderrNotice',
+        transport: 'headless',
+        countsAsTurn: false,
+        notice: 'mcpLoadFailed',
+        warning: 'kiro: mcp server "foo" failed to load',
+        raw: '[warn] mcp foo failed',
+      },
+    });
+    const result = await driver.run('kiro', { prompt: 'ping', kiroEvents: [notice(), notice(), kiroUsage()] });
+    assert.deepEqual(
+      result.warnings.filter((w) => /failed to load/.test(w)),
+      ['kiro: mcp server "foo" failed to load'],
+      result.warnings.join(' | '),
+    );
+  });
+
+  it('warns when the session store recorded a different model than the run requested', async () => {
+    // The fixture store records claude-haiku-4.5; the run asked for sonnet and
+    // no modelAck step was emitted (the ACP silent-drop shape).
+    const uuid = '99999999-8888-7777-6666-555555555555';
+    seedKiroSessionStore(uuid);
+    const driver = createDriver({ adapters: { kiro: new KiroMockAdapter('') }, stateDir: tmpStateDir() });
+    const result = await driver.run('kiro', {
+      prompt: 'ping',
+      model: 'claude-sonnet-4.5',
+      kiroEvents: [kiroUsage({ kiroSessionId: uuid }), kiroTurnEnd()],
+    });
+    assert.deepEqual(
+      result.warnings.filter((w) => /requested model/.test(w)),
+      ["kiro: requested model 'claude-sonnet-4.5' but the session store recorded 'claude-haiku-4.5'"],
+      result.warnings.join(' | '),
+    );
+  });
+
+  it('control: no modelAck step and no model request yields no model warning', async () => {
+    seedKiroSessionStore('no-such-session');
+    const driver = createDriver({ adapters: { kiro: new KiroMockAdapter('kiro-x') }, stateDir: tmpStateDir() });
+    const result = await driver.run('kiro', { prompt: 'ping', kiroEvents: [kiroChunk(), kiroUsage(), kiroTurnEnd()] });
+    assert.deepEqual(
+      result.warnings.filter((w) => /requested model/.test(w)),
+      [],
+      result.warnings.join(' | '),
+    );
+  });
+
   it('leaves non-kiro agents counting every step as a turn', async () => {
     const driver = mockDriver(new MockAdapter());
     const result = await driver.run('mock', {
