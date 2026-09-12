@@ -18,6 +18,7 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
     "@opentelemetry/resources": "^2.11.0",
     "@opentelemetry/sdk-trace-node": "^2.11.0",
+    "bun-pty": "0.4.10",
     "zod": "^4.6.1"
   },
   "devDependencies": {

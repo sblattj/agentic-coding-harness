@@ -1,0 +1,327 @@
+<!doctype html>
+<!--
+  term-pane.html — reusable live-terminal pane for the agent-harness dashboard.
+
+  This is a COMPONENT FRAGMENT, not a full page. To embed in grid.html / trio.html:
+
+    1. Host page must already include the vendored xterm assets (same-origin):
+         <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+         <script src="/vendor/xterm/xterm.js"></script>          <!-- global Terminal -->
+         <script src="/vendor/xterm/addon-fit.js"></script>      <!-- global FitAddon.FitAddon -->
+         <script src="/vendor/xterm/addon-webgl.js"></script>    <!-- global WebglAddon.WebglAddon -->
+    2. Copy the <style> and <script> blocks below into the host page
+       (or fetch() this file and eval the script block once).
+    3. Call:  const pane = createTermPane(containerEl, { id, token, live: true });
+              pane.dispose() when the tile goes away.
+
+  WS protocol coded against (server /ws/pty/<id>?token=<t>):
+    server -> client : first frame after open = full session scrollback (raw PTY bytes,
+                       may contain ANSI); then live frames, each one raw PTY byte string;
+                       terminal frame {"type":"exit","exitCode":N} (JSON text), then close.
+    client -> server : raw text frames = keystrokes forwarded to the PTY;
+                       {"type":"resize","cols":C,"rows":R} (JSON text) on pane resize
+                       (also sent once right after open so a reconnected PTY resyncs).
+
+  Standalone demo: open this file as served by the dashboard with ?demo
+  (e.g. /term-pane.html?demo&id=seat1&token=tok) — it injects the vendored
+  assets itself and mounts one full-viewport pane.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>term-pane</title>
+
+<style>
+/* ---- term-pane component styles (class-prefixed "tp-" to avoid host collisions).
+        Every color is var(--tp-*, var(--host-var, fallback)) so the host page's
+        grid palette (--panel/--green/--red/...) is inherited when present. ------ */
+.term-pane {
+  --tp-panel:  var(--panel,  #0a0f0c);
+  --tp-panel2: var(--panel2, #0d1410);
+  --tp-line:   var(--line,   #16241b);
+  --tp-text:   var(--text,   #cdeedd);
+  --tp-dim:    var(--dim,    #7fa08d);
+  --tp-green:  var(--green,  #3dff7c);
+  --tp-red:    var(--red,    #ff6f6f);
+  --tp-amber:  var(--amber,  #ffcf6b);
+  --tp-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;                 /* lets the xterm body shrink inside flex hosts */
+  background: var(--tp-panel);
+  border: 1px solid var(--tp-line);
+  border-radius: 8px;
+  overflow: hidden;
+  font: 12px/1.4 var(--tp-mono);
+  color: var(--tp-text);
+}
+
+/* titlebar: session id / command + status dot */
+.term-pane .tp-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--tp-panel2);
+  border-bottom: 1px solid var(--tp-line);
+  font: 600 10.5px var(--tp-mono);
+  letter-spacing: .06em;
+  user-select: none;
+}
+.term-pane .tp-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--tp-dim);
+  flex: none;
+}
+.term-pane .tp-dot.live {
+  background: var(--tp-green);
+  box-shadow: 0 0 8px var(--tp-green);
+  animation: tp-pulse 1.6s ease-out infinite;
+}
+.term-pane .tp-dot.reconn { background: var(--tp-amber); box-shadow: 0 0 8px var(--tp-amber); }
+.term-pane .tp-dot.dead  { background: var(--tp-red);   box-shadow: 0 0 8px var(--tp-red); }
+.term-pane .tp-title {
+  color: var(--tp-green);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-pane .tp-stat { margin-left: auto; color: var(--tp-dim); font-weight: 400; white-space: nowrap; }
+.term-pane .tp-stat.exited { color: var(--tp-red); }
+.term-pane .tp-stat.reconn { color: var(--tp-amber); }
+@keyframes tp-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(255,255,255,.25), 0 0 8px var(--tp-green); }
+  70%  { box-shadow: 0 0 0 6px transparent, 0 0 8px var(--tp-green); }
+  100% { box-shadow: 0 0 0 0 transparent, 0 0 8px var(--tp-green); }
+}
+
+/* terminal body: xterm fills whatever is left */
+.term-pane .tp-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 2px 2px 6px;
+  background: var(--tp-panel);
+}
+.term-pane .tp-body .terminal { padding: 0; }   /* our own padding instead of xterm's */
+
+@media (prefers-reduced-motion: reduce) {
+  .term-pane .tp-dot.live { animation: none; }
+}
+</style>
+
+<script>
+"use strict";
+
+/* createTermPane(container, opts) -> { el, term, dispose, write }
+   opts: { id, token, live = true, command }
+     id      session id (WS path segment, titlebar label fallback)
+     token   auth token (WS query param)
+     live    true = connect the socket and forward input; false = inert pane
+     command optional label shown in the titlebar instead of id                    */
+function createTermPane(container, opts) {
+  if (typeof Terminal === "undefined")
+    throw new Error("term-pane: host page must load /vendor/xterm/xterm.js (+ xterm.css, addon-fit.js, addon-webgl.js) first");
+  const { id, token, command, live = true } = opts;
+  if (!id) throw new Error("term-pane: opts.id is required");
+
+  // ---- DOM: titlebar + terminal body ------------------------------------------------
+  const el = document.createElement("div");
+  el.className = "term-pane";
+  el.innerHTML =
+    '<div class="tp-bar">' +
+      '<span class="tp-dot"></span>' +
+      '<span class="tp-title"></span>' +
+      '<span class="tp-stat"></span>' +
+    '</div>' +
+    '<div class="tp-body"></div>';
+  const dotEl   = el.querySelector(".tp-dot");
+  const titleEl = el.querySelector(".tp-title");
+  const statEl  = el.querySelector(".tp-stat");
+  const bodyEl  = el.querySelector(".tp-body");
+  titleEl.textContent = command || id;
+  container.appendChild(el);
+
+  // ---- terminal ---------------------------------------------------------------------
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const term = new Terminal({
+    convertEol: true,
+    cursorBlink: !reducedMotion,
+    scrollback: 5000,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontSize: 12,
+    theme: {           // hardcoded palette matching grid.html (xterm can't read CSS vars)
+      background: "#0a0f0c", foreground: "#cdeedd", cursor: "#3dff7c",
+      cursorAccent: "#0a0f0c", selectionBackground: "#1fae5a44",
+      black: "#0a0f0c", red: "#ff6f6f", green: "#3dff7c", yellow: "#ffcf6b",
+      blue: "#5bd7dd", magenta: "#c792ea", cyan: "#5bd7dd", white: "#cdeedd",
+      brightBlack: "#7fa08d", brightWhite: "#ffffff",
+    },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(bodyEl);                 // open BEFORE WebGL, per xterm docs
+  try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) { /* DOM renderer fallback */ }
+  fit.fit();
+  term.focus();
+
+  // ---- status -----------------------------------------------------------------------
+  let dead = false;                  // process exited: no more input, no reconnect
+  function setStatus(cls, text) {
+    dotEl.className = "tp-dot" + (cls ? " " + cls : "");
+    statEl.className = "tp-stat" + (cls === "dead" ? " exited" : cls === "reconn" ? " reconn" : "");
+    statEl.textContent = text;
+  }
+  setStatus(live ? "" : "", live ? "connecting…" : "offline");
+
+  // ---- websocket --------------------------------------------------------------------
+  let sock = null, disposed = false, firstFrame = false;
+  let retryMs = 500, retryTimer = 0;
+  let lastCols = -1, lastRows = -1;
+
+  function connect() {
+    if (disposed || dead || !live) return;
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = proto + "://" + location.host +
+                "/ws/pty/" + encodeURIComponent(id) + "?token=" + encodeURIComponent(token);
+    sock = new WebSocket(url);
+
+    sock.onopen = () => {
+      retryMs = 500;
+      firstFrame = true;              // next frame is the scrollback resync
+      setStatus("live", "live");
+      lastCols = -1;                  // force-send size so the PTY matches the pane
+      sendResize();
+    };
+    sock.onmessage = (ev) => {
+      const data = ev.data;
+      if (firstFrame) {               // server resends full scrollback on (re)connect
+        term.reset();
+        firstFrame = false;
+      }
+      const ctl = parseExitFrame(data);
+      if (ctl) { onExit(ctl.exitCode); return; }
+      term.write(data);               // raw PTY bytes, ANSI included — never escaped
+    };
+    sock.onclose = () => {
+      if (disposed || dead || !live) return;
+      setStatus("reconn", "reconnecting…");
+      retryTimer = setTimeout(connect, retryMs);   // backoff: 0.5s → 1 → 2 → … → 8s cap
+      retryMs = Math.min(retryMs * 2, 8000);
+    };
+    sock.onerror = () => { /* close event follows and drives reconnect */ };
+  }
+
+  // A control frame is a whole-frame JSON object with type:"exit"; anything else
+  // (including raw output that merely starts with '{') is written verbatim.
+  function parseExitFrame(d) {
+    if (typeof d !== "string" || d.length < 20 || d.charCodeAt(0) !== 0x7b /* '{' */) return null;
+    try {
+      const j = JSON.parse(d);
+      return (j && j.type === "exit") ? j : null;
+    } catch { return null; }
+  }
+
+  function onExit(code) {
+    dead = true;
+    term.write("\r\n\x1b[2m[process exited " + (code ?? "?") + "]\x1b[22m\r\n"); // dim exit line
+    setStatus("dead", "exited " + (code ?? "?"));
+    try { sock && sock.close(); } catch {}
+  }
+
+  function sendResize() {
+    if (!sock || sock.readyState !== 1 || dead) return;
+    if (term.cols === lastCols && term.rows === lastRows) return;
+    lastCols = term.cols; lastRows = term.rows;
+    sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  }
+
+  // keystrokes → PTY, only while live, connected, and process alive
+  term.onData((d) => {
+    if (live && !dead && sock && sock.readyState === 1) sock.send(d);
+  });
+
+  // ---- resize tracking ---------------------------------------------------------------
+  let fitReq = 0;
+  const ro = new ResizeObserver(() => {
+    if (disposed) return;
+    cancelAnimationFrame(fitReq);
+    fitReq = requestAnimationFrame(() => { try { fit.fit(); } catch {} sendResize(); });
+  });
+  ro.observe(bodyEl);
+
+  if (live) connect();
+
+  // ---- public surface ------------------------------------------------------------------
+  return {
+    el, term,
+    write: (d) => term.write(d),        // host-injected data (tests, mocks)
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(retryTimer);
+      cancelAnimationFrame(fitReq);
+      ro.disconnect();
+      if (sock) { sock.onclose = sock.onerror = sock.onmessage = sock.onopen = null;
+                  try { sock.close(); } catch {} }
+      try { term.dispose(); } catch {}
+      el.remove();
+    },
+  };
+}
+
+/* ============================ standalone demo ====================================
+   Guarded so embedding hosts that include this whole script stay inert.
+   Open e.g.  /term-pane.html?demo&id=seat1&token=tok  — injects the vendored
+   xterm assets (same-origin /vendor/*) via <script>/<link> (no document.write). */
+if (location.search.includes("demo")) {
+  const q = new URLSearchParams(location.search);
+  const loadScript = (src) => new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = res; s.onerror = () => rej(new Error("load failed: " + src));
+    document.head.appendChild(s);
+  });
+  const loadCss = (href) => new Promise((res, rej) => {
+    const l = document.createElement("link");
+    l.rel = "stylesheet"; l.href = href; l.onload = res; l.onerror = () => rej(new Error("load failed: " + href));
+    document.head.appendChild(l);
+  });
+
+  document.title = "term-pane demo — " + (q.get("id") || "demo");
+  const host = document.createElement("div");
+  host.style.cssText =
+    "--bg:#050806;position:fixed;inset:12px;display:flex;flex-direction:column;" +
+    "background:var(--bg);font:13px/1.45 ui-monospace,Menlo,monospace;color:#cdeedd;";
+  host.innerHTML =
+    '<div style="color:#7fa08d;margin-bottom:8px">term-pane demo — ?demo&amp;id=&lt;id&gt;&amp;token=&lt;t&gt;</div>' +
+    '<div id="tp-demo-mount" style="flex:1;min-height:0"></div>';
+  document.body.appendChild(host);
+
+  loadCss("/vendor/xterm/xterm.css")
+    .then(() => loadScript("/vendor/xterm/xterm.js"))
+    .then(() => loadScript("/vendor/xterm/addon-fit.js"))
+    .then(() => loadScript("/vendor/xterm/addon-webgl.js"))
+    .then(() => {
+      createTermPane(document.getElementById("tp-demo-mount"), {
+        id: q.get("id") || "demo",
+        token: q.get("token") || "",
+        live: true,
+      });
+    })
+    .catch((e) => {
+      const m = document.createElement("pre");
+      m.style.color = "#ff6f6f";
+      m.textContent = "demo: vendor asset load failed — serve this file from the dashboard server.\n" + e;
+      host.appendChild(m);
+    });
+}
+</script>
+</head>
+<body>
+  <!-- component fragment: the demo guard above builds its own host element when
+       ?demo is present; embedders copy the <style> and <script> only -->
+</body>
+</html>

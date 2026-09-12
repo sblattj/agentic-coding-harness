@@ -1,5 +1,5 @@
 // Dashboard web server: static assets, run JSON API, asciicast replays,
-// and the /ws endpoints (runs list broadcast + per-run live tail).
+// and the /ws endpoints (runs list broadcast, per-run live tail, PTY relay).
 //
 // Live per-run text is NOT taken from the hub topic: hub broadcasts carry
 // raw AgentEvents, which the dashboard cannot render. Instead each run
@@ -10,12 +10,14 @@ import { readRunRecord } from "../core/registry.ts";
 import { createRunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC } from "./hub.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
 import { deriveRunObservability } from "./derive.ts";
+import { PtyManager } from "./pty-manager.ts";
 
 export interface WebServerOptions {
   port: number;
   host: string;
   token?: string;
   stateDir: string;
+  ptyManager?: PtyManager;
 }
 
 export interface WebServerHandle {
@@ -34,11 +36,21 @@ interface RunSocketData {
   ended: boolean;
 }
 
-type WsData = RunsSocketData | RunSocketData;
+interface PtySocketData {
+  mode: "pty";
+  sessionId: string;
+  offData: (() => void) | null;
+  offExit: (() => void) | null;
+  closed: boolean;
+}
+
+type WsData = RunsSocketData | RunSocketData | PtySocketData;
 
 const NOT_LIVE_AFTER_MS = 60_000;
 const TAIL_INTERVAL_MS = 500;
 const RUN_ACTION_ROUTE = /^\/api\/runs\/([^/]+)\/([^/]+)$/;
+const PTY_KILL_ROUTE = /^\/api\/pty\/([^/]+)\/kill$/;
+const PTY_WS_ROUTE = /^\/ws\/pty\/([^/]+)$/;
 
 function jsonError(status: number, message: string): Response {
   return Response.json({ error: message }, { status });
@@ -84,6 +96,63 @@ function isRunLive(stateDir: string, runId: string): boolean {
 export function startWebServer(opts: WebServerOptions): WebServerHandle {
   const hub = createRunEventHub(opts.stateDir);
   const tailers = new Set<ReturnType<typeof setInterval>>();
+  const ownsPty = opts.ptyManager === undefined;
+  const ptyManager = opts.ptyManager ?? new PtyManager();
+
+  function detachPtySocket(ws: ServerWebSocket<PtySocketData>): void {
+    ws.data.closed = true;
+    ws.data.offData?.();
+    ws.data.offExit?.();
+    ws.data.offData = null;
+    ws.data.offExit = null;
+  }
+
+  function openPtySocket(ws: ServerWebSocket<PtySocketData>): void {
+    const sessionId = ws.data.sessionId;
+    const info = ptyManager.get(sessionId);
+    if (info === null) {
+      safeSend(ws, JSON.stringify({ type: "exit", exitCode: null }));
+      ws.close();
+      return;
+    }
+    const back = ptyManager.scrollback(sessionId);
+    if (back.length > 0) safeSend(ws, back);
+    if (!info.alive) {
+      ws.data.closed = true;
+      safeSend(ws, JSON.stringify({ type: "exit", exitCode: info.exitCode ?? null }));
+      ws.close();
+      return;
+    }
+    ws.data.offData = ptyManager.onData(sessionId, (data) => {
+      if (!ws.data.closed) safeSend(ws, data);
+    });
+    ws.data.offExit = ptyManager.onExit(sessionId, (exitCode) => {
+      if (ws.data.closed) return;
+      detachPtySocket(ws);
+      safeSend(ws, JSON.stringify({ type: "exit", exitCode }));
+      ws.close();
+    });
+  }
+
+  function handlePtyMessage(ws: ServerWebSocket<PtySocketData>, msg: string | Buffer): void {
+    const data = typeof msg === "string" ? msg : msg.toString("utf8");
+    if (data.startsWith("{")) {
+      try {
+        const ctrl = JSON.parse(data) as { type?: unknown; cols?: unknown; rows?: unknown };
+        if (ctrl !== null && typeof ctrl === "object" && ctrl.type === "resize") {
+          const cols = Number(ctrl.cols);
+          const rows = Number(ctrl.rows);
+          if (Number.isInteger(cols) && cols > 0 && Number.isInteger(rows) && rows > 0) {
+            ptyManager.resize(ws.data.sessionId, cols, rows);
+          }
+          return;
+        }
+      } catch {
+        // not a control frame; treat as raw keystrokes below
+      }
+    }
+    ptyManager.write(ws.data.sessionId, data);
+  }
 
   function sendEnd(ws: ServerWebSocket<RunSocketData>): void {
     if (ws.data.ended) return;
@@ -188,6 +257,73 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
         return notFound();
       }
 
+      if (pathname === "/api/pty") {
+        if (get) return Response.json({ sessions: ptyManager.list() });
+        if (req.method !== "POST") return notFound();
+        let body: unknown;
+        try {
+          body = await req.json();
+        } catch {
+          return jsonError(400, "invalid JSON body");
+        }
+        const b = body as Record<string, unknown>;
+        if (typeof b.command !== "string" || b.command.length === 0) {
+          return jsonError(400, "command must be a non-empty string");
+        }
+        if (b.args !== undefined && (!Array.isArray(b.args) || !b.args.every((a) => typeof a === "string"))) {
+          return jsonError(400, "args must be an array of strings");
+        }
+        if (b.cwd !== undefined && typeof b.cwd !== "string") return jsonError(400, "cwd must be a string");
+        if (b.cols !== undefined && (!Number.isInteger(b.cols) || (b.cols as number) < 1)) {
+          return jsonError(400, "cols must be a positive integer");
+        }
+        if (b.rows !== undefined && (!Number.isInteger(b.rows) || (b.rows as number) < 1)) {
+          return jsonError(400, "rows must be a positive integer");
+        }
+        try {
+          const info = await ptyManager.spawn({
+            command: b.command,
+            args: b.args as string[] | undefined,
+            cwd: b.cwd as string | undefined,
+            cols: b.cols as number | undefined,
+            rows: b.rows as number | undefined,
+          });
+          return Response.json(info, { status: 201 });
+        } catch (err) {
+          return jsonError(400, `spawn failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      const ptyKill = PTY_KILL_ROUTE.exec(pathname);
+      if (ptyKill !== null && req.method === "POST") {
+        let sessionId: string;
+        try {
+          sessionId = decodeURIComponent(ptyKill[1] as string);
+        } catch {
+          sessionId = ptyKill[1] as string;
+        }
+        if (!ptyManager.kill(sessionId)) return notFound();
+        return Response.json({ ok: true });
+      }
+
+      const ptyWs = PTY_WS_ROUTE.exec(pathname);
+      if (ptyWs !== null) {
+        if (!get) return notFound();
+        if (opts.token !== undefined && url.searchParams.get("token") !== opts.token) {
+          return jsonError(401, "unauthorized");
+        }
+        let sessionId: string;
+        try {
+          sessionId = decodeURIComponent(ptyWs[1] as string);
+        } catch {
+          sessionId = ptyWs[1] as string;
+        }
+        if (ptyManager.get(sessionId) === null) return notFound();
+        const data: PtySocketData = { mode: "pty", sessionId, offData: null, offExit: null, closed: false };
+        if (srv.upgrade(req, { data })) return undefined;
+        return jsonError(400, "upgrade failed");
+      }
+
       if (pathname === "/ws") {
         if (!get) return notFound();
         if (opts.token !== undefined && url.searchParams.get("token") !== opts.token) {
@@ -212,6 +348,10 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
     },
     websocket: {
       open(ws: ServerWebSocket<WsData>): void {
+        if (ws.data.mode === "pty") {
+          openPtySocket(ws as ServerWebSocket<PtySocketData>);
+          return;
+        }
         if (ws.data.mode === "runs") {
           ws.subscribe(RUNS_TOPIC);
           safeSend(ws, JSON.stringify({ type: "runs", records: hub.snapshotRuns() }));
@@ -224,10 +364,18 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
         }
         void sendBacklogAndTail(ws as ServerWebSocket<RunSocketData>);
       },
-      message(_ws: ServerWebSocket<WsData>, _msg: string | Buffer): void {
+      message(ws: ServerWebSocket<WsData>, msg: string | Buffer): void {
+        if (ws.data.mode === "pty") {
+          handlePtyMessage(ws as ServerWebSocket<PtySocketData>, msg);
+          return;
+        }
         // dashboard clients never send frames; nothing to do
       },
       close(ws: ServerWebSocket<WsData>): void {
+        if (ws.data.mode === "pty") {
+          detachPtySocket(ws as ServerWebSocket<PtySocketData>);
+          return;
+        }
         if (ws.data.mode === "run" && ws.data.tailer !== null) {
           clearInterval(ws.data.tailer);
           tailers.delete(ws.data.tailer);
@@ -246,7 +394,16 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
       hub.close();
       for (const t of tailers) clearInterval(t);
       tailers.clear();
-      await server.stop(true);
+      if (ownsPty) ptyManager.dispose();
+      // Bun 1.3.14: server.stop() never resolves after a server-initiated
+      // websocket close (the PTY exit path), so bound the wait.
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 2000);
+        void server.stop(true).finally(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
     },
   };
 }
