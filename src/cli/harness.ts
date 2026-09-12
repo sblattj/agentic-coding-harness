@@ -11,7 +11,9 @@ import {
   AGENTS,
   HarnessError,
   isKnownAgent,
+  KiroConfigSchema,
   type AgentEvent,
+  type KiroConfig,
   type RunResult,
 } from "../core/types.ts";
 import { z } from "zod";
@@ -40,6 +42,8 @@ const USAGE = `harness — unified agent run harness
 usage:
   harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
+              kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
+                         [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
   harness preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
                     [--cwd DIR] [--json]
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
@@ -107,6 +111,34 @@ function optIntWithEnv(flagVal: string | undefined, flag: string, envName: strin
 
 // ---------------------------------------------------------------- run
 
+/** `--kiro-*` flags → KiroConfig (undefined when no flag was given, so the
+ *  driver sees exactly what the caller asked for and nothing implied). */
+function kiroConfigFromFlags(v: {
+  "kiro-transport"?: string;
+  "kiro-agent"?: string;
+  "kiro-engine"?: string;
+  "kiro-effort"?: string;
+  "kiro-tools"?: string;
+  "kiro-require-mcp-startup"?: boolean;
+}): KiroConfig | undefined {
+  const cfg: Record<string, unknown> = {};
+  if (v["kiro-transport"] !== undefined) cfg.transport = v["kiro-transport"];
+  if (v["kiro-agent"] !== undefined) cfg.agent = v["kiro-agent"];
+  if (v["kiro-engine"] !== undefined) cfg.engine = v["kiro-engine"];
+  if (v["kiro-effort"] !== undefined) cfg.effort = v["kiro-effort"];
+  if (v["kiro-tools"] !== undefined) {
+    const t = v["kiro-tools"];
+    cfg.tools = t === "all" || t === "none" ? t : t.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  if (v["kiro-require-mcp-startup"]) cfg.requireMcpStartup = true;
+  if (Object.keys(cfg).length === 0) return undefined;
+  const parsed = KiroConfigSchema.safeParse(cfg);
+  if (!parsed.success) {
+    throw new HarnessError(`invalid --kiro-* flags: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`, "USAGE");
+  }
+  return parsed.data;
+}
+
 async function cmdRun(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
@@ -119,6 +151,14 @@ async function cmdRun(rest: string[]): Promise<number> {
       "wall-ms": { type: "string" },
       "idle-ms": { type: "string" },
       "extra-args": { type: "string" },
+      // Kiro-only typed config (src/core/types.ts KiroConfig). Ignored for
+      // other agents; the driver's RunSpecSchema validates the shape.
+      "kiro-transport": { type: "string" },
+      "kiro-agent": { type: "string" },
+      "kiro-engine": { type: "string" },
+      "kiro-effort": { type: "string" },
+      "kiro-tools": { type: "string" },
+      "kiro-require-mcp-startup": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -156,6 +196,7 @@ async function cmdRun(rest: string[]): Promise<number> {
         idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENT_HARNESS_IDLE_MS"),
       },
       extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
+      ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
