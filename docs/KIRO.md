@@ -157,7 +157,7 @@ KIRO_CALIBRATION=1 KIRO_CALIBRATION_AGENT=<native agent> \
 
 Use that form, not `npm test -- tests/kiro-calibration.test.ts`: the `test` script's glob is
 `tests/*.test.ts src/adapters/*.test.ts`, so a path after `--` is *appended* and the whole suite
-runs (measured: 453 tests, not 4). `KIRO_CALIBRATION_AGENT` is optional — when set it is forwarded
+runs, not just this file. `KIRO_CALIBRATION_AGENT` is optional — when set it is forwarded
 as `--kiro-agent`.
 
 **What it spends.** Two prompts (`Reply with exactly the word pong.`) to `claude-haiku-4.5`, one per
