@@ -9,6 +9,7 @@ import type { AgentEvent } from "../core/types.ts";
 import { readRunRecord } from "../core/registry.ts";
 import { createRunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC } from "./hub.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
+import { deriveRunObservability } from "./derive.ts";
 
 export interface WebServerOptions {
   port: number;
@@ -37,7 +38,7 @@ type WsData = RunsSocketData | RunSocketData;
 
 const NOT_LIVE_AFTER_MS = 60_000;
 const TAIL_INTERVAL_MS = 500;
-const CAST_ROUTE = /^\/api\/runs\/([^/]+)\/cast$/;
+const RUN_ACTION_ROUTE = /^\/api\/runs\/([^/]+)\/([^/]+)$/;
 
 function jsonError(status: number, message: string): Response {
   return Response.json({ error: message }, { status });
@@ -45,6 +46,12 @@ function jsonError(status: number, message: string): Response {
 
 function notFound(): Response {
   return jsonError(404, "not found");
+}
+
+async function servePage(fileName: string): Promise<Response> {
+  const file = Bun.file(new URL(`./${fileName}`, import.meta.url));
+  if (!(await file.exists())) return notFound();
+  return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
 function vendorContentType(name: string): string {
@@ -127,9 +134,15 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
       const get = req.method === "GET";
 
       if (get && (pathname === "/" || pathname === "/index.html")) {
-        const file = Bun.file(new URL("./index.html", import.meta.url));
-        if (!(await file.exists())) return notFound();
-        return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
+        return servePage("index.html");
+      }
+
+      if (get && pathname === "/grid") {
+        return servePage("grid.html");
+      }
+
+      if (get && pathname === "/trio") {
+        return servePage("trio.html");
       }
 
       if (get && pathname.startsWith("/vendor/")) {
@@ -151,19 +164,28 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
         return Response.json({ records: hub.snapshotRuns() });
       }
 
-      const cast = CAST_ROUTE.exec(pathname);
-      if (get && cast !== null) {
+      const runAction = RUN_ACTION_ROUTE.exec(pathname);
+      if (get && runAction !== null) {
         let runId: string;
+        let action: string;
         try {
-          runId = decodeURIComponent(cast[1] as string);
+          runId = decodeURIComponent(runAction[1] as string);
+          action = decodeURIComponent(runAction[2] as string);
         } catch {
-          runId = cast[1] as string;
+          runId = runAction[1] as string;
+          action = runAction[2] as string;
         }
         const rec = readRunRecord(opts.stateDir, runId);
         if (rec === null) return notFound();
         const events = await hub.readTranscript(runId);
-        const body = eventsToAsciicast(events, { title: runId });
-        return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } });
+        if (action === "cast") {
+          const body = eventsToAsciicast(events, { title: runId });
+          return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } });
+        }
+        if (action === "observability") {
+          return Response.json(deriveRunObservability(events));
+        }
+        return notFound();
       }
 
       if (pathname === "/ws") {

@@ -1,0 +1,439 @@
+<!doctype html>
+<!--
+  CONCEPT A: Observability Trio
+  - Thesis: three probes onto one run, sharing a single selection. WHERE time went (traces), WHAT it consumed (metrics), WHAT it said ( logs). A click on any span explains itself across all three panes at once.
+  - Traces pane maps to OTel gen_ai spans: nested model_call / tool_call with start offsets and durations; bar position is span start vs run start, width is duration.
+  - Metrics map to CanonicalTokenRecord aggregates: input / output / cacheRead / cacheWrite priced per MTok ($3 / $15 / $0.30 / $3.75); the series is normalized so its integral equals the run's exact token total and cost.
+  - Logs map to the AgentEvent stream (step / tool / usage / error kinds) with severity colors; the bottom drawer maps to the recorded pty stream, replayed as an interactive fake shell.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-harness · Concept A: Observability Trio</title>
+<style>
+*{box-sizing:border-box;margin:0}
+html{scroll-behavior:auto}
+:root{
+  --bg:#0a0d14;--panel:#0e1219;--panel2:#141a26;--line:#1d2433;--line2:#2b3549;
+  --fg:#dce3f2;--dim:#8a94ac;--faint:#5a6478;
+  --cyan:#67d5f5;--teal:#5eead4;--blue:#7aa2f7;--purple:#bb9af7;--green:#a5d97a;--amber:#e6c07b;--red:#ff7590;--pink:#ec9ec4;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+}
+body{height:100vh;display:flex;flex-direction:column;overflow:hidden;background:radial-gradient(1100px 500px at 30% -10%,#101728 0%,var(--bg) 55%);color:var(--fg);font:13px/1.45 var(--sans)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+:focus-visible{outline:1px solid var(--cyan);outline-offset:2px;border-radius:4px}
+::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px}::-webkit-scrollbar-track{background:transparent}
+
+header{display:flex;align-items:center;gap:12px;height:46px;padding:0 14px;background:color-mix(in oklab,var(--panel) 88%,transparent);border-bottom:1px solid var(--line);backdrop-filter:blur(6px)}
+.mark{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:.01em;font-size:14px;white-space:nowrap}
+.mark small{color:var(--faint);font-weight:500;font-size:11px;letter-spacing:.08em}
+.back{display:flex;align-items:center;gap:5px;font:600 11px var(--mono);letter-spacing:.06em;color:var(--cyan);text-decoration:none;padding:3px 9px;border:1px solid var(--line2);border-radius:6px;white-space:nowrap;transition:border-color .15s,background .15s}
+.back:hover{border-color:var(--cyan);background:color-mix(in oklab,var(--cyan) 10%,transparent)}
+.tabs{display:flex;gap:6px;overflow-x:auto}
+.tab{display:flex;align-items:center;gap:7px;padding:4px 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--dim);font-size:12px;white-space:nowrap;transition:border-color .15s,color .15s}
+.tab b{color:var(--fg);font-weight:600}
+.tab:hover{border-color:var(--line2)}
+.tab[aria-pressed="true"]{border-color:color-mix(in oklab,var(--cyan) 55%,var(--line));color:var(--fg);background:color-mix(in oklab,var(--cyan) 9%,var(--panel2))}
+.rid{font:11px var(--mono);color:var(--faint)}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.st-running{background:var(--green)}.st-completed{background:var(--blue)}.st-failed{background:var(--red)}
+.pulse{display:flex;align-items:center;gap:7px;margin-left:auto;font:11.5px var(--mono);color:var(--dim);white-space:nowrap}
+.pulse i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.pulse.on{color:var(--green)}.pulse.on i{background:var(--green);animation:ping 1.6s ease-out infinite}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(165,217,122,.55)}70%,100%{box-shadow:0 0 0 6px rgba(165,217,122,0)}}
+.tcost{display:flex;align-items:baseline;gap:8px;font:11px var(--mono);color:var(--faint)}
+.tcost b{font:600 13px var(--mono);color:var(--amber);font-variant-numeric:tabular-nums}
+
+main{flex:1;min-height:0;display:grid;grid-template-columns:1.04fr 1.3fr 1.04fr;gap:10px;padding:10px}
+.panel{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.02)}
+.ph{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:10.5px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase;flex:none}
+.pmeta{margin-left:auto;font:11px var(--mono);letter-spacing:0;text-transform:none;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pb{flex:1;min-height:0;overflow:auto;padding:7px}
+
+.span{display:grid;grid-template-columns:minmax(0,46%) 1fr;align-items:center;height:23px;cursor:pointer;border-radius:5px}
+.span:hover{background:var(--panel2)}
+.lbl{display:flex;align-items:center;gap:6px;font:11.5px var(--mono);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lbl em{font-style:normal;color:var(--faint);font-size:10.5px}
+.kd{width:6px;height:6px;border-radius:2px;flex:none}
+.k-model .kd{background:var(--blue)}.k-tool .kd{background:var(--teal)}.k-root .kd{background:var(--purple)}
+.bar{position:relative;height:11px;background-image:linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:25% 100%;background-position:0 center}
+.bar i{position:absolute;top:1px;height:9px;border-radius:2px;min-width:2px;background:var(--teal)}
+.k-model .bar i{background:var(--blue)}.k-root .bar i{background:color-mix(in oklab,var(--purple) 75%,transparent)}
+.span.sel{background:color-mix(in oklab,var(--cyan) 7%,transparent)}
+.span.sel .lbl{color:var(--cyan)}
+.span.sel .bar i{box-shadow:0 0 0 1px var(--cyan),0 0 10px rgba(103,213,245,.4)}
+
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:10px 10px 0;flex:none}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
+.stat .k{font-size:9.5px;letter-spacing:.12em;color:var(--faint);text-transform:uppercase}
+.stat .v{font:600 15px var(--mono);margin-top:2px;font-variant-numeric:tabular-nums}
+.v.c-in{color:var(--blue)}.v.c-out{color:var(--purple)}.v.c-cr{color:var(--teal)}.v.c-cw{color:var(--teal)}.v.c-cost{color:var(--amber)}.v.c-el{color:var(--fg)}
+.chartwrap{flex:1;min-height:0;display:grid;grid-template-rows:1fr auto auto;padding:8px 10px 10px;gap:4px}
+.chartbox{position:relative;min-height:0}
+#chart{width:100%;height:100%;display:block}
+#chart .grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+#chart .band{fill:rgba(103,213,245,.08);stroke:rgba(103,213,245,.35);stroke-dasharray:3 3;vector-effect:non-scaling-stroke}
+#chart .area{fill:rgba(94,234,212,.10);opacity:0;animation:fadein .8s .25s forwards}
+#chart .line{fill:none;stroke-width:1.6;stroke-dasharray:1600;stroke-dashoffset:1600;animation:draw 1s cubic-bezier(.3,0,.2,1) forwards}
+#chart .l-t{stroke:var(--teal)}#chart .l-u{stroke:var(--amber);stroke-dasharray:5 4!important;stroke-width:1.3}
+#chart.still .area{animation:none;opacity:1}
+#chart.still .l-t{animation:none;stroke-dasharray:none;stroke-dashoffset:0}
+#chart.still .l-u{animation:none;stroke-dasharray:5 4;stroke-dashoffset:0}
+#chart .xh{display:none}
+#chart .xh line{stroke:var(--faint);stroke-width:1;vector-effect:non-scaling-stroke}
+#chart .ct{fill:var(--teal)}#chart .cu{fill:var(--amber)}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes fadein{to{opacity:1}}
+.axl{position:absolute;right:calc(100% + 6px);font:9.5px var(--mono);color:var(--faint);transform:translateY(-50%)}
+.tip{position:absolute;top:6px;left:0;pointer-events:none;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:3px 8px;font:10.5px var(--mono);color:var(--fg);white-space:nowrap;display:none;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+.axt{display:flex;justify-content:space-between;font:9.5px var(--mono);color:var(--faint)}
+.legend{display:flex;gap:14px;justify-content:flex-end;font:10px var(--mono);color:var(--dim)}
+.sw{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.sw-t{background:var(--teal)}.sw-u{background:var(--amber)}
+
+.fchip{margin-left:auto;font:10.5px var(--mono);letter-spacing:0;text-transform:none;color:var(--cyan);border:1px solid color-mix(in oklab,var(--cyan) 40%,var(--line));border-radius:5px;padding:1px 7px}
+.fchip:hover{background:color-mix(in oklab,var(--cyan) 12%,transparent)}
+.logs .pmeta{margin-left:0}
+.log{display:flex;gap:9px;padding:1.5px 6px;font:11.5px var(--mono);line-height:1.55}
+.log:hover{background:var(--panel2)}
+.log .ts{color:var(--faint);flex:none;width:62px}
+.lv{flex:none;width:40px;font-weight:700;font-size:10px;letter-spacing:.06em;padding-top:1px}
+.lv-info{color:var(--teal)}.lv-warn{color:var(--amber)}.lv-error{color:var(--red)}.lv-usage{color:var(--purple)}
+.log .sp{flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;color:var(--dim);white-space:nowrap}
+.log .sp.hit{color:var(--cyan)}
+.log .m{color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+footer{flex:none;height:212px;display:flex;flex-direction:column;background:#0b0f16;border-top:1px solid var(--line);transition:height .2s ease}
+footer.min{height:35px}
+.tbar{display:flex;align-items:center;gap:10px;height:34px;padding:0 12px;border-bottom:1px solid var(--line);font-size:10.5px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase;flex:none}
+#drawerToggle{color:var(--dim);font-size:13px;line-height:1;transition:transform .2s}
+footer.min #drawerToggle{transform:rotate(180deg)}
+footer.min .tbody{display:none}
+.tbody{flex:1;min-height:0;display:flex;flex-direction:column}
+#termOut{flex:1;min-height:0;overflow:auto;padding:8px 14px 2px;font:12px/1.6 var(--mono)}
+.tl{white-space:pre-wrap;word-break:break-word}
+.tl.dim{color:var(--dim)}.tl.err{color:var(--red)}.tl.ok{color:var(--teal)}.tl.pri{color:var(--fg)}
+.pp2{color:var(--green)}
+.inrow{display:flex;gap:9px;align-items:center;padding:6px 14px 10px;flex:none;cursor:text}
+.pp{color:var(--green);font:12px var(--mono);white-space:nowrap}
+#termIn{flex:1;background:transparent;border:0;outline:0;color:var(--fg);font:12px var(--mono);caret-color:var(--cyan)}
+
+@media (max-width:1080px){
+  body{height:auto;overflow:auto}
+  main{grid-template-columns:1fr;height:auto}
+  .panel{min-height:300px}
+  header{flex-wrap:wrap;height:auto;padding:8px 14px}
+  .pulse{margin-left:0}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}footer{transition:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="mark">
+    <svg width="17" height="17" viewBox="0 0 17 17" aria-hidden="true"><rect x="1" y="6" width="3" height="10" rx="1" fill="#bb9af7"/><rect x="7" y="1" width="3" height="15" rx="1" fill="#5eead4"/><rect x="13" y="9" width="3" height="7" rx="1" fill="#7aa2f7"/></svg>
+    agent-harness <small>OBSERVABILITY TRIO</small>
+  </div>
+  <a class="back" href="b-terminal-grid.html" aria-label="back to terminal grid">&larr; grid</a>
+  <nav class="tabs" id="tabs" aria-label="agent runs"></nav>
+  <div class="pulse" id="pulse"><i></i><span id="pulseTxt">idle</span></div>
+  <div class="tcost"><span>Σ cost</span><b id="totalCost"></b></div>
+</header>
+<main>
+  <section class="panel" aria-label="traces">
+    <div class="ph"><span>Traces</span><span class="pmeta" id="traceMeta"></span></div>
+    <div class="pb" id="traceList"></div>
+  </section>
+  <section class="panel" aria-label="metrics">
+    <div class="ph"><span>Metrics</span><span class="pmeta" id="chartMeta"></span></div>
+    <div class="stats" id="stats"></div>
+    <div class="chartwrap">
+      <div class="chartbox">
+        <span class="axl" id="ax2" style="top:100%">0</span>
+        <span class="axl" id="ax1" style="top:50%"></span>
+        <span class="axl" id="ax0" style="top:0"></span>
+        <svg id="chart" viewBox="0 0 640 176" preserveAspectRatio="none" role="img" aria-label="tokens per second and dollars per second over the run"></svg>
+        <div class="tip" id="tip"></div>
+      </div>
+      <div class="axt" id="axT"></div>
+      <div class="legend"><span><i class="sw sw-t"></i>tok/s</span><span><i class="sw sw-u"></i>$/s</span></div>
+    </div>
+  </section>
+  <section class="panel" aria-label="logs">
+    <div class="ph"><span>Logs</span><button class="fchip" id="logFilter" hidden></button><span class="pmeta" id="logMeta"></span></div>
+    <div class="pb logs" id="logList"></div>
+  </section>
+</main>
+<footer id="drawer">
+  <div class="tbar">
+    <span>Terminal · pty</span><span class="pmeta" id="termMeta"></span>
+    <button id="drawerToggle" aria-expanded="true" aria-label="collapse terminal" style="margin-left:auto">▾</button>
+  </div>
+  <div class="tbody">
+    <div id="termOut" aria-live="polite"></div>
+    <div class="inrow" id="inrow"><span class="pp" id="termPrompt"></span><input id="termIn" autocomplete="off" spellcheck="false" aria-label="terminal input"></div>
+  </div>
+</footer>
+<script>
+'use strict';
+const PRICES={in:3,out:15,cr:.3,cw:3.75};
+const K=n=>n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(Math.round(n));
+const USD=n=>'$'+n.toFixed(3);
+const S=ms=>(ms/1000).toFixed(1)+'s';
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const $=id=>document.getElementById(id);
+const M={in:'in',out:'out',cr:'cacheRead',cw:'cacheWrite'};
+
+const RUNS=[
+{id:'run-7f3a',agent:'claude',model:'claude-sonnet-4.5',status:'completed',dur:12480,spans:[
+ ["agent_step · session","root",0,12480,null,[
+  ["model_call · plan(prompt)","model",120,9400,{in:21400,out:6120,cr:148000,cw:42000},[
+   ["tool · read AGENTS.md","tool",480,310,null,[]],["tool · grep handleAuth","tool",820,540,null,[]],
+   ["tool · read src/auth.ts","tool",1360,290,null,[]],["tool · edit src/auth.ts","tool",2100,880,null,[]],
+   ["tool · bash: typecheck","tool",3200,1240,null,[]],["tool · bash: pytest -q","tool",4520,2100,null,[]],
+   ["tool · read tests/auth.spec.ts","tool",6800,340,null,[]],["tool · edit tests/auth.spec.ts","tool",7300,620,null,[]]]],
+  ["model_call · revise(diff)","model",9580,2600,{in:24800,out:3140,cr:189000,cw:0},[]]]]],
+logs:[
+ [0,"info","agent_step · session","run start · agent=claude model=claude-sonnet-4.5 cwd=/src/api"],
+ [120,"info","model_call · plan(prompt)","model_call begin · 21.4k in (148k cached read, 42k cached write)"],
+ [820,"info","tool · grep handleAuth","grep -n handleAuth src/ · 14 matches in 3 files"],
+ [2100,"info","tool · edit src/auth.ts","edit src/auth.ts +38 -12 · session guards on rotate()"],
+ [3240,"info","tool · bash: typecheck","tsc --noEmit · clean in 1.2s"],
+ [4520,"info","tool · bash: pytest -q","pytest -q tests/ · running 84 tests"],
+ [6610,"error","tool · bash: pytest -q","2 failed: test_session_expiry, test_refresh_window"],
+ [6730,"warn","tool · bash: pytest -q","retrying with patched clock fixture"],
+ [9100,"info","tool · bash: pytest -q","pytest -q · 86 passed in 1.9s"],
+ [9590,"info","model_call · revise(diff)","model_call begin · 24.8k in (189k cached read)"],
+ [11400,"info","model_call · revise(diff)","patch accepted · tests/auth.spec.ts +21"],
+ [12180,"usage","agent_step · session","usage 46.2k in · 9.3k out · 337k cache read · 42k cache write"],
+ [12190,"usage","agent_step · session","cost $0.536 · 12.5s wall · 8 tool calls"],
+ [12480,"info","agent_step · session","run complete · exit 0"]]},
+{id:'run-2b9c',agent:'kiro',model:'gpt-5-codex',status:'completed',dur:8640,spans:[
+ ["agent_step · session","root",0,8640,null,[
+  ["model_call · spec(plan)","model",90,5300,{in:18200,out:4480,cr:96000,cw:28000},[
+   ["tool · read spec.md","tool",400,260,null,[]],["tool · grep TODO","tool",700,420,null,[]],
+   ["tool · edit src/api/routes.ts","tool",1450,760,null,[]],["tool · edit src/api/validators.ts","tool",2400,540,null,[]],
+   ["tool · bash: tsc --noEmit","tool",3100,1500,null,[]]]],
+  ["model_call · fix(types)","model",5500,2950,{in:20100,out:2620,cr:118000,cw:0},[]]]]],
+logs:[
+ [0,"info","agent_step · session","run start · agent=kiro model=gpt-5-codex spec=spec.md"],
+ [90,"info","model_call · spec(plan)","model_call begin · 18.2k in (96k cached read, 28k cached write)"],
+ [400,"info","tool · read spec.md","spec.md · 3 open tasks picked up"],
+ [700,"info","tool · grep TODO","grep TODO src/api · 11 hits"],
+ [1450,"info","tool · edit src/api/routes.ts","routes.ts +54 -8 · PUT /spec/:id"],
+ [3100,"info","tool · bash: tsc --noEmit","tsc --noEmit · 6 errors in routes.ts"],
+ [4600,"warn","tool · bash: tsc --noEmit","type errors: implicit any on ctx.params"],
+ [5500,"info","model_call · fix(types)","model_call begin · 20.1k in (118k cached read)"],
+ [8100,"info","tool · bash: tsc --noEmit","tsc --noEmit · clean in 1.5s"],
+ [8450,"usage","model_call · fix(types)","usage 38.3k in · 7.1k out · 214k cache read · 28k cache write"],
+ [8500,"usage","agent_step · session","cost $0.391 · 8.6s wall · 5 tool calls"],
+ [8640,"info","agent_step · session","run complete · spec tasks closed 3/3"]]},
+{id:'run-8e41',agent:'codex',model:'gpt-5-codex',status:'running',dur:15200,spans:[
+ ["agent_step · session","root",0,15200,null,[
+  ["model_call · explore(repo)","model",110,6800,{in:26800,out:5240,cr:142000,cw:36000},[
+   ["tool · glob **/*.go","tool",520,300,null,[]],["tool · read cmd/harness/main.go","tool",900,380,null,[]],
+   ["tool · read internal/run.go","tool",1350,420,null,[]],["tool · grep RunResult","tool",1900,650,null,[]],
+   ["tool · bash: go build ./...","tool",2900,2400,null,[]]]],
+  ["model_call · patch(runner)","model",7050,5900,{in:24300,out:6810,cr:176000,cw:0},[
+   ["tool · edit internal/run.go","tool",7600,920,null,[]],["tool · bash: go test ./internal/","tool",8700,2600,null,[]]]],
+  ["model_call · summarize","model",13100,1800,{in:19800,out:2140,cr:141000,cw:0},[]]]]],
+logs:[
+ [0,"info","agent_step · session","run start · agent=codex model=gpt-5-codex cwd=/src/harness"],
+ [110,"info","model_call · explore(repo)","model_call begin · 26.8k in (142k cached read, 36k cached write)"],
+ [520,"info","tool · glob **/*.go","glob **/*.go · 214 files"],
+ [1900,"info","tool · grep RunResult","grep RunResult · 17 hits in 6 files"],
+ [2900,"info","tool · bash: go build ./...","go build ./... · ok in 2.4s"],
+ [7050,"info","model_call · patch(runner)","model_call begin · 24.3k in (176k cached read)"],
+ [7600,"info","tool · edit internal/run.go","run.go +46 -19 · emit atif+otel on exit"],
+ [8700,"info","tool · bash: go test ./internal/","go test ./internal/ · running"],
+ [11300,"info","tool · bash: go test ./internal/","ok · 41 tests in 2.6s"],
+ [13100,"info","model_call · summarize","model_call begin · 19.8k in (141k cached read)"],
+ [14900,"usage","model_call · summarize","usage 70.9k in · 14.2k out · 459k cache read · 36k cache write"],
+ [15000,"usage","agent_step · session","cost $0.698 so far · 15.2s elapsed"]]},
+{id:'run-5d02',agent:'gemini',model:'gemini-2.5-pro',status:'failed',dur:4100,spans:[
+ ["agent_step · session","root",0,4100,null,[
+  ["model_call · plan","model",100,3900,{in:15600,out:2980,cr:64000,cw:18000},[
+   ["tool · read README.md","tool",450,240,null,[]],["tool · bash: pnpm install","tool",800,2900,null,[]]]]]]],
+logs:[
+ [0,"info","agent_step · session","run start · agent=gemini model=gemini-2.5-pro"],
+ [100,"info","model_call · plan","model_call begin · 15.6k in (64k cached read, 18k cached write)"],
+ [450,"info","tool · read README.md","README.md · 84 lines"],
+ [800,"info","tool · bash: pnpm install","pnpm install --frozen-lockfile"],
+ [2650,"warn","tool · bash: pnpm install","registry timeout · retry 1/2"],
+ [3700,"error","tool · bash: pnpm install","spawn pnpm ENOENT · PATH=/usr/bin:/bin"],
+ [3760,"error","agent_step · session","run aborted · exit 127 after 4.1s"],
+ [3780,"usage","agent_step · session","usage 15.6k in · 3.0k out · 64k cache read · 18k cache write · cost $0.178"],
+ [4100,"info","agent_step · session","run failed · artifacts kept at /runs/run-5d02"]]}
+];
+const LIVE=[
+ ["info","model_call · summarize","streaming · 412 tok/s out"],
+ ["info","tool · bash: go vet ./...","go vet ./... · clean"],
+ ["usage","agent_step · session","cost tick · $0.71 so far"],
+ ["info","tool · edit internal/run.go","run.go +3 -1 · flush on SIGTERM"]];
+
+const state={i:0,sel:null};
+let tick=null,tk=0,cur=null;
+
+function usage(run){const u={in:0,out:0,cr:0,cw:0};(function w(sp){for(const s of sp){if(s[4]){u.in+=s[4].in;u.out+=s[4].out;u.cr+=s[4].cr;u.cw+=s[4].cw}w(s[5])}})(run.spans);return u}
+function costOf(u){return u.in*PRICES.in/1e6+u.out*PRICES.out/1e6+u.cr*PRICES.cr/1e6+u.cw*PRICES.cw/1e6}
+function flat(sp,d,out){d=d||0;out=out||[];for(const s of sp){out.push({s:s,d:d});flat(s[5],d+1,out)}return out}
+function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function hash(s){let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))|0;return h}
+function series(run){
+ const u=usage(run),tot=u.in+u.out+u.cr+u.cw,cost=costOf(u),N=48,dt=run.dur/N;
+ const models=[];(function w(sp){for(const s of sp){if(s[1]==='model')models.push(s);w(s[5])}})(run.spans);
+ const rnd=mulberry(hash(run.id));const v=[];
+ for(let i=0;i<N;i++){const t=i*dt+dt/2;let r=0.04*tot/run.dur*1000;
+  for(const m of models){if(t>=m[2]&&t<m[2]+m[3]){r=(m[4].in+m[4].out+m[4].cr+m[4].cw)/m[3]*1000;break}}
+  v.push(r*(0.82+0.36*rnd()))}
+ const sum=v.reduce((a,b)=>a+b,0),sc=sum*dt/1000>0?tot/(sum*dt/1000):1;
+ return{tok:v.map(x=>x*sc),usd:v.map(x=>x*sc*cost/tot),dt:dt}}
+
+function geom(sr){const W=640,H=176,N=sr.tok.length;
+ const mx=Math.max(...sr.tok)*1.15,mu=Math.max(...sr.usd)*1.18;
+ const pts=(a,m)=>a.map((x,i)=>(i/(N-1)*W).toFixed(1)+','+(H-4-x/m*(H-16)).toFixed(1)).join(' ');
+ return{W:W,H:H,mx:mx,pt:pts(sr.tok,mx),pu:pts(sr.usd,mu)}}
+
+function drawChart(run,anim){
+ const sr=series(run),g=geom(sr);cur={sr:sr,g:g};
+ const W=g.W,H=g.H;let grid='';
+ for(let i=1;i<4;i++)grid+='<line class="grid" x1="0" x2="'+W+'" y1="'+(H-4-(H-16)*i/4).toFixed(1)+'" y2="'+(H-4-(H-16)*i/4).toFixed(1)+'"/>';
+ let band='';
+ if(state.sel){const rows=flat(run.spans).filter(r=>r.s[0]===state.sel);
+  if(rows.length){const s=rows[0].s,maxEnd=run.dur,l=s[2]/maxEnd*100,w=Math.max(s[3]/maxEnd*100,.5);
+   band='<rect class="band" x="'+(l/100*W).toFixed(1)+'" y="0" width="'+(w/100*W).toFixed(1)+'" height="'+H+'"/>'}}
+ const ch=$('chart');ch.classList.toggle('still',!anim);
+ ch.innerHTML=grid+band+
+  '<polygon class="area" points="'+g.pt+' '+W+','+H+' 0,'+H+'"/>'+
+  '<polyline class="line l-t" points="'+g.pt+'" vector-effect="non-scaling-stroke"/>'+
+  '<polyline class="line l-u" points="'+g.pu+'" vector-effect="non-scaling-stroke"/>'+
+  '<g class="xh"><line x1="0" x2="0" y1="0" y2="'+H+'"/><circle class="ct" r="3.2"/><circle class="cu" r="3.2"/></g>';
+ $('ax0').textContent=K(g.mx);$('ax1').textContent=K(g.mx/2);
+ $('axT').innerHTML='<span>0s</span><span>'+S(run.dur/2)+'</span><span>'+S(run.dur)+'</span>';
+ $('tip').style.display='none'}
+
+function updateChart(){if(!cur)return;const sr=cur.sr,g=geom(sr),ch=$('chart'),H=176;
+ ch.querySelector('.l-t').setAttribute('points',g.pt);
+ ch.querySelector('.l-u').setAttribute('points',g.pu);
+ ch.querySelector('.area').setAttribute('points',g.pt+' 640,'+H+' 0,'+H);
+ $('ax0').textContent=K(g.mx);$('ax1').textContent=K(g.mx/2)}
+
+function renderMetrics(run){
+ const u=usage(run),c=costOf(u),tot=u.in+u.out+u.cr+u.cw,spans=flat(run.spans).length;
+ $('stats').innerHTML=[['input',K(u.in),'c-in'],['output',K(u.out),'c-out'],['cache read',K(u.cr),'c-cr'],
+  ['cache write',K(u.cw),'c-cw'],['cost',USD(c),'c-cost'],['elapsed',S(run.dur),'c-el']]
+  .map(x=>'<div class="stat"><div class="k">'+x[0]+'</div><div class="v '+x[2]+'">'+x[1]+'</div></div>').join('');
+ $('chartMeta').textContent=K(tot)+' tok · avg '+K(tot/(run.dur/1000))+' tok/s · '+USD(c/(run.dur/1000))+'/s · '+spans+' spans';
+ drawChart(run,true)}
+
+function renderTraces(run){
+ const rows=flat(run.spans),maxEnd=run.dur;
+ $('traceMeta').textContent=rows.length+' spans · '+S(maxEnd);
+ $('traceList').innerHTML=rows.map(r=>{
+  const s=r.s,l=(s[2]/maxEnd*100).toFixed(2),w=Math.max(s[3]/maxEnd*100,.4);
+  return '<div class="span k-'+s[1]+(state.sel===s[0]?' sel':'')+'" data-n="'+esc(s[0])+'" role="button" tabindex="0" aria-pressed="'+(state.sel===s[0])+'">'+
+   '<span class="lbl" style="padding-left:'+(r.d*13)+'px"><i class="kd"></i>'+esc(s[0])+' <em>'+s[3]+'ms</em></span>'+
+   '<span class="bar"><i style="left:'+l+'%;width:'+w+'%"></i></span></div>'}).join('')}
+
+function logRow(l,hit){return '<div class="log"><span class="ts">+'+(l[0]/1000).toFixed(3)+'s</span><span class="lv lv-'+l[1]+'">'+l[1]+'</span><span class="sp'+(hit?' hit':'')+'">'+esc(l[2])+'</span><span class="m">'+esc(l[3])+'</span></div>'}
+function renderLogs(run){
+ const rows=state.sel?run.logs.filter(l=>l[2]===state.sel):run.logs;
+ $('logMeta').textContent=rows.length+' / '+run.logs.length+' lines';
+ $('logFilter').hidden=!state.sel;
+ if(state.sel)$('logFilter').textContent='filter: '+state.sel+'  ✕';
+ $('logFilter').style.marginLeft=state.sel?'':'auto';
+ const el=$('logList');el.innerHTML=rows.map(l=>logRow(l,state.sel===l[2])).join('');
+ el.scrollTop=el.scrollHeight}
+
+function renderTabs(){
+ $('tabs').innerHTML=RUNS.map((r,i)=>'<button class="tab" data-i="'+i+'" aria-pressed="'+(i===state.i)+'"><i class="dot st-'+r.status+'"></i><b>'+r.agent+'</b><span class="rid">'+r.id+'</span></button>').join('')}
+
+function pulse(run){const p=$('pulse');
+ p.classList.toggle('on',run.status==='running');
+ $('pulseTxt').textContent=run.status==='running'?'LIVE · '+S(run.dur):run.status.toUpperCase()}
+
+function termPrint(t,cls){const d=document.createElement('div');d.className='tl '+(cls||'dim');d.textContent=t;$('termOut').appendChild(d);$('termOut').scrollTop=1e9}
+function promptOf(run){return 'harness:/runs/'+run.id+' $'}
+function termAttach(run){
+ $('termPrompt').textContent=promptOf(run);
+ $('termMeta').textContent=run.agent+' · '+run.model+' · pty replay';
+ termPrint('attach '+run.id+' ('+run.agent+' / '+run.model+') · type \'help\'','dim')}
+
+const CMDS={
+ help:()=>[['commands: status · tokens · cost · spans · logs · clear','dim']],
+ status:r=>[[r.id+' · '+r.agent+' / '+r.model+' · '+r.status+' · '+S(r.dur)+' · '+USD(costOf(usage(r))),'pri']],
+ tokens:r=>{const u=usage(r),t=u.in+u.out+u.cr+u.cw;
+  return[['in '+K(u.in)+' · out '+K(u.out),'pri'],['cacheRead '+K(u.cr)+' · cacheWrite '+K(u.cw),'pri'],['total '+K(t)+' tokens','dim']]},
+ cost:r=>{const lines=flat(r.spans).filter(x=>x.s[1]==='model'&&x.s[4]).map(x=>[x.s[0].replace('model_call · ','')+': '+USD(costOf(x.s[4])),'ok']);
+  return lines.concat([['total '+USD(costOf(usage(r))),'dim']])},
+ spans:r=>flat(r.spans).slice(0,9).map(x=>[x.s[0].padEnd(34,' ')+' '+String(x.s[3]).padStart(6,' ')+'ms','pri']),
+ logs:r=>{const by={};r.logs.forEach(l=>by[l[1]]=(by[l[1]]||0)+1);
+  return[[Object.keys(by).map(k=>k+' '+by[k]).join(' · '),'pri'],['stream: AgentEvent · replay from run record','dim']]},
+ clear:()=>[]};
+
+function select(i){
+ state.i=i;state.sel=null;if(tick){clearInterval(tick);tick=null}
+ const run=RUNS[i];
+ renderTabs();pulse(run);renderTraces(run);renderMetrics(run);renderLogs(run);termAttach(run);
+ if(run.status==='running'){tk=0;tick=setInterval(()=>{liveTick(run)},2600)}}
+
+function liveTick(run){
+ tk++;const l=LIVE[tk%LIVE.length],ms=run.dur+tk*2600;
+ if(!state.sel||state.sel===l[1]){
+  const d=document.createElement('div');d.innerHTML=logRow([ms,l[0],l[1],l[2]],state.sel===l[1]);
+  $('logList').appendChild(d.firstChild);$('logList').scrollTop=1e9;
+  $('logMeta').textContent=(parseInt($('logMeta').textContent,10)+1)+' / '+(run.logs.length+tk)+' lines'}
+ if(cur){const tb=cur.sr.tok.reduce((a,b)=>a+b,0)/cur.sr.tok.length;
+  cur.sr.tok.push(tb*(0.85+0.3*Math.random()));cur.sr.tok.shift();
+  const ub=cur.sr.usd.reduce((a,b)=>a+b,0)/cur.sr.usd.length;
+  cur.sr.usd.push(ub*(0.85+0.3*Math.random()));cur.sr.usd.shift();updateChart()}
+ $('pulseTxt').textContent='LIVE · '+S(run.dur+tk*2600)}
+
+$('tabs').addEventListener('click',e=>{const b=e.target.closest('.tab');if(b)select(+b.dataset.i)});
+$('traceList').addEventListener('click',e=>{const b=e.target.closest('.span');if(b)pickSpan(b.dataset.n)});
+$('traceList').addEventListener('keydown',e=>{if(e.key!=='Enter'&&e.key!==' ')return;const b=e.target.closest('.span');if(b){e.preventDefault();pickSpan(b.dataset.n)}});
+function pickSpan(n){const run=RUNS[state.i];state.sel=state.sel===n?null:n;
+ renderTraces(run);renderLogs(run);drawChart(run,true)}
+
+$('logFilter').addEventListener('click',()=>{state.sel=null;const run=RUNS[state.i];renderTraces(run);renderLogs(run);drawChart(run,true)});
+
+const chartBox=document.querySelector('.chartbox');
+chartBox.addEventListener('mousemove',e=>{
+ if(!cur)return;const r=$('chart').getBoundingClientRect(),sr=cur.sr,N=sr.tok.length;
+ const fx=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)),i=Math.round(fx*(N-1));
+ const xh=$('chart').querySelector('.xh'),W=640,H=176;
+ const mx=Math.max(...sr.tok)*1.15,mu=Math.max(...sr.usd)*1.18;
+ const yt=H-4-sr.tok[i]/mx*(H-16),yu=H-4-sr.usd[i]/mu*(H-16),xx=i/(N-1)*W;
+ xh.style.display='block';
+ xh.querySelector('line').setAttribute('x1',xx);xh.querySelector('line').setAttribute('x2',xx);
+ const ct=xh.querySelector('.ct'),cu=xh.querySelector('.cu');
+ ct.setAttribute('cx',xx);ct.setAttribute('cy',yt);cu.setAttribute('cx',xx);cu.setAttribute('cy',yu);
+ const tip=$('tip');tip.style.display='block';
+ tip.textContent='t '+((i+.5)*sr.dt/1000).toFixed(1)+'s · '+K(sr.tok[i])+' tok/s · '+USD(sr.usd[i])+'/s';
+ tip.style.left=Math.min(76,Math.max(2,fx*100))+'%'});
+chartBox.addEventListener('mouseleave',()=>{const xh=$('chart').querySelector('.xh');if(xh)xh.style.display='none';$('tip').style.display='none'});
+
+$('drawerToggle').addEventListener('click',()=>{
+ const f=$('drawer'),min=f.classList.toggle('min');
+ $('drawerToggle').setAttribute('aria-expanded',String(!min));
+ $('drawerToggle').setAttribute('aria-label',min?'expand terminal':'collapse terminal')});
+document.querySelector('.inrow').addEventListener('click',()=>$('termIn').focus());
+$('termIn').addEventListener('keydown',e=>{
+ if(e.key!=='Enter')return;const v=$('termIn').value;$('termIn').value='';
+ termPrint(promptOf(RUNS[state.i])+' '+v,'pri');
+ const w=v.trim().split(/\s+/)[0];
+ if(!w)return;
+ const fn=CMDS[w];
+ if(!fn){termPrint('harness: command not found: '+w+' · try \'help\'','err');return}
+ for(const line of fn(RUNS[state.i]))termPrint(line[0],line[1])});
+
+$('totalCost').textContent='$'+RUNS.reduce((a,r)=>a+costOf(usage(r)),0).toFixed(2);
+termPrint('agent-harness pty · recorded stream replay (mock)','dim');
+termPrint('try: status · tokens · cost · spans · logs · clear','dim');
+select((()=>{const q=new URLSearchParams(location.search).get('run');const i=RUNS.findIndex(r=>r.agent===q);return i>=0?i:0})());
+$('termIn').focus();
+</script>
+</body>
+</html>

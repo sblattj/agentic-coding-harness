@@ -1,0 +1,482 @@
+<!doctype html>
+<!--
+
+  CONCEPT B: Terminal-Centric Grid
+
+  - Thesis: the pty stream IS the product. A tmux-style 2x2 grid of live agent
+    terminals is the primary surface; traces and token economics are secondary,
+    summoned on demand in a detail sidebar.
+  - Terminal tiles map to real harness primitives: each tile is a captured pty
+    (PseudoTty) replaying its AgentEvent stream; line classes here (tool, diff+,
+    diff-, pass/fail) correspond to event kinds in the recorded transcript.
+  - Detail sidebar maps to post-run telemetry: the waterfall renders the OTel
+    span tree from RunResult (start/duration/category), and the token panel
+    renders CanonicalTokenRecord rollups (input/output/cache/context) plus a
+    cumulative-usage sparkline.
+  - Grid/focus toggle mirrors tmux pane discipline: watch many agents at once,
+    zoom a single pane when it matters. CRT chrome is vibe only; palette stays
+    dim so 12px terminal output remains readable.
+
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-harness · concept B</title>
+<style>
+:root{
+  --bg:#050806; --panel:#0a0f0c; --panel2:#0d1410; --edge:#1b2a21; --edge2:#27402f;
+  --green:#3dff7c; --green2:#1fae5a; --text:#cdeedd; --dim:#7fa08d; --faint:#52695c;
+  --cyan:#5bd7dd; --amber:#ffcf6b; --red:#ff6f6f; --mag:#c792ea;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:auto}
+body{background:var(--bg);color:var(--text);font:13px/1.45 var(--mono);height:100vh;overflow:hidden}
+::selection{background:rgba(61,255,124,.25)}
+#fx{position:fixed;inset:0;pointer-events:none;z-index:99;
+  background:
+    radial-gradient(120% 90% at 50% 0%,transparent 60%,rgba(0,0,0,.38)),
+    repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);
+  opacity:.5}
+.app{height:100vh;display:flex;flex-direction:column}
+
+#hdr{display:flex;align-items:center;gap:18px;padding:0 14px;height:46px;
+  background:linear-gradient(180deg,#0c1310,#080d0a);border-bottom:1px solid var(--edge)}
+.brand{display:flex;align-items:baseline;gap:9px;white-space:nowrap}
+.glyph{color:var(--green);text-shadow:0 0 10px rgba(61,255,124,.6);letter-spacing:-1px}
+.wordmark{font-weight:700;letter-spacing:.14em;text-transform:lowercase;color:var(--text);
+  text-shadow:0 0 12px rgba(61,255,124,.28)}
+.ver{color:var(--faint);font-size:11px}
+.hstats{display:flex;gap:8px;flex:1;min-width:0;overflow:hidden}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:4px 10px;font-size:11px;color:var(--dim);
+  border:1px solid var(--edge);border-radius:3px;background:var(--panel);white-space:nowrap}
+.pill b{color:var(--text);font-weight:600}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);
+  animation:pulse 1.6s ease-in-out infinite}
+.pill.live b{color:var(--green)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hctl{display:flex;align-items:center;gap:8px}
+.tgl{font:inherit;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
+  background:var(--panel);border:1px solid var(--edge);border-radius:3px;padding:4px 11px;cursor:pointer}
+.tgl:hover{color:var(--text);border-color:var(--edge2)}
+.tgl.on{color:#04120a;background:var(--green);border-color:var(--green);
+  box-shadow:0 0 14px rgba(61,255,124,.35);font-weight:700}
+.tgl:focus-visible,.tile:focus-visible,input:focus-visible,button:focus-visible{outline:1px dashed var(--green);outline-offset:2px}
+.clock{color:var(--faint);font-size:11px;padding-left:6px}
+
+main{flex:1;display:flex;min-height:0}
+#grid{flex:1;min-width:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
+  gap:10px;padding:10px}
+#grid.focusmode{grid-template-columns:1fr;grid-template-rows:1fr}
+#grid.focusmode .tile:not(.selected){display:none}
+
+.tile{display:flex;flex-direction:column;min-height:0;min-width:0;cursor:pointer;
+  background:var(--panel);border:1px solid var(--edge);border-radius:5px;overflow:hidden;
+  box-shadow:inset 0 0 40px rgba(0,0,0,.35);transition:border-color .15s}
+.tile:hover{border-color:var(--edge2)}
+.tile.selected{border-color:var(--green2);cursor:default}
+.tile.selected .tbar{background:linear-gradient(90deg,#0f1a13,#0b120e);border-bottom-color:var(--green2)}
+.tbar{display:flex;align-items:center;gap:8px;padding:5px 10px;font-size:11px;color:var(--dim);
+  border-bottom:1px solid var(--edge);background:#0b110e;white-space:nowrap;overflow:hidden}
+.tbar .dot{flex:none}
+.tname{color:var(--green);font-weight:700;letter-spacing:.06em}
+.tname::before{content:"❯ ";color:var(--faint);font-weight:400}
+.tmodel{color:var(--faint);font-size:10px}
+.tspace{flex:1}
+.tstat{color:var(--dim)} .tstat b{color:var(--text);font-weight:600}
+.tstat.cost b{color:var(--amber)}
+.trio{flex:none;font:inherit;font-size:10px;font-weight:700;letter-spacing:.08em;
+  padding:2px 7px;border:1px solid var(--cyan);border-radius:5px;background:transparent;
+  color:var(--cyan);cursor:pointer;transition:background .15s,color .15s;text-transform:uppercase}
+.trio:hover{background:var(--cyan);color:#000}
+.trio:focus-visible{outline:2px solid var(--cyan);outline-offset:1px}
+.tbody{flex:1;overflow:hidden;padding:8px 10px;font-size:12px;line-height:1.5;user-select:text}
+.line{white-space:pre-wrap;word-break:break-word}
+.line.typing::after{content:"▍";color:var(--green);animation:blink .9s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.c{color:var(--text)} .c::before{content:"❯ ";color:var(--green)}
+.o{color:var(--dim)}
+.t{color:var(--cyan)}
+.k{color:var(--green)}
+.e{color:var(--red)}
+.p{color:var(--green)}
+.m{color:#ff8f8f}
+.n{color:var(--faint);font-style:italic}
+.tinput{display:flex;align-items:center;gap:7px;padding:5px 10px;border-top:1px solid var(--edge);background:#0a100d}
+.tinput .ps2{color:var(--green);font-size:12px}
+.tinput input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--green);
+  font:12px var(--mono);caret-color:var(--green)}
+.tinput input::placeholder{color:var(--faint)}
+.tinput input:disabled{cursor:not-allowed}
+
+#sidebar{width:0;overflow:hidden;flex:none;background:var(--panel2);border-left:1px solid transparent;
+  transition:width .18s ease,border-color .18s}
+#sidebar.open{width:352px;border-left-color:var(--edge);overflow-y:auto}
+.sb-h{position:relative;padding:13px 14px 10px;border-bottom:1px solid var(--edge)}
+.sb-title{display:flex;align-items:center;gap:10px}
+#sb-agent{color:var(--green);font-size:16px;font-weight:700;letter-spacing:.05em}
+#sb-agent::before{content:"❯ ";color:var(--faint);font-weight:400}
+.status{font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:3px}
+.status.live{color:var(--green);border:1px solid var(--green2);background:rgba(61,255,124,.07)}
+.sb-sub{color:var(--faint);font-size:11px;margin-top:4px}
+#sb-close{position:absolute;top:9px;right:9px;background:none;border:1px solid var(--edge);color:var(--dim);
+  border-radius:3px;width:22px;height:22px;font:14px/1 var(--mono);cursor:pointer}
+#sb-close:hover{color:var(--red);border-color:var(--red)}
+.sb-sec{padding:12px 14px;border-bottom:1px solid var(--edge)}
+.sb-sec h3{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+  margin-bottom:9px;display:flex;justify-content:space-between}
+.sb-sec h3 .hint{color:var(--faint);letter-spacing:.05em;text-transform:none}
+.spark{width:100%;height:56px;display:block}
+.sp-line{fill:none;stroke:var(--green);stroke-width:1.5}
+.sp-area{fill:rgba(61,255,124,.12);stroke:none}
+.tkrow{display:grid;grid-template-columns:64px 1fr 58px;align-items:center;gap:8px;margin:5px 0;font-size:11px}
+.tkrow span{color:var(--dim)}
+.tkrow b{color:var(--text);text-align:right;font-weight:600}
+.meter{height:7px;background:#0a100c;border:1px solid var(--edge);border-radius:2px;overflow:hidden}
+.meter i{display:block;height:100%;border-radius:1px}
+.f-in{background:var(--cyan)} .f-out{background:var(--green)} .f-cache{background:var(--mag)} .f-ctx{background:var(--amber)}
+.ctxrow{display:grid;grid-template-columns:64px 1fr 58px;align-items:center;gap:8px;margin:8px 0 2px;font-size:11px}
+.ctxrow span{color:var(--dim)} .ctxrow b{color:var(--amber);text-align:right}
+.wf{width:100%;display:block}
+.wlab{fill:var(--dim);font-size:8.5px;font-family:var(--mono)}
+.wdur{fill:var(--faint);font-size:8px;font-family:var(--mono)}
+.wax{stroke:var(--edge2);stroke-width:1}
+.wtick{fill:var(--faint);font-size:8px;font-family:var(--mono)}
+.sp-llm{fill:var(--green2)} .sp-tool{fill:var(--cyan)} .sp-sys{fill:var(--mag)} .sp-test{fill:var(--amber)}
+.legend{display:flex;gap:12px;margin-top:8px;font-size:10px;color:var(--dim)}
+.legend .sw{display:inline-block;width:8px;height:8px;border-radius:1px;margin-right:4px;vertical-align:-1px}
+.sw.llm{background:var(--green2)} .sw.tool{background:var(--cyan)} .sw.sys{background:var(--mag)} .sw.test{background:var(--amber)}
+
+#ftr{display:flex;justify-content:space-between;gap:10px;padding:0 14px;height:28px;align-items:center;
+  font-size:10px;color:var(--faint);border-top:1px solid var(--edge);background:#080d0a;white-space:nowrap;overflow:hidden}
+#ftr .green{color:var(--green2)}
+
+@media (max-width:860px){
+  main{flex-direction:column;overflow-y:auto}
+  #grid{grid-template-columns:1fr;grid-template-rows:none;grid-auto-rows:250px}
+  #grid.focusmode .tile:not(.selected){display:none}
+  #sidebar{width:100%!important;border-left:0;border-top:1px solid var(--edge)}
+  #sidebar:not(.open){display:none}
+  #hdr{height:auto;flex-wrap:wrap;padding:8px 12px;gap:8px}
+  .hstats{order:3;width:100%}
+}
+@media (prefers-reduced-motion:reduce){
+  .dot,.line.typing::after{animation:none}
+}
+</style>
+</head>
+<body>
+<div id="fx" aria-hidden="true"></div>
+<div class="app">
+  <header id="hdr">
+    <div class="brand"><span class="glyph">▚▞</span><span class="wordmark">agent-harness</span><span class="ver">v0.9</span></div>
+    <div class="hstats">
+      <span class="pill live"><span class="dot"></span><b id="st-runs">0</b> runs live</span>
+      <span class="pill"><b id="st-tok">0</b> tokens</span>
+      <span class="pill"><b id="st-cost">$0.00</b> est. spend</span>
+    </div>
+    <div class="hctl">
+      <button id="btn-grid" class="tgl on" aria-pressed="true">grid</button>
+      <button id="btn-focus" class="tgl" aria-pressed="false">focus</button>
+      <span class="clock" id="clock">--:--:--</span>
+    </div>
+  </header>
+  <main>
+    <div id="grid" role="group" aria-label="Agent terminal panes"></div>
+    <aside id="sidebar" aria-label="Run detail">
+      <header class="sb-h">
+        <div class="sb-title"><span id="sb-agent">claude</span><span id="sb-status" class="status live">live</span></div>
+        <div class="sb-sub" id="sb-meta"></div>
+        <button id="sb-close" aria-label="Close detail panel">×</button>
+      </header>
+      <section class="sb-sec">
+        <h3>tokens <span class="hint">CanonicalTokenRecord</span></h3>
+        <div id="sb-spark"></div>
+        <div id="sb-tokrows"></div>
+        <div class="ctxrow"><span>context</span><div class="meter"><i id="sb-ctxfill" class="f-ctx"></i></div><b id="sb-ctxpct">0%</b></div>
+      </section>
+      <section class="sb-sec">
+        <h3>trace waterfall <span class="hint">otel spans</span></h3>
+        <div id="sb-waterfall"></div>
+        <div class="legend"><span><i class="sw llm"></i>llm</span><span><i class="sw tool"></i>tool</span><span><i class="sw sys"></i>sys</span><span><i class="sw test"></i>test</span></div>
+      </section>
+    </aside>
+  </main>
+  <footer id="ftr">
+    <span><span class="green">❯</span> [1-4] select tile · type + enter to prompt the focused agent · [esc] close detail</span>
+    <span>concept B · terminal-centric grid · mock data</span>
+  </footer>
+</div>
+
+<script>
+const RUNS=[
+{id:"claude",model:"sonnet-4.5",ses:"ses_a83f21c9",tok:48210,rate:0.000019,cost:1.24,elapsed:252,win:200000,
+ m:{inp:21400,out:6180,cache:33800},
+ series:[420,980,1720,2500,3380,4150,5240,6420,7350,8650,9820,11240,12650,14180,15900,17520,19700,22500,26300,31400,36600,42300,48210],
+ script:[
+  ["c","claude --continue"],
+  ["n","resumed session · turn 14/∞ · cwd ~/work/api-gateway"],
+  ["o","⏺ Read src/auth/middleware.ts (312 lines)"],
+  ["o","⏺ Update(src/auth/middleware.ts) +48 −23"],
+  ["p","  + export function requireScope(scope: Scope) {"],
+  ["m","  − function checkScope(user, scope) {"],
+  ["t","⏿ Bash(git diff --stat) → 6 files changed, +112 −41"],
+  ["k","✓ vitest tests/auth · 42 passed · 1.6s"],
+  ["o","⏺ Compacting context (window 68% used)"],
+  ["n","turn cost $0.19 · cumulative 48.2k tok"],
+ ],
+ spans:[
+  {n:"session.resume",s:0,d:210,c:"sys"},{n:"context.load",s:210,d:340,c:"sys"},
+  {n:"llm.think",s:550,d:1620,c:"llm"},{n:"read middleware.ts",s:2170,d:180,c:"tool"},
+  {n:"llm.stream",s:2350,d:2100,c:"llm"},{n:"edit middleware.ts",s:4450,d:520,c:"tool"},
+  {n:"bash git diff",s:4970,d:840,c:"tool"},{n:"vitest run auth",s:5810,d:1610,c:"test"},
+  {n:"run.persist",s:7420,d:90,c:"sys"}],
+ resp:["Understood. Keeping the diff minimal and re-running the auth suite now.",
+       "Done: requireScope() now guards all /v2 routes. Tests green (42/42)."]},
+
+{id:"opencode",model:"ferry/medium",ses:"ses_71c2be04",tok:31940,rate:0.000011,cost:0.58,elapsed:187,win:128000,
+ m:{inp:15200,out:4210,cache:19800},
+ series:[300,760,1400,2100,2900,3700,4600,5600,6700,7900,9200,10600,12100,13700,15400,17200,19100,21100,23400,25800,28400,31940],
+ script:[
+  ["c","opencode run \"fix flaky retry in http client\""],
+  ["n","seat: standard · plan mode off · repo ~/work/sdk"],
+  ["t","read src/http/client.ts:88-140"],
+  ["o","found it: retry loop resets backoff before sleep"],
+  ["t","edit src/http/client.ts:112 +6 −4"],
+  ["p","  +   await sleep(backoff); backoff = backoff * 2;"],
+  ["e","✗ tsc error 2322: 'backoff' implicitly has type 'any'"],
+  ["t","edit src/http/client.ts:104 add type annotation"],
+  ["k","✓ tsc clean · vitest 88 passed (retries stable ×50)"],
+ ],
+ spans:[
+  {n:"session.start",s:0,d:180,c:"sys"},{n:"repo.index",s:180,d:520,c:"sys"},
+  {n:"llm.think",s:700,d:1250,c:"llm"},{n:"read client.ts",s:1950,d:150,c:"tool"},
+  {n:"llm.stream",s:2100,d:1740,c:"llm"},{n:"edit client.ts",s:3840,d:410,c:"tool"},
+  {n:"tsc check",s:4250,d:980,c:"test"},{n:"vitest retry.fuzz",s:5230,d:2210,c:"test"},
+  {n:"run.persist",s:7440,d:80,c:"sys"}],
+ resp:["On it. Patching the backoff reset and re-running the retry suite.",
+       "Fixed. Backoff now doubles before sleep; flaky test stable across 50 runs."]},
+
+{id:"kiro",model:"gpt-5.1-codex",ses:"ses_5de901aa",tok:18470,rate:0.000009,cost:0.31,elapsed:96,win:128000,
+ m:{inp:9800,out:3960,cache:6400},
+ series:[220,640,1180,1750,2400,3100,3900,4750,5600,6500,7500,8600,9800,11000,12400,13900,15500,18470],
+ script:[
+  ["c","kiro exec \"add property tests for parser\""],
+  ["n","spec candidate: tests/parser.spec.ts → 18 cases"],
+  ["t","write tests/parser.spec.ts +212"],
+  ["p","  + it(\"round-trips nested blocks\", () => fc.assert(...))"],
+  ["k","✓ 18 passed · 0 failed · 0.9s"],
+  ["t","bash: pnpm coverage"],
+  ["o","lines 94.2% · branches 91.8% (+12.4)"],
+ ],
+ spans:[
+  {n:"session.start",s:0,d:150,c:"sys"},{n:"llm.plan",s:150,d:880,c:"llm"},
+  {n:"read parser.ts",s:1030,d:140,c:"tool"},{n:"llm.stream",s:1170,d:1480,c:"llm"},
+  {n:"write spec.ts",s:2650,d:380,c:"tool"},{n:"vitest run",s:3030,d:900,c:"test"},
+  {n:"coverage",s:3930,d:1120,c:"test"},{n:"run.persist",s:5050,d:70,c:"sys"}],
+ resp:["Adding the failing-case fixtures before the next watch tick.",
+       "Coverage nudged to 94.8%; spec file staged for commit."]},
+
+{id:"codex",model:"gpt-5.2-codex",ses:"ses_c417fd33",tok:64830,rate:0.000015,cost:1.89,elapsed:311,win:200000,
+ m:{inp:29600,out:8240,cache:43100},
+ series:[500,1200,2100,3200,4400,5700,7100,8600,10200,11900,13700,15600,17600,19800,22100,24600,27300,30200,33400,36900,40700,44800,49200,54100,64830],
+ script:[
+  ["c","codex --full-auto \"migrate config loading to zod\""],
+  ["n","sandbox: workspace-write · approvals: never"],
+  ["t","read config/*.ts (9 files)"],
+  ["t","edit src/config/schema.ts +88 −12"],
+  ["p","  + export const AppConfig = z.object({ port: z.number().int() ... })"],
+  ["o","⏿ pnpm build"],
+  ["k","✓ build ok · 3.1s"],
+  ["e","✗ 2 type errors in src/config/loaders.ts (2311, 2551)"],
+  ["t","edit src/config/loaders.ts +4 −2"],
+  ["k","✓ build clean · commit 9f3ce21"],
+ ],
+ spans:[
+  {n:"session.start",s:0,d:190,c:"sys"},{n:"sandbox.setup",s:190,d:640,c:"sys"},
+  {n:"llm.plan",s:830,d:1900,c:"llm"},{n:"read config/*.ts",s:2730,d:460,c:"tool"},
+  {n:"llm.stream",s:3190,d:2600,c:"llm"},{n:"edit schema.ts",s:5790,d:720,c:"tool"},
+  {n:"pnpm build",s:6510,d:1980,c:"test"},{n:"llm.repair",s:8490,d:1520,c:"llm"},
+  {n:"edit loaders.ts",s:10010,d:300,c:"tool"},{n:"git commit",s:10310,d:540,c:"tool"},
+  {n:"run.persist",s:10850,d:90,c:"sys"}],
+ resp:["Proceeding with full-auto: schema migration continues.",
+       "loaders.ts patched; build clean at 9f3ce21."]}
+];
+
+const RM=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const TRIO_MAP={opencode:"gemini"}; // A mocks claude/kiro/codex/gemini; opencode tiles fall back to gemini (approx)
+const $=s=>document.querySelector(s);
+const grid=$("#grid"),sidebar=$("#sidebar");
+const fmt=n=>n>=1000?(n/1000).toFixed(1)+"k":String(n);
+const mmss=s=>{s=Math.floor(s);const m=Math.floor(s/60),h=Math.floor(m/60);
+ return (h?h+":":"")+String(m%60).padStart(2,"0")+":"+String(s%60).padStart(2,"0")};
+const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+
+let selected=null,mode="grid",respIdx={};
+const st={};
+
+RUNS.forEach(r=>{
+  const t=document.createElement("section");
+  t.className="tile";t.id="tile-"+r.id;t.tabIndex=0;
+  t.setAttribute("role","group");t.setAttribute("aria-label","terminal pane: "+r.id);
+  t.innerHTML=`<header class="tbar"><span class="dot"></span><span class="tname">${r.id}</span>`+
+    `<span class="tmodel">${r.model}</span><span class="tspace"></span>`+
+    `<button class="trio" data-agent="${r.id}" title="open ${r.id} in Observability Trio" aria-label="open ${r.id} in Observability Trio">trio ➜</button>`+
+    `<span class="tstat"><b class="ttok">${fmt(r.tok)}</b> tok</span>`+
+    `<span class="tstat cost">$<b class="tcost">0.00</b></span>`+
+    `<span class="tstat"><b class="ttime">${mmss(r.elapsed)}</b></span></header>`+
+    `<div class="tbody" role="log" aria-live="off"></div>`+
+    `<div class="tinput"><span class="ps2">❯</span><input aria-label="prompt ${r.id}" placeholder="send to agent…" maxlength="120"></div>`;
+  grid.appendChild(t);
+  const body=t.querySelector(".tbody"),input=t.querySelector("input");
+  t.querySelector(".trio").addEventListener("click",e=>{
+    e.stopPropagation();
+    openTrio(r.id);
+  });
+  t.addEventListener("click",()=>select(r.id));
+  t.addEventListener("keydown",e=>{if(e.key==="Enter"&&document.activeElement!==input){select(r.id);input.focus()}});
+  input.addEventListener("keydown",e=>{
+    if(e.key!=="Enter")return;
+    const v=input.value.trim();if(!v)return;input.value="";
+    addLine(body,"c",v);
+    const lines=r.resp[respIdx[r.id]=(respIdx[r.id]||0)%r.resp.length];
+    respIdx[r.id]++;
+    setTimeout(()=>addLine(body,"o",lines),420);
+  });
+  st[r.id]={body,line:0,ch:0,wait:[0,1100,2200,3300][RUNS.indexOf(r)],phase:"run"};
+});
+
+function addLine(body,cls,text){
+  const el=document.createElement("div");
+  el.className="line "+cls;el.textContent=text;
+  body.appendChild(el);
+  while(body.children.length>80)body.removeChild(body.firstChild);
+  body.scrollTop=body.scrollHeight;
+  return el;
+}
+
+function pump(r){
+  const s=st[r.id],body=s.body;
+  if(s.wait>0){const w=s.wait;s.wait=0;return setTimeout(()=>pump(r),w)}
+  if(s.phase==="done"){addLine(body,"n","─── reattach ───");s.line=0;s.ch=0;s.phase="run";s.wait=2400}
+  const spec=r.script[s.line];
+  if(!spec){s.phase="done";s.wait=260;return setTimeout(()=>pump(r),40)}
+  let el=body.lastElementChild;
+  if(!el||!el.classList.contains("typing")){
+    el=addLine(body,spec[0],"");el.classList.add("typing");
+  }
+  if(RM){el.textContent=spec[1];}
+  else{
+    el.textContent=spec[1].slice(0,++s.ch);
+    if(s.ch<spec[1].length)return setTimeout(()=>pump(r),14);
+  }
+  el.classList.remove("typing");
+  s.ch=0;s.line++;
+  r.tok+=40+Math.floor(Math.random()*180);
+  paintStats();
+  setTimeout(()=>pump(r),RM?500:110+Math.random()*160);
+}
+
+function select(id){
+  selected=id;
+  RUNS.forEach(r=>{
+    const t=$("#tile-"+r.id),on=r.id===id;
+    t.classList.toggle("selected",on);
+    t.querySelector("input").disabled=!on;
+  });
+  renderDetail();
+}
+function openTrio(id){
+  const agent=TRIO_MAP[id]||id;
+  location.href="a-observability-trio.html?run="+encodeURIComponent(agent);
+}
+function setMode(m){
+  mode=m;
+  grid.classList.toggle("focusmode",m==="focus");
+  $("#btn-grid").classList.toggle("on",m==="grid");
+  $("#btn-focus").classList.toggle("on",m==="focus");
+  $("#btn-grid").setAttribute("aria-pressed",m==="grid");
+  $("#btn-focus").setAttribute("aria-pressed",m==="focus");
+}
+$("#btn-grid").addEventListener("click",()=>setMode("grid"));
+$("#btn-focus").addEventListener("click",()=>setMode("focus"));
+$("#sb-close").addEventListener("click",()=>{sidebar.classList.remove("open")});
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape")sidebar.classList.remove("open");
+  if(/^[1-4]$/.test(e.key)&&e.target.tagName!=="INPUT")select(RUNS[+e.key-1].id);
+});
+
+function sparkline(r){
+  const W=322,H=56,pts=r.series.map((v,i)=>
+    `${(i/(r.series.length-1)*W).toFixed(1)},${(H-6-(v/Math.max(...r.series))*(H-12)).toFixed(1)}`).join(" ");
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="cumulative tokens sparkline">`+
+    `<polyline class="sp-area" points="0,${H} ${pts} ${W},${H}"/><polyline class="sp-line" points="${pts}"/></svg>`;
+}
+function tokRows(r){
+  const mx=Math.max(r.m.inp,r.m.out,r.m.cache,1);
+  const row=(lab,cls,v)=>`<div class="tkrow"><span>${lab}</span><div class="meter"><i class="${cls}" style="width:${(v/mx*100).toFixed(0)}%"></i></div><b>${fmt(v)}</b></div>`;
+  return row("input","f-in",r.m.inp)+row("output","f-out",r.m.out)+row("cache","f-cache",r.m.cache);
+}
+function waterfall(r){
+  const W=322,LX=96,rowH=15,H=r.spans.length*rowH+16;
+  const total=Math.max(...r.spans.map(s=>s.s+s.d)),BW=W-LX-4;
+  let out="";
+  r.spans.forEach((sp,i)=>{
+    const x=LX+(sp.s/total)*BW,w=Math.max(2,(sp.d/total)*BW);
+    out+=`<text class="wlab" x="${LX-6}" y="${12+i*rowH}" text-anchor="end">${sp.n}</text>`;
+    out+=`<rect class="sp-${sp.c}" x="${x.toFixed(1)}" y="${5.5+i*rowH}" width="${w.toFixed(1)}" height="7" rx="1.5"/>`;
+    out+=`<text class="wdur" x="${(x+w+3).toFixed(1)}" y="${12+i*rowH}">${sp.d>=1000?(sp.d/1000).toFixed(1)+"s":sp.d+"ms"}</text>`;
+  });
+  const ticks=[0,.5,1].map(f=>{const x=LX+f*BW;
+    return `<line class="wax" x1="${x}" y1="${H-8}" x2="${x}" y2="${H-5}"/>`+
+      `<text class="wtick" x="${x}" y="${H-1}" text-anchor="middle">${(total*f/1000).toFixed(1)}s</text>`}).join("");
+  return `<svg class="wf" viewBox="0 0 ${W} ${H}" role="img" aria-label="trace span waterfall">${out}${ticks}</svg>`;
+}
+function renderDetail(){
+  const r=RUNS.find(x=>x.id===selected);if(!r)return;
+  sidebar.classList.add("open");
+  $("#sb-agent").textContent=r.id;
+  $("#sb-meta").textContent=`${r.model} · ${r.ses} · elapsed ${mmss(r.elapsed)}`;
+  $("#sb-spark").innerHTML=sparkline(r);
+  $("#sb-tokrows").innerHTML=tokRows(r);
+  $("#sb-ctxfill").style.width=Math.min(100,r.tok/r.win*100).toFixed(1)+"%";
+  $("#sb-ctxpct").textContent=(r.tok/r.win*100).toFixed(1)+"% / "+fmt(r.win);
+  $("#sb-waterfall").innerHTML=waterfall(r);
+}
+
+function paintStats(){
+  let tok=0,cost=0;
+  RUNS.forEach(r=>{
+    const t=$("#tile-"+r.id);
+    t.querySelector(".ttok").textContent=fmt(r.tok);
+    const c=r.cost+(r.tok-4800)*r.rate*0.08;
+    t.querySelector(".tcost").textContent=c.toFixed(2);
+    tok+=r.tok;cost+=c;
+  });
+  $("#st-runs").textContent=RUNS.length;
+  $("#st-tok").textContent=fmt(tok);
+  $("#st-cost").textContent="$"+cost.toFixed(2);
+}
+
+setInterval(()=>{
+  const d=new Date();
+  $("#clock").textContent=[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,"0")).join(":");
+  RUNS.forEach(r=>{
+    r.elapsed++;r.tok+=30+Math.floor(Math.random()*90);
+    $("#tile-"+r.id).querySelector(".ttime").textContent=mmss(r.elapsed);
+    if(selected===r.id&&sidebar.classList.contains("open")){
+      $("#sb-meta").textContent=`${r.model} · ${r.ses} · elapsed ${mmss(r.elapsed)}`;
+      $("#sb-ctxfill").style.width=Math.min(100,r.tok/r.win*100).toFixed(1)+"%";
+      $("#sb-ctxpct").textContent=(r.tok/r.win*100).toFixed(1)+"% / "+fmt(r.win);
+    }
+  });
+  paintStats();
+},1000);
+
+RUNS.forEach(r=>pump(r));
+select("claude");
+paintStats();
+</script>
+</body>
+</html>

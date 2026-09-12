@@ -1,0 +1,707 @@
+<!doctype html>
+<!--
+  Observability Trio — detail view for ONE run (Concept A).
+  Three synchronized panes (Traces | Metrics | Logs) + replay terminal drawer.
+  Reads ?run=<runId>&token=<token>; all data from same-origin /api/* endpoints;
+  replay player from /vendor/asciinema. No frameworks, no external requests.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>agent-harness · observability trio</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/vendor/asciinema/asciinema-player.css">
+<style>
+* { box-sizing: border-box; margin: 0; }
+:root {
+  --bg: #0a0d14; --panel: #0e1219; --panel2: #141a26;
+  --line: #1d2433; --line2: #2b3549;
+  --fg: #dce3f2; --dim: #8a94ac; --faint: #5a6478;
+  --cyan: #67d5f5; --teal: #5eead4; --blue: #7aa2f7;
+  --purple: #bb9af7; --green: #a5d97a; --amber: #e6c07b; --red: #ff7590;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+html { scroll-behavior: auto; }
+body {
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  background: radial-gradient(1100px 500px at 30% -10%, #101728 0%, var(--bg) 55%);
+  color: var(--fg); font: 13px/1.45 var(--sans);
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; border-radius: 4px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ===== header ===== */
+header {
+  display: flex; align-items: center; gap: 12px; min-height: 46px;
+  padding: 6px 14px; flex: none;
+  background: color-mix(in oklab, var(--panel) 88%, transparent);
+  border-bottom: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.mark { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; white-space: nowrap; }
+.mark small { color: var(--faint); font-weight: 500; font-size: 11px; letter-spacing: .08em; }
+.back {
+  display: flex; align-items: center; gap: 5px;
+  font: 600 11px var(--mono); letter-spacing: .06em;
+  color: var(--cyan); text-decoration: none; padding: 3px 9px;
+  border: 1px solid var(--line2); border-radius: 6px; white-space: nowrap;
+  transition: border-color .15s, background .15s;
+}
+.back:hover { border-color: var(--cyan); background: color-mix(in oklab, var(--cyan) 10%, transparent); }
+.runmeta { display: flex; align-items: center; gap: 8px; min-width: 0; font: 12px var(--mono); }
+.runmeta b { font-weight: 600; }
+.rid { color: var(--faint); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.st-running { background: var(--green); }
+.st-success { background: var(--teal); }
+.st-error { background: var(--red); }
+.st-aborted, .st-interrupted { background: var(--amber); }
+.st-unknown { background: var(--faint); }
+.stlabel { color: var(--dim); font-size: 11px; }
+.pulse { display: flex; align-items: center; gap: 7px; margin-left: auto; font: 11.5px var(--mono); color: var(--dim); white-space: nowrap; }
+.pulse i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.pulse.on { color: var(--green); }
+.pulse.on i { background: var(--green); animation: ping 1.6s ease-out infinite; }
+@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(165, 217, 122, .55); } 70%, 100% { box-shadow: 0 0 0 6px rgba(165, 217, 122, 0); } }
+.tcost { display: flex; align-items: baseline; gap: 8px; font: 11px var(--mono); color: var(--faint); white-space: nowrap; }
+.tcost b { font: 600 13px var(--mono); color: var(--amber); font-variant-numeric: tabular-nums; }
+
+/* ===== fatal / empty states ===== */
+#fatal {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px; text-align: center; padding: 20px;
+}
+#fatal h1 { font: 600 15px var(--sans); color: var(--fg); }
+#fatal p { color: var(--dim); font: 12px var(--mono); max-width: 46ch; word-break: break-all; }
+#fatal a { color: var(--cyan); }
+
+/* ===== three panes ===== */
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3fr 1.04fr; gap: 10px; padding: 10px; }
+.panel {
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  overflow: hidden; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .02);
+}
+.ph {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex: none;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px; letter-spacing: .14em; color: var(--dim); text-transform: uppercase;
+}
+.pmeta {
+  font: 11px var(--mono); letter-spacing: 0; text-transform: none;
+  color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pempty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--faint); font: 11.5px var(--mono); }
+.pb { flex: 1; min-height: 0; overflow: auto; padding: 7px; }
+
+/* — traces — */
+.span {
+  display: grid; grid-template-columns: minmax(0, 46%) 1fr; align-items: center;
+  height: 23px; cursor: pointer; border-radius: 5px;
+}
+.span:hover { background: var(--panel2); }
+.span.sel { background: color-mix(in oklab, var(--cyan) 7%, transparent); }
+.span.sel .lbl { color: var(--cyan); }
+.span.sel .bar i { box-shadow: 0 0 0 1px var(--cyan), 0 0 10px rgba(103, 213, 245, .4); }
+.lbl {
+  display: flex; align-items: center; gap: 6px;
+  font: 11.5px var(--mono); color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lbl em { font-style: normal; color: var(--faint); font-size: 10.5px; }
+.lbl em.err { color: var(--red); }
+.kd { width: 6px; height: 6px; border-radius: 2px; flex: none; }
+.k-model .kd { background: var(--blue); }
+.k-tool .kd { background: var(--teal); }
+.k-sys .kd { background: var(--purple); }
+.k-test .kd { background: var(--green); }
+.bar { position: relative; height: 11px; background-image: linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 25% 100%; background-position: 0 center; }
+.bar i { position: absolute; top: 1px; height: 9px; border-radius: 2px; min-width: 2px; }
+.k-model .bar i { background: var(--blue); }
+.k-tool .bar i { background: var(--teal); }
+.k-sys .bar i { background: color-mix(in oklab, var(--purple) 75%, transparent); }
+.k-test .bar i { background: var(--green); }
+.bar i.err { background: var(--red); }
+
+/* — metrics — */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 10px 10px 0; flex: none; }
+.stat { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+.stat .k { font-size: 9.5px; letter-spacing: .12em; color: var(--faint); text-transform: uppercase; }
+.stat .v { font: 600 15px var(--mono); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.v.c-in { color: var(--blue); } .v.c-out { color: var(--purple); }
+.v.c-cr, .v.c-cw { color: var(--teal); }
+.v.c-cost { color: var(--amber); } .v.c-el { color: var(--fg); }
+.chartwrap { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto; padding: 8px 10px 10px; gap: 4px; }
+.chartbox { position: relative; min-height: 0; }
+#chart { width: 100%; height: 100%; display: block; }
+#chart .grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+#chart .band { fill: rgba(103, 213, 245, .08); stroke: rgba(103, 213, 245, .35); stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+#chart .l-t { fill: none; stroke: var(--teal); stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-dasharray: 1600; stroke-dashoffset: 1600; animation: draw .9s cubic-bezier(.3, 0, .2, 1) forwards; }
+#chart .l-u { fill: none; stroke: var(--amber); stroke-width: 1.3; vector-effect: non-scaling-stroke; stroke-dasharray: 5 4; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+#chart .xh { display: none; }
+#chart .xh line { stroke: var(--faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
+#chart .ct { fill: var(--teal); } #chart .cu { fill: var(--amber); }
+.axl { position: absolute; right: calc(100% + 6px); font: 9.5px var(--mono); color: var(--faint); transform: translateY(-50%); }
+.tip {
+  position: absolute; top: 6px; left: 0; pointer-events: none; display: none;
+  background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px;
+  padding: 3px 8px; font: 10.5px var(--mono); color: var(--fg);
+  white-space: nowrap; box-shadow: 0 4px 14px rgba(0, 0, 0, .4);
+}
+.axt { display: flex; justify-content: space-between; font: 9.5px var(--mono); color: var(--faint); }
+.legend { display: flex; gap: 14px; justify-content: flex-end; font: 10px var(--mono); color: var(--dim); }
+.sw { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.sw-t { background: var(--teal); } .sw-u { background: var(--amber); }
+
+/* — logs — */
+.fchip {
+  font: 10.5px var(--mono); letter-spacing: 0; text-transform: none; color: var(--cyan);
+  border: 1px solid color-mix(in oklab, var(--cyan) 40%, var(--line));
+  border-radius: 5px; padding: 1px 7px; max-width: 40%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none;
+}
+.fchip:hover { background: color-mix(in oklab, var(--cyan) 12%, transparent); }
+.logs .pmeta { margin-left: 0; }
+.log { display: flex; gap: 9px; padding: 1.5px 6px; font: 11.5px var(--mono); line-height: 1.55; }
+.log:hover { background: var(--panel2); }
+.log .ts { color: var(--faint); flex: none; width: 62px; }
+.lv { flex: none; width: 40px; font-weight: 700; font-size: 10px; letter-spacing: .06em; padding-top: 1px; }
+.lv-info { color: var(--teal); } .lv-warn { color: var(--amber); }
+.lv-error { color: var(--red); } .lv-usage { color: var(--faint); }
+.log .sp { flex: none; max-width: 38%; overflow: hidden; text-overflow: ellipsis; color: var(--dim); white-space: nowrap; }
+.log .sp.hit { color: var(--cyan); }
+.log .m { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ===== terminal drawer ===== */
+footer { flex: none; height: 220px; display: flex; flex-direction: column; background: #0b0f16; border-top: 1px solid var(--line); transition: height .2s ease; }
+footer.min { height: 35px; }
+.tbar {
+  display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; flex: none;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px; letter-spacing: .14em; color: var(--dim); text-transform: uppercase;
+}
+#drawerToggle { color: var(--dim); font-size: 13px; line-height: 1; transition: transform .2s; }
+footer.min #drawerToggle { transform: rotate(180deg); }
+footer.min .tbody { display: none; }
+.tbody { flex: 1; min-height: 0; overflow: auto; position: relative; }
+#playerBox { position: absolute; inset: 0; padding: 10px 14px; overflow: auto; }
+.player-msg { color: var(--dim); font: 11.5px var(--mono); padding: 8px 2px; }
+
+/* ===== responsive + motion ===== */
+@media (max-width: 1080px) {
+  body { height: auto; overflow: auto; }
+  main { grid-template-columns: 1fr; }
+  .panel { min-height: 300px; }
+  header { flex-wrap: wrap; }
+  .pulse { margin-left: 0; }
+  footer, footer.min { height: 260px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+  #chart .l-t { stroke-dasharray: none; stroke-dashoffset: 0; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="mark">
+    <svg width="17" height="17" viewBox="0 0 17 17" aria-hidden="true"><rect x="1" y="6" width="3" height="10" rx="1" fill="#bb9af7"/><rect x="7" y="1" width="3" height="15" rx="1" fill="#5eead4"/><rect x="13" y="9" width="3" height="7" rx="1" fill="#7aa2f7"/></svg>
+    agent-harness <small>OBSERVABILITY TRIO</small>
+  </div>
+  <a class="back" id="backBtn" href="/grid" aria-label="back to run grid">&larr; grid</a>
+  <div class="runmeta" id="runmeta"></div>
+  <div class="pulse" id="pulse"><i></i><span id="pulseTxt">&hellip;</span></div>
+  <div class="tcost"><span>&Sigma; cost</span><b id="totalCost">&ndash;</b></div>
+</header>
+
+<div id="fatal" hidden></div>
+
+<main id="main" hidden>
+  <section class="panel" aria-label="traces">
+    <div class="ph"><span>Traces</span><span class="pmeta" id="traceMeta"></span></div>
+    <div class="pb" id="traceList"></div>
+  </section>
+  <section class="panel" aria-label="metrics">
+    <div class="ph"><span>Metrics</span><span class="pmeta" id="chartMeta"></span></div>
+    <div class="stats" id="stats"></div>
+    <div class="chartwrap">
+      <div class="chartbox" id="chartbox">
+        <span class="axl" id="ax2" style="top:100%">0</span>
+        <span class="axl" id="ax1" style="top:50%"></span>
+        <span class="axl" id="ax0" style="top:0"></span>
+        <svg id="chart" viewBox="0 0 640 176" preserveAspectRatio="none" role="img" aria-label="cumulative tokens and cost over the run"></svg>
+        <div class="tip" id="tip"></div>
+      </div>
+      <div class="axt" id="axT"></div>
+      <div class="legend"><span><i class="sw sw-t"></i>tokens</span><span><i class="sw sw-u"></i>cost</span></div>
+    </div>
+  </section>
+  <section class="panel logs" aria-label="logs">
+    <div class="ph"><span>Logs</span><button class="fchip" id="logFilter" hidden></button><span class="pmeta" id="logMeta"></span></div>
+    <div class="pb" id="logList"></div>
+  </section>
+</main>
+
+<footer id="drawer">
+  <div class="tbar">
+    <span>Terminal &middot; replay</span>
+    <span class="pmeta" id="termMeta"></span>
+    <button id="drawerToggle" aria-expanded="true" aria-label="collapse terminal" style="margin-left:auto">&#9662;</button>
+  </div>
+  <div class="tbody"><div id="playerBox"></div></div>
+</footer>
+
+<script src="/vendor/asciinema/asciinema-player.min.js"></script>
+<script>
+(function () {
+"use strict";
+
+/* ===== helpers ===== */
+function $(id) { return document.getElementById(id); }
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+function K(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(Math.round(n));
+}
+function USD(n) { return "$" + (Number(n) || 0).toFixed(3); }
+function S(ms) { return ((ms || 0) / 1000).toFixed(1) + "s"; }
+function fmtDurMs(ms) {
+  ms = Number(ms) || 0;
+  return ms < 1000 ? Math.round(ms) + "ms" : (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + "s";
+}
+
+/* ===== query params ===== */
+var QS = new URLSearchParams(location.search);
+var RUN_ID = QS.get("run") || "";
+var TOKEN = QS.get("token") || "";
+var BACK_HREF = "/grid" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+$("backBtn").href = BACK_HREF;
+var LIVE_WINDOW_MS = 60000; // matches server NOT_LIVE_AFTER_MS
+
+/* ===== state ===== */
+var obs = null;   // /observability payload
+var rec = null;   // matching RunRecord from /api/runs (may be null)
+var sel = null;   // selected span: {id, name, startMs, endMs}
+var pollTimer = null;
+var castLoaded = false;
+var chartPts = null; // display points for the crosshair
+
+function api(path) { return fetch(path).then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r; }); }
+
+/* ===== header ===== */
+function isLive() { return !!rec && rec.status === "running" && Date.now() - (rec.updatedAt || 0) < LIVE_WINDOW_MS; }
+function renderHeader() {
+  var box = $("runmeta");
+  box.textContent = "";
+  var status = rec ? rec.status : "unknown";
+  box.appendChild(el("span", "dot st-" + status));
+  box.appendChild(el("b", null, rec && rec.agent ? rec.agent : (RUN_ID ? "run" : "no run")));
+  var rid = el("span", "rid", RUN_ID);
+  rid.title = RUN_ID;
+  box.appendChild(rid);
+  box.appendChild(el("span", "stlabel", status));
+  var pulse = $("pulse");
+  var live = isLive();
+  pulse.classList.toggle("on", live);
+  if (live) {
+    var end = Date.now();
+    var dur = Math.max(0, end - (rec.startedAt || end));
+    $("pulseTxt").textContent = "LIVE \u00b7 " + S(dur);
+  } else {
+    $("pulseTxt").textContent = status.toUpperCase();
+  }
+  $("totalCost").textContent = obs ? USD(obs.totalCostUsd) : "\u2013";
+}
+
+/* ===== fatal states ===== */
+function fatal(title, detail, link) {
+  $("main").hidden = true;
+  var f = $("fatal");
+  f.hidden = false;
+  f.textContent = "";
+  f.appendChild(el("h1", null, title));
+  if (detail) f.appendChild(el("p", null, detail));
+  if (link) {
+    var a = el("a", null, "\u2190 back to grid");
+    a.href = BACK_HREF;
+    f.appendChild(a);
+  }
+}
+
+/* ===== timeline bounds ===== */
+function totalMs() {
+  if (!obs) return 1;
+  var t = obs.durationMs || 0;
+  (obs.spans || []).forEach(function (s) { t = Math.max(t, s.startMs + s.durationMs); });
+  (obs.metrics || []).forEach(function (m) { t = Math.max(t, m.tMs); });
+  (obs.logs || []).forEach(function (l) { t = Math.max(t, l.tMs); });
+  return Math.max(t, 1);
+}
+
+/* ===== traces pane ===== */
+function sortedSpans() {
+  return (obs && obs.spans ? obs.spans : []).slice().sort(function (a, b) {
+    return a.startMs - b.startMs || a.depth - b.depth;
+  });
+}
+function renderTraces() {
+  var box = $("traceList");
+  box.textContent = "";
+  var spans = sortedSpans();
+  $("traceMeta").textContent = spans.length + " spans \u00b7 " + S(totalMs());
+  if (!spans.length) { box.appendChild(el("div", "pempty", "no spans")); return; }
+  var T = totalMs();
+  spans.forEach(function (s) {
+    var row = el("div", "span k-" + s.kind + (sel && sel.id === s.id ? " sel" : ""));
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
+    row.setAttribute("aria-pressed", sel && sel.id === s.id ? "true" : "false");
+    row.dataset.id = s.id;
+    var usageBits = [];
+    if (s.usage) {
+      usageBits.push("in " + K(s.usage.inputTokens), "out " + K(s.usage.outputTokens),
+        "cacheRead " + K(s.usage.cacheReadTokens), "cacheWrite " + K(s.usage.cacheWriteTokens));
+    }
+    row.title = s.name + " \u00b7 " + fmtDurMs(s.durationMs) + (usageBits.length ? " \u00b7 " + usageBits.join(" \u00b7 ") : "");
+
+    var lbl = el("span", "lbl");
+    lbl.style.paddingLeft = ((s.depth || 0) * 13) + "px";
+    lbl.appendChild(el("i", "kd"));
+    lbl.appendChild(document.createTextNode(s.name + " "));
+    lbl.appendChild(el("em", s.isError ? "err" : null, fmtDurMs(s.durationMs)));
+    row.appendChild(lbl);
+
+    var bar = el("span", "bar");
+    var fill = el("i", s.isError ? "err" : null);
+    fill.style.left = (s.startMs / T * 100).toFixed(2) + "%";
+    fill.style.width = Math.max(s.durationMs / T * 100, 0.4).toFixed(2) + "%";
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    box.appendChild(row);
+  });
+}
+
+/* ===== metrics pane ===== */
+function displayPoints() {
+  // cumulative series padded with (t=0, zeros) and a carry to run end so
+  // the step chart spans the full width even when usage stops early.
+  var ms = obs && obs.metrics ? obs.metrics.slice() : [];
+  if (!ms.length) return [];
+  var pts = [{ tMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }];
+  ms.forEach(function (m) { pts.push(m); });
+  var last = ms[ms.length - 1];
+  var T = totalMs();
+  if (last.tMs < T) pts.push({ tMs: T, input: last.input, output: last.output, cacheRead: last.cacheRead, cacheWrite: last.cacheWrite, costUsd: last.costUsd });
+  return pts;
+}
+function tokOf(p) { return (p.input || 0) + (p.output || 0) + (p.cacheRead || 0) + (p.cacheWrite || 0); }
+
+var CW = 640, CH = 176;
+function stepPoints(pts, val, maxV) {
+  var out = "";
+  var prevY = null;
+  for (var i = 0; i < pts.length; i++) {
+    var x = (pts[i].tMs / totalMs() * CW).toFixed(1);
+    var y = (CH - 4 - val(pts[i]) / maxV * (CH - 16)).toFixed(1);
+    if (i === 0) out = x + "," + y; // vertical from baseline is drawn by the first point itself
+    else out += " " + x + "," + prevY + " " + x + "," + y; // step-after: across, then up
+    prevY = y;
+  }
+  return out;
+}
+function drawChart() {
+  var svg = $("chart");
+  var tip = $("tip");
+  tip.style.display = "none";
+  var pts = displayPoints();
+  if (pts.length < 2) {
+    svg.textContent = "";
+    chartPts = null;
+    $("ax0").textContent = ""; $("ax1").textContent = ""; $("ax2").textContent = "0";
+    $("axT").textContent = "";
+    var box = $("chartbox");
+    if (!$("chartEmpty")) {
+      var msg = el("div", "pempty", "no usage recorded");
+      msg.id = "chartEmpty";
+      msg.style.position = "absolute";
+      msg.style.inset = "0";
+      box.appendChild(msg);
+    }
+    return;
+  }
+  var emptyMsg = $("chartEmpty");
+  if (emptyMsg) emptyMsg.remove();
+
+  var T = totalMs();
+  var maxTok = 0, maxCost = 0;
+  pts.forEach(function (p) { maxTok = Math.max(maxTok, tokOf(p)); maxCost = Math.max(maxCost, p.costUsd || 0); });
+  maxTok = maxTok * 1.15 || 1;
+  maxCost = maxCost * 1.15 || 1;
+  chartPts = { pts: pts, maxTok: maxTok, maxCost: maxCost, T: T };
+
+  var inner = "";
+  for (var g = 1; g < 4; g++) {
+    var gy = (CH - 4 - (CH - 16) * g / 4).toFixed(1);
+    inner += '<line class="grid" x1="0" x2="' + CW + '" y1="' + gy + '" y2="' + gy + '"/>';
+  }
+  if (sel) {
+    var bx = (sel.startMs / T * CW).toFixed(1);
+    var bw = Math.max((sel.endMs - sel.startMs) / T * CW, 2).toFixed(1);
+    inner += '<rect class="band" x="' + bx + '" y="0" width="' + bw + '" height="' + CH + '"/>';
+  }
+  inner += '<polyline class="l-t" points="' + stepPoints(pts, tokOf, maxTok) + '"/>';
+  inner += '<polyline class="l-u" points="' + stepPoints(pts, function (p) { return p.costUsd || 0; }, maxCost) + '"/>';
+  inner += '<g class="xh"><line x1="0" x2="0" y1="0" y2="' + CH + '"/><circle class="ct" r="3.2"/><circle class="cu" r="3.2"/></g>';
+  svg.innerHTML = inner;
+
+  $("ax0").textContent = K(maxTok);
+  $("ax1").textContent = K(maxTok / 2);
+  $("axT").textContent = "";
+  $("axT").appendChild(el("span", null, "0s"));
+  $("axT").appendChild(el("span", null, S(T / 2)));
+  $("axT").appendChild(el("span", null, S(T)));
+}
+function renderMetrics() {
+  var last = obs && obs.metrics && obs.metrics.length ? obs.metrics[obs.metrics.length - 1] : null;
+  var cards = [
+    ["input", last ? K(last.input) : "\u2013", "c-in"],
+    ["output", last ? K(last.output) : "\u2013", "c-out"],
+    ["cache read", last ? K(last.cacheRead) : "\u2013", "c-cr"],
+    ["cache write", last ? K(last.cacheWrite) : "\u2013", "c-cw"],
+    ["cost", obs ? USD(obs.totalCostUsd) : "\u2013", "c-cost"],
+    ["duration", obs ? S(obs.durationMs) : "\u2013", "c-el"],
+  ];
+  var box = $("stats");
+  box.textContent = "";
+  cards.forEach(function (c) {
+    var d = el("div", "stat");
+    d.appendChild(el("div", "k", c[0]));
+    d.appendChild(el("div", "v " + c[2], c[1]));
+    box.appendChild(d);
+  });
+  var nPts = obs && obs.metrics ? obs.metrics.length : 0;
+  $("chartMeta").textContent = nPts ? nPts + " usage points" : "";
+  drawChart();
+}
+
+/* crosshair */
+function chartMove(e) {
+  if (!chartPts) return;
+  var r = $("chart").getBoundingClientRect();
+  var fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  var t = fx * chartPts.T;
+  var pts = chartPts.pts;
+  var i = 0;
+  while (i + 1 < pts.length && pts[i + 1].tMs <= t) i++;
+  var p = pts[i];
+  var xh = $("chart").querySelector(".xh");
+  if (!xh) return;
+  var xx = (p.tMs / chartPts.T * CW).toFixed(1);
+  var yt = (CH - 4 - tokOf(p) / chartPts.maxTok * (CH - 16)).toFixed(1);
+  var yu = (CH - 4 - (p.costUsd || 0) / chartPts.maxCost * (CH - 16)).toFixed(1);
+  xh.style.display = "block";
+  var ln = xh.querySelector("line");
+  ln.setAttribute("x1", xx); ln.setAttribute("x2", xx);
+  var ct = xh.querySelector(".ct"), cu = xh.querySelector(".cu");
+  ct.setAttribute("cx", xx); ct.setAttribute("cy", yt);
+  cu.setAttribute("cx", xx); cu.setAttribute("cy", yu);
+  var tip = $("tip");
+  tip.style.display = "block";
+  tip.textContent = "+" + S(p.tMs) + " \u00b7 " + K(tokOf(p)) + " tok \u00b7 " + USD(p.costUsd || 0);
+  tip.style.left = Math.min(76, Math.max(2, fx * 100)) + "%";
+}
+function chartLeave() {
+  var xh = $("chart").querySelector(".xh");
+  if (xh) xh.style.display = "none";
+  $("tip").style.display = "none";
+}
+
+/* ===== logs pane ===== */
+function logRow(l, hit) {
+  var d = el("div", "log");
+  d.appendChild(el("span", "ts", "+" + ((l.tMs || 0) / 1000).toFixed(3) + "s"));
+  d.appendChild(el("span", "lv lv-" + l.level, l.level));
+  var sp = el("span", "sp" + (hit ? " hit" : ""), l.span || "");
+  sp.title = l.span || "";
+  d.appendChild(sp);
+  var m = el("span", "m", l.text || "");
+  m.title = l.text || "";
+  d.appendChild(m);
+  return d;
+}
+function renderLogs() {
+  var box = $("logList");
+  var logs = obs && obs.logs ? obs.logs : [];
+  var rows = sel ? logs.filter(function (l) { return l.span === sel.name; }) : logs;
+  $("logMeta").textContent = rows.length + " / " + logs.length + " lines";
+  var chip = $("logFilter");
+  chip.hidden = !sel;
+  if (sel) chip.textContent = "filter: " + sel.name + "  \u2715";
+  chip.title = sel ? "clear span filter" : "";
+  box.textContent = "";
+  if (!rows.length) {
+    box.appendChild(el("div", "pempty", sel ? "no lines for this span" : "no log lines"));
+    return;
+  }
+  var frag = document.createDocumentFragment();
+  rows.forEach(function (l) { frag.appendChild(logRow(l, !!sel && l.span === sel.name)); });
+  box.appendChild(frag);
+  box.scrollTop = box.scrollHeight;
+}
+
+/* ===== selection sync ===== */
+function applySel() {
+  renderTraces();
+  renderLogs();
+  drawChart();
+}
+function pickSpan(id) {
+  var span = null;
+  (obs && obs.spans ? obs.spans : []).forEach(function (s) { if (s.id === id) span = s; });
+  if (!span) return;
+  if (sel && sel.id === id) sel = null; // toggle off
+  else sel = { id: span.id, name: span.name, startMs: span.startMs, endMs: span.startMs + span.durationMs };
+  applySel();
+}
+function clearSel() {
+  if (!sel) return;
+  sel = null;
+  applySel();
+}
+
+/* ===== terminal drawer ===== */
+function loadCast() {
+  if (castLoaded || !RUN_ID) return;
+  castLoaded = true;
+  var box = $("playerBox");
+  $("termMeta").textContent = "pty replay";
+  if (!window.AsciinemaPlayer) {
+    box.appendChild(el("div", "player-msg", "asciinema vendor assets failed to load"));
+    return;
+  }
+  box.appendChild(el("div", "player-msg", "loading replay\u2026"));
+  api("/api/runs/" + encodeURIComponent(RUN_ID) + "/cast")
+    .then(function (r) { return r.text(); })
+    .then(function (cast) {
+      box.textContent = "";
+      if (cast && cast.trim()) window.AsciinemaPlayer.create({ data: cast }, box, { fit: "both" });
+      else box.appendChild(el("div", "player-msg", "no replay available for this run"));
+    })
+    .catch(function () {
+      box.textContent = "";
+      box.appendChild(el("div", "player-msg", "no replay available for this run"));
+    });
+}
+
+/* ===== data loading ===== */
+function fetchObs() {
+  return api("/api/runs/" + encodeURIComponent(RUN_ID) + "/observability")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      obs = {
+        spans: (data && data.spans) || [],
+        metrics: (data && data.metrics) || [],
+        logs: (data && data.logs) || [],
+        totalCostUsd: (data && data.totalCostUsd) || 0,
+        durationMs: (data && data.durationMs) || 0,
+      };
+    });
+}
+function fetchRec() {
+  return api("/api/runs")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      var records = (data && data.records) || [];
+      rec = null;
+      for (var i = 0; i < records.length; i++) {
+        if (records[i].runId === RUN_ID) { rec = records[i]; break; }
+      }
+    })
+    .catch(function () { rec = null; });
+}
+function renderAll() {
+  $("fatal").hidden = true;
+  $("main").hidden = false;
+  renderHeader();
+  renderTraces();
+  renderMetrics();
+  renderLogs();
+}
+function refreshLive() {
+  fetchRec().then(function () {
+    renderHeader();
+    if (!isLive() && pollTimer) { clearInterval(pollTimer); pollTimer = null; return; }
+    return fetchObs().then(function () {
+      // keep selection only if the span still exists
+      if (sel) {
+        var still = obs.spans.some(function (s) { return s.id === sel.id; });
+        if (!still) sel = null;
+      }
+      renderAll();
+    });
+  }).catch(function () { /* transient poll failure; keep last view */ });
+}
+function startPollingIfLive() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (isLive()) pollTimer = setInterval(refreshLive, 5000);
+}
+
+/* ===== events ===== */
+$("traceList").addEventListener("click", function (e) {
+  var t = e.target.closest ? e.target.closest(".span") : null;
+  if (t) pickSpan(t.dataset.id);
+});
+$("traceList").addEventListener("keydown", function (e) {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  var t = e.target.closest ? e.target.closest(".span") : null;
+  if (t) { e.preventDefault(); pickSpan(t.dataset.id); }
+});
+$("logFilter").addEventListener("click", clearSel);
+$("chartbox").addEventListener("mousemove", chartMove);
+$("chartbox").addEventListener("mouseleave", chartLeave);
+$("drawerToggle").addEventListener("click", function () {
+  var min = $("drawer").classList.toggle("min");
+  this.setAttribute("aria-expanded", String(!min));
+  this.setAttribute("aria-label", min ? "expand terminal" : "collapse terminal");
+  if (!min) loadCast();
+});
+
+/* ===== init ===== */
+function init() {
+  if (!RUN_ID) {
+    fatal("no run selected", "open this page as /trio?run=<runId> (an optional &token= is forwarded to the grid).", true);
+    return;
+  }
+  fetchObs()
+    .then(function () { return fetchRec(); })
+    .then(function () {
+      renderAll();
+      startPollingIfLive();
+      loadCast();
+    })
+    .catch(function (err) {
+      var msg = err && err.message === "http 404"
+        ? "run \u201c" + RUN_ID + "\u201d is not in the registry \u2014 it may have been pruned, or the harness state dir differs from this server's."
+        : "failed to load observability data (" + ((err && err.message) || "network error") + "). Is the harness web server running?";
+      fatal("run not found", msg, true);
+    });
+}
+init();
+})();
+</script>
+</body>
+</html>
