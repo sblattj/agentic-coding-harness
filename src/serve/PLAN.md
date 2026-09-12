@@ -57,7 +57,7 @@ Tools (zod-validated, errors name the field, same conventions as tools-run.ts):
 
 ## C. HTTP transport (seat W3) — src/mcp/http.ts + serve command
 
-`harness serve [--http] [--port N=8399] [--token T] [--host 127.0.0.1]`
+`harness serve [--http] [--port N=8398] [--token T] [--host 127.0.0.1]`
 - Streamable HTTP MCP on loopback: POST /mcp accepts single JSON-RPC messages
   AND batches; responds application/json (no SSE streams needed for v1 —
   declare 'Streamable' via the single-endpoint shape: POST-only, JSON

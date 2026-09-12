@@ -147,6 +147,33 @@ Details and the fixture-backed source table are in
   compatibility check is the version number in `result.kiro.cliVersion` (`2.21.2` on both
   transports; `'unknown'` when the probe or handshake failed).
 
+### stderr notices
+
+Two classes of headless stderr line are classified rather than treated as opaque progress
+text: the model-ack warning (see `modelAck` above) and an MCP dynamic-client-registration
+failure. Both surface as a `step` event (`payload.kind: 'modelAck'` or `'stderrNotice'`) and
+the raw line is still forwarded as an ordinary `progress` event too — classification never
+suppresses it. A `stderrNotice` step also carries a `warning` string, which the driver folds
+into `result.warnings` (deduplicated).
+
+The MCP registration failure looks like this on kiro-cli 2.21.2:
+
+```
+Dynamic registration failed: Registration failed: HTTP 400 Bad Request: malformed payload: invalid message version tag ""; expected "2.0"
+```
+
+The line never names the offending server. In practice this fires when Kiro's global
+`~/.kiro/settings/mcp.json` (or an agent's own `mcpServers` list) registers a server that Kiro
+tries OAuth dynamic client registration against and the server rejects — for example a
+ToolHive/vMCP aggregator that does not implement DCR. Remedy: remove or scope that entry out of
+`~/.kiro/settings/mcp.json` for harness-driven runs, or pass `--kiro-mcp-server` to supply a
+per-run `mcpServers` set instead of relying on the global config.
+
+This classifier runs on the **headless** transport only (`src/adapters/kiro.ts` `onStderrLine`).
+The ACP transport (`src/adapters/kiro-acp.ts`) keeps stderr only as a bounded ring buffer for
+error diagnostics (`stderrTail()`); it has no per-line hook that turns stderr into events, so
+there is nothing to wire the classifier into today.
+
 ## Paid calibration (opt-in)
 
 `tests/kiro-calibration.test.ts` is the one test that spends credits. Every other test under

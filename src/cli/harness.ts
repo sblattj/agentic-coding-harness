@@ -67,7 +67,7 @@ usage:
                  (single-file HTML comparison; a trials/ root scans subdirs)
   harness dash [--json] [--all] [--dir <stateDir>]
                (live run dashboard; --json dumps RunRecords and exits)
-  harness serve [--http] [--port N=8399] [--host 127.0.0.1] [--token T]
+  harness serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENT_HARNESS_HTTP_TOKEN)
   harness web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]

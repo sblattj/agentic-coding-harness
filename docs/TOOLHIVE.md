@@ -15,7 +15,7 @@ MCP toolset with no agent CLI of their own.
                      |  HTTPS, Bearer token
            ToolHive gateway (auth, TLS, routing)
                      |  loopback, Authorization: Bearer <token>
-        harness serve --http --port 8399          (execution host)
+        harness serve --http --port 8398          (execution host)
                      |  host PATH + host auth
         agent CLIs (claude, codex, opencode, gemini, kiro)
 ```
@@ -28,11 +28,13 @@ run behaves like one typed at the host's shell.
 ## Running the service
 
 ```sh
-harness serve --http --port 8399 --token "$TOKEN"
+harness serve --http --port 8398 --token "$TOKEN"
 ```
 
 - Binds loopback (`--host 127.0.0.1` default); Streamable HTTP MCP on
   `POST /mcp`, JSON responses, protocol version `2025-06-18`.
+- `harness serve` defaults to port 8398 and `harness web` defaults to 8399,
+  so both can run on one host without an explicit `--port`.
 - Token: set `AGENT_HARNESS_HTTP_TOKEN` in the service env, or have ToolHive
   forward it as a secret into that env — never on argv (`ps` leaks argv).
   Flag wins over env; env over unset. No token anywhere means loopback-only
@@ -161,8 +163,8 @@ Smoke the deployment before spending anything (bearer header when a token is
 set):
 
 ```sh
-curl -s http://127.0.0.1:8399/health          # {"status":"ok",...}
-curl -s -X POST http://127.0.0.1:8399/mcp -H 'content-type: application/json' \
+curl -s http://127.0.0.1:8398/health          # {"status":"ok",...}
+curl -s -X POST http://127.0.0.1:8398/mcp -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
 ```
 

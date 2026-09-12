@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createKiroNormalizer,
   parseKiroStderrLine,
+  parseKiroStderrNotice,
   sumMeteringUsage,
   type KiroUsageExtra,
 } from '../src/adapters/kiro-events.js';
@@ -412,5 +413,26 @@ describe('kiro-events: stderr model-ack helper', () => {
     assert.equal(parseKiroStderrLine('[warn] something else'), null);
     assert.equal(parseKiroStderrLine(''), null);
     assert.equal(parseKiroStderrLine('failed to set model'), null);
+  });
+});
+
+describe('kiro-events: stderr notice helper', () => {
+  const F3_LINE =
+    'Dynamic registration failed: Registration failed: HTTP 400 Bad Request: malformed payload: invalid message version tag ""; expected "2.0"';
+
+  it('parses the observed MCP dynamic-registration-failure stderr line', () => {
+    const hit = parseKiroStderrNotice(F3_LINE);
+    assert.ok(hit, 'expected a hit on the F3 line');
+    assert.equal(hit!.notice, 'mcpRegistrationFailed');
+    assert.ok(
+      hit!.warning.includes(F3_LINE),
+      `warning must contain the raw line: ${hit!.warning}`,
+    );
+  });
+
+  it('returns null for a model-ack line and an unrelated plain line', () => {
+    assert.equal(parseKiroStderrNotice("[warn] failed to set model 'x': Method not found"), null);
+    assert.equal(parseKiroStderrNotice('just some unrelated stderr output'), null);
+    assert.equal(parseKiroStderrNotice(''), null);
   });
 });
