@@ -1,8 +1,34 @@
 // Kiro CLI driver adapter (adapter-lane contract, src/adapters/types.ts).
 //
 // Headless invocation:
-//   kiro-cli chat --no-interactive --trust-all-tools --output-format stream-json --v3 "<prompt>"
+//   kiro-cli chat --no-interactive --output-format stream-json --agent-engine v2 \
+//     [--model M] [--agent A] [--effort E] [--require-mcp-startup] \
+//     [--trust-all-tools | --trust-tools=<csv>] [--resume | --resume-id <id>] \
+//     [...extraArgs] "<prompt>"
 // Resume: `--resume` (last session) or `--resume-id <sessionId>`.
+//
+// TRUST POLICY (behaviour change, issue #2). The adapter NO LONGER passes an
+// implicit `--trust-all-tools`. `spec.kiro.tools` is the only trust input:
+//   'all'      -> --trust-all-tools
+//   'none'     -> --trust-tools=            (empty allowlist)
+//   ['a','b']  -> --trust-tools=a,b
+//   undefined  -> NO trust flag at all; kiro's own native agent config decides.
+// Callers that relied on the old implicit trust-all must now ask for
+// `kiro: { tools: 'all' }` explicitly.
+//
+// EVENT PARSING. spawn() normalizes stdout through
+// `createKiroNormalizer({transport:'headless'})` (src/adapters/kiro-events.ts),
+// which understands both the 2.21.x `{type,data}` envelopes
+// (runStarted/metadata/sessionUpdate/runFinished) and the legacy top-level
+// shapes. stderr is scanned with `parseKiroStderrLine`: the
+// `[warn] failed to set model 'X': Method not found` line sets
+// `modelAck:'unsupported'` for the run and emits a `step` with
+// `payload.kind:'modelAck'` so the evidence lands in the transcript.
+//
+// EFFECTIVE CONFIG. Every run records a `KiroEffective` (requested config,
+// resolved argv minus the prompt, trust flag, engine, agent, model, native
+// session id, model ack, configHash). It reaches the driver through
+// `AgentHandle.kiro()` — see PLAN-kiro-acp.md, "Handle -> driver hand-off".
 // KIRO_API_KEY passes through to the child process, never stripped, so
 // kiro-cli authenticates headless with the caller's ambient credentials.
 //
@@ -23,9 +49,22 @@ import type {
   AgentEvent as CoreAgentEvent,
   AgentHandle as CoreAgentHandle,
   CanonicalTokenRecord as CoreTokenRecord,
+  KiroConfig,
+  KiroEffective,
+  KiroModelAck,
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
-import { runJsonlCli, launchDriverHandle, houseEventToCore, EventQueue, type HouseEventLike, type SpawnFn } from './shared.ts';
+import { createHash } from 'node:crypto';
+import {
+  runJsonlCli,
+  launchDriverHandle,
+  houseEventToCore,
+  defaultSpawnFn,
+  EventQueue,
+  type HouseEventLike,
+  type SpawnFn,
+} from './shared.ts';
+import { createKiroNormalizer, parseKiroStderrLine, type KiroNormalizer } from './kiro-events.ts';
 import { findKiroMitmPort, mitmdumpAvailable, startKiroMitm, tapEnv, type KiroMitmHandle } from '../monitors/kiro-mitm.js';
 
 export const KIRO_CAPABILITIES: AdapterCapabilities = {
@@ -41,32 +80,69 @@ export interface KiroRunSpec extends RunOptions {
   model?: string;
   /** `--resume-id <id>`, or 'continue' for `--resume` (last session). */
   resume?: { sessionId: string } | 'continue';
+  /** Kiro-specific configuration (agent/engine/effort/tools/requireMcpStartup). */
+  kiro?: KiroConfig;
+  /** Extra argv appended verbatim after every flag, before the prompt. */
+  extraArgs?: string[];
 }
 
 /**
- * Build argv for `kiro-cli chat --no-interactive --trust-all-tools
- * --output-format stream-json --v3 [--resume | --resume-id <id>]
- * "<prompt>"`. Pure; exported for tests. The prompt is always the final
- * positional argument.
+ * A `kiro-cli --version` probe running alongside a run: `value()` is
+ * 'unknown' until the probe settles; `settle(p)` resolves with p's result
+ * only after the probe has settled too.
+ */
+interface VersionProbe {
+  value: () => string;
+  settle: <T>(p: Promise<T>) => Promise<T>;
+}
+
+/** Default agent engine when `spec.kiro.engine` is not given. */
+export const KIRO_DEFAULT_ENGINE = 'v2';
+
+/**
+ * The trust flag for a `KiroConfig.tools` policy, or null for "no flag".
+ *
+ * `undefined` deliberately yields null: the adapter never passes an implicit
+ * `--trust-all-tools` (issue #2). Pure; exported for tests.
+ */
+export function kiroTrustFlag(tools: KiroConfig['tools']): string | null {
+  if (tools === undefined) return null;
+  if (tools === 'all') return '--trust-all-tools';
+  if (tools === 'none') return '--trust-tools=';
+  return `--trust-tools=${tools.join(',')}`;
+}
+
+/**
+ * Build argv for `kiro-cli chat`. Pure; exported for tests. Order:
+ * base flags, `--agent-engine <engine>`, `--model`, `--agent`, `--effort`,
+ * `--require-mcp-startup`, the trust flag (only when `kiro.tools` is set),
+ * resume flags, `extraArgs` verbatim, prompt LAST.
  */
 export function buildKiroArgs(spec: KiroRunSpec): string[] {
+  const kiro = spec.kiro ?? {};
   const args = [
     'chat',
     '--no-interactive',
-    '--trust-all-tools',
     '--output-format',
     'stream-json',
     // TODO(v3): `--v3` fails through the MITM tap — v3's model-catalog fetch
     // to management.us-east-1.kiro.dev dies under mitmproxy with
     // ModelRegistryUnavailableError. v2 verified working through the tap.
     '--agent-engine',
-    'v2',
+    kiro.engine ?? KIRO_DEFAULT_ENGINE,
   ];
+  if (spec.model) args.push('--model', spec.model);
+  if (kiro.agent) args.push('--agent', kiro.agent);
+  if (kiro.effort) args.push('--effort', kiro.effort);
+  if (kiro.requireMcpStartup) args.push('--require-mcp-startup');
+  const trust = kiroTrustFlag(kiro.tools);
+  if (trust !== null) args.push(trust);
   if (spec.resume && typeof spec.resume === 'object' && spec.resume.sessionId) {
     args.push('--resume-id', spec.resume.sessionId);
   } else if (spec.resume === 'continue') {
     args.push('--resume');
   }
+  if (spec.extraArgs) args.push(...spec.extraArgs);
   args.push(spec.prompt);
   return args;
 }
@@ -107,6 +183,10 @@ function num(v: unknown): number {
  * cacheWriteInputTokens / totalTokens) or plain names (inputTokens /
  * cacheReadTokens / cacheWriteTokens / totalTokens) — into the adapter-lane
  * CanonicalTokenRecord.
+ *
+ * @deprecated Superseded by the normalizer in src/adapters/kiro-events.ts
+ * (`createKiroNormalizer`), which handles the 2.21.x envelopes as well. Kept
+ * exported for existing importers/tests; the adapter no longer calls it.
  */
 export function mapKiroTokens(o: Record<string, unknown>): CanonicalTokenRecord {
   const tu = (o.tokenUsage ?? o.usage ?? o) as Record<string, unknown>;
@@ -122,6 +202,22 @@ export function mapKiroTokens(o: Record<string, unknown>): CanonicalTokenRecord 
   };
 }
 
+/**
+ * Last-resort session-id sweep over one raw stdout line: any top-level
+ * sessionId/session_id/sessionID string. Used only when the normalizer did not
+ * recognize the envelope (see spawn()).
+ */
+function sniffSessionId(line: string): string | undefined {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(line.trim());
+  } catch {
+    return undefined;
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return undefined;
+  return pickString(obj as Record<string, unknown>, ['sessionId', 'session_id', 'sessionID']);
+}
+
 export interface ParsedKiroLine {
   events: KiroEvent[];
   /** sessionId from any line that carries one (resume capture). */
@@ -133,6 +229,12 @@ export interface ParsedKiroLine {
  * schema is under-documented, so: known envelope types map to canonical
  * events; any other typed JSON object maps to {type:'step', payload: raw};
  * non-JSON lines (banners, warnings) yield no events rather than throwing.
+ *
+ * @deprecated Superseded by `createKiroNormalizer({transport:'headless'})` in
+ * src/adapters/kiro-events.ts, which understands the current 2.21.x
+ * `{type,data}` envelopes (this function maps them all to `step`) and
+ * coalesces chunks. Kept exported for existing importers/tests; the adapter
+ * no longer calls it.
  */
 export function parseKiroLineRecord(line: string): ParsedKiroLine {
   let obj: unknown;
@@ -187,7 +289,12 @@ export function parseKiroLineRecord(line: string): ParsedKiroLine {
   return { events, sessionId };
 }
 
-/** Parse one line to canonical events only (house convention, like codex/gemini). */
+/**
+ * Parse one line to canonical events only (house convention, like codex/gemini).
+ *
+ * @deprecated See `parseKiroLineRecord`; use `createKiroNormalizer` from
+ * src/adapters/kiro-events.ts instead.
+ */
 export function parseKiroLine(line: string): KiroEvent[] {
   return parseKiroLineRecord(line).events;
 }
@@ -197,10 +304,13 @@ export function parseKiroLine(line: string): KiroEvent[] {
 // ---------------------------------------------------------------------------
 
 /**
- * House-lane carrier for one tap record. Token counts are deliberately zero:
- * counts flow from the stdout usage events, and the tap event exists for the
- * metering credits — `extra.credits`, which are metering units, NOT USD, so
- * `costUsd` stays undefined everywhere.
+ * House-lane carrier for one tap record. On kiro 2.21.x the tap's token fields
+ * are all zero (PLAN-kiro-acp.md § "Amendment: token counts"), so the carrier
+ * declares whether the counts mean anything: `extra.tokensAvailable` is false
+ * when EVERY token field in the tap record is 0 and true when any is non-zero.
+ * A consumer must render `unavailable`, never `0`/`$0.0000`, on false. The tap
+ * event exists mainly for the metering credits — `extra.credits`, which are
+ * metering units, NOT USD, so `costUsd` stays undefined everywhere.
  */
 export interface KiroMitmUsageEvent {
   type: 'usage';
@@ -213,21 +323,45 @@ export interface KiroMitmUsageEvent {
 /** House events the kiro lane can emit: stream events plus tap carriers. */
 export type KiroLaneEvent = KiroEvent | KiroMitmUsageEvent;
 
-/** Convert one tap record into its zero-token house carrier event. */
+/**
+ * True when the tap record carries at least one non-zero token count. All-zero
+ * records are NOT token records: they are credits-only evidence.
+ */
+export function tapTokensAvailable(rec: CoreTokenRecord): boolean {
+  return (
+    num(rec.inputTokens) !== 0 ||
+    num(rec.outputTokens) !== 0 ||
+    num(rec.cacheReadTokens) !== 0 ||
+    num(rec.cacheWriteTokens) !== 0 ||
+    num(rec.reasoningTokens) !== 0
+  );
+}
+
+/**
+ * Convert one tap record into its house carrier event. The carrier's own token
+ * fields mirror the tap record (zeros stay zeros — nothing is fabricated) and
+ * `mitmRecord.extra` gains `tokensAvailable` + `source:'tap'`; `extra.credits`
+ * is preserved untouched.
+ */
 export function mitmRecordToUsageEvent(rec: CoreTokenRecord): KiroMitmUsageEvent {
+  const available = tapTokensAvailable(rec);
+  const stamped: CoreTokenRecord = {
+    ...rec,
+    extra: { ...rec.extra, tokensAvailable: available, source: 'tap' },
+  };
   return {
     type: 'usage',
     tokens: {
-      inputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      outputTokens: 0,
+      inputTokens: num(rec.inputTokens),
+      cacheReadTokens: num(rec.cacheReadTokens),
+      cacheWriteTokens: num(rec.cacheWriteTokens),
+      outputTokens: num(rec.outputTokens),
       reasoningTokens: null,
       totalTokens: null,
       durationMs: null,
       raw: rec.extra?.raw ?? rec,
     },
-    mitmRecord: rec,
+    mitmRecord: stamped,
   };
 }
 
@@ -246,11 +380,13 @@ export function kiroEventToCore(event: KiroLaneEvent): CoreAgentEvent | null {
       usage: {
         agent: 'kiro',
         ...(typeof rec.model === 'string' && rec.model !== '' ? { model: rec.model } : {}),
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        extra: rec.extra,
+        inputTokens: num(rec.inputTokens),
+        outputTokens: num(rec.outputTokens),
+        cacheReadTokens: num(rec.cacheReadTokens),
+        cacheWriteTokens: num(rec.cacheWriteTokens),
+        // Truthfulness marker: the four counters above are meaningless unless
+        // extra.tokensAvailable is true. extra.credits survives untouched.
+        extra: { ...rec.extra, tokensAvailable: tapTokensAvailable(rec), source: 'tap' },
         timestamp,
       },
       data: rec.extra?.raw,
@@ -289,6 +425,14 @@ export interface KiroRunHandle {
   nativeSessionId(): string | undefined;
   /** Full exit state: exit code plus captured sessionId/usage. */
   result(): Promise<KiroRunResult>;
+  /**
+   * Requested-vs-effective evidence for this run. `cliVersion` is supplied by
+   * the caller (the adapter caches one `kiro-cli --version` probe per
+   * instance). Safe to call at any time; only complete once wait() settles.
+   */
+  effective(cliVersion: string): KiroEffective;
+  /** Model acknowledgement verdict so far (see `effective()`). */
+  modelAck(): KiroModelAck;
 }
 
 export interface KiroAdapterOptions {
@@ -325,6 +469,8 @@ export class KiroAdapter implements CoreAgentAdapter {
   readonly #mitmOpt: boolean | undefined;
   readonly #mitmdumpBin: string;
   #current: { abort(): void } | null = null;
+  /** Cached `kiro-cli --version` probe (one per adapter instance). */
+  #cliVersionPromise: Promise<string> | null = null;
 
   constructor(options: KiroAdapterOptions = {}) {
     this.#command = options.command ?? process.env.KIRO_CLI_BIN ?? 'kiro-cli';
@@ -340,33 +486,98 @@ export class KiroAdapter implements CoreAgentAdapter {
   spawn(promptOrTask: string | KiroRunSpec, opts: RunOptions = {}): KiroRunHandle {
     const task: KiroRunSpec =
       typeof promptOrTask === 'string' ? { prompt: promptOrTask, ...opts } : promptOrTask;
-    const state: { sessionId?: string; usage?: CanonicalTokenRecord } = {};
+    const requested: KiroConfig = task.kiro ?? {};
+    const args = buildKiroArgs(task);
+    // argv evidence excludes the prompt (last positional): it is run input,
+    // not configuration, and keeping it out makes configHash prompt-stable.
+    const argv = args.slice(0, -1);
+    const normalizer: KiroNormalizer = createKiroNormalizer({ transport: 'headless' });
+    const state: {
+      sessionId?: string;
+      usage?: CanonicalTokenRecord;
+      modelAck: KiroModelAck;
+    } = { modelAck: task.model ? 'unverified' : 'not-requested' };
+
     const handle = runJsonlCli({
       spec: {
         command: this.#command,
-        args: buildKiroArgs(task),
+        args,
         cwd: task.cwd,
         env: buildKiroEnv(task.env),
       },
       parseLine: (line): CanonicalEvent[] => {
-        const parsed = parseKiroLineRecord(line);
-        if (parsed.sessionId) state.sessionId = parsed.sessionId;
-        for (const event of parsed.events) {
-          if (event.type === 'usage') state.usage = event.tokens;
+        const events = normalizer.pushHeadlessLine(line);
+        // The normalizer only captures a session id from envelopes it knows.
+        // Live kiro runs have been observed carrying the bare on-disk uuid on
+        // an otherwise untyped line, so keep the old tolerant sweep as a
+        // FALLBACK (never an override) for correlation/resume.
+        const native = normalizer.state().nativeSessionId ?? sniffSessionId(line);
+        if (native && !state.sessionId) state.sessionId = native;
+        for (const event of events) {
+          if (event.type === 'usage') state.usage = event.tokens as CanonicalTokenRecord;
         }
-        // KiroEvent[] is a strict superset of CanonicalEvent[] at runtime
-        // (step events); the shared loop only types the base union.
-        return parsed.events as CanonicalEvent[];
+        return events;
+      },
+      onStderrLine: (line): CanonicalEvent[] | void => {
+        const ack = parseKiroStderrLine(line);
+        if (!ack) return;
+        state.modelAck = 'unsupported';
+        return [
+          {
+            type: 'step',
+            payload: {
+              kind: 'modelAck',
+              transport: 'headless',
+              countsAsTurn: false,
+              modelAck: 'unsupported',
+              model: ack.model,
+              raw: line,
+            },
+          },
+        ];
       },
       spawnFn: this.#spawnFn,
     });
+
+    const effective = (cliVersion: string): KiroEffective => {
+      const native = normalizer.state().nativeSessionId ?? state.sessionId;
+      const eff: Record<string, unknown> = {
+        argv,
+        trustFlag: kiroTrustFlag(requested.tools),
+        engine: requested.engine ?? KIRO_DEFAULT_ENGINE,
+        ...(requested.agent !== undefined ? { agent: requested.agent } : {}),
+        // A model the CLI explicitly refused is NOT effective. Anything else
+        // headless is 'unverified' — the chat transport never acknowledges.
+        ...(task.model !== undefined && state.modelAck !== 'unsupported' ? { model: task.model } : {}),
+      };
+      return {
+        cliVersion,
+        transport: 'headless',
+        requested,
+        effective: eff,
+        ...(native !== undefined ? { nativeSessionId: native } : {}),
+        modelAck: state.modelAck,
+        // Hash over requested+effective ONLY: no env, no prompt, no cwd.
+        configHash: createHash('sha256')
+          .update(JSON.stringify({ requested, effective: eff }))
+          .digest('hex'),
+      };
+    };
+
     const enriched: KiroRunHandle = {
       events: handle.events as AsyncIterable<KiroEvent>,
       wait: handle.wait,
       abort: handle.abort,
       sessionId: () => handle.wait().then(() => state.sessionId),
       nativeSessionId: () => state.sessionId,
-      result: () => handle.wait().then((exitCode) => ({ exitCode, ...state })),
+      result: () =>
+        handle.wait().then((exitCode) => ({
+          exitCode,
+          ...(state.sessionId !== undefined ? { sessionId: state.sessionId } : {}),
+          ...(state.usage !== undefined ? { usage: state.usage } : {}),
+        })),
+      effective,
+      modelAck: () => state.modelAck,
     };
     this.#current = enriched;
     void enriched.wait().finally(() => {
@@ -400,6 +611,37 @@ export class KiroAdapter implements CoreAgentAdapter {
     };
   }
 
+  /**
+   * `kiro-cli --version`, run ONCE per adapter instance and cached (the probe
+   * sends no prompt, so it is free). Goes through the injected spawnFn so
+   * tests can fake it. Any failure resolves to 'unknown' rather than throwing
+   * — a version probe must never fail a run.
+   */
+  #cliVersion(): Promise<string> {
+    if (this.#cliVersionPromise) return this.#cliVersionPromise;
+    this.#cliVersionPromise = new Promise<string>((resolve) => {
+      let settled = false;
+      const done = (value: string): void => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      try {
+        const spawnFn = this.#spawnFn ?? defaultSpawnFn;
+        const proc = spawnFn(this.#command, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = '';
+        proc.stdout?.on('data', (chunk: Buffer | string) => {
+          out += String(chunk);
+        });
+        proc.once('error', () => done('unknown'));
+        proc.once('close', () => done(out.trim() === '' ? 'unknown' : out.trim()));
+      } catch {
+        done('unknown');
+      }
+    });
+    return this.#cliVersionPromise;
+  }
+
   /** Resolve the mitm option: explicit wins; the default is auto — the PATH
    * probe result, except an injected test spawnFn keeps unit runs tap-less. */
   #mitmRequested(): boolean {
@@ -413,7 +655,7 @@ export class KiroAdapter implements CoreAgentAdapter {
    * with the inline addon. Returns null (with a stderr warning) when the tap
    * is unavailable — the run proceeds untapped either way.
    */
-  async #startMitmTap(): Promise<KiroMitmHandle | null> {
+  async #startMitmTap(onRecord: (rec: CoreTokenRecord) => void): Promise<KiroMitmHandle | null> {
     if (!mitmdumpAvailable(this.#mitmdumpBin)) {
       process.stderr.write(
         `[warn] kiro: mitmdump ("${this.#mitmdumpBin}") not found; running without the credit/token tap\n`,
@@ -427,6 +669,10 @@ export class KiroAdapter implements CoreAgentAdapter {
     }
     try {
       const mitm = startKiroMitm(port, { mitmdumpBin: this.#mitmdumpBin });
+      // Attach the record listener SYNCHRONOUSLY: startKiroMitm begins parsing
+      // mitmdump stdout at once, and a record that lands before launch()
+      // resumes from this await would otherwise be dropped on the floor.
+      mitm.on('record', onRecord);
       mitm.on('error', (err: Error) => {
         process.stderr.write(`[warn] kiro: MITM tap failed: ${err.message}; continuing without tap records\n`);
       });
@@ -441,17 +687,24 @@ export class KiroAdapter implements CoreAgentAdapter {
 
   /** launch() with the tap: merged stdout+tap event stream, tap env on the
    * child, tap stopped (graceful SIGTERM) when the run settles or aborts. */
-  #launchWithMitmTap(spec: CoreRunSpec, mitm: KiroMitmHandle): Promise<CoreAgentHandle> {
-    // One merged stream: stdout events plus tap records interleaved. Records
-    // can land after the child exits (trailing frames), so the merge closes
-    // only once the tap has stopped.
-    const merged = new EventQueue<KiroLaneEvent>();
-    mitm.on('record', (rec: CoreTokenRecord) => merged.push(mitmRecordToUsageEvent(rec)));
+  #launchWithMitmTap(
+    spec: CoreRunSpec,
+    mitm: KiroMitmHandle,
+    version: VersionProbe,
+    merged: EventQueue<KiroLaneEvent>,
+  ): Promise<CoreAgentHandle> {
+    // One merged stream: stdout events plus tap records interleaved (tap
+    // records are pushed by the listener #startMitmTap attached). Records can
+    // land after the child exits (trailing frames), so the merge closes only
+    // once the tap has stopped.
 
     const handle = this.spawn({
       prompt: spec.prompt,
       ...(spec.resume ? { resume: { sessionId: spec.resume } } : {}),
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
+      ...(spec.model !== undefined ? { model: spec.model } : {}),
+      ...(spec.kiro !== undefined ? { kiro: spec.kiro } : {}),
+      ...(spec.extraArgs !== undefined ? { extraArgs: spec.extraArgs } : {}),
       // tapEnv's NodeJS.ProcessEnv typing is `string | undefined` per key;
       // both keys are always set, so the cast is safe for the child env.
       env: { ...(spec.env ?? {}), ...(tapEnv(mitm.port) as Record<string, string>) },
@@ -485,23 +738,29 @@ export class KiroAdapter implements CoreAgentAdapter {
       mapEvent: this.#mapWithNativeSession(handle, (event) => kiroEventToCore(event)),
       // Stop the tap once the run settles (wait) or is aborted, before the
       // exit verdict resolves — no mitmdump outlives the run.
-      exit: handle.wait().then(async (code) => {
-        await stopTap();
-        return code;
-      }),
+      exit: version.settle(
+        handle.wait().then(async (code) => {
+          await stopTap();
+          return code;
+        }),
+      ),
       abort: () => {
         void stopTap();
         handle.abort();
       },
       fallbackSessionId: spec.resume,
+      kiro: () => handle.effective(version.value()),
     });
   }
 
-  #launchPlain(spec: CoreRunSpec): Promise<CoreAgentHandle> {
+  #launchPlain(spec: CoreRunSpec, version: VersionProbe): Promise<CoreAgentHandle> {
     const handle = this.spawn({
       prompt: spec.prompt,
       ...(spec.resume ? { resume: { sessionId: spec.resume } } : {}),
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
+      ...(spec.model !== undefined ? { model: spec.model } : {}),
+      ...(spec.kiro !== undefined ? { kiro: spec.kiro } : {}),
+      ...(spec.extraArgs !== undefined ? { extraArgs: spec.extraArgs } : {}),
       ...(spec.env ? { env: spec.env } : {}),
     });
     return launchDriverHandle({
@@ -512,9 +771,10 @@ export class KiroAdapter implements CoreAgentAdapter {
       mapEvent: this.#mapWithNativeSession(handle, (event) =>
         houseEventToCore('kiro', event as HouseEventLike),
       ),
-      exit: handle.wait(),
+      exit: version.settle(handle.wait()),
       abort: () => handle.abort(),
       fallbackSessionId: spec.resume,
+      kiro: () => handle.effective(version.value()),
     });
   }
 
@@ -523,10 +783,29 @@ export class KiroAdapter implements CoreAgentAdapter {
    * routed through the MITM proxy so per-run credit/token records are
    * captured; failures degrade to the untapped path with a warning. */
   async launch(spec: CoreRunSpec): Promise<CoreAgentHandle> {
-    if (!this.#mitmRequested()) return this.#launchPlain(spec);
-    const mitm = await this.#startMitmTap();
-    if (!mitm) return this.#launchPlain(spec);
-    return this.#launchWithMitmTap(spec, mitm);
+    // The version probe runs CONCURRENTLY with the run: launch() must spawn
+    // the child synchronously (driver/test contract — a caller may close the
+    // child right after launch() returns), so the run never waits on the
+    // probe. `version.settle()` makes wait() resolve only after the probe
+    // did, so `handle.kiro()` read after wait() always carries the version.
+    const version = this.#versionProbe();
+    if (!this.#mitmRequested()) return this.#launchPlain(spec, version);
+    const merged = new EventQueue<KiroLaneEvent>();
+    const mitm = await this.#startMitmTap((rec) => merged.push(mitmRecordToUsageEvent(rec)));
+    if (!mitm) return this.#launchPlain(spec, version);
+    return this.#launchWithMitmTap(spec, mitm, version, merged);
+  }
+
+  /** Start (or reuse) the cached `--version` probe as a VersionProbe. */
+  #versionProbe(): VersionProbe {
+    let value = 'unknown';
+    const ready = this.#cliVersion().then((v) => {
+      value = v;
+    });
+    return {
+      value: () => value,
+      settle: <T>(p: Promise<T>) => p.then(async (r) => (await ready, r)),
+    };
   }
 
   /** Kill the in-flight run. */

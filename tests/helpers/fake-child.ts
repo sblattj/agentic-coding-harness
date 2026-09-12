@@ -63,6 +63,45 @@ export function fakeSpawnFn(child: FakeChild, calls: FakeSpawnCall[] = []): Spaw
   };
 }
 
+/**
+ * SpawnFn for adapters that make a cached `--version` probe before the run
+ * (KiroAdapter): the probe gets its OWN throwaway child that immediately
+ * prints `version` and exits 0, and every other spawn gets `child`. Both
+ * invocations are recorded in `calls`; use `runCall()` to select the real run.
+ *
+ * A plain `fakeSpawnFn` cannot be used here: it hands the SAME FakeChild to
+ * the probe and the run, so the probe consumes the run's stdout and then waits
+ * forever on a 'close' the already-closed child will never emit again.
+ */
+export function versionProbeSpawnFn(
+  child: FakeChild,
+  calls: FakeSpawnCall[] = [],
+  version = 'kiro-cli 2.21.2\n',
+): SpawnFn {
+  return (command, args, opts) => {
+    calls.push({ command, args, opts });
+    if (args[0] === '--version') {
+      const probe = new FakeChild();
+      queueMicrotask(() => {
+        probe.writeStdout(version);
+        probe.close(0);
+      });
+      return probe as unknown as ChildProcess;
+    }
+    queueMicrotask(() => child.emit('spawn'));
+    return child as unknown as ChildProcess;
+  };
+}
+
+/** The recorded spawn that is NOT the `--version` probe. */
+export function runCall(calls: FakeSpawnCall[]): FakeSpawnCall {
+  const found = calls.filter((c) => c.args[0] !== '--version');
+  if (found.length !== 1) {
+    throw new Error(`expected exactly one non-version spawn, got ${JSON.stringify(calls.map((c) => c.args[0]))}`);
+  }
+  return found[0]!;
+}
+
 /** Split a string into two halves at an index inside the first line. */
 export function splitMidFirstLine(text: string): [string, string] {
   const firstNewline = text.indexOf('\n');

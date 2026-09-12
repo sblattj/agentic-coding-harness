@@ -8,6 +8,7 @@ import type {
   AgentEvent as CoreAgentEvent,
   AgentHandle as CoreAgentHandle,
   CanonicalTokenRecord as CoreTokenRecord,
+  KiroEffective,
 } from '../core/types.js';
 
 /**
@@ -125,6 +126,14 @@ export interface JsonlRunConfig {
   spawnFn?: SpawnFn;
   /** Grace period between SIGTERM and SIGKILL on abort. */
   killGraceMs?: number;
+  /**
+   * Optional stderr hook. stderr lines are ALWAYS forwarded as `progress`
+   * events (unchanged behaviour); when this is present it is called first for
+   * every non-blank line and any events it returns are pushed BEFORE the
+   * progress event. Used by the kiro adapter to turn
+   * `[warn] failed to set model ...` into a `step` with `payload.kind:'modelAck'`.
+   */
+  onStderrLine?: (line: string) => CanonicalEvent[] | void;
 }
 
 /**
@@ -133,6 +142,7 @@ export interface JsonlRunConfig {
  */
 export function runJsonlCli(config: JsonlRunConfig): RunHandle {
   const { spec, parseLine } = config;
+  const onStderrLine = config.onStderrLine;
   const spawnFn = config.spawnFn ?? defaultSpawnFn;
   const killGraceMs = config.killGraceMs ?? 5000;
 
@@ -185,15 +195,23 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
     });
 
     const stderrAsm = new LineAssembler();
-    proc.stderr?.on('data', (chunk: Buffer | string) => {
-      for (const line of stderrAsm.push(String(chunk))) {
-        if (line.trim() !== '') queue.push({ type: 'progress', text: line });
+    const emitStderr = (line: string): void => {
+      if (line.trim() === '') return;
+      if (onStderrLine) {
+        try {
+          const extra = onStderrLine(line);
+          if (extra) queue.push(...extra);
+        } catch {
+          /* a stderr hook must never break the run */
+        }
       }
+      queue.push({ type: 'progress', text: line });
+    };
+    proc.stderr?.on('data', (chunk: Buffer | string) => {
+      for (const line of stderrAsm.push(String(chunk))) emitStderr(line);
     });
     proc.stderr?.on('end', () => {
-      for (const line of stderrAsm.flush()) {
-        if (line.trim() !== '') queue.push({ type: 'progress', text: line });
-      }
+      for (const line of stderrAsm.flush()) emitStderr(line);
     });
 
     proc.stdin?.end();
@@ -376,6 +394,12 @@ export interface DriverLaunchConfig<TEvent> {
   fallbackSessionId?: string;
   /** How long launch() waits for a stream-captured session id (default 2s). */
   sessionIdWaitMs?: number;
+  /**
+   * Handle -> driver hand-off for the kiro requested-vs-effective config.
+   * Passed straight through to `AgentHandle.kiro` (src/core/types.ts); kiro
+   * runs only, and only meaningful once wait() has settled.
+   */
+  kiro?: () => KiroEffective | undefined;
 }
 
 /**
@@ -439,6 +463,7 @@ export async function launchDriverHandle<TEvent>(config: DriverLaunchConfig<TEve
     },
     wait: (): Promise<AdapterExit> =>
       exit.then((code) => exitCodeToStatus(code, aborted || (config.isAborted?.() ?? false))),
+    ...(config.kiro ? { kiro: config.kiro } : {}),
   };
 
   if ((sessionIdWaitMs ?? 2000) > 0) {

@@ -503,7 +503,7 @@ export const KiroConfigSchema = z
   .strict();
 
 /** Whether the model request was acknowledged by the agent process. */
-export type KiroModelAck = "acknowledged" | "rejected" | "unsupported" | "not-requested";
+export type KiroModelAck = "acknowledged" | "rejected" | "unsupported" | "not-requested" | "unverified";
 
 /** What the run actually did with the requested Kiro config (RunResult.kiro). */
 export interface KiroEffective {
@@ -523,7 +523,7 @@ export const KiroEffectiveSchema = z.object({
   requested: KiroConfigSchema,
   effective: z.record(z.string(), z.unknown()),
   nativeSessionId: z.string().optional(),
-  modelAck: z.enum(["acknowledged", "rejected", "unsupported", "not-requested"]),
+  modelAck: z.enum(["acknowledged", "rejected", "unsupported", "not-requested", "unverified"]),
   configHash: z.string(),
 });
 
@@ -625,6 +625,13 @@ export interface AgentHandle {
   attach(): AsyncIterable<AgentEvent>;
   abort(): void;
   wait(): Promise<AdapterExit>;
+  /**
+   * Handle -> driver hand-off for requested-vs-effective Kiro config
+   * (see src/adapters/PLAN-kiro-acp.md, "Handle -> driver hand-off").
+   * Kiro runs only; every other adapter leaves it undefined. Read it AFTER
+   * wait() settles — before that the ack/session evidence is incomplete.
+   */
+  kiro?: () => KiroEffective | undefined;
 }
 
 /** Result of RunHandle.wait(): adapter-reported exit plus raw exit code. */
