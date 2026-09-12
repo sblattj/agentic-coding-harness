@@ -1,0 +1,105 @@
+{
+  "session_id": "d031eff1-edd7-46d2-9838-3520ad69cd1c",
+  "cwd": "/private/tmp/acp-probe/ws",
+  "created_at": "2026-09-12T18:54:24.723961Z",
+  "updated_at": "2026-09-12T18:54:26.538587Z",
+  "title": "Reply with exactly the single word PONG and nothing else.",
+  "session_created_reason": "subagent",
+  "session_state": {
+    "version": "v1",
+    "conversation_metadata": {
+      "user_turn_metadatas": [
+        {
+          "loop_id": {
+            "agent_id": {
+              "name": "kiro_default",
+              "parent_id": null,
+              "rand": null
+            },
+            "rand": 3397365252
+          },
+          "result": {
+            "Ok": {
+              "id": "108ae55e-e756-43b9-88eb-051f58fa7e69",
+              "role": "assistant",
+              "content": [
+                {
+                  "kind": "thinking",
+                  "data": {
+                    "text": "",
+                    "modelId": "auto"
+                  }
+                },
+                {
+                  "kind": "text",
+                  "data": "PONG"
+                }
+              ],
+              "meta": {
+                "timestamp": 1789239266
+              }
+            }
+          },
+          "message_ids": [
+            "33cdcb6d-d0d5-44d4-a002-c8dc91b6a207",
+            "ef7edb80-4e50-4214-a5e7-ae08a63369e4"
+          ],
+          "total_request_count": 1,
+          "number_of_cycles": 0,
+          "builtin_tool_uses": 0,
+          "turn_duration": {
+            "secs": 1,
+            "nanos": 616320417
+          },
+          "end_reason": "UserTurnEnd",
+          "end_timestamp": "2026-09-12T18:54:26.538117Z",
+          "input_token_count": 0,
+          "output_token_count": 0,
+          "cache_read_input_token_count": 0,
+          "cache_write_input_token_count": 0,
+          "model": "auto",
+          "assistant_response_length": 4,
+          "request_attempts": 1,
+          "context_usage_percentage": 1.3314,
+          "final_context_usage_percentage": 1.3314,
+          "metering_usage": [
+            {
+              "value": 0.04248789137645108,
+              "unit": "credit",
+              "unitPlural": "credits"
+            }
+          ],
+          "user_prompt_length": 57
+        }
+      ],
+      "last_context_usage": {
+        "percentage": 1.3314,
+        "model_id": "auto"
+      },
+      "user_turn_start_request": null,
+      "last_request": null
+    },
+    "rts_model_state": {
+      "model_info": {
+        "model_id": "auto",
+        "context_window_tokens": 200000
+      },
+      "context_usage_percentage": 1.3314
+    },
+    "permissions": {
+      "filesystem": {
+        "allowed_read_paths": [
+          "/private/tmp/acp-probe/ws"
+        ],
+        "allowed_write_paths": [],
+        "denied_read_paths": [],
+        "denied_write_paths": []
+      },
+      "trusted_tools": [],
+      "denied_tools": [],
+      "allowed_commands": []
+    },
+    "agent_name": "dotai",
+    "goal": null
+  }
+}

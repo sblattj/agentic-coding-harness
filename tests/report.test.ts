@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { esc, renderReport } from "../src/report/html.ts";
-import { loadTrials } from "../src/report/model.ts";
+import { loadTrials, toLoadedRun } from "../src/report/model.ts";
 import type { LoadedRun } from "../src/report/model.ts";
 
 const CLI = new URL("../src/cli/harness.ts", import.meta.url).pathname;
@@ -195,5 +195,129 @@ describe("harness report", () => {
 
   test("esc() neutralizes attribute-breaking quotes", () => {
     assert.equal(esc(`<a href="x" class='y'>&amp;`), "&lt;a href=&quot;x&quot; class=&#39;y&#39;&gt;&amp;amp;");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Truthful usage in the HTML report (pure render + a toLoadedRun pass).
+// ---------------------------------------------------------------------------
+
+const CREDITS_ONLY_USAGE = {
+  tokens: { available: false },
+  credits: { available: true, source: "reconciled", value: 0.0247448 },
+  usd: { available: false },
+  context: {
+    available: true,
+    source: "derived",
+    percentage: 5.0080004,
+    windowTokens: 200000,
+    windowSource: "session-store",
+    tokens: 10016,
+  },
+} as const;
+
+describe("report — truthful usage rendering", () => {
+  test("toLoadedRun lifts RunResult.usage and marks tokens/usd unavailable", () => {
+    const run = toLoadedRun(
+      "kiro",
+      {
+        runId: "r",
+        sessionId: "s",
+        events: [],
+        tokens: [
+          {
+            agent: "kiro",
+            model: "claude-haiku-4.5",
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            timestamp: 1,
+            extra: { credits: 0.0247448, tokensAvailable: false },
+          },
+        ],
+        totalCost: 0,
+        durationMs: 10,
+        exitStatus: "success",
+        warnings: [],
+        usage: CREDITS_ONLY_USAGE,
+      } as never,
+      "/tmp/t",
+      "t",
+      null,
+      false,
+    );
+    assert.equal(run.tokensUnavailable, true);
+    assert.equal(run.usdUnavailable, true);
+    assert.equal(run.costUsd, undefined); // never $0.0000
+    assert.equal(run.credits, 0.0247448);
+    assert.equal(run.usage?.context?.tokens, 10016);
+  });
+
+  test("an artifact with NO usage block keeps the old behaviour exactly", () => {
+    const run = toLoadedRun(
+      "claude",
+      {
+        runId: "r",
+        sessionId: "s",
+        events: [],
+        tokens: [
+          {
+            agent: "claude",
+            model: "m",
+            inputTokens: 100,
+            outputTokens: 5,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            costUsd: 0.25,
+            timestamp: 1,
+          },
+        ],
+        totalCost: 0.25,
+        durationMs: 10,
+        exitStatus: "success",
+        warnings: [],
+      } as never,
+      "/tmp/t",
+      "t",
+      null,
+      false,
+    );
+    assert.equal(run.usage, undefined);
+    assert.equal(run.tokensUnavailable, false);
+    assert.equal(run.usdUnavailable, false);
+    assert.equal(run.costUsd, 0.25);
+    assert.equal(run.inputTokens, 100);
+  });
+
+  test("the comparison table shows n/a cells and a ctx cell for an unavailable run", () => {
+    const html = renderReport({
+      rootDir: "/tmp/t",
+      labels: ["t"],
+      runs: [
+        fakeRun({
+          agent: "kiro",
+          credits: 0.0247448,
+          tokensUnavailable: true,
+          usdUnavailable: true,
+          usage: CREDITS_ONLY_USAGE as never,
+        }),
+      ],
+    }, { version: "0.0.0-test", generatedAt: new Date(0) });
+    assert.match(html, /ctx ≈ 10,016 tok/);
+    assert.ok(!html.includes("$0.0000"), "no fabricated zero cost");
+    const naCells = html.match(/class="num na">n\/a</g) ?? [];
+    assert.ok(naCells.length >= 6, `expected >=6 n/a cells (5 token + cost), got ${naCells.length}`);
+  });
+
+  test("a run WITHOUT usage still renders real numbers and no context column", () => {
+    const html = renderReport({
+      rootDir: "/tmp/t",
+      labels: ["t"],
+      runs: [fakeRun({ agent: "claude", inputTokens: 1234, costUsd: 0.5 })],
+    }, { version: "0.0.0-test", generatedAt: new Date(0) });
+    assert.match(html, /1,234/);
+    assert.match(html, /\$0\.5000/);
+    assert.ok(!html.includes('data-k="context"'), "context column hidden when nothing derived it");
   });
 });

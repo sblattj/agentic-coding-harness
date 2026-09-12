@@ -1,0 +1,192 @@
+// Truthful usage reporting — wave 2/F of the kiro-acp plan.
+//
+// ONE rule governs this module: NEVER FABRICATE. A number is reported only when
+// a source actually produced it. On kiro 2.21.x every token counter in every
+// available source is zero (MITM tap `tokenUsage`, session-store
+// `*_token_count`, stream `metadata`), so `tokens.available` comes back FALSE
+// and the renderers print `n/a` — not `0`, and not `$0.0000`. See
+// `docs/TOKEN-COUNTING.md` § "Kiro on 2.21.x".
+//
+// What IS knowable there: credits (three independent sources, reconciled here)
+// and context-window occupancy (derived from a percentage and a window size,
+// labelled `source:'derived'` so nobody mistakes it for billed tokens).
+//
+// Pure: no I/O, no clock, no env. The driver does the reading.
+import type { CanonicalTokenRecord, UsageAvailability } from './types.js';
+import type { ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
+
+/** Credits agreeing to within this absolute delta are treated as one charge. */
+export const CREDIT_TOLERANCE = 1e-9;
+
+/**
+ * Context-window fallback when no source states the real window. Deliberately
+ * one conservative entry: a guess is always labelled `windowSource:'assumed'`
+ * so a reader can discount it. NEVER grow this into a pricing-style table of
+ * per-model guesses — add real sources instead.
+ */
+export const ASSUMED_CONTEXT_WINDOWS: Record<string, number> = { default: 200_000 };
+
+export interface ComputeUsageInput {
+  agent: string;
+  tokens: CanonicalTokenRecord[];
+  sessionStore?: ParsedKiroSessionStore | null;
+  /** Cumulative credits reported by the live stream (kiro `metadata` frames). */
+  streamCreditsCumulative?: number | null;
+  /** Driver's running USD total (0 when nothing could be priced). */
+  totalCost: number;
+  /** True when the pricer returned a real (non-NaN) price for some record. */
+  pricerPriced: boolean;
+}
+
+export interface ComputeUsageResult {
+  usage: UsageAvailability;
+  /** Reconciliation problems for RunResult.warnings; empty when all agree. */
+  warnings: string[];
+}
+
+function extraOf(rec: CanonicalTokenRecord): Record<string, unknown> {
+  return (rec.extra ?? {}) as Record<string, unknown>;
+}
+
+function finite(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/** A record counts as carrying tokens only when it says so AND a counter is
+ *  non-zero. `extra.tokensAvailable === false` vetoes it outright. */
+function recordHasTokens(rec: CanonicalTokenRecord): boolean {
+  if (extraOf(rec).tokensAvailable === false) return false;
+  return (
+    (rec.inputTokens ?? 0) > 0 ||
+    (rec.outputTokens ?? 0) > 0 ||
+    (rec.cacheReadTokens ?? 0) > 0 ||
+    (rec.cacheWriteTokens ?? 0) > 0
+  );
+}
+
+function storeHasTokens(store: ParsedKiroSessionStore): boolean {
+  return store.turns.some(
+    (t) => t.inputTokens > 0 || t.outputTokens > 0 || t.cacheReadTokens > 0 || t.cacheWriteTokens > 0,
+  );
+}
+
+/** Sum `extra.credits` across records; null when no record reported any. */
+function tapCredits(tokens: CanonicalTokenRecord[]): number | null {
+  let total: number | null = null;
+  for (const rec of tokens) {
+    const c = finite(extraOf(rec).credits);
+    if (c === undefined) continue;
+    total = (total ?? 0) + c;
+  }
+  return total;
+}
+
+/** Latest `extra.contextUsagePercentage` seen on a usage record. */
+function streamContextPercentage(tokens: CanonicalTokenRecord[]): number | undefined {
+  for (let i = tokens.length - 1; i >= 0; i -= 1) {
+    const rec = tokens[i];
+    if (!rec) continue;
+    const pct = finite(extraOf(rec).contextUsagePercentage);
+    if (pct !== undefined) return pct;
+  }
+  return undefined;
+}
+
+/**
+ * Decide what this run actually knows about tokens, credits, USD and context.
+ *
+ * Credits authority order (PLAN amendment rule 4): live stream > session store
+ * > MITM tap. Every source that reported a value lands in `credits.sources`
+ * whether or not it won, and any disagreement beyond CREDIT_TOLERANCE becomes a
+ * warning listing all three — the charge is reported ONCE, never summed across
+ * sources.
+ */
+export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsageResult {
+  const warnings: string[] = [];
+  const store = input.sessionStore ?? null;
+
+  // ------------------------------------------------------------------ tokens
+  const recordsWithTokens = input.tokens.filter(recordHasTokens);
+  const storeTokens = store !== null && storeHasTokens(store);
+  const tokens: UsageAvailability['tokens'] = storeTokens
+    ? { available: true, source: 'session-store', scope: 'turn', cumulative: false, complete: true }
+    : recordsWithTokens.length > 0
+      ? { available: true, source: 'tap', scope: 'call', cumulative: false, complete: false }
+      : { available: false };
+
+  // ----------------------------------------------------------------- credits
+  const sources: NonNullable<UsageAvailability['credits']['sources']> = {};
+  const stream = finite(input.streamCreditsCumulative);
+  if (stream !== undefined) sources.stream = stream;
+  if (store !== null && store.creditsTotal !== null) sources['session-store'] = store.creditsTotal;
+  const tap = tapCredits(input.tokens);
+  if (tap !== null) sources.tap = tap;
+
+  const reported = Object.entries(sources) as Array<[keyof typeof sources, number]>;
+  let credits: UsageAvailability['credits'];
+  if (reported.length === 0) {
+    credits = { available: false };
+  } else {
+    // Authority order, not a sum: the same charge observed three ways.
+    const order: Array<[keyof typeof sources, UsageAvailability['credits']['source']]> = [
+      ['stream', 'native'],
+      ['session-store', 'native'],
+      ['tap', 'tap'],
+    ];
+    let value = 0;
+    let source: UsageAvailability['credits']['source'] = 'tap';
+    for (const [key, src] of order) {
+      const v = sources[key];
+      if (v === undefined) continue;
+      value = v;
+      source = src;
+      break;
+    }
+    const disagreement = reported.some(([, v]) => Math.abs(v - value) > CREDIT_TOLERANCE);
+    if (disagreement) {
+      warnings.push(
+        `usage: credit sources disagree (${reported
+          .map(([k, v]) => `${k}=${v}`)
+          .join(', ')}); reporting ${value} from ${source}`,
+      );
+    }
+    credits = {
+      available: true,
+      source: reported.length > 1 ? 'reconciled' : source,
+      scope: 'run',
+      cumulative: true,
+      complete: true,
+      value,
+      sources,
+    };
+  }
+
+  // --------------------------------------------------------------------- usd
+  // USD is real only when the pricer priced a record that HAS tokens. Pricing
+  // zero tokens yields $0.0000, which is a lie dressed as a number.
+  const usd: UsageAvailability['usd'] =
+    input.pricerPriced && tokens.available && Number.isFinite(input.totalCost)
+      ? { available: true, source: 'pricer', value: input.totalCost }
+      : { available: false };
+
+  // ----------------------------------------------------------------- context
+  const percentage = store?.lastContextUsagePercentage ?? streamContextPercentage(input.tokens);
+  const model = store?.model;
+  const storeWindow = store?.contextWindowTokens;
+  const windowTokens = storeWindow ?? ASSUMED_CONTEXT_WINDOWS.default;
+  const windowSource: 'session-store' | 'assumed' = storeWindow !== undefined ? 'session-store' : 'assumed';
+  const context: UsageAvailability['context'] =
+    percentage === undefined || windowTokens === undefined
+      ? { available: false, source: 'derived', ...(model !== undefined ? { model } : {}) }
+      : {
+          available: true,
+          source: 'derived',
+          percentage,
+          windowTokens,
+          windowSource,
+          tokens: Math.round((percentage / 100) * windowTokens),
+          ...(model !== undefined ? { model } : {}),
+        };
+
+  return { usage: { tokens, credits, usd, context }, warnings };
+}

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { dirname, join } from 'node:path';
+import { afterEach, describe, it } from 'node:test';
 import { createDriver, defaultAdapters } from '../src/core/driver.js';
 import { listRunRecords } from '../src/core/registry.js';
 import type { AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, RunResult, RunSpec } from '../src/core/types.js';
@@ -471,5 +471,258 @@ describe('wall/idle budget enforcement', () => {
     assert.equal(recs.length, 1);
     assert.equal(recs[0]!.status, 'aborted');
     assert.equal(recs[0]!.exitStatus, 'timeout');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kiro usage truth (PLAN-kiro-acp.md § Usage availability + amendment
+// 2026-09-12). A fake adapter registered under the name `kiro` emits exactly
+// the event shapes src/adapters/kiro-events.ts produces: credits-only `usage`
+// records tagged `extra.tokensAvailable:false`, chunk/vendor `step` events
+// tagged `payload.countsAsTurn:false`, and the native turn terminator
+// `payload.kind === 'runFinished'`. The session store is faked on disk via
+// KIRO_SESSIONS_DIR using the real sanitized fixture.
+// ---------------------------------------------------------------------------
+
+type KiroScripted = { type: 'step'; payload: Record<string, unknown> } | { type: 'usage'; usage: CanonicalTokenRecord };
+
+class KiroMockHandle implements AgentHandle {
+  aborted = false;
+  readonly #events: KiroScripted[];
+  readonly #done: Promise<void>;
+  #markDone!: () => void;
+
+  constructor(readonly sessionId: string, events: KiroScripted[]) {
+    this.#events = events;
+    this.#done = new Promise<void>((resolve) => {
+      this.#markDone = resolve;
+    });
+  }
+
+  async *attach(): AsyncIterable<AgentEvent> {
+    try {
+      for (const e of this.#events) {
+        const ts = Date.now();
+        if (e.type === 'step') yield { type: 'step', payload: e.payload, sessionId: this.sessionId, timestamp: ts };
+        else yield { type: 'usage', usage: e.usage, sessionId: this.sessionId, timestamp: ts };
+      }
+    } finally {
+      this.#markDone();
+    }
+  }
+
+  abort(): void {
+    this.aborted = true;
+    this.#markDone();
+  }
+
+  async wait(): Promise<'aborted' | 'success'> {
+    await this.#done;
+    return this.aborted ? 'aborted' : 'success';
+  }
+}
+
+class KiroMockAdapter implements AgentAdapter {
+  readonly name = 'kiro';
+  lastHandle?: KiroMockHandle;
+  constructor(readonly sessionId: string) {}
+  async launch(spec: RunSpec): Promise<AgentHandle> {
+    const handle = new KiroMockHandle(this.sessionId, (spec as { kiroEvents?: KiroScripted[] }).kiroEvents ?? []);
+    this.lastHandle = handle;
+    return handle;
+  }
+}
+
+const kiroFixture = readFileSync(
+  join(dirname(new URL(import.meta.url).pathname), 'fixtures', 'kiro', 'session-store-haiku.json'),
+  'utf8',
+);
+/** Credits the haiku fixture really charges, summed from the raw JSON. */
+const FIXTURE_CREDITS = (
+  JSON.parse(kiroFixture).session_state.conversation_metadata.user_turn_metadatas as Array<{
+    metering_usage: Array<{ value: number }>;
+  }>
+).reduce((sum, t) => sum + t.metering_usage.reduce((a, m) => a + m.value, 0), 0);
+const FIXTURE_PCT = JSON.parse(kiroFixture).session_state.conversation_metadata.user_turn_metadatas[0]
+  .final_context_usage_percentage as number;
+const FIXTURE_WINDOW = JSON.parse(kiroFixture).session_state.rts_model_state.model_info
+  .context_window_tokens as number;
+const FIXTURE_CTX_TOKENS = Math.round((FIXTURE_PCT / 100) * FIXTURE_WINDOW);
+
+/** Plant the fixture as <tmp>/<uuid>.json and point KIRO_SESSIONS_DIR at it. */
+function seedKiroSessionStore(uuid: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'kiro-sessions-'));
+  writeFileSync(join(dir, `${uuid}.json`), kiroFixture);
+  process.env.KIRO_SESSIONS_DIR = dir;
+  return dir;
+}
+
+function kiroUsage(over: Record<string, unknown> = {}): KiroScripted {
+  return {
+    type: 'usage',
+    usage: {
+      agent: 'kiro',
+      model: 'unknown',
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      timestamp: Date.now(),
+      extra: {
+        credits: FIXTURE_CREDITS,
+        creditsCumulative: FIXTURE_CREDITS,
+        source: 'native',
+        tokensAvailable: false,
+        contextUsagePercentage: FIXTURE_PCT,
+        ...over,
+      },
+    } as CanonicalTokenRecord,
+  };
+}
+
+const kiroChunk = (): KiroScripted => ({ type: 'step', payload: { kind: 'chunk', countsAsTurn: false } });
+const kiroTurnEnd = (): KiroScripted => ({
+  type: 'step',
+  payload: { kind: 'runFinished', countsAsTurn: false, status: 'ok' },
+});
+
+describe('kiro usage truth', () => {
+  const previousSessionsDir = process.env.KIRO_SESSIONS_DIR;
+  afterEach(() => {
+    if (previousSessionsDir === undefined) delete process.env.KIRO_SESSIONS_DIR;
+    else process.env.KIRO_SESSIONS_DIR = previousSessionsDir;
+  });
+
+  it('reports tokens/usd unavailable, credits reconciled, and context derived from the session store', async () => {
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    seedKiroSessionStore(uuid);
+    const regDir = tmpStateDir();
+    const driver = createDriver({
+      adapters: { kiro: new KiroMockAdapter(`kiro-${uuid}`) },
+      stateDir: tmpStateDir(),
+      registry: { stateDir: regDir },
+    });
+
+    const result = await driver.run('kiro', {
+      prompt: 'ping',
+      kiroEvents: [kiroChunk(), kiroUsage(), kiroTurnEnd()],
+    });
+
+    assert.equal(result.exitStatus, 'success');
+    // The credits-only record is KEPT as evidence...
+    assert.equal(result.tokens.length, 1);
+    // ...and the session-store model backfills the 'unknown' placeholder.
+    assert.equal(result.tokens[0]!.model, 'claude-haiku-4.5');
+
+    assert.equal(result.usage?.tokens.available, false);
+    assert.equal(result.usage?.usd.available, false);
+    assert.equal(result.usage?.credits.available, true);
+    assert.equal(result.usage?.credits.value, FIXTURE_CREDITS);
+    assert.deepEqual(result.usage?.credits.sources, {
+      stream: FIXTURE_CREDITS,
+      'session-store': FIXTURE_CREDITS,
+      tap: FIXTURE_CREDITS,
+    });
+    assert.equal(result.usage?.context?.available, true);
+    assert.equal(result.usage?.context?.windowSource, 'session-store');
+    assert.equal(result.usage?.context?.tokens, FIXTURE_CTX_TOKENS);
+
+    // Registry: zero token counters (never bumped by a placeholder record),
+    // credits summed, derived context recorded, usage mirrored.
+    const recs = listRunRecords(regDir);
+    assert.equal(recs.length, 1);
+    const totals = recs[0]!.totals;
+    assert.equal(totals.inputTokens, 0);
+    assert.equal(totals.outputTokens, 0);
+    assert.equal(totals.cacheReadTokens, 0);
+    assert.equal(totals.cacheWriteTokens, 0);
+    assert.equal(totals.credits, FIXTURE_CREDITS);
+    assert.equal(totals.contextTokens, FIXTURE_CTX_TOKENS);
+    assert.equal(recs[0]!.usage?.tokens.available, false);
+  });
+
+  it('locates the session store from a usage record extra.kiroSessionId when no registry exists', async () => {
+    const uuid = '11111111-2222-3333-4444-555555555555';
+    seedKiroSessionStore(uuid);
+    const driver = createDriver({
+      adapters: { kiro: new KiroMockAdapter('') },
+      stateDir: tmpStateDir(),
+    });
+    const result = await driver.run('kiro', {
+      prompt: 'ping',
+      kiroEvents: [kiroUsage({ kiroSessionId: uuid })],
+    });
+    assert.equal(result.usage?.context?.windowSource, 'session-store');
+    assert.equal(result.usage?.context?.tokens, FIXTURE_CTX_TOKENS);
+  });
+
+  it('does NOT count chunk steps toward maxTurns, but DOES count runFinished steps', async () => {
+    seedKiroSessionStore('no-such-session');
+
+    const chunky = createDriver({ adapters: { kiro: new KiroMockAdapter('kiro-x') }, stateDir: tmpStateDir() });
+    const notTripped = await chunky.run('kiro', {
+      prompt: 'ping',
+      budget: { maxTurns: 1 },
+      kiroEvents: [kiroChunk(), kiroChunk(), kiroChunk(), kiroChunk()],
+    });
+    assert.equal(notTripped.exitStatus, 'success');
+    assert.equal(notTripped.events.length, 4);
+
+    const turnful = createDriver({ adapters: { kiro: new KiroMockAdapter('kiro-x') }, stateDir: tmpStateDir() });
+    const tripped = await turnful.run('kiro', {
+      prompt: 'ping',
+      budget: { maxTurns: 1 },
+      kiroEvents: [kiroChunk(), kiroTurnEnd(), kiroChunk(), kiroTurnEnd(), kiroTurnEnd()],
+    });
+    assert.equal(tripped.exitStatus, 'turn_limit');
+  });
+
+  it('warns that a usd budget cannot be enforced for kiro', async () => {
+    seedKiroSessionStore('no-such-session');
+    const driver = createDriver({ adapters: { kiro: new KiroMockAdapter('kiro-x') }, stateDir: tmpStateDir() });
+    const result = await driver.run('kiro', { prompt: 'ping', budget: { usd: 5 }, kiroEvents: [kiroUsage()] });
+    assert.ok(
+      result.warnings.includes(
+        'budget: usd cap is not enforceable for kiro (credits only); wall/idle/maxTurns still apply',
+      ),
+      result.warnings.join(' | '),
+    );
+    assert.equal(result.exitStatus, 'success'); // the cap never fires
+  });
+
+  it('warns when a kiro run produced no usage records at all', async () => {
+    seedKiroSessionStore('no-such-session');
+    const driver = createDriver({ adapters: { kiro: new KiroMockAdapter('kiro-x') }, stateDir: tmpStateDir() });
+    const result = await driver.run('kiro', { prompt: 'ping', kiroEvents: [kiroChunk()] });
+    assert.ok(
+      result.warnings.includes('kiro: no usage records; tokens/credits/usd unavailable'),
+      result.warnings.join(' | '),
+    );
+    assert.equal(result.usage?.credits.available, false);
+    assert.equal(result.usage?.context?.available, false);
+  });
+
+  it('attaches the adapter kiro() hook result to RunResult.kiro when the handle exposes one', async () => {
+    seedKiroSessionStore('no-such-session');
+    const adapter = new KiroMockAdapter('kiro-x');
+    const driver = createDriver({ adapters: { kiro: adapter }, stateDir: tmpStateDir() });
+    const originalLaunch = adapter.launch.bind(adapter);
+    adapter.launch = async (spec: RunSpec) => {
+      const handle = await originalLaunch(spec);
+      (handle as { kiro?: () => unknown }).kiro = () => ({ transport: 'acp', modelAck: 'acknowledged' });
+      return handle;
+    };
+    const result = await driver.run('kiro', { prompt: 'ping', kiroEvents: [kiroUsage()] });
+    assert.deepEqual(result.kiro, { transport: 'acp', modelAck: 'acknowledged' } as never);
+  });
+
+  it('leaves non-kiro agents counting every step as a turn', async () => {
+    const driver = mockDriver(new MockAdapter());
+    const result = await driver.run('mock', {
+      prompt: 'hi',
+      budget: { maxTurns: 2 },
+      scriptedEvents: [ev.step(), ev.step(), ev.step(), ev.step()],
+    });
+    assert.equal(result.exitStatus, 'turn_limit');
   });
 });

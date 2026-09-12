@@ -6,7 +6,9 @@ import { z } from 'zod';
 import { normalizeAuto } from './normalize.js';
 import { createPricer, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
-import type { AdapterExit, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, RunResult, RunSpec } from './types.js';
+import { computeUsageAvailability } from './usage-availability.js';
+import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
+import type { AdapterExit, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec } from './types.js';
 import { ClaudeCodeAdapter } from '../adapters/claude.js';
 import { OpenCodeAdapter } from '../adapters/opencode.js';
 import { KiroAdapter } from '../adapters/kiro.js';
@@ -55,6 +57,34 @@ function fromPreNormalized(agent: string, u: CanonicalTokenRecord, timestamp: nu
     ...(u.extra !== undefined ? { extra: u.extra } : {}),
     timestamp,
   };
+}
+
+/**
+ * Turn accounting for `budget.maxTurns`.
+ *
+ * A `step` event is a PROGRESS marker, not necessarily a turn: kiro's
+ * normalizer emits one per message chunk, per vendor notification and per
+ * metadata frame, all tagged `payload.countsAsTurn === false`. Counting those
+ * trips a maxTurns cap within the first reply.
+ *
+ * - kiro: a turn ends on the native terminator ONLY — the step carrying
+ *   `payload.kind === 'runFinished'`, emitted by `handleTerminal` in
+ *   src/adapters/kiro-events.ts (`vendorStep('runFinished', data, {...})`,
+ *   valid at 6130fb7; re-derive by symbol). `runFinished` covers both
+ *   transports: the ACP client hands its `session/prompt` result to the same
+ *   function.
+ * - every other agent: unchanged — every step counts unless the producer
+ *   explicitly opted out with `countsAsTurn: false`.
+ *
+ * The payload rides `event.payload` when an adapter emits core events directly
+ * and `event.data` after houseEventToCore (src/adapters/shared.ts) bridges it;
+ * both are read.
+ */
+export function countsAsTurn(agent: string, event: AgentEvent): boolean {
+  const raw = (event as { payload?: unknown }).payload ?? (event as { data?: unknown }).data;
+  const payload = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : undefined;
+  if (agent === 'kiro') return payload?.kind === 'runFinished';
+  return payload?.countsAsTurn !== false;
 }
 
 const RunSpecSchema = z.object({
@@ -197,6 +227,19 @@ export function createDriver(options: DriverOptions): Driver {
       let enforcedStatus: ExitStatus | null = null;
 
       const drainPricerWarnings = () => warnings.push(...pricer.drainWarnings());
+      // Truthful budgets: kiro bills in CREDITS, and nothing maps credits to
+      // USD, so a --budget-usd cap silently never fires there. Say so up front
+      // rather than let the caller believe the run is capped.
+      if (budgetUsd !== undefined && agentName === 'kiro') {
+        warnings.push(
+          'budget: usd cap is not enforceable for kiro (credits only); wall/idle/maxTurns still apply',
+        );
+      }
+      // Highest cumulative credit figure the live stream reported
+      // (kiro-events puts it on every usage record's extra.creditsCumulative).
+      let streamCreditsCumulative: number | null = null;
+      // True once the pricer returned a real (non-NaN) price for some record.
+      let pricerPriced = false;
 
       // --- wall-clock / idle budget timers ---
       // Armed right after launch (wallMs measures from launch) and the idle
@@ -272,10 +315,18 @@ export function createDriver(options: DriverOptions): Driver {
       // units, not USD) kept separate from costUsd.
       const bumpRegistryTotals = (c: CanonicalTokenRecord): void => {
         if (!rec) return;
-        rec.totals.inputTokens += c.inputTokens;
-        rec.totals.outputTokens += c.outputTokens;
-        rec.totals.cacheReadTokens += c.cacheReadTokens;
-        rec.totals.cacheWriteTokens += c.cacheWriteTokens;
+        // A record that declares extra.tokensAvailable === false carries
+        // PLACEHOLDER zeros (kiro reports no token counts on 2.21.x). It is
+        // still kept in RunResult.tokens as evidence, but it must never touch
+        // the four token counters — summing placeholders manufactures a
+        // confident "0 in / 0 out" where the truth is "unknown". Credits below
+        // are real and are still summed.
+        if ((c.extra as Record<string, unknown> | undefined)?.tokensAvailable !== false) {
+          rec.totals.inputTokens += c.inputTokens;
+          rec.totals.outputTokens += c.outputTokens;
+          rec.totals.cacheReadTokens += c.cacheReadTokens;
+          rec.totals.cacheWriteTokens += c.cacheWriteTokens;
+        }
         const credits = c.extra?.credits;
         if (typeof credits === 'number' && Number.isFinite(credits)) {
           rec.totals.credits = (rec.totals.credits ?? 0) + credits;
@@ -327,11 +378,17 @@ export function createDriver(options: DriverOptions): Driver {
             if (normalized) {
               tokens.push(normalized);
               bumpRegistryTotals(normalized);
+              const nx = normalized.extra as Record<string, unknown> | undefined;
+              const cum = nx?.creditsCumulative;
+              if (typeof cum === 'number' && Number.isFinite(cum)) {
+                streamCreditsCumulative = Math.max(streamCreditsCumulative ?? 0, cum);
+              }
               const cost = pricer.price(normalized);
               if (Number.isNaN(cost)) {
                 drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
               } else {
                 cumulativeCost += cost;
+                if (nx?.tokensAvailable !== false) pricerPriced = true;
               }
             }
             if (budgetUsd !== undefined && cumulativeCost > budgetUsd) {
@@ -341,7 +398,7 @@ export function createDriver(options: DriverOptions): Driver {
             }
           }
 
-          if (event.type === 'step') {
+          if (event.type === 'step' && countsAsTurn(agentName, event)) {
             steps++;
             // Enforce the turn ceiling only when the adapter doesn't do it itself.
             if (maxTurns !== undefined && !adapter.enforcesBudget && steps > maxTurns) {
@@ -377,6 +434,77 @@ export function createDriver(options: DriverOptions): Driver {
         adapterExit = 'error';
       }
 
+      // --- kiro effective config + truthful usage (PLAN § Usage availability,
+      // amendment 2026-09-12). Both are read AFTER wait() so the child has
+      // flushed its session store and the ACP client has settled its config.
+      // Every step here is best-effort: a failure becomes a warning.
+      let kiroEffective: KiroEffective | undefined;
+      const kiroHook = (handle as { kiro?: () => unknown }).kiro;
+      if (typeof kiroHook === 'function') {
+        try {
+          const value = kiroHook.call(handle);
+          if (value && typeof value === 'object') kiroEffective = value as KiroEffective;
+        } catch (err) {
+          warnings.push(`kiro: effective-config hook failed (${err instanceof Error ? err.message : String(err)})`);
+        }
+      }
+
+      let sessionStore: ParsedKiroSessionStore | null = null;
+      if (agentName === 'kiro') {
+        if (tokens.length === 0) {
+          warnings.push('kiro: no usage records; tokens/credits/usd unavailable');
+        }
+        // Native session id, best source first: the registry record (the id the
+        // stream reported), the adapter's own effective config, then any usage
+        // record's extra.kiroSessionId.
+        let nativeSessionId: string | undefined =
+          (typeof rec?.sessionId === 'string' && rec.sessionId !== '' ? rec.sessionId : undefined) ??
+          kiroEffective?.nativeSessionId;
+        if (nativeSessionId === undefined) {
+          for (const t of tokens) {
+            const id = (t.extra as Record<string, unknown> | undefined)?.kiroSessionId;
+            if (typeof id === 'string' && id !== '') {
+              nativeSessionId = id;
+              break;
+            }
+          }
+        }
+        // The harness namespaces the session id as `kiro-<uuid>`; the store is
+        // keyed by the bare uuid.
+        const bare = nativeSessionId?.startsWith('kiro-') === true ? nativeSessionId.slice(5) : nativeSessionId;
+        const read = await readKiroSessionStore(bare);
+        if (read.ok) {
+          sessionStore = read.store;
+          // 2.21.x leaves kiro token records with model:'unknown' (the stream
+          // never names a model). The session store does. Backfilling it here
+          // is post-hoc: pricing already ran per event and is NOT redone, so
+          // USD stays unavailable — kiro is a credits-only lane.
+          if (sessionStore.model !== undefined) {
+            for (const t of tokens) {
+              if (!t.model || t.model === 'unknown') t.model = sessionStore.model;
+            }
+          }
+        } else {
+          warnings.push(`kiro: ${read.reason}`);
+        }
+      }
+
+      const { usage, warnings: usageWarnings } = computeUsageAvailability({
+        agent: agentName,
+        tokens,
+        sessionStore,
+        streamCreditsCumulative,
+        totalCost: cumulativeCost,
+        pricerPriced,
+      });
+      warnings.push(...usageWarnings);
+      if (rec) {
+        rec.usage = usage;
+        if (usage.context?.available === true && usage.context.tokens !== undefined) {
+          rec.totals.contextTokens = usage.context.tokens;
+        }
+      }
+
       // Driver enforcement verdicts override whatever the adapter reported.
       const exitStatus: ExitStatus = enforcedStatus ?? adapterExit;
       finalizeRunRecord(exitStatus);
@@ -392,6 +520,8 @@ export function createDriver(options: DriverOptions): Driver {
         durationMs: Date.now() - start,
         exitStatus,
         warnings,
+        usage,
+        ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
       };
     },
   };

@@ -31,6 +31,26 @@ function fmtCredits(c: number | undefined): string {
   return c === undefined ? "" : `${c.toFixed(2)}cr`;
 }
 
+// Truthful usage (RunResult.usage / RunRecord.usage): a run whose agent
+// reports no token counts prints `n/a`, never `0`, and no `$0.0000` cost.
+// A record WITHOUT `usage` (written before this landed) renders exactly as
+// before — the checks are `=== false`, not falsy.
+function tokensUnavailable(rec: RunRecord): boolean {
+  return rec.usage?.tokens.available === false;
+}
+
+function usdUnavailable(rec: RunRecord): boolean {
+  return rec.usage?.usd.available === false;
+}
+
+/** `ctx 10.0k (5.0%)` — DERIVED occupancy, visually distinct from billed tokens. */
+function fmtContext(rec: RunRecord): string {
+  const ctx = rec.usage?.context;
+  if (ctx?.available !== true || ctx.tokens === undefined) return "";
+  const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
+  return `${compact(ctx.tokens)}${pct}`;
+}
+
 function fmtElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -80,13 +100,14 @@ const COL = {
   cache: 8,
   cost: 8,
   credits: 8,
+  ctx: 14,
 } as const;
 
 const HEADER =
   `${padR("STATUS", COL.status)} ${padR("AGENT", COL.agent)} ${padR("RUNID", COL.runId)} ` +
   `${padR("SESSION", COL.session)} ${padR("ELAPSED", COL.elapsed)} ${padL("IN", COL.in)} ` +
   `${padL("OUT", COL.out)} ${padL("CACHE", COL.cache)} ${padL("COST", COL.cost)} ` +
-  `${padL("CREDITS", COL.credits)} LAST EVENT`;
+  `${padL("CREDITS", COL.credits)} ${padL("CTX", COL.ctx)} LAST EVENT`;
 
 // Default view: live runs plus finished runs from the last hour; --all
 // widens to every record on disk (dash prunes display, never files).
@@ -106,11 +127,12 @@ function tableRow(rec: RunRecord, now: number, ansi: boolean, lastW: number): st
     padR(rec.runId.slice(0, COL.runId), COL.runId),
     padR((rec.sessionId ?? "-").slice(0, COL.session), COL.session),
     padL(fmtElapsed(end - rec.startedAt), COL.elapsed),
-    padL(compact(rec.totals.inputTokens), COL.in),
-    padL(compact(rec.totals.outputTokens), COL.out),
-    padL(compact(cache), COL.cache),
-    padL(fmtCost(rec.totals.costUsd), COL.cost),
+    padL(tokensUnavailable(rec) ? "n/a" : compact(rec.totals.inputTokens), COL.in),
+    padL(tokensUnavailable(rec) ? "n/a" : compact(rec.totals.outputTokens), COL.out),
+    padL(tokensUnavailable(rec) ? "n/a" : compact(cache), COL.cache),
+    padL(usdUnavailable(rec) ? "n/a" : fmtCost(rec.totals.costUsd), COL.cost),
     padL(fmtCredits(rec.totals.credits), COL.credits),
+    padL(fmtContext(rec), COL.ctx),
     padR(rec.lastEvent ?? "", lastW),
   ];
   return cells.join(" ");
@@ -123,9 +145,13 @@ function footer(visible: RunRecord[]): string {
   let credits = 0;
   let hasCredits = false;
   for (const r of visible) {
-    input += r.totals.inputTokens;
-    output += r.totals.outputTokens;
-    cost += r.totals.costUsd;
+    // Unavailable rows contribute nothing: a fleet total must not silently
+    // absorb a credits-only run as "0 tokens, $0".
+    if (!tokensUnavailable(r)) {
+      input += r.totals.inputTokens;
+      output += r.totals.outputTokens;
+    }
+    if (!usdUnavailable(r)) cost += r.totals.costUsd;
     if (r.totals.credits !== undefined) {
       credits += r.totals.credits;
       hasCredits = true;
@@ -142,7 +168,8 @@ function footer(visible: RunRecord[]): string {
   return parts.join("  ");
 }
 
-function frame(recs: RunRecord[], dir: string, showAll: boolean, width: number, ansi: boolean): string {
+/** One rendered dashboard frame. Exported for tests (pure: no TTY, no I/O). */
+export function frame(recs: RunRecord[], dir: string, showAll: boolean, width: number, ansi: boolean): string {
   const now = Date.now();
   const visible = recs.filter((r) => isVisible(r, now, showAll));
   const fixed = Object.values(COL).reduce((a, w) => a + w, 0) + Object.keys(COL).length;

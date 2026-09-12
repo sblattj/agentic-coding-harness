@@ -308,8 +308,21 @@ function statusBadge(s: string): string {
   return `<span class="badge st-${esc(s)}">${esc(s)}</span>`;
 }
 
+/** `n/a` cell — the honest rendering of an unknowable number (never `0`). */
+const NA_CELL = `<td data-v="" class="num na">n/a</td>`;
+
+/** DERIVED context occupancy, worded so it can't be mistaken for billed tokens. */
+function contextCell(r: LoadedRun): string {
+  const ctx = r.usage?.context;
+  if (ctx?.available !== true || ctx.tokens === undefined) return NA_CELL;
+  const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
+  const title = ctx.windowSource === "assumed" ? " title=\"context window assumed, not reported\"" : "";
+  return `<td data-v="${ctx.tokens}" class="num"${title}>ctx ≈ ${fmtInt(ctx.tokens)} tok${esc(pct)}</td>`;
+}
+
 function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
   const showCredits = runs.some((r) => r.credits !== null);
+  const showContext = runs.some((r) => r.usage?.context?.available === true);
   const head = [
     `<th data-k="agent" data-t="s">agent</th>`,
     ...(multiTrial ? [`<th data-k="trial" data-t="s">trial</th>`] : []),
@@ -321,32 +334,38 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
     `<th data-k="reasoning" data-t="n" class="num">reasoning</th>`,
     `<th data-k="cost" data-t="n" class="num">cost USD</th>`,
     ...(showCredits ? [`<th data-k="credits" data-t="n" class="num">credits</th>`] : []),
+    ...(showContext ? [`<th data-k="context" data-t="n" class="num">context</th>`] : []),
     `<th data-k="dur" data-t="n" class="num">duration</th>`,
     `<th data-k="exit" data-t="s">exit status</th>`,
   ].join("");
   const rows = runs
     .map((r) => {
+      // `usage.usd.available === false` is a positive claim that no price is
+      // derivable (kiro: credits only) — never print $0.0000 for it.
       const costCell =
-        r.costUsd === undefined
-          ? `<td data-v="" class="num na">n/a</td>`
+        r.usdUnavailable || r.costUsd === undefined
+          ? NA_CELL
           : `<td data-v="${r.costUsd}" class="num">${esc(fmtCost(r.costUsd))}</td>`;
+      const tokenCell = (v: number): string =>
+        r.tokensUnavailable ? NA_CELL : `<td data-v="${v}" class="num">${fmtInt(v)}</td>`;
       const cells = [
         `<td data-v="${esc(r.agent)}" class="agent-cell">${esc(r.agent)}</td>`,
         ...(multiTrial ? [`<td data-v="${esc(r.trialLabel)}">${esc(r.trialLabel)}</td>`] : []),
         `<td data-v="${esc(r.model ?? "")}">${r.model ? esc(r.model) : '<span class="muted">—</span>'}</td>`,
-        `<td data-v="${r.inputTokens}" class="num">${fmtInt(r.inputTokens)}</td>`,
-        `<td data-v="${r.outputTokens}" class="num">${fmtInt(r.outputTokens)}</td>`,
-        `<td data-v="${r.cacheReadTokens}" class="num">${fmtInt(r.cacheReadTokens)}</td>`,
-        `<td data-v="${r.cacheWriteTokens}" class="num">${fmtInt(r.cacheWriteTokens)}</td>`,
-        `<td data-v="${r.reasoningTokens}" class="num">${fmtInt(r.reasoningTokens)}</td>`,
+        tokenCell(r.inputTokens),
+        tokenCell(r.outputTokens),
+        tokenCell(r.cacheReadTokens),
+        tokenCell(r.cacheWriteTokens),
+        tokenCell(r.reasoningTokens),
         costCell,
         ...(showCredits
           ? [
               r.credits === null
-                ? `<td data-v="" class="num na">n/a</td>`
+                ? NA_CELL
                 : `<td data-v="${r.credits}" class="num">${fmtInt(r.credits)}</td>`,
             ]
           : []),
+        ...(showContext ? [contextCell(r)] : []),
         `<td data-v="${esc(fmtDuration(r))}" class="num">${esc(fmtDuration(r))}</td>`,
         `<td data-v="${esc(r.result.exitStatus ?? "unknown")}">${statusBadge(r.result.exitStatus ?? "unknown")}</td>`,
       ];
