@@ -90,3 +90,21 @@ No prompt is sent. Checks, each `{name, status:'verified'|'failed'|'unproven', d
 6. wall/idle/startup timeouts + child cleanup; unsupported USD/turn controls reported → D/G/F tests.
 7. opt-in paid calibration retains failures → wave 3.
 8. docs A/B/C example → H.
+
+## Amendment 2026-09-12: token counts (owner request "expose token counts as well as credits")
+
+Measured on 2.21.2 with one tapped Haiku headless run (`AGENT_HARNESS_STATE_DIR=/tmp/... harness run --agent kiro --json`):
+
+| Source | Token fields | Value observed |
+|---|---|---|
+| MITM tap, `metadataEvent`/`meteringEvent` frames | `tokenUsage.{uncachedInputTokens,cacheReadInputTokens,cacheWriteInputTokens,outputTokens,totalTokens}` | all `0`; `credits` on `meteringEvent` = 0.04248789137645108 |
+| Kiro session store `~/.kiro/sessions/cli/<nativeSessionId>.json` → `session_state.conversation_metadata.user_turn_metadatas[i]` | `input_token_count, output_token_count, cache_read_input_token_count, cache_write_input_token_count` | all `0`; also `model` (= `"auto"` — proves headless `--model` was ignored), `context_usage_percentage`, `final_context_usage_percentage`, `metering_usage[]` |
+| same file → `session_state.rts_model_state.model_info` | `context_window_tokens` | `200000`; `model_id` |
+| stream / ACP `metadata` | `contextUsagePercentage` | per turn |
+
+So on this version NO source carries non-zero input/output tokens. Rule for wave-2 seat F (usage-truth):
+1. **Never fabricate.** `usage.tokens.available` is `true` only when some source yields a non-zero token count. Then expose them with `source: 'tap' | 'session-store'` and `scope: 'call' | 'turn'`. When both exist and disagree, prefer session-store per turn, keep the other in `extra.audit`. Zero-valued token records from the tap are NOT token records: they carry `extra.tokensAvailable:false` and do not set `available`.
+2. **Expose `contextTokens` always** (new field on `UsageAvailability`: `context: { available, source:'derived', percentage, windowTokens, tokens: round(percentage/100 * windowTokens), model? }`), derived from the latest `contextUsagePercentage` and `context_window_tokens` from the session store (fallback: model-window table with `windowSource:'assumed'`, never silent). Render as "ctx ≈ N tok (p%)" in `harness ls`, dash, report — visually distinct from billed tokens.
+3. **Add a session-store reader** `src/adapters/kiro-session-store.ts` (pure parse + a locator by native session id; path override `KIRO_SESSIONS_DIR`), read once after exit. It also yields the per-turn `model` → fixes `model:"unknown"` in token records and feeds `KiroEffective.effective.model` (this is the *only* place the effective model is recorded on 2.21.2).
+4. Credits reconcile across three sources (stream metadata, tap `meteringEvent`, session-store `metering_usage`): equal on the probe; authoritative order native stream > session store > tap; any disagreement → warning with all three values.
+5. Registry `totals` gets `contextTokens?` (latest), and `credits` stays; the four token counters remain 0 and the dash prints `n/a` for them when `usage.tokens.available === false`.
