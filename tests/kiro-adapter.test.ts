@@ -16,6 +16,8 @@ import {
   tapTokensAvailable,
 } from '../src/adapters/kiro.js';
 import type { KiroEffective } from '../src/core/types.js';
+import type { SpawnFn } from '../src/adapters/shared.ts';
+import type { ChildProcess } from 'node:child_process';
 import { FakeChild, runCall, versionProbeSpawnFn, type FakeSpawnCall } from './helpers/fake-child.ts';
 
 const BASE_ARGS = ['chat', '--no-interactive', '--output-format', 'stream-json', '--agent-engine', 'v2'];
@@ -366,6 +368,33 @@ describe('kiro launch (driver contract)', () => {
     const versionCalls = calls.filter((c) => c.args[0] === '--version');
     assert.equal(versionCalls.length, 1, 'the --version probe must be cached per adapter instance');
     assert.equal(versionCalls[0]!.command, 'kiro-cli');
+  });
+
+  it('a hung `--version` probe never holds launch()/wait() open: cliVersion falls back to unknown', async () => {
+    // A binary that ignores --version (or a stub that never closes) used to
+    // pin wait() forever because version.settle() awaited the probe.
+    const calls: FakeSpawnCall[] = [];
+    const child = new FakeChild();
+    const hungProbe = new FakeChild();
+    const spawnFn: SpawnFn = (command, args, opts) => {
+      calls.push({ command, args, opts });
+      if (args[0] === '--version') return hungProbe as unknown as ChildProcess;
+      queueMicrotask(() => child.emit('spawn'));
+      return child as unknown as ChildProcess;
+    };
+    const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn, versionProbeMs: 40 });
+
+    const launchPromise = adapter.launch({ prompt: 'ping' });
+    child.writeStdout('{"type":"runFinished","data":{"sessionId":"sid-hung","status":"success"}}\n');
+    child.close(0);
+    const handle = await launchPromise;
+    for await (const _ of handle.attach()) {
+      /* drain */
+    }
+    assert.equal(await handle.wait(), 'success');
+    assert.equal(handle.kiro?.()?.cliVersion, 'unknown');
+    assert.deepEqual(hungProbe.signals, ['SIGKILL'], 'the ceiling must reap the hung probe');
+    assert.equal(calls.filter((c) => c.args[0] === '--version').length, 1);
   });
 
   it('a `failed to set model` stderr warning sets modelAck:unsupported and emits a step', async () => {

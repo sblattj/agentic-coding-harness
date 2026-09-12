@@ -618,10 +618,12 @@ describe('kiro usage truth', () => {
     assert.equal(result.usage?.usd.available, false);
     assert.equal(result.usage?.credits.available, true);
     assert.equal(result.usage?.credits.value, FIXTURE_CREDITS);
+    // The only usage record is kiro's OWN metadata frame (extra.source:
+    // 'native'); it is the stream figure, not a tap observation, so no
+    // `tap` source is reported and nothing is double-counted.
     assert.deepEqual(result.usage?.credits.sources, {
       stream: FIXTURE_CREDITS,
       'session-store': FIXTURE_CREDITS,
-      tap: FIXTURE_CREDITS,
     });
     assert.equal(result.usage?.context?.available, true);
     assert.equal(result.usage?.context?.windowSource, 'session-store');
@@ -639,6 +641,51 @@ describe('kiro usage truth', () => {
     assert.equal(totals.credits, FIXTURE_CREDITS);
     assert.equal(totals.contextTokens, FIXTURE_CTX_TOKENS);
     assert.equal(recs[0]!.usage?.tokens.available, false);
+  });
+
+  it('registry credits prefer the native figure over the tap sum when both observe one charge', async () => {
+    // Headless + MITM tap: kiro's metadata frame (native) and the tap's
+    // meteringEvent both report the SAME charge. Summing them doubled the
+    // registry credits and raised a stream-vs-tap disagreement warning.
+    const uuid = 'cccccccc-dddd-eeee-ffff-000000000000';
+    seedKiroSessionStore(uuid);
+    const regDir = tmpStateDir();
+    const driver = createDriver({
+      adapters: { kiro: new KiroMockAdapter(`kiro-${uuid}`) },
+      stateDir: tmpStateDir(),
+      registry: { stateDir: regDir },
+    });
+
+    const result = await driver.run('kiro', {
+      prompt: 'ping',
+      kiroEvents: [
+        kiroChunk(),
+        kiroUsage(),
+        kiroUsage({ source: 'tap', creditsCumulative: undefined }),
+        kiroTurnEnd(),
+      ],
+    });
+
+    assert.equal(result.exitStatus, 'success');
+    assert.deepEqual(result.usage?.credits.sources, {
+      stream: FIXTURE_CREDITS,
+      'session-store': FIXTURE_CREDITS,
+      tap: FIXTURE_CREDITS,
+    });
+    assert.equal(result.usage?.credits.value, FIXTURE_CREDITS);
+    assert.deepEqual(
+      result.warnings.filter((w) => /credit/i.test(w)),
+      [],
+      'native and tap agree, so no disagreement warning',
+    );
+    assert.deepEqual(
+      result.warnings.filter((w) => /pricing/i.test(w)),
+      [],
+      'a credits-only record must not be priced (no "unknown model" warning)',
+    );
+
+    const totals = listRunRecords(regDir)[0]!.totals;
+    assert.equal(totals.credits, FIXTURE_CREDITS, 'registry credits are the native figure, not native + tap');
   });
 
   it('locates the session store from a usage record extra.kiroSessionId when no registry exists', async () => {

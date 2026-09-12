@@ -78,7 +78,9 @@ kiro              0          0          0        n/a       44 success
   PATH; captures metering credits (`extra.credits`) and the native `kiroSession` id for grep
   correlation; degrades to a warning when absent.
 - **Kiro ACP transport + preflight** — `--kiro-transport acp` drives `kiro-cli acp` over JSON-RPC
-  and records the *proven* mode/model (`result.kiro.modelAck`); `harness preflight --agent kiro`
+  and records the *proven* mode/model (`result.kiro.modelAck`); the default headless lane forwards
+  the same `--model`/`--kiro-*` config and records what it passed, with no implicit
+  `--trust-all-tools`; `harness preflight --agent kiro`
   and `harness_kiro_preflight` verify binary, auth, agent, model and MCP state without sending a
   prompt. Token counts are reported `n/a` when no source carries them (kiro-cli 2.21.x) — never
   fabricated zeros; credits and derived context tokens are shown instead. See

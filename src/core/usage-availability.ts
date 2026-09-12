@@ -70,11 +70,19 @@ function storeHasTokens(store: ParsedKiroSessionStore): boolean {
   );
 }
 
-/** Sum `extra.credits` across records; null when no record reported any. */
+/**
+ * Sum `extra.credits` across TAP records; null when no tap record reported
+ * any. Records stamped `extra.source:'native'` are the stream's own snapshot
+ * of the same charge (kiro-events) and are reported via
+ * `streamCreditsCumulative` — summing them here would double-count every
+ * headless run and raise a bogus "credit sources disagree" warning.
+ */
 function tapCredits(tokens: CanonicalTokenRecord[]): number | null {
   let total: number | null = null;
   for (const rec of tokens) {
-    const c = finite(extraOf(rec).credits);
+    const extra = extraOf(rec);
+    if (extra.source === 'native') continue;
+    const c = finite(extra.credits);
     if (c === undefined) continue;
     total = (total ?? 0) + c;
   }

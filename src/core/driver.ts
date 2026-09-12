@@ -313,6 +313,8 @@ export function createDriver(options: DriverOptions): Driver {
       // Same summing rule as cmdRun (src/cli/harness.ts): canonical token
       // fields summed per usage record; extra.credits (kiro MITM metering
       // units, not USD) kept separate from costUsd.
+      let nativeCredits: number | undefined;
+      let tapCreditsSum: number | undefined;
       const bumpRegistryTotals = (c: CanonicalTokenRecord): void => {
         if (!rec) return;
         // A record that declares extra.tokensAvailable === false carries
@@ -327,9 +329,18 @@ export function createDriver(options: DriverOptions): Driver {
           rec.totals.cacheReadTokens += c.cacheReadTokens;
           rec.totals.cacheWriteTokens += c.cacheWriteTokens;
         }
+        // Credits: one charge, possibly observed twice (kiro's own metadata
+        // frames stamp extra.source:'native'; the MITM tap stamps 'tap').
+        // Native wins the moment it appears; the tap is the fallback. Never
+        // the sum of both — that doubles every tapped headless run.
         const credits = c.extra?.credits;
         if (typeof credits === 'number' && Number.isFinite(credits)) {
-          rec.totals.credits = (rec.totals.credits ?? 0) + credits;
+          if (c.extra?.source === 'native') {
+            nativeCredits = (nativeCredits ?? 0) + credits;
+          } else {
+            tapCreditsSum = (tapCreditsSum ?? 0) + credits;
+          }
+          rec.totals.credits = nativeCredits ?? tapCreditsSum;
         }
       };
       const finalizeRunRecord = (exit: ExitStatus): void => {
@@ -383,12 +394,18 @@ export function createDriver(options: DriverOptions): Driver {
               if (typeof cum === 'number' && Number.isFinite(cum)) {
                 streamCreditsCumulative = Math.max(streamCreditsCumulative ?? 0, cum);
               }
-              const cost = pricer.price(normalized);
-              if (Number.isNaN(cost)) {
-                drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
+              if (nx?.tokensAvailable === false) {
+                // Placeholder zeros with no token counts to price (kiro
+                // 2.21.x): pricing them would only emit an "unknown model"
+                // warning about a record that carries nothing priceable.
               } else {
-                cumulativeCost += cost;
-                if (nx?.tokensAvailable !== false) pricerPriced = true;
+                const cost = pricer.price(normalized);
+                if (Number.isNaN(cost)) {
+                  drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
+                } else {
+                  cumulativeCost += cost;
+                  pricerPriced = true;
+                }
               }
             }
             if (budgetUsd !== undefined && cumulativeCost > budgetUsd) {

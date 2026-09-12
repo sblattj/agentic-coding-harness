@@ -97,6 +97,9 @@ interface VersionProbe {
   settle: <T>(p: Promise<T>) => Promise<T>;
 }
 
+/** Ceiling for the `kiro-cli --version` probe; past it the version is 'unknown'. */
+export const KIRO_VERSION_PROBE_MS = 3_000;
+
 /** Default agent engine when `spec.kiro.engine` is not given. */
 export const KIRO_DEFAULT_ENGINE = 'v2';
 
@@ -451,6 +454,12 @@ export interface KiroAdapterOptions {
   mitm?: boolean;
   /** mitmdump binary for the tap; defaults to $MITMDUMP_BIN or `mitmdump`. */
   mitmdumpBin?: string;
+  /**
+   * Ceiling (ms) for the one-shot `kiro-cli --version` probe; past it the
+   * probe child is SIGKILLed and cliVersion reports 'unknown'. Defaults to
+   * KIRO_VERSION_PROBE_MS; tests lower it.
+   */
+  versionProbeMs?: number;
 }
 
 /**
@@ -469,6 +478,7 @@ export class KiroAdapter implements CoreAgentAdapter {
   readonly #spawnFn: SpawnFn | undefined;
   readonly #mitmOpt: boolean | undefined;
   readonly #mitmdumpBin: string;
+  readonly #versionProbeMs: number;
   #current: { abort(): void } | null = null;
   /** Cached `kiro-cli --version` probe (one per adapter instance). */
   #cliVersionPromise: Promise<string> | null = null;
@@ -478,6 +488,7 @@ export class KiroAdapter implements CoreAgentAdapter {
     this.#spawnFn = options.spawnFn;
     this.#mitmOpt = options.mitm;
     this.#mitmdumpBin = options.mitmdumpBin ?? process.env.MITMDUMP_BIN ?? 'mitmdump';
+    this.#versionProbeMs = options.versionProbeMs ?? KIRO_VERSION_PROBE_MS;
   }
 
   /** House-style spawn: prompt string + run options. */
@@ -636,6 +647,19 @@ export class KiroAdapter implements CoreAgentAdapter {
         });
         proc.once('error', () => done('unknown'));
         proc.once('close', () => done(out.trim() === '' ? 'unknown' : out.trim()));
+        // Ceiling: a binary that ignores --version and hangs (or a fake that
+        // does) must never hold wait() open — version.settle() waits on this.
+        const ceiling = setTimeout(() => {
+          if (settled) return;
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            /* already gone */
+          }
+          done('unknown');
+        }, this.#versionProbeMs);
+        ceiling.unref();
+        proc.once('close', () => clearTimeout(ceiling));
       } catch {
         done('unknown');
       }

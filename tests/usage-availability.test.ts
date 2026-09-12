@@ -138,6 +138,27 @@ describe('computeUsageAvailability — credits reconciliation', () => {
     }
   });
 
+  it('never counts a native (stream) record as a tap observation', () => {
+    // A headless run with the MITM tap on sees the SAME charge twice: kiro's
+    // metadata frame (source:'native', also fed in as the cumulative stream
+    // figure) and the tap's meteringEvent (source:'tap'). Summing both as
+    // "tap" doubled the tap figure and raised a bogus disagreement warning.
+    const native = kiroRecord({ extra: { credits: 0.4, creditsCumulative: 0.4, source: 'native', tokensAvailable: false } });
+    const tap = kiroRecord({ extra: { credits: 0.4, source: 'tap', tokensAvailable: false } });
+    const { usage, warnings } = computeUsageAvailability({
+      ...base,
+      tokens: [native, tap],
+      streamCreditsCumulative: 0.4,
+    });
+    assert.deepEqual(warnings, []);
+    assert.equal(usage.credits.value, 0.4);
+    assert.deepEqual(usage.credits.sources, { stream: 0.4, tap: 0.4 });
+
+    // Native record alone: it IS the stream, so no tap source at all.
+    const only = computeUsageAvailability({ ...base, tokens: [native], streamCreditsCumulative: 0.4 });
+    assert.deepEqual(only.usage.credits.sources, { stream: 0.4 });
+  });
+
   it('treats a sub-tolerance float difference as agreement (no warning)', () => {
     const { usage, warnings } = computeUsageAvailability({
       ...base,

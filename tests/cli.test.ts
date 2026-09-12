@@ -240,16 +240,19 @@ describe("harness cli", () => {
       credits: 0.05,
       ts: 1_700_000_000,
     });
+    // The fakes hand-shake through a per-port ready marker (see
+    // tests/kiro-autotap.test.ts): the run must not finish before the "proxy"
+    // has printed its record, which is what real traffic guarantees.
     const fakeMitmdump = path.join(tmpExtra, "fake-mitmdump.sh");
     await fs.writeFile(
       fakeMitmdump,
-      `#!/bin/sh\necho '${meteringLine}'\nsleep 30 &\nchild=$!\ntrap 'kill "$child" 2>/dev/null; exit 0' TERM INT\nwait $!\n`,
+      `#!/bin/sh\nport="$2"\necho '${meteringLine}'\ntouch "${tmpExtra}/ready.$port"\nsleep 30 &\nchild=$!\ntrap 'rm -f "${tmpExtra}/ready.$port"; kill "$child" 2>/dev/null; exit 0' TERM INT\nwait $!\n`,
     );
     await fs.chmod(fakeMitmdump, 0o755);
     const fakeKiroCli = path.join(tmpExtra, "fake-kiro-cli.sh");
     await fs.writeFile(
       fakeKiroCli,
-      `#!/bin/sh\necho '{"type":"session_start","sessionId":"sess-cli-tap"}'\necho '{"type":"assistant","text":"done"}'\nexit 0\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'kiro-cli 2.21.2'; exit 0; fi\nport="\${HTTPS_PROXY##*:}"\ni=0\nwhile [ ! -f "${tmpExtra}/ready.$port" ] && [ "$i" -lt 300 ]; do sleep 0.01; i=$((i+1)); done\necho '{"type":"session_start","sessionId":"sess-cli-tap"}'\necho '{"type":"assistant","text":"done"}'\nexit 0\n`,
     );
     await fs.chmod(fakeKiroCli, 0o755);
 

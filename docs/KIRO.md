@@ -10,15 +10,18 @@ and a fake ACP server (`tests/fixtures/kiro/fake-acp-server.ts`). No test spends
 
 | | `headless` (default) | `acp` |
 |---|---|---|
-| Command | `kiro-cli chat --no-interactive --output-format stream-json --agent-engine v2` | `kiro-cli acp [--agent A] [--model M] [--effort E] [--trust-tools …] [--agent-engine …]` |
+| Command | `kiro-cli chat --no-interactive --output-format stream-json --agent-engine v2 [--model M] [--agent A] [--effort E] [--trust-tools …]` | `kiro-cli acp [--agent A] [--model M] [--effort E] [--trust-tools …] [--agent-engine …]` |
 | Wire | stream-json envelopes on stdout | newline-delimited JSON-RPC on stdio |
-| Model request | `--model` is **accepted and ignored** on 2.21.2 (`[warn] failed to set model 'X': Method not found`, session store records `auto`) | `initialize → session/new → session/set_model` returns `{}`; `session/new` returns `models.currentModelId` + `availableModels` |
-| Agent / effort / tools forwarding | not yet (see *Limitations*) | forwarded as flags; mode verified from `session/new.modes` |
-| What `result.kiro` reports | `null` | `{ cliVersion, transport, requested, effective, nativeSessionId, modelAck, configHash }` |
+| Model request | `--model` is forwarded; on 2.21.2 it is **accepted and ignored** (`[warn] failed to set model 'X': Method not found`, session store records `auto`) → `modelAck: unsupported`. A CLI that stays silent leaves it `unverified` | `initialize → session/new → session/set_model`; the ack (or its error) is recorded → `modelAck: acknowledged` / `rejected` |
+| Agent / effort / tools forwarding | forwarded as flags (`--agent`, `--effort`, `--trust-tools=…`); **not verified** — the chat transport never echoes them | forwarded as flags; mode verified from `session/new.modes` |
+| Native session id | sniffed from the first envelope carrying `data.sessionId` (`runStarted`) | `session/new` result |
+| What `result.kiro` reports | `{ cliVersion, transport: 'headless', requested, effective: { argv, trustFlag, … }, nativeSessionId, modelAck, configHash }` | `{ cliVersion, transport: 'acp', requested, effective, nativeSessionId, modelAck, configHash }` |
 
 Pick the ACP lane when you need the run to *prove* which agent and model it used. The headless
-lane still works, and the MITM credit tap still auto-starts on it, but on 2.21.2 it cannot confirm
-a model request.
+lane forwards the same configuration and records exactly what it passed (the argv, minus the
+prompt, is part of `effective` and of `configHash`), but on 2.21.2 it can only prove a model
+request was *refused*, never that one was honored. The MITM credit tap auto-starts on the headless
+lane only.
 
 ### Verified configuration (`modelAck`)
 
@@ -29,6 +32,8 @@ a model request.
   `kiro.requireModelAck` is set.
 - `unsupported` — the CLI printed the *Method not found* warning (headless lane) or does not
   expose `set_model`.
+- `unverified` — a model was requested on the headless lane and the CLI said nothing either way.
+  The flag was passed; whether it took effect is unknown (check the session store's model).
 - `not-requested` — no `--model` was given; `effective.model` is whatever `session/new` reported
   (`auto` on a fresh session).
 
@@ -56,9 +61,10 @@ harness run --agent kiro --kiro-transport acp --kiro-agent dotai \
 | `--kiro-tools` | `tools` | `all`, `none`, or a comma list |
 | `--kiro-require-mcp-startup` | `requireMcpStartup` | boolean; fail the run if MCP startup reports an error |
 
-`tools` unset means **no trust flag is passed at all** on the ACP lane; the native agent config
-decides. There is no implicit `--trust-all-tools` there. (`mcpServers`, `startupMs`,
-`requireModelAck` have no CLI flag yet; use the MCP tool or the library.)
+`tools` unset means **no trust flag is passed at all** on either lane; the native agent config
+decides. There is no implicit `--trust-all-tools` anywhere (0.3.x passed it unconditionally on
+the headless lane). (`mcpServers`, `startupMs`, `requireModelAck` have no CLI flag yet; use the
+MCP tool or the library.)
 
 MCP (`harness_run` / `harness_run_async`):
 
@@ -114,11 +120,15 @@ Details and the fixture-backed source table are in
 
 ## Limitations in this release
 
-- **Headless lane does not forward `agent`, `engine`, `effort`, or `tools`**, still passes
-  `--trust-all-tools`, and reports `result.kiro = null`. The new stream envelopes
-  (`runStarted` / `metadata` / `sessionUpdate` / `runFinished`) are normalized only on the ACP
-  lane, so a headless run may log `no kiro session store for session id …` because the native
-  session id is not extracted from the stream. Use `--kiro-transport acp` for any of that.
+- **The headless lane forwards configuration but cannot verify it.** `--agent`, `--effort` and
+  `--trust-tools` are passed and recorded in `result.kiro.effective.argv`, and `modelAck` is
+  `unsupported` on 2.21.2 or `unverified` when the CLI is silent; only the ACP lane returns
+  `acknowledged`. Use `--kiro-transport acp` (or `harness preflight`) when the claim matters.
+- When the MITM tap and the stream both observe a charge, the run reports both (`sources.stream`,
+  `sources.tap`) and keeps the native figure as the total; a disagreement between them raises a
+  warning instead of being silently summed.
+- The `kiro-cli --version` probe is capped at 3 s (`KIRO_VERSION_PROBE_MS`); a binary that hangs
+  on `--version` reports `cliVersion: 'unknown'` and the run proceeds.
 - `--trust-tools` on 2.21.2 did **not** block a `read` and no `session/request_permission`
   arrived, so a tool restriction is recorded per tool from evidence, never asserted from the flag.
 - Fixtures are 2.21.2. The 2.21.4 sample in issue #2 uses the same envelope family; the
