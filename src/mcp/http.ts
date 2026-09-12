@@ -23,7 +23,7 @@ async function readVersion(): Promise<string> {
   } catch {
     /* bundled/standalone builds fall through */
   }
-  return "0.2.2";
+  return "0.3.0";
 }
 
 function json(status: number, body: unknown): Response {

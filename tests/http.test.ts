@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -162,7 +162,8 @@ describe('harness serve (HTTP MCP subprocess)', () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as { status: string; version: string };
     assert.equal(body.status, 'ok');
-    assert.equal(body.version, '0.2.2');
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+    assert.equal(body.version, pkg.version);
   });
 
   it('POST /mcp initialize with bearer token → protocolVersion 2025-06-18', { timeout: 30_000 }, async () => {

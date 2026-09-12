@@ -16,7 +16,7 @@ import { gatewayConfigFromFlags } from "../serve/gateway.ts";
 const DEFAULT_PORT = 8399;
 const DEFAULT_HOST = "127.0.0.1";
 // Mirrors src/mcp/index.ts (importing it would start the stdio lane).
-const VERSION = "0.2.2";
+const VERSION = "0.3.0";
 const DRAIN_MS = 5_000;
 
 function optPort(v: string | undefined, flag: string): number {

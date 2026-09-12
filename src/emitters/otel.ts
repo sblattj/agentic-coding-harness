@@ -280,7 +280,7 @@ export function toOtlpJson(
         },
         scopeSpans: [
           {
-            scope: { name: 'agent-harness', version: '0.2.2' },
+            scope: { name: 'agent-harness', version: '0.3.0' },
             spans: [rootJson, ...childJson],
           },
         ],

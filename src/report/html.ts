@@ -557,7 +557,7 @@ function labelToTimestamp(label: string): string | null {
   return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
 }
 
-/** Best-effort package version for the footer; "0.2.2" when unreadable. */
+/** Best-effort package version for the footer; "0.3.0" when unreadable. */
 export async function readVersion(): Promise<string> {
   try {
     const raw = await fs.readFile(new URL("../../package.json", import.meta.url), "utf8");
@@ -566,5 +566,5 @@ export async function readVersion(): Promise<string> {
   } catch {
     /* bundled/standalone builds fall through */
   }
-  return "0.2.2";
+  return "0.3.0";
 }
