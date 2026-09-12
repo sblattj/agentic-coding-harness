@@ -14,7 +14,11 @@ import { registerInspectTools } from "../mcp/tools-inspect.ts";
 import { registerJobTools } from "../mcp/tools-jobs.ts";
 import { gatewayConfigFromFlags } from "../serve/gateway.ts";
 
-const DEFAULT_PORT = 8399;
+// Distinct from src/cli/web.ts's DEFAULT_PORT (8399) so `harness serve --http`
+// and `harness web` can both bind loopback on one host without a manual
+// --port pick (observed collision: a running `harness web` on 8399 blocked
+// `harness serve --http` from binding).
+const DEFAULT_PORT = 8398;
 const DEFAULT_HOST = "127.0.0.1";
 // Mirrors src/mcp/index.ts (importing it would start the stdio lane).
 import { VERSION } from '../version.ts';
@@ -26,6 +30,22 @@ function optPort(v: string | undefined, flag: string): number {
     throw new HarnessError(`${flag} expects a port number 0-65535, got '${v}'`, "USAGE");
   }
   return n;
+}
+
+/** Recognize a Bun.serve listen failure that means the address is already
+ *  bound, and build the operator-facing message for it. Bun.serve throws a
+ *  plain Error with `code: "EADDRINUSE"` and
+ *  `message: "Failed to start server. Is port <N> in use?"` (observed via a
+ *  live two-process control run on this host); check both the code and the
+ *  message text since callers may pass a wrapped or synthetic error. Returns
+ *  null for any other error, which must propagate unchanged. Exported pure
+ *  (no socket bound) so it is unit-testable. */
+export function describeListenError(err: unknown, host: string, port: number): string | null {
+  const code = err !== null && typeof err === "object" ? (err as { code?: unknown }).code : undefined;
+  const message = err instanceof Error ? err.message : "";
+  const isAddrInUse = code === "EADDRINUSE" || /\bin use\b/i.test(message);
+  if (!isAddrInUse) return null;
+  return `serve: port ${port} on ${host} is already in use (another harness serve or harness web?); pass --port to choose another`;
 }
 
 function optPositiveInt(v: string | undefined, flag: string): number | undefined {
@@ -91,7 +111,17 @@ export async function cmdServe(rest: string[]): Promise<number> {
   registerInspectTools(server, opts);
   registerJobTools(server, opts);
   registerPreflightTools(server, { ...(gateway ? { gateway } : {}) });
-  const http: HttpServerHandle = await startHttpServer({ server, port, host, token });
+  let http: HttpServerHandle;
+  try {
+    http = await startHttpServer({ server, port, host, token });
+  } catch (err) {
+    const described = describeListenError(err, host, port);
+    if (described !== null) {
+      process.stderr.write(`${described}\n`);
+      return 1;
+    }
+    throw err;
+  }
   process.stderr.write(`serve: http://${host}:${http.port}/mcp (auth ${token === undefined ? "off" : "on"})\n`);
 
   let closing = false;
