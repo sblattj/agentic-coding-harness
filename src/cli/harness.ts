@@ -9,9 +9,11 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import {
   AGENTS,
+  AcpMcpServerSchema,
   HarnessError,
   isKnownAgent,
   KiroConfigSchema,
+  type AcpMcpServer,
   type AgentEvent,
   type KiroConfig,
   type RunResult,
@@ -45,8 +47,10 @@ usage:
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                          [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
+                         [--kiro-startup-ms MS] [--kiro-require-model-ack]
+                         [--kiro-mcp-server '<json>']...
   harness preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
-                    [--cwd DIR] [--json]
+                    [--cwd DIR] [--json] [--kiro-startup-ms MS] [--kiro-mcp-server '<json>']...
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
   harness watch [--dir <transcriptDir>]
@@ -114,6 +118,44 @@ function optIntWithEnv(flagVal: string | undefined, flag: string, envName: strin
   return optInt(envVal, envName);
 }
 
+/** Positive-integer flag (unlike optInt, 0 is not allowed — startupMs is a budget). */
+function optPositiveInt(v: string | undefined, flag: string): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new HarnessError(`${flag} expects a positive integer, got '${v}'`, "USAGE");
+  }
+  return n;
+}
+
+/** `--kiro-mcp-server` (repeatable): each value is a JSON object of the
+ *  AcpMcpServer shape ({name, command, args?, env?}, strict). Shared by
+ *  `run` and `preflight` so the error text and validation never drift. */
+function optAcpMcpServers(values: string[] | undefined, flag: string): AcpMcpServer[] | undefined {
+  if (values === undefined) return undefined;
+  return values.map((raw) => {
+    let obj: unknown;
+    try {
+      obj = JSON.parse(raw);
+    } catch (e) {
+      throw new HarnessError(
+        `${flag} expects a JSON object, got '${raw}': ${e instanceof Error ? e.message : String(e)}`,
+        "USAGE",
+      );
+    }
+    const parsed = AcpMcpServerSchema.safeParse(obj);
+    if (!parsed.success) {
+      throw new HarnessError(
+        `${flag} '${raw}' does not match {name, command, args?, env?}: ${parsed.error.issues
+          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+        "USAGE",
+      );
+    }
+    return parsed.data;
+  });
+}
+
 // ---------------------------------------------------------------- run
 
 /** `--kiro-*` flags → KiroConfig (undefined when no flag was given, so the
@@ -125,6 +167,9 @@ function kiroConfigFromFlags(v: {
   "kiro-effort"?: string;
   "kiro-tools"?: string;
   "kiro-require-mcp-startup"?: boolean;
+  "kiro-startup-ms"?: string;
+  "kiro-require-model-ack"?: boolean;
+  "kiro-mcp-server"?: string[];
 }): KiroConfig | undefined {
   const cfg: Record<string, unknown> = {};
   if (v["kiro-transport"] !== undefined) cfg.transport = v["kiro-transport"];
@@ -136,6 +181,11 @@ function kiroConfigFromFlags(v: {
     cfg.tools = t === "all" || t === "none" ? t : t.split(",").map((s) => s.trim()).filter(Boolean);
   }
   if (v["kiro-require-mcp-startup"]) cfg.requireMcpStartup = true;
+  const startupMs = optPositiveInt(v["kiro-startup-ms"], "--kiro-startup-ms");
+  if (startupMs !== undefined) cfg.startupMs = startupMs;
+  if (v["kiro-require-model-ack"]) cfg.requireModelAck = true;
+  const mcpServers = optAcpMcpServers(v["kiro-mcp-server"], "--kiro-mcp-server");
+  if (mcpServers !== undefined) cfg.mcpServers = mcpServers;
   if (Object.keys(cfg).length === 0) return undefined;
   const parsed = KiroConfigSchema.safeParse(cfg);
   if (!parsed.success) {
@@ -164,6 +214,9 @@ async function cmdRun(rest: string[]): Promise<number> {
       "kiro-effort": { type: "string" },
       "kiro-tools": { type: "string" },
       "kiro-require-mcp-startup": { type: "boolean", default: false },
+      "kiro-startup-ms": { type: "string" },
+      "kiro-require-model-ack": { type: "boolean", default: false },
+      "kiro-mcp-server": { type: "string", multiple: true },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -270,6 +323,8 @@ async function cmdPreflight(rest: string[]): Promise<number> {
       cwd: { type: "string" },
       "kiro-agent": { type: "string" },
       "kiro-transport": { type: "string" },
+      "kiro-startup-ms": { type: "string" },
+      "kiro-mcp-server": { type: "string", multiple: true },
       "extra-args": { type: "string" },
       json: { type: "boolean", default: false },
     },
@@ -289,6 +344,12 @@ async function cmdPreflight(rest: string[]): Promise<number> {
       "USAGE",
     );
   }
+  // startupMs/mcpServers are meaningful here: kiroPreflight's handshake spawns
+  // the ACP client with kiro.startupMs and forwards kiro.mcpServers to
+  // session/new (see src/adapters/kiro-preflight.ts). requireModelAck is a
+  // run-time (session/prompt) gate and has no preflight equivalent.
+  const startupMs = optPositiveInt(args.values["kiro-startup-ms"], "--kiro-startup-ms");
+  const mcpServers = optAcpMcpServers(args.values["kiro-mcp-server"], "--kiro-mcp-server");
   const extraArgs = args.values["extra-args"]?.split(" ").filter(Boolean);
   const receipt = await kiroPreflight({
     cwd: args.values.cwd ?? process.cwd(),
@@ -296,6 +357,8 @@ async function cmdPreflight(rest: string[]): Promise<number> {
     kiro: {
       transport: "acp",
       ...(args.values["kiro-agent"] !== undefined ? { agent: args.values["kiro-agent"] } : {}),
+      ...(startupMs !== undefined ? { startupMs } : {}),
+      ...(mcpServers !== undefined ? { mcpServers } : {}),
     },
     ...(extraArgs !== undefined ? { extraArgs } : {}),
   });

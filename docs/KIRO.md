@@ -60,11 +60,19 @@ harness run --agent kiro --kiro-transport acp --kiro-agent dotai \
 | `--kiro-effort` | `effort` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `--kiro-tools` | `tools` | `all`, `none`, or a comma list |
 | `--kiro-require-mcp-startup` | `requireMcpStartup` | boolean; fail the run if MCP startup reports an error |
+| `--kiro-startup-ms` | `startupMs` | positive integer ms; startup/handshake budget (default 60 000) |
+| `--kiro-require-model-ack` | `requireModelAck` | boolean; ACP: fail before prompting if `set_model` is not acknowledged |
+| `--kiro-mcp-server` | `mcpServers` (append) | ACP only: repeatable, one JSON object per server — `{name, command, args?, env?}` |
 
 `tools` unset means **no trust flag is passed at all** on either lane; the native agent config
 decides. There is no implicit `--trust-all-tools` anywhere (0.3.x passed it unconditionally on
-the headless lane). (`mcpServers`, `startupMs`, `requireModelAck` have no CLI flag yet; use the
-MCP tool or the library.)
+the headless lane). Every `KiroConfig` key now has a CLI flag; for example:
+
+```sh
+harness run --agent kiro --kiro-transport acp --kiro-agent dotai \
+  --kiro-mcp-server '{"name":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}' \
+  "…"
+```
 
 MCP (`harness_run` / `harness_run_async`):
 

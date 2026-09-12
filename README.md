@@ -102,6 +102,7 @@ harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SI
             [--budget-usd N] [--max-turns N] [--wall-ms N] [--idle-ms N] [--json] "prompt"
             kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                        [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
+                       [--kiro-startup-ms N] [--kiro-require-model-ack] [--kiro-mcp-server '<json>']...
 harness preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 harness watch [--dir <transcriptDir>]              # live per-session token deltas
 harness stats [--agent A] [--days N] [--json] [--state-only]

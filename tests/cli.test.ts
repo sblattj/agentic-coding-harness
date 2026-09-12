@@ -300,6 +300,59 @@ describe("harness cli", () => {
     assert.match(r.stdout, /^exit       success$/m);
   });
 
+  test("run --agent kiro forwards --kiro-startup-ms/--kiro-require-model-ack/--kiro-mcp-server into result.kiro.requested", async () => {
+    const fakeKiroCli = path.join(tmpExtra, "fake-kiro-flags.sh");
+    await fs.writeFile(
+      fakeKiroCli,
+      `#!/bin/sh\necho '{"type":"session_start","sessionId":"sess-flags"}'\necho '{"type":"assistant","text":"done"}'\nexit 0\n`,
+    );
+    await fs.chmod(fakeKiroCli, 0o755);
+    const r = runCli(
+      [
+        "run",
+        "--agent",
+        "kiro",
+        "--kiro-startup-ms",
+        "1234",
+        "--kiro-require-model-ack",
+        "--kiro-mcp-server",
+        '{"name":"a","command":"echo"}',
+        "--kiro-mcp-server",
+        '{"name":"b","command":"cat","args":["-"]}',
+        "--json",
+        "hi",
+      ],
+      { ...env(), KIRO_CLI_BIN: fakeKiroCli, MITMDUMP_BIN: "/nonexistent/mitmdump" },
+    );
+    assert.equal(r.code, 0, r.stderr);
+    const parsed = JSON.parse(r.stdout);
+    assert.deepEqual(parsed.kiro.requested, {
+      startupMs: 1234,
+      requireModelAck: true,
+      mcpServers: [
+        { name: "a", command: "echo" },
+        { name: "b", command: "cat", args: ["-"] },
+      ],
+    });
+  });
+
+  test("run rejects a non-integer --kiro-startup-ms cleanly before launching any agent", () => {
+    const r = runCli(["run", "--agent", "kiro", "--kiro-startup-ms", "abc", "hi"], env());
+    assert.equal(r.code, 1);
+    assert.ok(r.stderr.includes("invalid --kiro-* flags") || r.stderr.includes("--kiro-startup-ms"), r.stderr);
+    assert.doesNotMatch(r.stderr, /\n\s+at /);
+    assert.equal(r.stdout, "");
+  });
+
+  test("run rejects invalid JSON for --kiro-mcp-server, naming the flag and the value", () => {
+    const r = runCli(["run", "--agent", "kiro", "--kiro-mcp-server", "not json", "hi"], env());
+    assert.equal(r.code, 1);
+    assert.ok(r.stderr.includes("--kiro-mcp-server"), r.stderr);
+    assert.ok(r.stderr.includes("not json"), r.stderr);
+    assert.doesNotMatch(r.stderr, /\n\s+at /);
+    assert.equal(r.stdout, "");
+  });
+
   test("emit produces ATIF and OTel documents from an event stream", async () => {
     const eventsFile = path.join(tmpExtra, "events.json");
     await fs.writeFile(
