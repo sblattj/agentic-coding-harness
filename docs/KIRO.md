@@ -4,7 +4,8 @@ How `agent-harness` drives `kiro-cli`, what it can *prove* about the configurati
 and what it can and cannot tell you about usage. Everything below was measured against
 **kiro-cli 2.21.2** (engine v2, API-key auth) on 2026-09-12; fixtures under `tests/fixtures/kiro/`
 are sanitized captures from that binary, and the automated tests run only against those fixtures
-and a fake ACP server (`tests/fixtures/kiro/fake-acp-server.ts`). No test spends credits.
+and a fake ACP server (`tests/fixtures/kiro/fake-acp-server.ts`). No test spends credits unless
+`KIRO_CALIBRATION=1` (see [Paid calibration](#paid-calibration-opt-in)).
 
 ## Two transports
 
@@ -141,4 +142,53 @@ Details and the fixture-backed source table are in
   arrived, so a tool restriction is recorded per tool from evidence, never asserted from the flag.
 - Fixtures are 2.21.2. The 2.21.4 sample in issue #2 uses the same envelope family; the
   compatibility check is the `kiro-cli --version` line in `result.kiro.cliVersion`.
-- No paid calibration test ships yet; `tests/` is fixture-only.
+- `kiro.cliVersion` is **not normalized across transports**: headless parses `kiro-cli --version`
+  stdout and keeps the prefix (`kiro-cli 2.21.2`); ACP reports the handshake's bare
+  `agentInfo.version` (`2.21.2`). Strip a leading `kiro-cli ` before comparing the two.
+
+## Paid calibration (opt-in)
+
+`tests/kiro-calibration.test.ts` is the one test that spends credits. Every other test under
+`tests/` is fixture-only, and this one is skipped unless `KIRO_CALIBRATION=1` — a plain `npm test`
+reports it as `skipped 4` rather than silently omitting it.
+
+```sh
+KIRO_CALIBRATION=1 KIRO_CALIBRATION_AGENT=<native agent> \
+  node --import tsx --test --test-timeout=240000 tests/kiro-calibration.test.ts
+```
+
+Use that form, not `npm test -- tests/kiro-calibration.test.ts`: the `test` script's glob is
+`tests/*.test.ts src/adapters/*.test.ts`, so a path after `--` is *appended* and the whole suite
+runs (measured: 453 tests, not 4). `KIRO_CALIBRATION_AGENT` is optional — when set it is forwarded
+as `--kiro-agent`.
+
+**What it spends.** Two prompts (`Reply with exactly the word pong.`) to `claude-haiku-4.5`, one per
+transport, ~50 s wall. Measured 2026-09-12 against kiro-cli 2.21.2: **0.0556 credits** headless +
+**0.0166 credits** ACP = **0.0722 credits** for the file.
+
+**What it proves.** It drives the real `harness run --json` entry point (`spawnSync` on
+`src/cli/harness.ts`, fresh `AGENT_HARNESS_STATE_DIR`) once per transport and asserts, per run:
+
+- `exitStatus: "success"` and `warnings: []`.
+- `usage.credits.value` equals `sources.stream` equals `sources['session-store']` within `1e-9`,
+  and equals `sources.tap` when the MITM tap observed the run (headless only — the ACP lane does
+  not auto-tap, so `sources.tap` is absent there).
+- **The calibration itself**: that same figure re-summed straight off kiro-cli's OWN record at
+  `${KIRO_SESSIONS_DIR:-~/.kiro/sessions/cli}/<kiro.nativeSessionId>.json`, over
+  `session_state.conversation_metadata.user_turn_metadatas[].metering_usage[].value` — the sum
+  `tests/driver.test.ts` performs on the fixture, performed here on a store the CLI just wrote.
+  A missing store file fails the test naming the path; it never passes.
+- Nothing is fabricated: `usage.tokens.available: false` must come with all-zero `inputTokens`,
+  `outputTokens`, `cacheReadTokens`, `cacheWriteTokens` on every record and `totalCost: 0` (if a
+  future CLI does report counts, the other branch asserts the totals are positive instead).
+- `usage.context.available: true` with a positive derived `tokens`.
+- Provenance: `cliVersion` carries a real version (not `'unknown'`), `nativeSessionId` is a uuid,
+  `transport` matches, `modelAck` is `unsupported|unverified|acknowledged` headless and
+  `acknowledged` on ACP, and headless `kiro.effective.argv` forwards `--model claude-haiku-4.5`
+  with `trustFlag: null`.
+- The model actually answered: an `events[]` `{type:'message', source:'agent'}` whose `content`
+  contains `pong`.
+
+A failing assertion prints the transport, the observed figure and the `cliVersion`, so a newer
+kiro-cli that changes the credit plumbing or the ACP model handshake is diagnosable from the
+failure line alone.
