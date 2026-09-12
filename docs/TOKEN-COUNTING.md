@@ -107,6 +107,45 @@ shapes; reconcile on merge.
 input as uncached); the MITM tap's `meteringEvent` credits land in `extra.credits` — metering
 units, **not USD**, never priced (see §3).
 
+#### Kiro on 2.21.x — no source carries a token count
+
+Measured 2026-09-12 against `kiro-cli 2.21.2` (engine v2, API-key auth) with one tapped Haiku
+headless run plus kiro's own session store for two probe runs. Fixtures:
+`tests/fixtures/kiro/session-store-auto.json`, `tests/fixtures/kiro/session-store-haiku.json`
+(sanitized copies of `~/.kiro/sessions/cli/<nativeSessionId>.json`).
+
+| Source | Token fields it exposes | Value observed |
+|---|---|---|
+| MITM tap — `metadataEvent` / `meteringEvent` frames | `tokenUsage.{uncachedInputTokens,cacheReadInputTokens,cacheWriteInputTokens,outputTokens,totalTokens}` | **all `0`** |
+| Session store — `session_state.conversation_metadata.user_turn_metadatas[i]` | `input_token_count`, `output_token_count`, `cache_read_input_token_count`, `cache_write_input_token_count` | **all `0`** |
+| Stream / ACP `metadata` frames | *(no token field at all)* | — |
+
+So on this version **every token counter in every available source is zero**, and a zero there is
+indistinguishable from "not reported". The harness therefore reports `usage.tokens.available =
+false` and every renderer (`harness run` summary, `harness dash`, the HTML report) prints `n/a`
+for input/output/cache — never `0`. USD follows: nothing maps credits to dollars, so
+`usage.usd.available = false` and the cost cell is `n/a`, never `$0.0000`. Passing `--budget-usd`
+to a kiro run emits
+`budget: usd cap is not enforceable for kiro (credits only); wall/idle/maxTurns still apply`.
+
+**What kiro *does* expose, and where it is read:**
+
+| Signal | Source field | Surfaced as |
+|---|---|---|
+| credits (authoritative charge) | stream `metadata.meteringUsage[].value` (cumulative) > session store `metering_usage[].value` > tap `meteringEvent.credits` | `usage.credits.value`, `RunRecord.totals.credits`; every source kept in `usage.credits.sources` |
+| effective model | session store `rts_model_state.model_info.model_id`, per-turn `model` | backfilled onto token records whose `model` was `"unknown"` (post-hoc: pricing is NOT re-run, USD stays unavailable) |
+| context-window occupancy | `context_usage_percentage` / `final_context_usage_percentage` × `model_info.context_window_tokens` | `usage.context` (`source:'derived'`), rendered `ctx ≈ N tok (p%)`, `RunRecord.totals.contextTokens` |
+
+The three credit sources are reconciled to **one** charge in `src/core/usage-availability.ts`
+(authority order above, tolerance `1e-9`); they are never summed together, and any disagreement
+becomes a run warning naming all three values. Context tokens are **derived, not billed** — the
+`≈` and the separate column are deliberate, and a window taken from the fallback table is marked
+`windowSource:'assumed'`.
+
+Nothing here is fabricated: a field the store does not carry comes back `undefined`, not `0`.
+Re-derive by symbol: `parseKiroSessionStore` (`src/adapters/kiro-session-store.ts`),
+`computeUsageAvailability` (`src/core/usage-availability.ts`).
+
 ---
 
 ## 2. Double-counting traps

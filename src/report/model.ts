@@ -6,7 +6,13 @@
 // `harness report trials/` scans every subdirectory that looks like a trial.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { HarnessError, type AgentEvent, type RunResult } from "../core/types.ts";
+import {
+  HarnessError,
+  UsageAvailabilitySchema,
+  type AgentEvent,
+  type RunResult,
+  type UsageAvailability,
+} from "../core/types.ts";
 
 /** Tolerant RunResult view: `harness run --json` writes the full envelope, but
  * hand-trimmed fixtures may omit numeric/cost fields. Everything except
@@ -37,6 +43,12 @@ export interface LoadedRun {
   credits: number | null;
   /** The run's prompt/task text when recoverable from the event stream. */
   task: string | null;
+  /** RunResult.usage when the artifact carries one (absent on older runs). */
+  usage?: UsageAvailability;
+  /** True when the run states its token counts are unknowable (render n/a). */
+  tokensUnavailable?: boolean;
+  /** True when the run states no USD price is derivable (render n/a). */
+  usdUnavailable?: boolean;
 }
 
 export interface TrialSet {
@@ -122,7 +134,14 @@ export function toLoadedRun(
     if (cr !== undefined) credits = (credits ?? 0) + cr;
   }
   const totalCost = toNumOrUndefined(result.totalCost);
-  const costUsd = hasCost ? (costSum as number) : totalCost;
+  // Truthful usage: parse defensively — a hand-trimmed fixture may carry a
+  // partial `usage`, and an artifact written before this landed carries none.
+  // `undefined` means "no claim", which renders exactly as it always did.
+  const parsedUsage = UsageAvailabilitySchema.safeParse((result as { usage?: unknown }).usage);
+  const usage = parsedUsage.success ? (parsedUsage.data as UsageAvailability) : undefined;
+  const tokensUnavailable = usage?.tokens.available === false;
+  const usdUnavailable = usage?.usd.available === false;
+  const costUsd = usdUnavailable ? undefined : hasCost ? (costSum as number) : totalCost;
   const events = Array.isArray(result.events) ? result.events : [];
   return {
     agent: typeof result.agent === "string" && result.agent ? result.agent : agent,
@@ -140,6 +159,9 @@ export function toLoadedRun(
     costUsd,
     credits,
     task: extractTask(events),
+    ...(usage !== undefined ? { usage } : {}),
+    tokensUnavailable,
+    usdUnavailable,
   };
 }
 

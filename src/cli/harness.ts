@@ -196,6 +196,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       costUsd: result.totalCost,
       durationMs: result.durationMs,
       exitStatus: result.exitStatus,
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
     });
     if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
     if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;

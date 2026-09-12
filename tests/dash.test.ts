@@ -4,6 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
+import { frame } from '../src/cli/dash.ts';
+import type { RunRecord } from '../src/core/registry.ts';
 
 // ---------------------------------------------------------------------------
 // agh dash (integration, real subprocess)
@@ -130,5 +132,69 @@ describe('agh dash --json (real subprocess, non-TTY)', () => {
     const rows = JSON.parse(res.stdout) as unknown[];
     assert.ok(Array.isArray(rows), `expected a JSON array, got: ${res.stdout.slice(0, 200)}`);
     assert.equal(rows.length, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Truthful-usage columns in the ANSI table (pure render, no subprocess).
+// A RunRecord that claims `usage.tokens.available === false` must print `n/a`
+// for the token/cost cells — never `0` / `$0.0000` — and a record WITHOUT a
+// `usage` block (everything written before this landed) must render exactly as
+// it always did.
+// ---------------------------------------------------------------------------
+
+function tableLine(rec: Record<string, unknown>): string {
+  const lines = frame([rec as unknown as RunRecord], '/tmp/state', true, 200, false).split('\n');
+  const row = lines.find((l) => l.includes(String(rec.runId)));
+  assert.ok(row, `no row for ${String(rec.runId)}; frame was:\n${lines.join('\n')}`);
+  return row;
+}
+
+const CREDITS_ONLY_USAGE = {
+  tokens: { available: false },
+  credits: { available: true, source: 'reconciled', value: 0.0247448, scope: 'run', cumulative: true },
+  usd: { available: false },
+  context: { available: true, source: 'derived', percentage: 5.0080004, windowTokens: 200000, windowSource: 'session-store', tokens: 10016 },
+};
+
+describe('dash table — truthful usage columns', () => {
+  it('prints n/a for tokens and cost on a credits-only run, plus the derived ctx cell', () => {
+    const row = tableLine(
+      runRec({
+        runId: 'kiro-cr',
+        agent: 'kiro',
+        status: 'success',
+        totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, credits: 0.0247448, contextTokens: 10016 },
+        usage: CREDITS_ONLY_USAGE,
+      }),
+    );
+    assert.equal((row.match(/n\/a/g) ?? []).length, 4, row); // in, out, cache, cost
+    assert.ok(!row.includes('$0.0000'), row);
+    assert.ok(row.includes('0.02cr'), row); // credits still real
+    assert.ok(row.includes('10.0k (5.0%)'), row); // derived context
+  });
+
+  it('renders a record WITHOUT a usage block exactly as before', () => {
+    const row = tableLine(runRec({ runId: 'legacy-1', status: 'success' }));
+    assert.ok(!row.includes('n/a'), row);
+    assert.ok(row.includes('$0.0100'), row);
+    assert.ok(row.includes('10') && row.includes('20'), row);
+  });
+
+  it('keeps an unavailable run out of the footer totals', () => {
+    const now = Date.now();
+    const rendered = frame(
+      [
+        runRec({ runId: 'kiro-cr', status: 'success', updatedAt: now, totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 999, credits: 1 }, usage: CREDITS_ONLY_USAGE }) as unknown as RunRecord,
+        runRec({ runId: 'normal-1', status: 'success', updatedAt: now }) as unknown as RunRecord,
+      ],
+      '/tmp/state',
+      true,
+      200,
+      false,
+    );
+    const footerLine = rendered.split('\n').at(-1) ?? '';
+    assert.ok(footerLine.includes('in 10'), footerLine);
+    assert.ok(footerLine.includes('cost $0.0100'), footerLine); // 999 excluded
   });
 });

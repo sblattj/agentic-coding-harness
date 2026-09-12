@@ -32,6 +32,8 @@ export interface RunRecord {
     cacheWriteTokens: number;
     costUsd: number;
     credits?: number;
+    /** Latest DERIVED context-window occupancy (not billed tokens). */
+    contextTokens?: number;
   };
   lastEvent?: string; // one-line preview of the latest event
   rawTranscript: string; // absolute path to <stateDir>/raw/<agent>-<session>.jsonl
@@ -48,6 +50,7 @@ const TotalsSchema = z.object({
   cacheWriteTokens: z.number(),
   costUsd: z.number(),
   credits: z.number().optional(),
+  contextTokens: z.number().optional(),
 });
 
 export const RunRecordSchema = z.object({

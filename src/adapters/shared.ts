@@ -254,6 +254,13 @@ export interface HouseTokens {
   totalTokens: number | null;
   durationMs: number | null;
   raw: unknown;
+  /**
+   * Producer sidecar (kiro credits metering: `credits`, `creditsCumulative`,
+   * `tokensAvailable:false`, `contextUsagePercentage`, …). MERGED through the
+   * bridge below — never rebuilt — so the driver, registry and report can tell
+   * "credits only, tokens unavailable" from "zero tokens".
+   */
+  extra?: Record<string, unknown>;
 }
 
 /** House event or a lane extension ({type:'step'} from opencode, {type:'step',
@@ -279,7 +286,16 @@ export function toCoreTokenRecord(
       ? { reasoningTokens: tokens.reasoningTokens }
       : {}),
     ...(opts.costUsd !== undefined ? { costUsd: opts.costUsd } : {}),
-    extra: { totalTokens: tokens.totalTokens, durationMs: tokens.durationMs, raw: tokens.raw },
+    // Bridge extras: the house-level totals FIRST, then the producer's own
+    // `extra` on top. Merging (not rebuilding) is what carries kiro's
+    // `credits` / `tokensAvailable:false` to the driver — see the note in
+    // src/adapters/kiro-events.ts.
+    extra: {
+      totalTokens: tokens.totalTokens,
+      durationMs: tokens.durationMs,
+      raw: tokens.raw,
+      ...(tokens.extra ?? {}),
+    },
   };
 }
 
