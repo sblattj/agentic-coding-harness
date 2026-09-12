@@ -1,0 +1,7 @@
+{"type":"runStarted","data":{"payloadSchema":"acp","acpProtocolVersion":1,"engine":"v2"}}
+{"type":"metadata","data":{"sessionId":"d031eff1-edd7-46d2-9838-3520ad69cd1c","contextUsagePercentage":2.4214999675750732}}
+{"type":"sessionUpdate","data":{"sessionId":"d031eff1-edd7-46d2-9838-3520ad69cd1c","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"P"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"d031eff1-edd7-46d2-9838-3520ad69cd1c","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ONG"}}}}
+{"type":"metadata","data":{"sessionId":"d031eff1-edd7-46d2-9838-3520ad69cd1c","contextUsagePercentage":1.3314000368118286}}
+{"type":"metadata","data":{"sessionId":"d031eff1-edd7-46d2-9838-3520ad69cd1c","contextUsagePercentage":1.3314000368118286,"meteringUsage":[{"value":0.04248789137645108,"unit":"credit","unitPlural":"credits"}],"turnDurationMs":1616}}
+{"type":"runFinished","data":{"sessionId":"d031eff1-edd7-46d2-9838-3520ad69cd1c","status":"success","stopReason":"end_turn","finalText":"PONG","finalTextTruncated":false}}
