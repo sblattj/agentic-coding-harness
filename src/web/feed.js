@@ -11,6 +11,13 @@
  * attaches a pre-rendered `text` field for legacy consumers, which this
  * module deliberately ignores — every row is rendered from structure.
  *
+ * Streamed `chunk` steps coalesce into one row per contiguous run of a single
+ * kind: `agent_thought_chunk` text lands in a dim `.hf-reason` row, every other
+ * chunk in an `.hf-msg-agent` row, and a change of kind opens a fresh row. Dim
+ * status rows (progress, modelAck, stderrNotice) print WITHOUT closing that
+ * block, so an interleaved heartbeat can no longer shred one message into a row
+ * per delta; only a message, a tool card or a terminal row ends the stream.
+ *
  * All event-derived text goes through textContent; nothing is ever parsed as
  * HTML or markdown.
  */
@@ -249,7 +256,7 @@
       byId: Object.create(null),   // toolCallId -> card
       unresolved: [],              // cards awaiting a result, oldest first
       pending: [],                 // cards with a live spinner chip
-      stream: null,                // { row, pre, text } coalesced chunk block
+      stream: null,                // { pre, text, kind } chunk block; kind "message" | "reasoning"
     };
 
     function atBottom() {
@@ -408,9 +415,15 @@
       var reasoning = typeof ev.reasoningContent === "string" ? ev.reasoningContent : "";
       if (content.trim() === "" && reasoning.trim() === "") return;
 
-      if ((source === "agent" || source === undefined) && state.stream !== null) {
-        // A coalesced chunk block that the adapter is now confirming: replace
-        // the streamed text in place rather than emitting a duplicate row.
+      if (
+        (source === "agent" || source === undefined) &&
+        state.stream !== null &&
+        state.stream.kind === "message"
+      ) {
+        // A coalesced MESSAGE block that the adapter is now confirming: replace
+        // the streamed text in place rather than emitting a duplicate row. A
+        // live reasoning block is never merged into — the message opens its own
+        // row below it.
         if (state.stream.text.trim() === content.trim() && content.trim() !== "") {
           state.stream.pre.textContent = content;
           endStream();
@@ -427,12 +440,18 @@
       addRow(tsOf(ev), box);
     }
 
-    function renderChunk(ev, text) {
+    /** `kind` is "reasoning" (agent thoughts) or "message" (the answer). */
+    function renderChunk(ev, text, kind) {
       if (typeof text !== "string" || text === "") return;
+      var want = kind === "reasoning" ? "reasoning" : "message";
+      // A change of kind closes the current block so thoughts and the answer
+      // never share a row; same-kind chunks keep appending.
+      if (state.stream !== null && state.stream.kind !== want) endStream();
       if (state.stream === null) {
-        var pre = el("div", "hf-text hf-msg-agent", text);
+        var cls = want === "reasoning" ? "hf-text hf-reason" : "hf-text hf-msg-agent";
+        var pre = el("div", cls, text);
         addRow(tsOf(ev), pre);
-        state.stream = { pre: pre, text: text };
+        state.stream = { pre: pre, text: text, kind: want };
         return;
       }
       state.stream.text += text;
@@ -446,17 +465,18 @@
       var kind = d.kind;
       if (kind === "chunk") {
         var text = typeof d.text === "string" ? d.text : "";
-        renderChunk(ev, text);
+        // Kiro sends reasoning and answer over the same `chunk` step; only
+        // chunkKind separates them (see src/adapters/kiro-events.ts).
+        renderChunk(ev, text, d.chunkKind === "agent_thought_chunk" ? "reasoning" : "message");
         return;
       }
       if (kind === "modelAck") {
-        endStream();
+        // Dim advisory rows print below the live block without closing it.
         var ack = typeof d.raw === "string" ? d.raw : typeof d.warning === "string" ? d.warning : compact(d);
         line(tsOf(ev), "hf-warn", ack);
         return;
       }
       if (kind === "stderrNotice") {
-        endStream();
         var warn = typeof d.warning === "string" ? d.warning : typeof d.raw === "string" ? d.raw : compact(d);
         line(tsOf(ev), "hf-warn", warn);
         return;
@@ -516,7 +536,8 @@
           renderStep(ev);
           return;
         case "progress": {
-          endStream();
+          // Heartbeats interleave with chunks; ending the stream here shredded
+          // the agent's text into one row per delta.
           var text = typeof ev.text === "string" ? ev.text : "";
           if (text.trim() === "") return;
           line(tsOf(ev), /warn|fail|retry/i.test(text) ? "hf-warn" : "hf-dim", text);
