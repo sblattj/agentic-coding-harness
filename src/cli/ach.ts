@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 // harness — unified CLI for driving agents, watching usage, aggregating
 // stats, and emitting interchange formats. Single entry, hand-rolled dispatch
 // (node:util parseArgs); no external CLI framework. Stdlib + zod only.
