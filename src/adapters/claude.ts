@@ -77,6 +77,23 @@ export type AgentEvent =
         usage?: CanonicalTokenRecord;
       };
     }
+  | {
+      /**
+       * Tool activity lifted out of the stream-json content blocks: a `start`
+       * per `tool_use` block on an assistant line, a `result` per `tool_result`
+       * block on a user line. Bridged to the core tool_call/tool_result pair by
+       * claudeEventToCore().
+       */
+      type: 'tool';
+      payload:
+        | { phase: 'start'; toolCallId: string; name: string; input: unknown }
+        | {
+            phase: 'result';
+            toolCallId: string;
+            output: string | Record<string, unknown>;
+            isError?: boolean;
+          };
+    }
   | { type: 'usage'; payload: CanonicalTokenRecord }
   | {
       type: 'aborted';
@@ -146,6 +163,14 @@ const AssistantLineSchema = z.object({
   session_id: z.string().optional(),
 });
 
+const UserLineSchema = z.object({
+  type: z.literal('user'),
+  message: z.object({
+    content: z.array(z.any()).optional(),
+  }),
+  session_id: z.string().optional(),
+});
+
 const ModelUsageEntrySchema = z.object({
   inputTokens: safeNum,
   cacheCreationInputTokens: safeNum,
@@ -184,6 +209,70 @@ function textFromContent(content: unknown[] | undefined): string | undefined {
     .map((b) => b.text)
     .join('');
   return text.length > 0 ? text : undefined;
+}
+
+/** `tool_use` content blocks of an assistant line, in stream order. */
+function toolUsesFromContent(
+  content: unknown[] | undefined,
+): { toolCallId: string; name: string; input: unknown }[] {
+  if (!Array.isArray(content)) return [];
+  const out: { toolCallId: string; name: string; input: unknown }[] = [];
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== 'tool_use') continue;
+    out.push({
+      toolCallId: typeof b.id === 'string' ? b.id : '',
+      name: typeof b.name === 'string' ? b.name : '',
+      input: b.input,
+    });
+  }
+  return out;
+}
+
+/**
+ * `tool_result.content` is a string, an array of `{type:'text',text}` blocks
+ * (joined), an arbitrary object (passed through), or absent (→ '').
+ */
+function toolResultContent(value: unknown): string | Record<string, unknown> {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .filter(
+        (b): b is { text: string } =>
+          typeof b === 'object' && b !== null && typeof (b as any).text === 'string',
+      )
+      .map((b) => b.text)
+      .join('');
+  }
+  if (typeof value === 'object') return value as Record<string, unknown>;
+  return String(value);
+}
+
+/** `tool_result` content blocks of a user line, in stream order. */
+function toolResultsFromContent(
+  content: unknown[] | undefined,
+): { toolCallId: string; output: string | Record<string, unknown>; isError?: boolean }[] {
+  if (!Array.isArray(content)) return [];
+  const out: {
+    toolCallId: string;
+    output: string | Record<string, unknown>;
+    isError?: boolean;
+  }[] = [];
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== 'tool_result') continue;
+    out.push({
+      toolCallId: typeof b.tool_use_id === 'string' ? b.tool_use_id : '',
+      output: toolResultContent(b.content),
+      // Only set when the provider said so, matching shared.ts (which sets
+      // isError only when a status is known).
+      ...(typeof b.is_error === 'boolean' ? { isError: b.is_error } : {}),
+    });
+  }
+  return out;
 }
 
 function canonicalFromMessageUsage(
@@ -317,6 +406,27 @@ function claudeEventToCore(event: AgentEvent): CoreAgentEvent {
           : {}),
         timestamp,
       };
+    case 'tool': {
+      const p = event.payload;
+      if (p.phase === 'start') {
+        return {
+          type: 'tool_call',
+          agent: 'claude',
+          toolCallId: p.toolCallId,
+          functionName: p.name,
+          arguments: (p.input as Record<string, unknown> | string | undefined) ?? '',
+          timestamp,
+        };
+      }
+      return {
+        type: 'tool_result',
+        agent: 'claude',
+        toolCallId: p.toolCallId,
+        content: p.output,
+        ...(p.isError !== undefined ? { isError: p.isError } : {}),
+        timestamp,
+      };
+    }
     case 'usage':
       return {
         type: 'usage',
@@ -598,6 +708,22 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
             : undefined,
         },
       });
+      // Tools come AFTER the message so the transcript reads text-then-tools.
+      for (const use of toolUsesFromContent(message.content)) {
+        this.push({ type: 'tool', payload: { phase: 'start', ...use } });
+      }
+      return;
+    }
+    if (kind === 'user') {
+      // User lines carry tool_result blocks. Deliberately LENIENT: a malformed
+      // user line is ignored without incrementing parseErrors, because
+      // parseErrors counts only lines the adapter claims to fully understand
+      // (system/assistant/result) and user lines are a permissive passthrough.
+      const parsed = UserLineSchema.safeParse(raw);
+      if (!parsed.success) return;
+      for (const result of toolResultsFromContent(parsed.data.message.content)) {
+        this.push({ type: 'tool', payload: { phase: 'result', ...result } });
+      }
       return;
     }
     if (kind === 'result') {
@@ -616,7 +742,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       if (record) this.push({ type: 'usage', payload: record });
       return;
     }
-    // user / stream_event / other lines: ignored (forward compatible).
+    // stream_event / other lines: ignored (forward compatible).
   }
 
   private handleClose(code: number | null, signal: string | null): void {

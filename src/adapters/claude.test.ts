@@ -255,19 +255,144 @@ describe('ClaudeCodeAdapter stream parsing', () => {
     cleanup(stateDir);
   });
 
-  it('ignores user/tool lines and unknown line types', async () => {
+  it('ignores unknown line types and non-tool_result user blocks, but keeps tool results', async () => {
     const { adapter, captured, stateDir } = makeAdapter();
     adapter.spawn({ prompt: 'x' });
+    // A user line with a tool_result now yields a tool event...
     captured.child.feed(
-      '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}\n',
+      '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}\n',
     );
+    // ...while plain user text blocks are ignored,
+    captured.child.feed(
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n',
+    );
+    // a malformed user line is dropped WITHOUT counting a parse error,
+    captured.child.feed('{"type":"user","message":42}\n');
+    // and unknown line types still yield nothing.
     captured.child.feed('{"type":"some_future_type","data":1}\n');
     captured.child.feed(FIXTURE_LINES[2] + '\n');
     captured.child.end(0);
 
     const events = await collect(adapter.attach());
-    assert.equal(events.length, 1);
-    assert.equal((events[0] as any).type, 'usage');
+    assert.equal(events.length, 2);
+    assert.deepEqual(events[0], {
+      type: 'tool',
+      payload: { phase: 'result', toolCallId: 'toolu_1', output: 'ok' },
+    });
+    assert.equal((events[1] as any).type, 'usage');
+    cleanup(stateDir);
+  });
+
+  it('emits a message then one tool event per tool_use block on an assistant line', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+    adapter.spawn({ prompt: 'x' });
+    captured.child.feed(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          model: 'claude-sonnet-4-5-20250929',
+          content: [
+            { type: 'text', text: 'Listing then reading.' },
+            { type: 'tool_use', id: 'toolu_01a', name: 'Bash', input: { command: 'ls' } },
+            { type: 'tool_use', id: 'toolu_01b', name: 'Read', input: { file_path: '/tmp/x' } },
+          ],
+        },
+      }) + '\n',
+    );
+    captured.child.end(0);
+
+    const events = await collect(adapter.attach());
+    assert.deepEqual(
+      events.map((e) => (e as any).type),
+      ['message', 'tool', 'tool'],
+    );
+    assert.equal((events[0] as any).payload.text, 'Listing then reading.');
+    assert.deepEqual((events[1] as any).payload, {
+      phase: 'start',
+      toolCallId: 'toolu_01a',
+      name: 'Bash',
+      input: { command: 'ls' },
+    });
+    assert.deepEqual((events[2] as any).payload, {
+      phase: 'start',
+      toolCallId: 'toolu_01b',
+      name: 'Read',
+      input: { file_path: '/tmp/x' },
+    });
+    cleanup(stateDir);
+  });
+
+  it('keeps the message event (for its usage) when an assistant line is tool_use only', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+    adapter.spawn({ prompt: 'x' });
+    captured.child.feed(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          model: 'm',
+          content: [{ type: 'tool_use', id: 'toolu_z', name: 'Bash', input: { command: 'ls' } }],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_creation_input_tokens: 3,
+            cache_read_input_tokens: 4,
+            reasoning_tokens: 0,
+          },
+        },
+      }) + '\n',
+    );
+    captured.child.end(0);
+
+    const events = await collect(adapter.attach());
+    assert.deepEqual(
+      events.map((e) => (e as any).type),
+      ['message', 'tool'],
+    );
+    assert.equal((events[0] as any).payload.text, undefined);
+    assert.equal((events[0] as any).payload.usage.input, 1);
+    cleanup(stateDir);
+  });
+
+  it('joins array tool_result content and carries is_error through', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+    adapter.spawn({ prompt: 'x' });
+    captured.child.feed(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_s', content: 'plain string' },
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_a',
+              content: [
+                { type: 'text', text: 'line one\n' },
+                { type: 'text', text: 'line two' },
+              ],
+              is_error: true,
+            },
+            { type: 'tool_result', tool_use_id: 'toolu_e' },
+          ],
+        },
+      }) + '\n',
+    );
+    captured.child.end(0);
+
+    const events = await collect(adapter.attach());
+    assert.deepEqual(events, [
+      { type: 'tool', payload: { phase: 'result', toolCallId: 'toolu_s', output: 'plain string' } },
+      {
+        type: 'tool',
+        payload: {
+          phase: 'result',
+          toolCallId: 'toolu_a',
+          output: 'line one\nline two',
+          isError: true,
+        },
+      },
+      { type: 'tool', payload: { phase: 'result', toolCallId: 'toolu_e', output: '' } },
+    ]);
     cleanup(stateDir);
   });
 
@@ -390,6 +515,55 @@ describe('ClaudeCodeAdapter.launch (driver contract)', () => {
     assert.equal(usage.reasoningTokens, 64);
     assert.equal(usage.costUsd, 0.0771);
     assert.equal(usage.model, 'claude-sonnet-4-5-20250929');
+    cleanup(stateDir);
+  });
+
+  it('surfaces tool_use/tool_result blocks as core tool_call/tool_result events', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+
+    const launchPromise = adapter.launch({ prompt: 'x' });
+    captured.child.feed(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          model: 'm',
+          content: [
+            { type: 'text', text: 'running it' },
+            { type: 'tool_use', id: 'toolu_01', name: 'Bash', input: { command: 'ls' } },
+          ],
+        },
+      }) + '\n',
+    );
+    captured.child.feed(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_01', content: [{ type: 'text', text: 'a\nb' }] },
+          ],
+        },
+      }) + '\n',
+    );
+    captured.child.end(0);
+    const handle = await launchPromise;
+
+    const events: { type: string; [key: string]: unknown }[] = [];
+    for await (const event of handle.attach()) {
+      events.push(event as { type: string; [key: string]: unknown });
+    }
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ['message', 'tool_call', 'tool_result'],
+    );
+    assert.equal(events[0]!.content, 'running it');
+    assert.equal(events[1]!.agent, 'claude');
+    assert.equal(events[1]!.toolCallId, 'toolu_01');
+    assert.equal(events[1]!.functionName, 'Bash');
+    assert.deepEqual(events[1]!.arguments, { command: 'ls' });
+    assert.equal(events[2]!.toolCallId, 'toolu_01');
+    assert.equal(events[2]!.content, 'a\nb');
+    assert.equal(events[2]!.isError, undefined);
     cleanup(stateDir);
   });
 
