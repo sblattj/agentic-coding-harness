@@ -324,8 +324,9 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
   });
 
   it('GET /feed.js → 200 javascript exposing HarnessFeed; unknown vendor file → 404', async () => {
-    // The xterm/asciinema vendor bundles are gone (the dashboard renders a
-    // structured feed instead), so /feed.js is the static-script probe.
+    // asciinema is gone (the dashboard renders a structured feed instead), but
+    // the xterm vendor bundle is still served for the live PTY panes, so both
+    // /feed.js and /vendor/xterm/xterm.js are static-script probes.
     const res = await fetch(urlOf(seeded!, '/feed.js'));
     assert.equal(res.status, 200);
     assert.ok(
@@ -335,6 +336,13 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
     const body = await res.text();
     assert.ok(body.includes('HarnessFeed'), 'feed.js must expose HarnessFeed');
     assert.ok(body.length > 1_000, 'feed.js bundle suspiciously small');
+    const xterm = await fetch(urlOf(seeded!, '/vendor/xterm/xterm.js'));
+    assert.equal(xterm.status, 200);
+    assert.ok(
+      (xterm.headers.get('content-type') ?? '').startsWith('text/javascript'),
+      `xterm content-type: ${xterm.headers.get('content-type')}`,
+    );
+    assert.ok((await xterm.text()).length > 1_000, 'xterm.js bundle suspiciously small');
     const missing = await fetch(urlOf(seeded!, '/vendor/nope/missing.js'));
     assert.equal(missing.status, 404);
   });

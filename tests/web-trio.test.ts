@@ -116,12 +116,12 @@ describe('derive trio views (in-process, pure)', () => {
     const keys = ['input', 'output', 'cacheRead', 'cacheWrite', 'costUsd'] as const;
     for (const k of keys) {
       for (let i = 1; i < points.length; i++) {
-        assert.ok(points[i]![k] >= points[i - 1]![k], `${k} must be non-decreasing at point ${i}`);
+        assert.ok(points[i]![k]! >= points[i - 1]![k]!, `${k} must be non-decreasing at point ${i}`);
       }
     }
-    assert.ok(p2!.costUsd > p1!.costUsd, 'cost must grow');
+    assert.ok(p2!.costUsd! > p1!.costUsd!, 'cost must grow');
     // flat-rate sanity: U1 alone prices at (1000*3 + 500*15 + 2000*0.3 + 100*3.75)/1e6
-    assert.ok(Math.abs(p1!.costUsd - 0.011_475) < 1e-9, `unexpected first cost ${p1!.costUsd}`);
+    assert.ok(Math.abs(p1!.costUsd! - 0.011_475) < 1e-9, `unexpected first cost ${p1!.costUsd}`);
   });
 
   it('deriveLogs levels: error for the failed tool_result, usage for the usage event', () => {
@@ -152,7 +152,7 @@ describe('derive trio views (in-process, pure)', () => {
     const obs = deriveRunObservability(EVENTS);
     assert.equal(obs.durationMs, 1_000);
     assert.equal(obs.totalCostUsd, obs.metrics[obs.metrics.length - 1]!.costUsd);
-    assert.ok(obs.totalCostUsd > 0);
+    assert.ok(obs.totalCostUsd! > 0);
 
     assert.deepEqual(deriveRunObservability([]), {
       spans: [],
@@ -262,7 +262,6 @@ describe('grid/trio routes + observability API (bun subprocess)', { skip: isBun 
     assert.ok(html.includes('<html'), 'missing <html tag');
     assert.ok(html.includes('/feed.js'), 'grid must load the shared feed module');
     assert.ok(!/asciinema/i.test(html), 'grid must not reference asciinema');
-    assert.ok(!/xterm/i.test(html), 'grid must not reference xterm');
   });
 
   it('GET /trio → 200 HTML with a doctype', async () => {
@@ -274,7 +273,6 @@ describe('grid/trio routes + observability API (bun subprocess)', { skip: isBun 
     assert.ok(html.includes('<html'), 'missing <html tag');
     assert.ok(html.includes('/feed.js'), 'trio must load the shared feed module');
     assert.ok(!/asciinema/i.test(html), 'trio must not reference asciinema');
-    assert.ok(!/xterm/i.test(html), 'trio must not reference xterm');
   });
 
   it('GET /api/runs/<runId>/observability → 200 with spans/metrics/logs arrays', async () => {
@@ -290,7 +288,7 @@ describe('grid/trio routes + observability API (bun subprocess)', { skip: isBun 
     assert.equal(vitest?.kind, 'test');
     assert.equal(obs.metrics[0]!.input, 1_000);
     assert.equal(obs.durationMs, 600);
-    assert.ok(obs.totalCostUsd > 0);
+    assert.ok(obs.totalCostUsd! > 0);
   });
 
   it('GET /api/runs/<unknown>/observability → 404 JSON error', async () => {

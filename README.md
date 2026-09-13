@@ -112,6 +112,7 @@ harness emit --input events.json --format atif|otel|langfuse [--out path]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 harness report <trials-dir> [--out path]           # single-file HTML comparison
 harness dash [--json] [--all] [--dir <stateDir>]   # live run dashboard; q quits
+harness web [trials-dir] [--port N=8399] [--host H] [--token T] [--dir D] [--no-open]
 ```
 
 `agh` is the same binary (`package.json` `bin`). Budget flags (`--budget-usd`, `--max-turns`,
@@ -125,6 +126,24 @@ by construction. On a Mac whose Claude Code login is keychain-bound OAuth (no
 pass `--claude-default-config` (or set `AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1`) to run against the
 default config instead. Transcripts then land under `~/.claude/projects` and concurrent claude runs
 share one config, so pair it with sequential runs when isolation matters.
+
+### `harness web`
+
+`harness web` (default port 8399) serves a same-origin browser dashboard over the same state dir:
+
+- **`/`** — one run in full: a structured live feed built from the persisted `AgentEvent` rows
+  (text, expandable tool-call/result cards, warnings, usage, exit status), streamed over `/ws?runId=`.
+- **`/grid`** — every run as a tile, each tile body carrying that same feed. A green **LIVE** button
+  on a tile spawns an interactive PTY for the run's agent (`claude`, `opencode`, `kiro-cli`,
+  `codex`, `gemini`, else `bash -i`) and expands the tile to a full-width xterm.js pane you can type
+  into; the feed stays visible as a strip above it. Closing the pane kills the PTY.
+- **`/trio?run=<runId>`** — traces | metrics | logs for one run, plus a **FEED | LIVE TERMINAL**
+  drawer: FEED is the default and shows the same structured feed, LIVE TERMINAL mounts the PTY pane.
+
+The PTY relay is `POST /api/pty` (spawn) / `GET /api/pty` (list) / `POST /api/pty/<id>/kill` and the
+`/ws/pty/<id>` websocket (server→client raw PTY bytes, client→server keystrokes and `resize` frames).
+Agents are spawned with their non-interactive flags so a live pane does not die on a trust prompt.
+`--token` gates every websocket and PTY route. All assets are vendored under `/vendor/` — no CDN.
 
 ## Limits & budgets
 

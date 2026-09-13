@@ -1,10 +1,11 @@
 <!doctype html>
 <!--
   Observability Trio — detail view for ONE run (Concept A).
-  Three synchronized panes (Traces | Metrics | Logs) + a live log drawer.
-  Reads ?run=<runId>&token=<token>; all data from same-origin /api/* endpoints;
-  the drawer is the shared structured feed (/feed.js) over the run's /ws
-  socket. No frameworks, no external requests.
+  Three synchronized panes (Traces | Metrics | Logs) + a FEED | LIVE TERMINAL
+  drawer. Reads ?run=<runId>&token=<token>; all data from same-origin /api/*
+  endpoints; the feed is the shared structured feed (/feed.js) over the run's
+  /ws socket, the live terminal an xterm.js pane over /ws/pty/<id>.
+  No frameworks, no external requests.
 -->
 <html lang="en">
 <head>
@@ -13,6 +14,7 @@
 <meta name="color-scheme" content="dark">
 <title>agent-harness · observability trio</title>
 <link rel="icon" href="data:,">
+<link rel="stylesheet" href="/vendor/xterm/xterm.css">
 <style>
 * { box-sizing: border-box; margin: 0; }
 :root {
@@ -179,9 +181,11 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3f
 .log .sp.hit { color: var(--cyan); }
 .log .m { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* ===== feed drawer ===== */
+/* ===== terminal drawer ===== */
 footer { flex: none; height: 320px; display: flex; flex-direction: column; background: #0b0f16; border-top: 1px solid var(--line); transition: height .2s ease; }
 footer.min { height: 35px; }
+footer.live { height: min(74vh, 760px); }          /* live mode: big workspace, not a replay strip */
+footer.live.max { height: calc(100vh - 48px); }    /* near-full-screen */
 .tbar {
   display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; flex: none;
   border-bottom: 1px solid var(--line);
@@ -203,6 +207,97 @@ footer.min .tbody { display: none; }
   --feed-yellow: var(--amber);
   --feed-blue: var(--blue);
   --feed-mono: var(--mono);
+}
+#liveBox { position: absolute; inset: 0; padding: 8px 10px; overflow: hidden; }
+.player-msg { color: var(--dim); font: 11.5px var(--mono); padding: 8px 2px; }
+.term-err { color: var(--red); opacity: .75; font: 11.5px var(--mono); padding: 8px 2px; }
+.term-err small { display: block; color: var(--dim); padding-top: 4px; }
+
+/* — mode toggle: feed | live terminal — */
+.tmode { display: flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden; flex: none; }
+.mtog {
+  padding: 2px 10px; font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--dim); transition: color .15s, background .15s;
+}
+.mtog + .mtog { border-left: 1px solid var(--line2); }
+.mtog:hover { color: var(--fg); background: var(--panel2); }
+.mtog.on { color: var(--cyan); background: color-mix(in oklab, var(--cyan) 12%, transparent); }
+.tright { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+#termSize { color: var(--dim); font-size: 14px; line-height: 1; padding: 0 4px; }
+#termSize:hover { color: var(--cyan); }
+
+/* ---- inlined term-pane component styles (class-prefixed "tp-", from term-pane.html).
+        Colors fall back to this page's palette vars (--panel/--green/...). ------ */
+.term-pane {
+  --tp-panel:  var(--panel,  #0e1219);
+  --tp-panel2: var(--panel2, #141a26);
+  --tp-line:   var(--line,   #1d2433);
+  --tp-text:   var(--fg,     #dce3f2);
+  --tp-dim:    var(--dim,    #8a94ac);
+  --tp-green:  var(--green,  #a5d97a);
+  --tp-red:    var(--red,    #ff7590);
+  --tp-amber:  var(--amber,  #e6c07b);
+  --tp-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;                 /* lets the xterm body shrink inside flex hosts */
+  background: var(--tp-panel);
+  border: 1px solid var(--tp-line);
+  border-radius: 8px;
+  overflow: hidden;
+  font: 12px/1.4 var(--tp-mono);
+  color: var(--tp-text);
+}
+.term-pane .tp-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--tp-panel2);
+  border-bottom: 1px solid var(--tp-line);
+  font: 600 10.5px var(--tp-mono);
+  letter-spacing: .06em;
+  user-select: none;
+}
+.term-pane .tp-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--tp-dim);
+  flex: none;
+}
+.term-pane .tp-dot.live {
+  background: var(--tp-green);
+  box-shadow: 0 0 8px var(--tp-green);
+  animation: tp-pulse 1.6s ease-out infinite;
+}
+.term-pane .tp-dot.reconn { background: var(--tp-amber); box-shadow: 0 0 8px var(--tp-amber); }
+.term-pane .tp-dot.dead  { background: var(--tp-red);   box-shadow: 0 0 8px var(--tp-red); }
+.term-pane .tp-title {
+  color: var(--tp-green);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-pane .tp-stat { margin-left: auto; color: var(--tp-dim); font-weight: 400; white-space: nowrap; }
+.term-pane .tp-stat.exited { color: var(--tp-red); }
+.term-pane .tp-stat.reconn { color: var(--tp-amber); }
+@keyframes tp-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(255,255,255,.25), 0 0 8px var(--tp-green); }
+  70%  { box-shadow: 0 0 0 6px transparent, 0 0 8px var(--tp-green); }
+  100% { box-shadow: 0 0 0 0 transparent, 0 0 8px var(--tp-green); }
+}
+.term-pane .tp-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 2px 2px 6px;
+  background: var(--tp-panel);
+}
+.term-pane .tp-body .terminal { padding: 0; }   /* our own padding instead of xterm's */
+@media (prefers-reduced-motion: reduce) {
+  .term-pane .tp-dot.live { animation: none; }
 }
 
 /* ===== responsive + motion ===== */
@@ -263,11 +358,19 @@ footer.min .tbody { display: none; }
 
 <footer id="drawer">
   <div class="tbar">
-    <span>Feed &middot; live log</span>
+    <span class="tmode" role="group" aria-label="drawer mode">
+      <button type="button" class="mtog on" id="modeFeed" aria-pressed="true">feed</button><button type="button" class="mtog" id="modeLive" aria-pressed="false">live terminal</button>
+    </span>
     <span class="pmeta" id="termMeta"></span>
-    <button id="drawerToggle" aria-expanded="true" aria-label="collapse feed" style="margin-left:auto">&#9662;</button>
+    <span class="tright">
+      <button type="button" id="termSize" hidden aria-label="expand terminal to near full screen" title="near full screen">&#10530;</button>
+      <button type="button" id="drawerToggle" aria-expanded="true" aria-label="collapse drawer">&#9662;</button>
+    </span>
   </div>
-  <div class="tbody"><div id="feedBox"></div></div>
+  <div class="tbody">
+    <div id="feedBox"></div>
+    <div id="liveBox" hidden></div>
+  </div>
 </footer>
 
 <script src="/feed.js"></script>
@@ -598,7 +701,300 @@ function clearSel() {
   applySel();
 }
 
-/* ===== feed drawer ===== */
+/* ===== terminal drawer ===== */
+/* Two modes: "feed" (the shared structured HarnessFeed over the run's /ws
+   socket — the primary content, default) and "live" (spawn a fresh interactive
+   PTY for the run's agent and attach a full-size xterm.js pane — watch AND
+   type). Live sessions are disposed+killed on drawer collapse, mode switch,
+   spawn retry, and page unload. */
+
+/* ---- inlined term-pane component (from src/web/term-pane.html). Requires the
+        vendored xterm assets (/vendor/xterm/*), lazily loaded via ensureXterm().
+        WS protocol: server->client raw PTY bytes (first frame = scrollback,
+        {"type":"exit",exitCode:N} on exit); client->server raw keystrokes and
+        {"type":"resize","cols":C,"rows":R} control frames. ---- */
+function createTermPane(container, opts) {
+  if (typeof Terminal === "undefined")
+    throw new Error("term-pane: host page must load /vendor/xterm/xterm.js (+ xterm.css, addon-fit.js, addon-webgl.js) first");
+  var opt = opts || {};
+  var id = opt.id, token = opt.token, command = opt.command, live = opt.live !== false;
+  if (!id) throw new Error("term-pane: opts.id is required");
+
+  // ---- DOM: titlebar + terminal body ------------------------------------------------
+  var pane = el("div", "term-pane");
+  pane.innerHTML =
+    '<div class="tp-bar">' +
+      '<span class="tp-dot"></span>' +
+      '<span class="tp-title"></span>' +
+      '<span class="tp-stat"></span>' +
+    '</div>' +
+    '<div class="tp-body"></div>';
+  var dotEl   = pane.querySelector(".tp-dot");
+  var titleEl = pane.querySelector(".tp-title");
+  var statEl  = pane.querySelector(".tp-stat");
+  var bodyEl  = pane.querySelector(".tp-body");
+  titleEl.textContent = command || id;
+  container.appendChild(pane);
+
+  // ---- terminal ---------------------------------------------------------------------
+  var reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var term = new Terminal({
+    convertEol: true,
+    cursorBlink: !reducedMotion,
+    scrollback: 5000,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontSize: 12,
+    theme: {           // trio palette (xterm can't read CSS vars)
+      background: "#0b0f16", foreground: "#dce3f2", cursor: "#67d5f5",
+      cursorAccent: "#0b0f16", selectionBackground: "#67d5f544",
+      black: "#0e1219", red: "#ff7590", green: "#a5d97a", yellow: "#e6c07b",
+      blue: "#7aa2f7", magenta: "#bb9af7", cyan: "#67d5f5", white: "#dce3f2",
+      brightBlack: "#8a94ac", brightWhite: "#ffffff",
+    },
+  });
+  var fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(bodyEl);                 // open BEFORE WebGL, per xterm docs
+  try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) { /* DOM renderer fallback */ }
+  fit.fit();
+  term.focus();
+
+  // ---- status -----------------------------------------------------------------------
+  var dead = false;                  // process exited: no more input, no reconnect
+  function setStatus(cls, text) {
+    dotEl.className = "tp-dot" + (cls ? " " + cls : "");
+    statEl.className = "tp-stat" + (cls === "dead" ? " exited" : cls === "reconn" ? " reconn" : "");
+    statEl.textContent = text;
+  }
+  setStatus("", live ? "connecting\u2026" : "offline");
+
+  // ---- websocket --------------------------------------------------------------------
+  var sock = null, disposed = false, firstFrame = false;
+  var retryMs = 500, retryTimer = 0;
+  var lastCols = -1, lastRows = -1;
+
+  function connect() {
+    if (disposed || dead || !live) return;
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    var url = proto + "//" + location.host +
+                "/ws/pty/" + encodeURIComponent(id) + "?token=" + encodeURIComponent(token);
+    sock = new WebSocket(url);
+
+    sock.onopen = function () {
+      retryMs = 500;
+      firstFrame = true;              // next frame is the scrollback resync
+      setStatus("live", "live");
+      lastCols = -1;                  // force-send size so the PTY matches the pane
+      sendResize();
+    };
+    sock.onmessage = function (ev) {
+      var data = ev.data;
+      if (firstFrame) {               // server resends full scrollback on (re)connect
+        term.reset();
+        firstFrame = false;
+      }
+      var ctl = parseExitFrame(data);
+      if (ctl) { onExit(ctl.exitCode); return; }
+      term.write(data);               // raw PTY bytes, ANSI included — never escaped
+    };
+    sock.onclose = function () {
+      if (disposed || dead || !live) return;
+      setStatus("reconn", "reconnecting\u2026");
+      retryTimer = setTimeout(connect, retryMs);   // backoff: 0.5s → 1 → 2 → … → 8s cap
+      retryMs = Math.min(retryMs * 2, 8000);
+    };
+    sock.onerror = function () { /* close event follows and drives reconnect */ };
+  }
+
+  // A control frame is a whole-frame JSON object with type:"exit"; anything else
+  // (including raw output that merely starts with '{') is written verbatim.
+  function parseExitFrame(d) {
+    if (typeof d !== "string" || d.length < 20 || d.charCodeAt(0) !== 0x7b /* '{' */) return null;
+    try {
+      var j = JSON.parse(d);
+      return (j && j.type === "exit") ? j : null;
+    } catch (e) { return null; }
+  }
+
+  function onExit(code) {
+    dead = true;
+    term.write("\r\n\x1b[2m[process exited " + (code == null ? "?" : code) + "]\x1b[22m\r\n"); // dim exit line
+    setStatus("dead", "exited " + (code == null ? "?" : code));
+    try { sock && sock.close(); } catch (e) {}
+  }
+
+  function sendResize() {
+    if (!sock || sock.readyState !== 1 || dead) return;
+    if (term.cols === lastCols && term.rows === lastRows) return;
+    lastCols = term.cols; lastRows = term.rows;
+    sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  }
+
+  // keystrokes → PTY, only while live, connected, and process alive
+  term.onData(function (d) {
+    if (live && !dead && sock && sock.readyState === 1) sock.send(d);
+  });
+
+  // ---- resize tracking ---------------------------------------------------------------
+  var fitReq = 0;
+  var ro = new ResizeObserver(function () {
+    if (disposed) return;
+    cancelAnimationFrame(fitReq);
+    fitReq = requestAnimationFrame(function () { try { fit.fit(); } catch (e) {} sendResize(); });
+  });
+  ro.observe(bodyEl);
+
+  if (live) connect();
+
+  // ---- public surface ------------------------------------------------------------------
+  return {
+    pane: pane, term: term,
+    write: function (d) { term.write(d); },        // host-injected data (tests, mocks)
+    dispose: function () {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(retryTimer);
+      cancelAnimationFrame(fitReq);
+      ro.disconnect();
+      if (sock) { sock.onclose = sock.onerror = sock.onmessage = sock.onopen = null;
+                  try { sock.close(); } catch (e) {} }
+      try { term.dispose(); } catch (e) {}
+      pane.remove();
+    },
+  };
+}
+
+/* ---- lazy vendored xterm.js load (first live use only) ---- */
+var xtermLoad = null;
+function ensureXterm() {
+  if (window.Terminal && window.FitAddon && window.WebglAddon) return Promise.resolve();
+  if (!xtermLoad) {
+    var load = function (src) {
+      return new Promise(function (res, rej) {
+        var s = document.createElement("script");
+        s.src = src;
+        s.onload = function () { res(); };
+        s.onerror = function () { rej(new Error("load failed: " + src)); };
+        document.head.appendChild(s);
+      });
+    };
+    xtermLoad = load("/vendor/xterm/xterm.js")
+      .then(function () { return load("/vendor/xterm/addon-fit.js"); })
+      .then(function () { return load("/vendor/xterm/addon-webgl.js"); })
+      .catch(function (err) { xtermLoad = null; throw err; });   // allow retry after a failed load
+  }
+  return xtermLoad;
+}
+
+/* ---- agent → interactive command ---- */
+// Non-interactive flags so the pane doesn't die on a trust/approval prompt.
+var AGENT_CMDS = {
+  claude:  ["claude", "--dangerously-skip-permissions"],
+  opencode: ["opencode"],
+  kiro:    ["kiro-cli", "chat", "--trust-all-tools"],
+  codex:   ["codex", "--full-auto"],
+  gemini:  ["gemini", "--yolo"],
+};
+function agentCommand(agent) {
+  var a = (agent || "").toLowerCase();
+  for (var k in AGENT_CMDS) {
+    if (a === k || a.indexOf(k + "-") === 0 || a.indexOf(k + " ") === 0) return AGENT_CMDS[k].slice();
+  }
+  return ["bash", "-i"];
+}
+
+/* ---- live session lifecycle ---- */
+var MODE = "feed";     // "feed" | "live"
+var livePane = null;   // createTermPane result while a live session is mounted
+var liveId = null;     // PTY session id — killed on teardown
+var liveSeq = 0;       // guards async spawns against mode switches / collapse / retry
+
+function killPty(id) {
+  if (!id) return;
+  try {
+    fetch("/api/pty/" + encodeURIComponent(id) + "/kill?token=" + encodeURIComponent(TOKEN), { method: "POST" })
+      .catch(function () { /* best effort; server reaps idle sessions */ });
+  } catch (e) { /* best effort */ }
+}
+
+function stopLive() {
+  liveSeq++;                        // invalidate any in-flight spawn
+  if (livePane) { try { livePane.dispose(); } catch (e) {} livePane = null; }
+  killPty(liveId);
+  liveId = null;
+}
+
+function liveErr(msg, hint) {
+  var box = $("liveBox");
+  box.textContent = "";
+  var d = el("div", "term-err", msg);
+  if (hint) d.appendChild(el("small", null, hint));
+  box.appendChild(d);
+}
+
+function startLive() {
+  var seq = ++liveSeq;
+  var box = $("liveBox");
+  box.textContent = "";
+  box.appendChild(el("div", "player-msg", "spawning live session\u2026"));
+  $("termMeta").textContent = "live pty";
+  var cmd = agentCommand(rec && rec.agent);
+  ensureXterm()
+    .then(function () {
+      if (seq !== liveSeq) return null;
+      return fetch("/api/pty?token=" + encodeURIComponent(TOKEN), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command: cmd[0], args: cmd.slice(1), runId: RUN_ID }),
+      }).then(function (r) {
+        if (!r.ok) throw new Error("http " + r.status + " from /api/pty");
+        return r.json();
+      });
+    })
+    .then(function (info) {
+      if (seq !== liveSeq) { if (info && info.id) killPty(info.id); return; }  // stale spawn: don't leak it
+      if (!info || !info.id) throw new Error("spawn response missing id");
+      liveId = info.id;
+      livePane = createTermPane(box, { id: info.id, token: TOKEN, live: true, command: cmd.join(" ") });
+      $("termMeta").textContent = "live pty \u00b7 " + cmd.join(" ");
+    })
+    .catch(function (err) {
+      if (seq !== liveSeq) return;
+      liveErr(
+        "live terminal unavailable \u2014 " + ((err && err.message) || "network error"),
+        "click \u201clive terminal\u201d to retry, or go back to the feed."
+      );
+      $("termMeta").textContent = "live pty \u00b7 spawn failed";
+    });
+}
+
+function setMode(mode) {
+  MODE = mode;
+  var isLive = mode === "live";
+  $("modeFeed").classList.toggle("on", !isLive);
+  $("modeFeed").setAttribute("aria-pressed", String(!isLive));
+  $("modeLive").classList.toggle("on", isLive);
+  $("modeLive").setAttribute("aria-pressed", String(isLive));
+  var drawer = $("drawer");
+  drawer.classList.toggle("live", isLive);
+  if (!isLive) drawer.classList.remove("max");
+  $("termSize").hidden = !isLive;
+  // the feed's DOM (and its socket) survive a live detour untouched
+  $("feedBox").hidden = isLive;
+  $("liveBox").hidden = !isLive;
+  if (isLive) {
+    drawer.classList.remove("min");  // live always opens the drawer
+    var t = $("drawerToggle");
+    t.setAttribute("aria-expanded", "true");
+    t.setAttribute("aria-label", "collapse drawer");
+    if (!livePane) startLive();      // fresh spawn; also the retry path after a failure
+  } else {
+    stopLive();                      // mode switch away from live: dispose + kill, no leaks
+    openFeed();
+    if (feedOpened) $("termMeta").textContent = feedEnded ? "ended" : "live";
+  }
+}
+
 function openFeed() {
   if (feedOpened || !RUN_ID) return;
   var box = $("feedBox");
@@ -619,6 +1015,8 @@ function openFeed() {
       // must not downgrade the label back to "idle".
       if (feedEnded) return;
       if (s === "ended") feedEnded = true;
+      // a live-terminal detour owns the meta line; the feed reclaims it on return
+      if (MODE === "live") return;
       $("termMeta").textContent = s === "open" ? "live" : s === "closed" ? "idle" : s;
     },
   });
@@ -690,17 +1088,36 @@ $("traceList").addEventListener("keydown", function (e) {
 $("logFilter").addEventListener("click", clearSel);
 $("chartbox").addEventListener("mousemove", chartMove);
 $("chartbox").addEventListener("mouseleave", chartLeave);
+$("modeFeed").addEventListener("click", function () { setMode("feed"); });
+$("modeLive").addEventListener("click", function () { setMode("live"); });
+$("termSize").addEventListener("click", function () {
+  var max = $("drawer").classList.toggle("max");
+  this.setAttribute("aria-label", max ? "restore terminal size" : "expand terminal to near full screen");
+  this.setAttribute("title", max ? "restore size" : "near full screen");
+});
 var DRAWER_KEY = "harness.trio.drawer";
 function setDrawer(min, persist) {
   $("drawer").classList.toggle("min", min);
   var btn = $("drawerToggle");
   btn.setAttribute("aria-expanded", String(!min));
-  btn.setAttribute("aria-label", min ? "expand feed" : "collapse feed");
+  btn.setAttribute("aria-label", min ? "expand drawer" : "collapse drawer");
   if (persist) { try { sessionStorage.setItem(DRAWER_KEY, min ? "min" : "open"); } catch (e) { /* noop */ } }
-  if (!min) openFeed();
+  if (min) {
+    if (MODE === "live") setMode("feed");   // collapsing the drawer closes the live session
+    return;
+  }
+  openFeed();
 }
 $("drawerToggle").addEventListener("click", function () {
   setDrawer(!$("drawer").classList.contains("min"), true);
+});
+addEventListener("beforeunload", function () {
+  // page unload: fetch may be cancelled — sendBeacon delivers the kill reliably
+  if (liveId) {
+    try {
+      navigator.sendBeacon("/api/pty/" + encodeURIComponent(liveId) + "/kill?token=" + encodeURIComponent(TOKEN));
+    } catch (e) { /* best effort */ }
+  }
 });
 
 /* ===== init ===== */

@@ -171,7 +171,10 @@ export interface MetricPoint {
   output: number;
   cacheRead: number;
   cacheWrite: number;
-  costUsd: number;
+  /** Cumulative USD; omitted for credit-metered runs (kiro) that report no USD. */
+  costUsd?: number;
+  /** Cumulative metering credits, when the source bills credits not tokens (kiro). */
+  credits?: number;
 }
 
 export interface FlatPrices {
@@ -199,19 +202,52 @@ function flatCost(u: CanonicalTokenRecord): number {
   );
 }
 
+function finiteNum(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 export function deriveMetrics(events: AgentEvent[]): MetricPoint[] {
   const rows = normalizeTimeline(events);
   const points: MetricPoint[] = [];
-  const tot = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
+  const tot = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, credits: 0 };
+  let sawUsd = false;
+  let sawCredits = false;
   for (const { ev, tMs } of rows) {
     const u = ev.type === "usage" ? ev.usage : ev.type === "model_call_end" ? ev.usage : undefined;
     if (u === undefined) continue;
+    const extra = u.extra as Record<string, unknown> | undefined;
+    // Credits-only records (kiro) carry placeholder zero tokens; pricing them
+    // would emit a false $0. Price only token-bearing records; surface credits.
+    const tokensAvailable = extra?.tokensAvailable !== false;
     tot.input += num(u.inputTokens);
     tot.output += num(u.outputTokens);
     tot.cacheRead += num(u.cacheReadTokens);
     tot.cacheWrite += num(u.cacheWriteTokens);
-    tot.costUsd += flatCost(u);
-    points.push({ tMs, ...tot });
+    if (tokensAvailable) {
+      tot.costUsd += flatCost(u);
+      sawUsd = true;
+    }
+    const cum = finiteNum(extra?.creditsCumulative);
+    if (cum !== null) {
+      tot.credits = Math.max(tot.credits, cum); // cumulative gauge, not a sum
+      sawCredits = true;
+    } else {
+      const c = finiteNum(extra?.credits);
+      if (c !== null) {
+        tot.credits += c; // per-record credits sum
+        sawCredits = true;
+      }
+    }
+    const point: MetricPoint = {
+      tMs,
+      input: tot.input,
+      output: tot.output,
+      cacheRead: tot.cacheRead,
+      cacheWrite: tot.cacheWrite,
+    };
+    if (sawUsd) point.costUsd = tot.costUsd;
+    if (sawCredits) point.credits = tot.credits;
+    points.push(point);
   }
   return points.sort((a, b) => a.tMs - b.tMs);
 }
@@ -358,7 +394,10 @@ export interface RunObservability {
   spans: Span[];
   metrics: MetricPoint[];
   logs: LogLine[];
-  totalCostUsd: number;
+  /** Cumulative USD; omitted for credit-metered runs that report no USD. */
+  totalCostUsd?: number;
+  /** Cumulative metering credits, when the source bills credits (kiro). */
+  totalCredits?: number;
   durationMs: number;
 }
 
@@ -366,7 +405,11 @@ export function deriveRunObservability(events: AgentEvent[]): RunObservability {
   const spans = deriveSpans(events);
   const metrics = deriveMetrics(events);
   const logs = deriveLogs(events);
-  const totalCostUsd = metrics.length > 0 ? metrics[metrics.length - 1]!.costUsd : 0;
+  const last = metrics.length > 0 ? metrics[metrics.length - 1]! : undefined;
   const durationMs = spans.length > 0 ? spans[0]!.durationMs : 0;
-  return { spans, metrics, logs, totalCostUsd, durationMs };
+  const out: RunObservability = { spans, metrics, logs, durationMs };
+  if (last?.costUsd !== undefined) out.totalCostUsd = last.costUsd;
+  else if (metrics.length === 0) out.totalCostUsd = 0; // no usage at all → USD knowable as zero
+  if (last?.credits !== undefined) out.totalCredits = last.credits;
+  return out;
 }

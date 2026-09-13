@@ -207,6 +207,115 @@ main { flex: 1; display: block; }
 .tbody::-webkit-scrollbar-thumb { background: #1c2921; border-radius: 4px; }
 .tbody::-webkit-scrollbar-track { background: transparent; }
 
+/* ===== live PTY expansion ===== */
+.tile.expanded {
+  grid-column: 1 / -1;            /* span the full grid width */
+  height: min(72vh, 680px);
+  cursor: default;
+}
+/* the structured feed stays visible as a strip above the live terminal */
+.tile.expanded .tbody { flex: 0 0 150px; }
+.tlive {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 6px;
+}
+.tlive > .term-pane { flex: 1; min-width: 0; height: auto; }
+
+/* LIVE button — mirrors .trio, but green; turns red when a pane is open */
+.liveb {
+  flex: none;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border: 1px solid var(--green2);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--green);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.liveb:hover { background: var(--green2); color: #000; }
+.liveb:disabled { opacity: .5; cursor: wait; }
+.liveb.on { border-color: var(--red); color: var(--red); }
+.liveb.on:hover { background: var(--red); color: #000; }
+
+/* ===== term-pane component styles (inlined from term-pane.html; "tp-" prefixed
+   so they cannot collide with grid classes. Colors fall back to this page's
+   --panel/--green/... palette, which is defined above). ===== */
+.term-pane {
+  --tp-panel:  var(--panel,  #0a0f0c);
+  --tp-panel2: var(--panel2, #0d1410);
+  --tp-line:   var(--line,   #16241b);
+  --tp-text:   var(--text,   #cdeedd);
+  --tp-dim:    var(--dim,    #7fa08d);
+  --tp-green:  var(--green,  #3dff7c);
+  --tp-red:    var(--red,    #ff6f6f);
+  --tp-amber:  var(--amber,  #ffcf6b);
+  --tp-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;                 /* lets the xterm body shrink inside flex hosts */
+  background: var(--tp-panel);
+  border: 1px solid var(--tp-line);
+  border-radius: 8px;
+  overflow: hidden;
+  font: 12px/1.4 var(--tp-mono);
+  color: var(--tp-text);
+}
+.term-pane .tp-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--tp-panel2);
+  border-bottom: 1px solid var(--tp-line);
+  font: 600 10.5px var(--tp-mono);
+  letter-spacing: .06em;
+  user-select: none;
+}
+.term-pane .tp-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--tp-dim);
+  flex: none;
+}
+.term-pane .tp-dot.live {
+  background: var(--tp-green);
+  box-shadow: 0 0 8px var(--tp-green);
+  animation: tp-pulse 1.6s ease-out infinite;
+}
+.term-pane .tp-dot.reconn { background: var(--tp-amber); box-shadow: 0 0 8px var(--tp-amber); }
+.term-pane .tp-dot.dead  { background: var(--tp-red);   box-shadow: 0 0 8px var(--tp-red); }
+.term-pane .tp-title {
+  color: var(--tp-green);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-pane .tp-stat { margin-left: auto; color: var(--tp-dim); font-weight: 400; white-space: nowrap; }
+.term-pane .tp-stat.exited { color: var(--tp-red); }
+.term-pane .tp-stat.reconn { color: var(--tp-amber); }
+@keyframes tp-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(255,255,255,.25), 0 0 8px var(--tp-green); }
+  70%  { box-shadow: 0 0 0 6px transparent, 0 0 8px var(--tp-green); }
+  100% { box-shadow: 0 0 0 0 transparent, 0 0 8px var(--tp-green); }
+}
+.term-pane .tp-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 2px 2px 6px;
+  background: var(--tp-panel);
+}
+.term-pane .tp-body .terminal { padding: 0; }
+
 /* ===== footer ===== */
 #ftr {
   display: flex;
@@ -234,9 +343,15 @@ main { flex: 1; display: block; }
 /* ===== reduced motion ===== */
 @media (prefers-reduced-motion: reduce) {
   .dot.pulse { animation: none; }
-  .tile, .trio { transition: none; }
+  .tile, .trio, .liveb { transition: none; }
+  .term-pane .tp-dot.live { animation: none; }
 }
 </style>
+<!-- vendored xterm stack (same-origin, no CDN) for the live PTY panes -->
+<link rel="stylesheet" href="/vendor/xterm/xterm.css">
+<script src="/vendor/xterm/xterm.js"></script>
+<script src="/vendor/xterm/addon-fit.js"></script>
+<script src="/vendor/xterm/addon-webgl.js"></script>
 </head>
 <body>
 <div id="fx" aria-hidden="true"></div>
@@ -263,12 +378,175 @@ main { flex: 1; display: block; }
   </main>
 
   <footer id="ftr">
-    <span><span class="green">❯</span> click a tile to select · TRIO opens the detail view</span>
+    <span><span class="green">❯</span> click a tile to select · TRIO opens the detail view · LIVE spawns an interactive PTY</span>
     <span>live = running + heartbeat &lt; 60s</span>
   </footer>
 </div>
 
 <script src="/feed.js"></script>
+<script>
+"use strict";
+
+/* createTermPane — inlined from src/web/term-pane.html (component only; the
+   standalone ?demo block of that file is deliberately not copied).
+   createTermPane(container, opts) -> { el, term, dispose, write }
+   opts: { id, token, live = true, command }
+   Requires the vendored globals loaded in <head>: Terminal, FitAddon, WebglAddon.
+   WS protocol: server -> client raw PTY bytes (first frame = scrollback resync,
+   then {"type":"exit","exitCode":N} before close); client -> server raw
+   keystrokes + {"type":"resize","cols":C,"rows":R}. */
+function createTermPane(container, opts) {
+  if (typeof Terminal === "undefined")
+    throw new Error("term-pane: host page must load /vendor/xterm/xterm.js (+ xterm.css, addon-fit.js, addon-webgl.js) first");
+  const { id, token, command, live = true } = opts;
+  if (!id) throw new Error("term-pane: opts.id is required");
+
+  // ---- DOM: titlebar + terminal body ------------------------------------------------
+  const el = document.createElement("div");
+  el.className = "term-pane";
+  el.innerHTML =
+    '<div class="tp-bar">' +
+      '<span class="tp-dot"></span>' +
+      '<span class="tp-title"></span>' +
+      '<span class="tp-stat"></span>' +
+    '</div>' +
+    '<div class="tp-body"></div>';
+  const dotEl   = el.querySelector(".tp-dot");
+  const titleEl = el.querySelector(".tp-title");
+  const statEl  = el.querySelector(".tp-stat");
+  const bodyEl  = el.querySelector(".tp-body");
+  titleEl.textContent = command || id;
+  container.appendChild(el);
+
+  // ---- terminal ---------------------------------------------------------------------
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const term = new Terminal({
+    convertEol: true,
+    cursorBlink: !reducedMotion,
+    scrollback: 5000,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontSize: 12,
+    theme: {           // hardcoded palette matching grid.html (xterm can't read CSS vars)
+      background: "#0a0f0c", foreground: "#cdeedd", cursor: "#3dff7c",
+      cursorAccent: "#0a0f0c", selectionBackground: "#1fae5a44",
+      black: "#0a0f0c", red: "#ff6f6f", green: "#3dff7c", yellow: "#ffcf6b",
+      blue: "#5bd7dd", magenta: "#c792ea", cyan: "#5bd7dd", white: "#cdeedd",
+      brightBlack: "#7fa08d", brightWhite: "#ffffff",
+    },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(bodyEl);                 // open BEFORE WebGL, per xterm docs
+  try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) { /* DOM renderer fallback */ }
+  fit.fit();
+  term.focus();
+
+  // ---- status -----------------------------------------------------------------------
+  let dead = false;                  // process exited: no more input, no reconnect
+  function setStatus(cls, text) {
+    dotEl.className = "tp-dot" + (cls ? " " + cls : "");
+    statEl.className = "tp-stat" + (cls === "dead" ? " exited" : cls === "reconn" ? " reconn" : "");
+    statEl.textContent = text;
+  }
+  setStatus(live ? "" : "", live ? "connecting…" : "offline");
+
+  // ---- websocket --------------------------------------------------------------------
+  let sock = null, disposed = false, firstFrame = false;
+  let retryMs = 500, retryTimer = 0;
+  let lastCols = -1, lastRows = -1;
+
+  function connect() {
+    if (disposed || dead || !live) return;
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = proto + "//" + location.host +
+                "/ws/pty/" + encodeURIComponent(id) + "?token=" + encodeURIComponent(token);
+    sock = new WebSocket(url);
+
+    sock.onopen = () => {
+      retryMs = 500;
+      firstFrame = true;              // next frame is the scrollback resync
+      setStatus("live", "live");
+      lastCols = -1;                  // force-send size so the PTY matches the pane
+      sendResize();
+    };
+    sock.onmessage = (ev) => {
+      const data = ev.data;
+      if (firstFrame) {               // server resends full scrollback on (re)connect
+        term.reset();
+        firstFrame = false;
+      }
+      const ctl = parseExitFrame(data);
+      if (ctl) { onExit(ctl.exitCode); return; }
+      term.write(data);               // raw PTY bytes, ANSI included — never escaped
+    };
+    sock.onclose = () => {
+      if (disposed || dead || !live) return;
+      setStatus("reconn", "reconnecting…");
+      retryTimer = setTimeout(connect, retryMs);   // backoff: 0.5s → 1 → 2 → … → 8s cap
+      retryMs = Math.min(retryMs * 2, 8000);
+    };
+    sock.onerror = () => { /* close event follows and drives reconnect */ };
+  }
+
+  // A control frame is a whole-frame JSON object with type:"exit"; anything else
+  // (including raw output that merely starts with '{') is written verbatim.
+  function parseExitFrame(d) {
+    if (typeof d !== "string" || d.length < 20 || d.charCodeAt(0) !== 0x7b /* '{' */) return null;
+    try {
+      const j = JSON.parse(d);
+      return (j && j.type === "exit") ? j : null;
+    } catch { return null; }
+  }
+
+  function onExit(code) {
+    dead = true;
+    term.write("\r\n\x1b[2m[process exited " + (code ?? "?") + "]\x1b[22m\r\n"); // dim exit line
+    setStatus("dead", "exited " + (code ?? "?"));
+    try { sock && sock.close(); } catch {}
+  }
+
+  function sendResize() {
+    if (!sock || sock.readyState !== 1 || dead) return;
+    if (term.cols === lastCols && term.rows === lastRows) return;
+    lastCols = term.cols; lastRows = term.rows;
+    sock.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  }
+
+  // keystrokes → PTY, only while live, connected, and process alive
+  term.onData((d) => {
+    if (live && !dead && sock && sock.readyState === 1) sock.send(d);
+  });
+
+  // ---- resize tracking ---------------------------------------------------------------
+  let fitReq = 0;
+  const ro = new ResizeObserver(() => {
+    if (disposed) return;
+    cancelAnimationFrame(fitReq);
+    fitReq = requestAnimationFrame(() => { try { fit.fit(); } catch {} sendResize(); });
+  });
+  ro.observe(bodyEl);
+
+  if (live) connect();
+
+  // ---- public surface ------------------------------------------------------------------
+  return {
+    el, term,
+    write: (d) => term.write(d),        // host-injected data (tests, mocks)
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(retryTimer);
+      cancelAnimationFrame(fitReq);
+      ro.disconnect();
+      if (sock) { sock.onclose = sock.onerror = sock.onmessage = sock.onopen = null;
+                  try { sock.close(); } catch {} }
+      try { term.dispose(); } catch {}
+      el.remove();
+    },
+  };
+}
+</script>
+
 <script>
 (function () {
   "use strict";
@@ -348,6 +626,12 @@ main { flex: 1; display: block; }
     trio.className = "trio";
     trio.type = "button";
     trio.textContent = "TRIO ➜";
+    trio.title = "open the detail view";
+    var liveBtn = document.createElement("button");
+    liveBtn.className = "liveb";
+    liveBtn.type = "button";
+    liveBtn.textContent = "LIVE";
+    liveBtn.title = "spawn an interactive PTY for this agent";
     var tok = document.createElement("span");
     tok.className = "tstat";
     var cost = document.createElement("span");
@@ -359,6 +643,7 @@ main { flex: 1; display: block; }
     bar.appendChild(model);
     bar.appendChild(space);
     bar.appendChild(trio);
+    bar.appendChild(liveBtn);
     bar.appendChild(tok);
     bar.appendChild(cost);
     bar.appendChild(elapsed);
@@ -375,7 +660,7 @@ main { flex: 1; display: block; }
     tile.appendChild(body);
 
     return {
-      tile: tile, dot: dot, name: name, model: model, trio: trio,
+      tile: tile, dot: dot, name: name, model: model, trio: trio, liveBtn: liveBtn,
       tok: tok, cost: cost, elapsed: elapsed, prompt: prompt, body: body
     };
   }
@@ -443,6 +728,140 @@ main { flex: 1; display: block; }
     if (st.feed) st.feed.setEnded();
   }
 
+  // ------- live interactive PTY -------
+
+  // A one-line dim note appended into the tile's feed column. The old text
+  // pane's appendLine() is gone; these are PTY-side failures, not run events,
+  // so they are written straight into the feed container rather than injected
+  // as synthetic AgentEvents.
+  function liveNote(st, msg) {
+    var row = document.createElement("div");
+    row.className = "hf-row";
+    row.appendChild(document.createElement("span")).className = "hf-gutter";
+    var body = document.createElement("div");
+    body.className = "hf-body";
+    var text = document.createElement("div");
+    text.className = "hf-text hf-dim";
+    text.textContent = msg;
+    body.appendChild(text);
+    row.appendChild(body);
+    st.dom.body.appendChild(row);
+    st.dom.body.scrollTop = st.dom.body.scrollHeight;
+  }
+
+  var AGENT_PTY = {
+    // Non-interactive flags so the pane doesn't die on a trust/approval prompt.
+    claude: ["claude", "--dangerously-skip-permissions"],
+    opencode: ["opencode"],
+    kiro: ["kiro-cli", "chat", "--trust-all-tools"],
+    codex: ["codex", "--full-auto"],
+    gemini: ["gemini", "--yolo"],
+  };
+
+  function ptyCommandFor(agent) {
+    var cmd = AGENT_PTY[String(agent || "").toLowerCase()];
+    if (!cmd) cmd = ["bash", "-i"];       // generic fallback: interactive shell
+    return { command: cmd[0], args: cmd.slice(1) };
+  }
+
+  function killPty(id) {
+    if (!id) return;
+    var url = "/api/pty/" + encodeURIComponent(id) + "/kill" +
+      (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+    fetch(url, { method: "POST" }).catch(function () { /* already gone */ });
+  }
+
+  function resetLiveButton(st) {
+    st.dom.liveBtn.disabled = false;
+    st.dom.liveBtn.classList.remove("on");
+    st.dom.liveBtn.textContent = "LIVE";
+  }
+
+  function closeLive(st) {
+    if (st.pane) { try { st.pane.dispose(); } catch (e) { /* noop */ } st.pane = null; }
+    var ptyId = st.ptyId;
+    st.ptyId = null;
+    if (st.liveHost) { st.liveHost.remove(); st.liveHost = null; }
+    st.dom.tile.classList.remove("expanded");
+    resetLiveButton(st);
+    st.liveBusy = false;
+    // the hidden event stream kept updating; park it at the bottom on return
+    st.dom.body.scrollTop = st.dom.body.scrollHeight;
+    killPty(ptyId);
+  }
+
+  function spawnLive(st) {
+    if (st.liveBusy || st.pane) return;
+    if (typeof Terminal === "undefined") {
+      liveNote(st, "— live unavailable: vendored xterm assets failed to load —");
+      return;
+    }
+    st.liveBusy = true;
+    st.dom.liveBtn.disabled = true;
+    st.dom.liveBtn.textContent = "LIVE…";
+    var cmd = ptyCommandFor(st.rec.agent);
+    fetch("/api/pty" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : ""), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: cmd.command, args: cmd.args, cols: 120, rows: 34, runId: st.rec.runId })
+    })
+      .then(function (r) {
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            throw new Error((j && j.error) || "http " + r.status);
+          });
+        }
+        return r.json();
+      })
+      .then(function (info) {
+        st.liveBusy = false;
+        if (!info || typeof info.id !== "string") throw new Error("spawn response missing id");
+        st.ptyId = info.id;
+        var host = document.createElement("div");
+        host.className = "tlive";
+        // keep terminal clicks/keys inside the pane: the tile's own handlers
+        // would otherwise toggle selection and swallow Space/Enter keydowns
+        host.addEventListener("click", function (ev) { ev.stopPropagation(); });
+        host.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
+        st.dom.tile.appendChild(host);
+        st.liveHost = host;
+        st.dom.tile.classList.add("expanded");
+        try {
+          st.pane = createTermPane(host, {
+            id: info.id,
+            token: TOKEN,
+            live: true,
+            command: cmd.command + (cmd.args.length ? " " + cmd.args.join(" ") : "")
+          });
+        } catch (e) {
+          // terminal stack failed to mount — tear down the session we just made
+          host.remove();
+          st.liveHost = null;
+          st.dom.tile.classList.remove("expanded");
+          killPty(st.ptyId);
+          st.ptyId = null;
+          resetLiveButton(st);
+          liveNote(st, "— live failed: " + (e && e.message ? e.message : e) + " —");
+          return;
+        }
+        st.dom.liveBtn.textContent = "✕ CLOSE";
+        st.dom.liveBtn.disabled = false;
+        st.dom.liveBtn.classList.add("on");
+      })
+      .catch(function (err) {
+        st.liveBusy = false;
+        resetLiveButton(st);
+        liveNote(st, "— live spawn failed (" + cmd.command + "): " +
+          (err && err.message ? err.message : err) + " —");
+      });
+  }
+
+  function toggleLive(st) {
+    if (st.liveBusy) return;
+    if (st.pane || st.liveHost) closeLive(st);
+    else spawnLive(st);
+  }
+
   // ------- runs list -------
 
   function sortIds() {
@@ -494,7 +913,10 @@ main { flex: 1; display: block; }
       var live = isLive(rec, Date.now());
       if (!st) {
         var dom = makeTile(rec);
-        st = { rec: rec, live: live, ended: false, conn: null, feed: null, dom: dom };
+        st = {
+          rec: rec, live: live, ended: false, conn: null, feed: null, dom: dom,
+          pane: null, ptyId: null, liveHost: null, liveBusy: false
+        };
         (function (state) {
           state.dom.tile.addEventListener("click", function () { select(state.rec.runId); });
           state.dom.tile.addEventListener("keydown", function (ev) {
@@ -503,6 +925,13 @@ main { flex: 1; display: block; }
           state.dom.trio.addEventListener("click", function (ev) {
             ev.stopPropagation();
             goTrio(state.rec.runId);
+          });
+          state.dom.liveBtn.addEventListener("click", function (ev) {
+            ev.stopPropagation();
+            toggleLive(state);
+          });
+          state.dom.liveBtn.addEventListener("keydown", function (ev) {
+            if (ev.key === "Enter" || ev.key === " ") ev.stopPropagation();
           });
         })(st);
         runs.set(rec.runId, st);
@@ -536,6 +965,7 @@ main { flex: 1; display: block; }
     runs.forEach(function (st, id) { if (!seen.has(id)) gone.push(id); });
     for (var g = 0; g < gone.length; g++) {
       var st2 = runs.get(gone[g]);
+      if (st2.pane || st2.ptyId) closeLive(st2);   // dispose pane + kill the PTY
       finishRun(st2);
       grid.removeChild(st2.dom.tile);
       runs.delete(gone[g]);
