@@ -630,8 +630,8 @@ function createTermPane(container, opts) {
     var liveBtn = document.createElement("button");
     liveBtn.className = "liveb";
     liveBtn.type = "button";
-    liveBtn.textContent = "LIVE";
-    liveBtn.title = "spawn an interactive PTY for this agent";
+    liveBtn.textContent = "TERM ➜";
+    liveBtn.title = "spawn a live interactive terminal (PTY) for this agent";
     var tok = document.createElement("span");
     tok.className = "tstat";
     var cost = document.createElement("span");
@@ -774,7 +774,7 @@ function createTermPane(container, opts) {
   function resetLiveButton(st) {
     st.dom.liveBtn.disabled = false;
     st.dom.liveBtn.classList.remove("on");
-    st.dom.liveBtn.textContent = "LIVE";
+    st.dom.liveBtn.textContent = "TERM ➜";
   }
 
   function closeLive(st) {
@@ -798,7 +798,7 @@ function createTermPane(container, opts) {
     }
     st.liveBusy = true;
     st.dom.liveBtn.disabled = true;
-    st.dom.liveBtn.textContent = "LIVE…";
+    st.dom.liveBtn.textContent = "TERM…";
     var cmd = ptyCommandFor(st.rec.agent);
     fetch("/api/pty" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : ""), {
       method: "POST",
