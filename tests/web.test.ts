@@ -323,15 +323,18 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
     assert.ok(frames.some(([, , text]) => text.startsWith('$ bash ls -la')), 'tool_call frame missing');
   });
 
-  it('GET /vendor/xterm/xterm.js → 200 javascript; unknown vendor file → 404', async () => {
-    const res = await fetch(urlOf(seeded!, '/vendor/xterm/xterm.js'));
+  it('GET /feed.js → 200 javascript exposing HarnessFeed; unknown vendor file → 404', async () => {
+    // The xterm/asciinema vendor bundles are gone (the dashboard renders a
+    // structured feed instead), so /feed.js is the static-script probe.
+    const res = await fetch(urlOf(seeded!, '/feed.js'));
     assert.equal(res.status, 200);
     assert.ok(
       (res.headers.get('content-type') ?? '').startsWith('text/javascript'),
       `content-type: ${res.headers.get('content-type')}`,
     );
     const body = await res.text();
-    assert.ok(body.length > 1_000, 'xterm.js bundle suspiciously small');
+    assert.ok(body.includes('HarnessFeed'), 'feed.js must expose HarnessFeed');
+    assert.ok(body.length > 1_000, 'feed.js bundle suspiciously small');
     const missing = await fetch(urlOf(seeded!, '/vendor/nope/missing.js'));
     assert.equal(missing.status, 404);
   });
@@ -390,5 +393,74 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
     // the server must still answer plain HTTP after a websocket session
     const res = await fetch(urlOf(seeded!, '/api/runs'));
     assert.equal(res.status, 200);
+  });
+
+  it('WS ?runId= live tick forwards the FULL structured event, not just its text', async () => {
+    if (typeof WebSocket === 'undefined') {
+      assert.ok(true, 'WebSocket global unavailable in this runner; skipped');
+      return;
+    }
+    // A separate server whose run record is live (status running, fresh
+    // updatedAt) so sendBacklogAndTail installs the 500ms transcript tailer
+    // instead of closing the stream with {type:"end"}.
+    const liveState = mkState('live');
+    states.push(liveState);
+    const raw = join(liveState, 'raw', 'claude-live.jsonl');
+    mkdirSync(join(liveState, 'raw'), { recursive: true });
+    writeFileSync(raw, JSON.stringify({ type: 'message', source: 'user', content: 'go', timestamp: T0 }) + '\n');
+    writeRunRecord(
+      liveState,
+      rec({ runId: 'run-live-1', rawTranscript: raw, status: 'running', updatedAt: Date.now() }),
+    );
+    const live = await spawnServer(liveState, '');
+
+    const ws = new WebSocket(`ws://127.0.0.1:${live.port}/ws?runId=run-live-1`);
+    try {
+      const sawBacklog = new Promise<void>((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error('no backlog within 10s')), 10_000);
+        ws.addEventListener('message', (mev: MessageEvent) => {
+          const msg = JSON.parse(String(mev.data)) as { type?: string };
+          if (msg.type === 'backlog') {
+            clearTimeout(deadline);
+            resolve();
+          }
+        });
+      });
+      await sawBacklog;
+
+      const tick = new Promise<Record<string, unknown>>((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error('no live event within 15s')), 15_000);
+        ws.addEventListener('message', (mev: MessageEvent) => {
+          const msg = JSON.parse(String(mev.data)) as { type?: string };
+          if (msg.type === 'event') {
+            clearTimeout(deadline);
+            resolve(msg as Record<string, unknown>);
+          }
+        });
+      });
+      // append a tool_call AFTER the backlog snapshot so the tailer forwards it
+      writeFileSync(
+        raw,
+        JSON.stringify({ type: 'message', source: 'user', content: 'go', timestamp: T0 }) +
+          '\n' +
+          JSON.stringify({
+            type: 'tool_call',
+            toolCallId: 'call-1',
+            functionName: 'bash',
+            arguments: { command: 'ls -la' },
+            timestamp: T0 + 10,
+          }) +
+          '\n',
+      );
+      const msg = await tick;
+      const event = msg.event as Record<string, unknown>;
+      assert.equal(event.type, 'tool_call', 'the live tick must carry the structured event');
+      assert.equal(event.functionName, 'bash');
+      assert.equal(event.toolCallId, 'call-1');
+      assert.deepEqual(event.arguments, { command: 'ls -la' });
+      assert.equal(typeof msg.text, 'string', 'legacy text field kept for grid/trio');
+    } finally {
+      ws.close();
+    }
   });
 });
