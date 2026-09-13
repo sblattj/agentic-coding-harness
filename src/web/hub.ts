@@ -1,21 +1,26 @@
 // Run event hub: pub/sub glue for the dashboard websockets.
 //
 // The hub itself never touches sockets. Package 2 (the websocket server)
-// subscribes each client to Bun-native topics ("run:<runId>" for per-run
-// events, "runs" for run-list changes) and calls the publish helpers here.
+// subscribes each client to topics ("run:<runId>" for per-run events,
+// "runs" for run-list changes) and calls the publish helpers here.
 // Catch-up is transcript tailing: readTranscript replays a run's persisted
 // jsonl as AgentEvents before live push takes over.
 import fs from "node:fs";
-import type { Server } from "bun";
 import type { AgentEvent } from "../core/types.ts";
 import { type RunRecord, listRunRecords, readRunRecord, registryDir } from "../core/registry.ts";
 
 export const RUN_TOPIC_PREFIX = "run:";
 export const RUNS_TOPIC = "runs";
 
-// The socket-data type parameter belongs to Package 2's websocket server;
-// the hub only needs the topic-publish surface, so it stays unconstrained.
-type AnyServer = Server<any>;
+/**
+ * The topic-publish surface the websocket server exposes. Kept as a
+ * single-method interface so the hub stays runtime-agnostic: under Bun it
+ * is the native `server.publish`; under Node it is the server's own topic
+ * registry over `ws` sockets.
+ */
+export interface WsPublisher {
+  publish(topic: string, data: string): void;
+}
 
 export interface RunEventMessage {
   type: "event";
@@ -31,26 +36,26 @@ export interface RunsMessage {
 export type HubMessage = RunEventMessage | RunsMessage;
 
 export class RunEventHub {
-  private server: AnyServer | null = null;
+  private publisher: WsPublisher | null = null;
   private watcher: fs.FSWatcher | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly stateDir: string) {}
 
-  attach(server: AnyServer): void {
-    this.server = server;
+  attach(publisher: WsPublisher): void {
+    this.publisher = publisher;
   }
 
   publishRunEvent(runId: string, event: AgentEvent): void {
-    if (!this.server) return;
+    if (!this.publisher) return;
     const msg: RunEventMessage = { type: "event", runId, event };
-    this.server.publish(RUN_TOPIC_PREFIX + runId, JSON.stringify(msg));
+    this.publisher.publish(RUN_TOPIC_PREFIX + runId, JSON.stringify(msg));
   }
 
   publishRuns(records: RunRecord[]): void {
-    if (!this.server) return;
+    if (!this.publisher) return;
     const msg: RunsMessage = { type: "runs", records };
-    this.server.publish(RUNS_TOPIC, JSON.stringify(msg));
+    this.publisher.publish(RUNS_TOPIC, JSON.stringify(msg));
   }
 
   snapshotRuns(): RunRecord[] {

@@ -1,4 +1,5 @@
-// serve — expose the harness MCP server over streamable HTTP (Bun.serve).
+// serve — expose the harness MCP server over streamable HTTP (node:http —
+// one code path under Bun and Node).
 // Registers every tool family (run, inspect, jobs) and answers POST /mcp
 // (single or batch JSON-RPC), GET /health, with optional bearer-token auth.
 // Without a token (--token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN) the server binds
@@ -32,11 +33,13 @@ function optPort(v: string | undefined, flag: string): number {
   return n;
 }
 
-/** Recognize a Bun.serve listen failure that means the address is already
- *  bound, and build the operator-facing message for it. Bun.serve throws a
- *  plain Error with `code: "EADDRINUSE"` and
- *  `message: "Failed to start server. Is port <N> in use?"` (observed via a
- *  live two-process control run on this host); check both the code and the
+/** Recognize a listen failure that means the address is already bound, and
+ *  build the operator-facing message for it. Under Bun the old Bun.serve
+ *  path threw a plain Error with `code: "EADDRINUSE"` and
+ *  `message: "Failed to start server. Is port <N> in use?"`; node:http
+ *  (both runtimes now) emits an EADDRINUSE 'error' event with
+ *  `message: "listen EADDRINUSE: address already in use ..."` (observed via
+ *  live two-process control runs on this host); check both the code and the
  *  message text since callers may pass a wrapped or synthetic error. Returns
  *  null for any other error, which must propagate unchanged. Exported pure
  *  (no socket bound) so it is unit-testable. */

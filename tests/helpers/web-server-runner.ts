@@ -1,13 +1,14 @@
-// Dashboard-server runner for tests/web.test.ts.
+// Dashboard-server runner for tests/web.test.ts, web-trio.test.ts and
+// web-pty.test.ts.
 //
-// src/web/server.ts builds on Bun.serve, which does not exist under the
-// tsx/node test runner (`npm test`); the test therefore spawns this file as a
-// bun subprocess and talks to it over HTTP/WS. argv: [stateDir, token] —
-// an empty token argument means "no token".
+// The server is node:http based (runtime-agnostic), but the tests spawn
+// this file as a bun subprocess so the PTY relay (bun-pty) also works
+// where the scenario needs it. argv: [stateDir, token] — an empty token
+// argument means "no token".
 import { startWebServer } from '../../src/web/server.ts';
 
 const [stateDir = '', token = ''] = process.argv.slice(2);
-const handle = startWebServer({
+const handle = await startWebServer({
   port: 0, // ephemeral: the real port is reported on the READY line
   host: '127.0.0.1',
   token: token === '' ? undefined : token,

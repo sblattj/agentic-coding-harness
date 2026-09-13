@@ -1,8 +1,11 @@
-// Streamable HTTP transport for the harness MCP server (Bun.serve — this
-// repo runs on bun; do not port to node:http). One endpoint shape, PLAN.md
-// §C: POST /mcp accepts a single JSON-RPC message or a batch array and
-// answers plain application/json (no SSE streams for v1); GET /health is an
-// unauthenticated readiness probe; everything else is 404, wrong verb 405.
+// Streamable HTTP transport for the harness MCP server, built on node:http
+// (Bun implements node:http, so this one code path serves both runtimes).
+// One endpoint shape, PLAN.md §C: POST /mcp accepts a single JSON-RPC
+// message or a batch array and answers plain application/json (no SSE
+// streams for v1); GET /health is an unauthenticated readiness probe;
+// everything else is 404, wrong verb 405.
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { JsonRpcRequest, JsonRpcResponse, McpServer } from "./contract.ts";
 import { VERSION } from "../version.ts";
 
@@ -14,15 +17,21 @@ export interface HttpServerHandle {
   close(): Promise<void>;
 }
 
-function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 }
 
-function notAllowed(allow: "POST" | "GET"): Response {
-  return new Response("method not allowed", { status: 405, headers: { allow } });
+function notAllowed(res: ServerResponse, allow: "POST" | "GET"): void {
+  res.writeHead(405, { allow }).end("method not allowed");
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
 }
 
 export async function startHttpServer(opts: {
@@ -43,16 +52,18 @@ export async function startHttpServer(opts: {
   const dispatchOne = async (msg: unknown): Promise<JsonRpcResponse | null> =>
     opts.server.dispatch(msg as JsonRpcRequest);
 
-  const handlePostMcp = async (req: Request): Promise<Response> => {
+  const handlePostMcp = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // Auth before anything else, including body parsing.
-    if (opts.token !== undefined && req.headers.get("authorization") !== `Bearer ${opts.token}`) {
-      return json(401, unauthorized);
+    if (opts.token !== undefined && req.headers.authorization !== `Bearer ${opts.token}`) {
+      sendJson(res, 401, unauthorized);
+      return;
     }
     let body: unknown;
     try {
-      body = JSON.parse(await req.text());
+      body = JSON.parse(await readBody(req));
     } catch {
-      return json(400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+      sendJson(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+      return;
     }
     if (Array.isArray(body)) {
       // Batch: every message dispatched; notifications dropped from the
@@ -60,34 +71,38 @@ export async function startHttpServer(opts: {
       const responses = (await Promise.all(body.map(dispatchOne))).filter(
         (r): r is JsonRpcResponse => r !== null,
       );
-      return json(200, responses);
+      sendJson(res, 200, responses);
+      return;
     }
     if (typeof body !== "object" || body === null) {
-      return json(400, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } });
+      sendJson(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } });
+      return;
     }
     const response = await dispatchOne(body);
     // Single notification → no JSON-RPC response body (MCP streamable HTTP
     // answers notifications with 202 Accepted).
-    if (response === null) return new Response(null, { status: 202 });
-    return json(200, response);
+    if (response === null) res.writeHead(202).end();
+    else sendJson(res, 200, response);
   };
 
-  const srv = Bun.serve({
-    port: opts.port,
-    hostname: opts.host,
-    async fetch(req) {
-      inFlight++;
+  const requestHandler = (req: IncomingMessage, res: ServerResponse): void => {
+    inFlight++;
+    void (async () => {
       try {
-        const { pathname } = new URL(req.url);
+        const { pathname } = new URL(req.url ?? "/", "http://localhost");
         if (pathname === "/health") {
-          if (req.method !== "GET") return notAllowed("GET");
-          return json(200, { status: "ok", version: VERSION });
+          if (req.method !== "GET") return notAllowed(res, "GET");
+          return sendJson(res, 200, { status: "ok", version: VERSION });
         }
         if (pathname === "/mcp") {
-          if (req.method !== "POST") return notAllowed("POST");
-          return await handlePostMcp(req);
+          if (req.method !== "POST") return notAllowed(res, "POST");
+          return await handlePostMcp(req, res);
         }
-        return json(404, { error: "not found" });
+        return sendJson(res, 404, { error: "not found" });
+      } catch (err) {
+        process.stderr.write(`serve: request handler error: ${err instanceof Error ? err.message : String(err)}\n`);
+        if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
+        else res.end();
       } finally {
         inFlight--;
         if (inFlight === 0 && drained) {
@@ -96,21 +111,46 @@ export async function startHttpServer(opts: {
           done();
         }
       }
-    },
+    })();
+  };
+
+  // node:http (and Bun's implementation of it) does not throw listen
+  // failures synchronously — it emits 'error' on the server.
+  const server = createServer(requestHandler);
+
+  // Track every open socket so close() can force idle keep-alives after
+  // the in-flight drain (Server#close alone waits for them forever).
+  const sockets = new Set<{ destroy(): void }>();
+  server.on("connection", (socket: { on: (ev: string, cb: () => void) => void; destroy(): void }) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
   });
 
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: Error): void => reject(err);
+    server.once("error", onError);
+    server.listen(opts.port, opts.host, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+
+  let closed = false;
   return {
-    // bun-types types Server.port as number | undefined (unix-socket
-    // servers); for a TCP listen it is always set once Bun.serve returns.
-    port: srv.port!,
+    // For a TCP listen, address() is always an AddressInfo once listening.
+    port: (server.address() as AddressInfo).port,
     async close(): Promise<void> {
-      srv.stop(false); // stop accepting; in-flight requests keep running
+      if (closed) return;
+      closed = true;
+      server.close(); // stop accepting; in-flight requests keep running
       if (inFlight > 0) {
         await new Promise<void>((resolve) => {
           drained = resolve;
         });
       }
-      srv.stop(true); // force-close idle keep-alive sockets
+      // All remaining sockets are idle keep-alives: force-close them.
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
     },
   };
 }

@@ -1,4 +1,5 @@
-// web — dashboard server CLI (src/web/server.ts over Bun.serve).
+// web — dashboard server CLI (src/web/server.ts over node:http + ws; one
+// code path under Bun and Node).
 // Serves the live-run dashboard (HTML + /api/runs + ws tails) and opens the
 // browser to it. Without a token (--token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
 // the server binds loopback only and runs unauthenticated with a stderr
@@ -7,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
+import { describeListenError } from "./serve.ts";
 import { startWebServer, type WebServerHandle } from "../web/server.ts";
 
 const DEFAULT_PORT = 8399;
@@ -50,7 +52,17 @@ export async function cmdWeb(rest: string[]): Promise<number> {
     host = DEFAULT_HOST;
   }
 
-  const handle: WebServerHandle = startWebServer({ port, host, token, stateDir: dir });
+  let handle: WebServerHandle;
+  try {
+    handle = await startWebServer({ port, host, token, stateDir: dir });
+  } catch (err) {
+    const described = describeListenError(err, host, port);
+    if (described !== null) {
+      process.stderr.write(described.replace(/^serve:/, "web:") + "\n");
+      return 1;
+    }
+    throw err;
+  }
   const url = `http://${host}:${handle.port}` + (token === undefined ? "" : `?token=${token}`);
   process.stderr.write(`web dashboard: http://${host}:${handle.port} (auth ${token === undefined ? "off" : "on"})\n`);
 
