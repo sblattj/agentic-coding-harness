@@ -158,6 +158,26 @@ describe('run event hub (in-process)', () => {
     assert.equal(events[1]!.type, 'tool_call');
   });
 
+  it('readTranscript relocates a stale pre-rename rawTranscript by basename under <stateDir>/raw', async () => {
+    // Records written before commit 77cf64e (~/.agent-harness →
+    // ~/.agentic-coding-harness) still hold the OLD absolute path.
+    const dir = mkState('hub-stale');
+    mkdirSync(join(dir, 'raw'), { recursive: true });
+    writeFileSync(
+      join(dir, 'raw', 'claude-s1.jsonl'),
+      [
+        JSON.stringify({ type: 'message', source: 'user', content: 'hi', timestamp: T0 }),
+        JSON.stringify({ type: 'tool_call', functionName: 'bash', arguments: 'ls', timestamp: T0 + 5 }),
+      ].join('\n') + '\n',
+    );
+    writeRunRecord(dir, rec({ rawTranscript: '/Users/nobody/.agent-harness/raw/claude-s1.jsonl' }));
+    const hub = createRunEventHub(dir);
+    const events = await hub.readTranscript('run-web-1');
+    assert.equal(events.length, 2, `stale path must resolve under <stateDir>/raw, got ${events.length} events`);
+    assert.equal(events[0]!.type, 'message');
+    assert.equal(events[1]!.type, 'tool_call');
+  });
+
   it('readTranscript returns [] for an unknown run and for a missing transcript file', async () => {
     const dir = mkState('hub-missing');
     const hub = createRunEventHub(dir);

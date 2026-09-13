@@ -248,6 +248,29 @@ describe('harness_run_events', () => {
     assert.equal(tail.truncated, false);
   });
 
+  it('finds events when the record carries a stale pre-rename absolute rawTranscript', { timeout: 30_000 }, async () => {
+    // Pre-77cf64e records point at ~/.agent-harness/raw/<name>.jsonl; the file
+    // now lives under the CURRENT stateDir with the same basename.
+    const dir = mkState();
+    const tools = jobTools(dir);
+
+    const runId = 'evstale-run-0001';
+    mkdirSync(join(dir, 'raw'), { recursive: true });
+    const seeded = Array.from({ length: 3 }, (_, i) => ({ type: 'step', seq: i }));
+    writeFileSync(
+      join(dir, 'raw', 'evstale.jsonl'),
+      seeded.map((e) => JSON.stringify(e)).join('\n') + '\n',
+    );
+    const stale = '/Users/nobody/.agent-harness/raw/evstale.jsonl';
+    assert.equal(existsSync(stale), false, 'precondition: stale path must not exist');
+    writeRunRecord(dir, rec(runId, { rawTranscript: stale }));
+
+    const res = await call<RunEventsResult>(tools, 'harness_run_events', { runId });
+    assert.equal(res.found, true, 'stale rawTranscript must resolve under <stateDir>/raw');
+    assert.equal(res.total, 3);
+    assert.deepEqual(res.events, seeded);
+  });
+
   it('found:false for an unknown runId', { timeout: 30_000 }, async () => {
     const tools = jobTools(mkState());
     const res = await call<RunEventsResult>(tools, 'harness_run_events', { runId: randomUUID() });

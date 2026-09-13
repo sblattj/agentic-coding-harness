@@ -17,6 +17,7 @@ import {
   listRunRecords,
   readRunRecord,
   registryDir,
+  resolveRawTranscript,
 } from "../core/registry.ts";
 import {
   checkCwd,
@@ -225,7 +226,7 @@ export function registerJobTools(
       if (!rec) return { found: false, runId: a.runId };
       let text: string;
       try {
-        text = await fs.readFile(rec.rawTranscript, "utf8");
+        text = await fs.readFile(resolveRawTranscript(opts.stateDir, rec), "utf8");
       } catch {
         return { found: false, runId: a.runId };
       }

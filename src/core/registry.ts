@@ -115,6 +115,24 @@ export function readRunRecord(stateDir: string, runId: string): RunRecord | null
   return parseRunRecord(text);
 }
 
+/**
+ * Resolve a record's transcript path, tolerating a state dir that moved.
+ *
+ * Records store an ABSOLUTE `rawTranscript` written at run time, so every run
+ * predating commit 77cf64e (`~/.agent-harness` → `~/.agentic-coding-harness`)
+ * still points at a directory that no longer exists. When the stored path is
+ * gone but a file of the same basename sits under the CURRENT
+ * `<stateDir>/raw/`, that relocated path is returned instead. Records on disk
+ * are never rewritten; when neither file exists the stored path comes back
+ * unchanged so callers keep their existing "missing → empty" behaviour.
+ */
+export function resolveRawTranscript(stateDir: string, rec: RunRecord): string {
+  if (fs.existsSync(rec.rawTranscript)) return rec.rawTranscript;
+  const relocated = path.join(stateDir, "raw", path.basename(rec.rawTranscript));
+  if (fs.existsSync(relocated)) return relocated;
+  return rec.rawTranscript;
+}
+
 export function listRunRecords(stateDir: string): RunRecord[] {
   let names: string[];
   try {

@@ -9,6 +9,7 @@ import {
   listRunRecords,
   readRunRecord,
   registryDir,
+  resolveRawTranscript,
   writeRunRecord,
   type RunRecord,
 } from '../src/core/registry.js';
@@ -143,5 +144,37 @@ describe('effectiveStatus', () => {
       const r = rec({ status, updatedAt: Date.now() - 60_000, pid: 4194303 });
       assert.equal(effectiveStatus(r), status);
     }
+  });
+});
+
+// --------------------------------------------------- stale rawTranscript
+// Commit 77cf64e renamed the state dir (~/.agent-harness →
+// ~/.agentic-coding-harness); pre-rename records still carry the OLD absolute
+// path. resolveRawTranscript relocates by basename under the CURRENT stateDir.
+
+describe('resolveRawTranscript', () => {
+  it('returns the stored path unchanged when that file exists', () => {
+    const dir = mkState();
+    const raw = join(dir, 'elsewhere', 'claude-s1.jsonl');
+    mkdirSync(join(dir, 'elsewhere'), { recursive: true });
+    writeFileSync(raw, '{}\n');
+    assert.equal(resolveRawTranscript(dir, rec({ rawTranscript: raw })), raw);
+  });
+
+  it('relocates to <stateDir>/raw/<basename> when the stored absolute path is gone', () => {
+    const dir = mkState();
+    mkdirSync(join(dir, 'raw'), { recursive: true });
+    const relocated = join(dir, 'raw', 'claude-s1.jsonl');
+    writeFileSync(relocated, '{}\n');
+    // Default fixture path is '/tmp/proj/raw/claude-s1.jsonl' — same basename.
+    const stale = '/Users/nobody/.agent-harness/raw/claude-s1.jsonl';
+    assert.equal(existsSync(stale), false, 'precondition: stale path must not exist');
+    assert.equal(resolveRawTranscript(dir, rec({ rawTranscript: stale })), relocated);
+  });
+
+  it('returns the original string when neither the stored path nor the basename exists', () => {
+    const dir = mkState();
+    const stale = '/Users/nobody/.agent-harness/raw/claude-never.jsonl';
+    assert.equal(resolveRawTranscript(dir, rec({ rawTranscript: stale })), stale);
   });
 });
