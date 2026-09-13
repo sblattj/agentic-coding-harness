@@ -280,6 +280,9 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
         if (b.rows !== undefined && (!Number.isInteger(b.rows) || (b.rows as number) < 1)) {
           return jsonError(400, "rows must be a positive integer");
         }
+        if (b.runId !== undefined && typeof b.runId !== "string") {
+          return jsonError(400, "runId must be a string");
+        }
         try {
           const info = await ptyManager.spawn({
             command: b.command,
@@ -287,6 +290,7 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
             cwd: b.cwd as string | undefined,
             cols: b.cols as number | undefined,
             rows: b.rows as number | undefined,
+            runId: b.runId as string | undefined,
           });
           return Response.json(info, { status: 201 });
         } catch (err) {

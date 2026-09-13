@@ -869,12 +869,13 @@ function ensureXterm() {
 }
 
 /* ---- agent → interactive command ---- */
+// Non-interactive flags so the pane doesn't die on a trust/approval prompt.
 var AGENT_CMDS = {
-  claude:  ["claude"],
+  claude:  ["claude", "--dangerously-skip-permissions"],
   opencode: ["opencode"],
-  kiro:    ["kiro-cli", "chat"],
-  codex:   ["codex"],
-  gemini:  ["gemini"],
+  kiro:    ["kiro-cli", "chat", "--trust-all-tools"],
+  codex:   ["codex", "--full-auto"],
+  gemini:  ["gemini", "--yolo"],
 };
 function agentCommand(agent) {
   var a = (agent || "").toLowerCase();
@@ -926,7 +927,7 @@ function startLive() {
       return fetch("/api/pty?token=" + encodeURIComponent(TOKEN), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ command: cmd[0], args: cmd.slice(1) }),
+        body: JSON.stringify({ command: cmd[0], args: cmd.slice(1), runId: RUN_ID }),
       }).then(function (r) {
         if (!r.ok) throw new Error("http " + r.status + " from /api/pty");
         return r.json();

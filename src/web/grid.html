@@ -792,11 +792,12 @@ function createTermPane(container, opts) {
   // ------- live interactive PTY -------
 
   var AGENT_PTY = {
-    claude: ["claude"],
+    // Non-interactive flags so the pane doesn't die on a trust/approval prompt.
+    claude: ["claude", "--dangerously-skip-permissions"],
     opencode: ["opencode"],
-    kiro: ["kiro-cli", "chat"],
-    codex: ["codex"],
-    gemini: ["gemini"],
+    kiro: ["kiro-cli", "chat", "--trust-all-tools"],
+    codex: ["codex", "--full-auto"],
+    gemini: ["gemini", "--yolo"],
   };
 
   function ptyCommandFor(agent) {
@@ -844,7 +845,7 @@ function createTermPane(container, opts) {
     fetch("/api/pty" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : ""), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: cmd.command, args: cmd.args, cols: 120, rows: 34 })
+      body: JSON.stringify({ command: cmd.command, args: cmd.args, cols: 120, rows: 34, runId: st.rec.runId })
     })
       .then(function (r) {
         if (!r.ok) {

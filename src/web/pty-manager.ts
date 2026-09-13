@@ -26,6 +26,8 @@ export interface PtySessionInfo {
   pid: number | null;
   alive: boolean;
   exitCode?: number;
+  /** The harness run this terminal belongs to, when spawned from a run view. */
+  runId?: string;
 }
 
 export interface PtySpawnOptions {
@@ -36,6 +38,7 @@ export interface PtySpawnOptions {
   rows?: number;
   env?: Record<string, string>;
   id?: string;
+  runId?: string;
 }
 
 interface Session {
@@ -93,6 +96,7 @@ export class PtyManager {
         startedAt: Date.now(),
         pid: typeof term.pid === "number" ? term.pid : null,
         alive: true,
+        ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
       },
       term,
       chunks: [],
