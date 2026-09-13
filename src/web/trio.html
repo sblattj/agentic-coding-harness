@@ -3,7 +3,7 @@
   Observability Trio — detail view for ONE run (Concept A).
   Three synchronized panes (Traces | Metrics | Logs) + replay terminal drawer.
   Reads ?run=<runId>&token=<token>; all data from same-origin /api/* endpoints;
-  replay player from /vendor/asciinema. No frameworks, no external requests.
+  structured feed (pane pending migration). No frameworks, no external requests.
 -->
 <html lang="en">
 <head>
@@ -12,7 +12,6 @@
 <meta name="color-scheme" content="dark">
 <title>agent-harness · observability trio</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="/vendor/asciinema/asciinema-player.css">
 <style>
 * { box-sizing: border-box; margin: 0; }
 :root {
@@ -258,7 +257,6 @@ footer.min .tbody { display: none; }
   <div class="tbody"><div id="playerBox"></div></div>
 </footer>
 
-<script src="/vendor/asciinema/asciinema-player.min.js"></script>
 <script>
 (function () {
 "use strict";
@@ -585,26 +583,14 @@ function clearSel() {
 
 /* ===== terminal drawer ===== */
 function loadCast() {
+  // The replay player is gone: this pane is pending migration to the
+  // structured HarnessFeed (see /feed.js and src/web/index.html).
   if (castLoaded || !RUN_ID) return;
   castLoaded = true;
   var box = $("playerBox");
-  $("termMeta").textContent = "pty replay";
-  if (!window.AsciinemaPlayer) {
-    box.appendChild(el("div", "player-msg", "asciinema vendor assets failed to load"));
-    return;
-  }
-  box.appendChild(el("div", "player-msg", "loading replay\u2026"));
-  api("/api/runs/" + encodeURIComponent(RUN_ID) + "/cast")
-    .then(function (r) { return r.text(); })
-    .then(function (cast) {
-      box.textContent = "";
-      if (cast && cast.trim()) window.AsciinemaPlayer.create({ data: cast }, box, { fit: "both" });
-      else box.appendChild(el("div", "player-msg", "no replay available for this run"));
-    })
-    .catch(function () {
-      box.textContent = "";
-      box.appendChild(el("div", "player-msg", "no replay available for this run"));
-    });
+  $("termMeta").textContent = "transcript";
+  box.textContent = "";
+  box.appendChild(el("div", "player-msg", "feed pending migration \u2014 open the dashboard for the live log feed"));
 }
 
 /* ===== data loading ===== */

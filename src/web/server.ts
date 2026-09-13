@@ -54,6 +54,12 @@ async function servePage(fileName: string): Promise<Response> {
   return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+async function serveScript(fileName: string): Promise<Response> {
+  const file = Bun.file(new URL(`./${fileName}`, import.meta.url));
+  if (!(await file.exists())) return notFound();
+  return new Response(file, { headers: { "content-type": "text/javascript; charset=utf-8" } });
+}
+
 function vendorContentType(name: string): string {
   if (name.endsWith(".js")) return "text/javascript; charset=utf-8";
   if (name.endsWith(".css")) return "text/css; charset=utf-8";
@@ -109,10 +115,15 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
       const now = await hub.readTranscript(runId);
       if (now.length > sent) {
         for (const ev of now.slice(sent)) {
+          // Every new event goes out with its FULL structure attached; the
+          // feed client renders from structure and decides what is visible.
+          // `text` stays on the envelope for the legacy text-only consumers
+          // (grid/trio) until they migrate to HarnessFeed.
           const text = eventToText(ev);
-          if (text !== null) {
-            safeSend(ws, JSON.stringify({ type: "event", text, event: { text } }));
-          }
+          safeSend(
+            ws,
+            JSON.stringify({ type: "event", ...(text === null ? {} : { text }), event: backlogEvent(ev) }),
+          );
         }
         sent = now.length;
       }
@@ -135,6 +146,10 @@ export function startWebServer(opts: WebServerOptions): WebServerHandle {
 
       if (get && (pathname === "/" || pathname === "/index.html")) {
         return servePage("index.html");
+      }
+
+      if (get && pathname === "/feed.js") {
+        return serveScript("feed.js");
       }
 
       if (get && pathname === "/grid") {

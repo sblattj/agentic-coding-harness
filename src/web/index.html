@@ -6,8 +6,6 @@
 <meta name="color-scheme" content="dark">
 <title>agent-harness</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/vendor/asciinema/asciinema-player.css">
 <style>
 /* ===== theme ===== */
 :root {
@@ -91,9 +89,22 @@ body {
 }
 #metastrip .kv { white-space: nowrap; }
 #metastrip .k { color: var(--dim); margin-right: 5px; }
-#termwrap { flex: 1; position: relative; min-height: 0; }
-#terminal { position: absolute; inset: 0; display: none; }
-#player { position: absolute; inset: 0; display: none; padding: 18px; overflow: auto; }
+#feedwrap { flex: 1; position: relative; min-height: 0; }
+#feed {
+  position: absolute;
+  inset: 0;
+  display: none;
+  /* page theme -> feed theme */
+  --feed-bg: var(--bg);
+  --feed-fg: var(--fg);
+  --feed-dim: var(--dim);
+  --feed-line: var(--line);
+  --feed-green: var(--green);
+  --feed-red: var(--red);
+  --feed-yellow: var(--yellow);
+  --feed-blue: #7aa2f7;
+  --feed-mono: "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
 #empty {
   position: absolute;
   inset: 0;
@@ -102,10 +113,9 @@ body {
   justify-content: center;
   color: var(--dim);
 }
-.player-msg { color: var(--dim); padding: 8px; }
-#runlist::-webkit-scrollbar, #player::-webkit-scrollbar { width: 8px; height: 8px; }
-#runlist::-webkit-scrollbar-thumb, #player::-webkit-scrollbar-thumb { background: #232d3f; }
-#runlist::-webkit-scrollbar-track, #player::-webkit-scrollbar-track { background: transparent; }
+#runlist::-webkit-scrollbar { width: 8px; height: 8px; }
+#runlist::-webkit-scrollbar-thumb { background: #232d3f; }
+#runlist::-webkit-scrollbar-track { background: transparent; }
 </style>
 </head>
 <body>
@@ -118,17 +128,13 @@ body {
 
 <main id="main">
   <div id="metastrip"></div>
-  <div id="termwrap">
-    <div id="terminal"></div>
-    <div id="player"></div>
+  <div id="feedwrap">
+    <div id="feed"></div>
     <div id="empty">select a run</div>
   </div>
 </main>
 
-<script src="/vendor/xterm/xterm.js"></script>
-<script src="/vendor/xterm/addon-fit.js"></script>
-<script src="/vendor/xterm/addon-webgl.js"></script>
-<script src="/vendor/asciinema/asciinema-player.min.js"></script>
+<script src="/feed.js"></script>
 <script>
 (function () {
 "use strict";
@@ -147,10 +153,8 @@ var TOKEN = new URLSearchParams(location.search).get("token") || "";
 
 var runs = [];
 var selectedId = null;
-var term = null, fitAddon = null, webglAddon = null;
-var player = null, runSocket = null, runsSocket = null;
+var feed = null, feedConn = null, runsSocket = null;
 var runsRetry = 0;
-var mode = "empty";
 
 function isLive(r) {
   return !!r && r.status === "running" && Date.now() - (r.updatedAt || 0) < LIVE_WINDOW_MS;
@@ -199,12 +203,6 @@ function wsUrl(params) {
   });
   return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws" +
     (parts.length ? "?" + parts.join("&") : "");
-}
-function eventText(ev) {
-  if (ev == null) return "";
-  if (typeof ev === "string") return ev;
-  var t = ev.text != null ? ev.text : ev.data != null ? ev.data : ev.output != null ? ev.output : ev.message;
-  return t == null ? "" : String(t);
 }
 
 /* ===== sidebar ===== */
@@ -281,27 +279,14 @@ function renderMeta() {
   box.appendChild(el("span", "status " + (r.status || ""), (GLYPH[r.status] || "\u00b7") + " " + (r.status || "?")));
 }
 
-/* ===== panes ===== */
-function showMode(m) {
-  mode = m;
-  $("terminal").style.display = m === "live" ? "block" : "none";
-  $("player").style.display = m === "replay" ? "block" : "none";
-  $("empty").style.display = m === "empty" ? "flex" : "none";
-}
-function closeRunSocket() {
-  if (!runSocket) return;
-  var ws = runSocket;
-  runSocket = null;
-  ws.onclose = null;
-  try { ws.close(); } catch (e) {}
+/* ===== feed pane ===== */
+function showFeed(on) {
+  $("feed").style.display = on ? "block" : "none";
+  $("empty").style.display = on ? "none" : "flex";
 }
 function teardown() {
-  closeRunSocket();
-  if (player) { try { if (player.dispose) player.dispose(); } catch (e) {} player = null; }
-  $("player").textContent = "";
-  if (webglAddon) { try { webglAddon.dispose(); } catch (e) {} webglAddon = null; }
-  if (term) { try { term.dispose(); } catch (e) {} term = null; }
-  fitAddon = null;
+  if (feedConn) { try { feedConn.close(); } catch (e) {} feedConn = null; }
+  if (feed) { try { feed.destroy(); } catch (e) {} feed = null; }
 }
 function selectRun(id) {
   if (id === selectedId) return;
@@ -309,96 +294,17 @@ function selectRun(id) {
   teardown();
   renderRuns();
   renderMeta();
-  var r = findRun(id);
-  if (isLive(r)) startLive(r); else startReplay(id);
-}
-
-/* ===== live terminal ===== */
-function startLive(r) {
-  showMode("live");
-  if (!window.Terminal || !window.FitAddon) {
-    $("terminal").appendChild(el("div", "player-msg", "xterm vendor assets failed to load"));
+  if (!id) { showFeed(false); return; }
+  showFeed(true);
+  if (!window.HarnessFeed) {
+    $("feed").textContent = "feed.js failed to load";
     return;
   }
-  term = new window.Terminal({
-    convertEol: true,
-    cursorBlink: true,
-    fontSize: 12,
-    fontFamily: '"SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace',
-    scrollback: 20000,
-    theme: {
-      background: "#0b0e14",
-      foreground: "#c9d4e3",
-      cursor: "#4cc38a",
-      cursorAccent: "#0b0e14",
-      selectionBackground: "#33415e"
-    }
-  });
-  fitAddon = new window.FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  term.open($("terminal"));
-  try {
-    webglAddon = new window.WebglAddon.WebglAddon();
-    term.loadAddon(webglAddon);
-  } catch (e) { webglAddon = null; }
-  try { fitAddon.fit(); } catch (e) {}
-  openRunSocket(r.runId);
-}
-function openRunSocket(id) {
-  var ws = new WebSocket(wsUrl({ runId: id, token: TOKEN }));
-  runSocket = ws;
-  ws.onmessage = function (m) {
-    if (ws !== runSocket) return;
-    var msg;
-    try { msg = JSON.parse(m.data); } catch (e) { return; }
-    if (msg.type === "record" && msg.record) {
-      upsertRun(msg.record);
-    } else if (msg.type === "backlog" && msg.events) {
-      writeEvents(msg.events);
-    } else if (msg.type === "event" && msg.event) {
-      writeEvents([msg.event]);
-    } else if (msg.type === "end") {
-      closeRunSocket();
-      startReplay(selectedId);
-    }
-  };
-  ws.onclose = function () {
-    if (ws !== runSocket) return;
-    runSocket = null;
-    var r = findRun(selectedId);
-    if (mode === "live" && r && r.status !== "running") startReplay(selectedId);
-  };
-  ws.onerror = function () { try { ws.close(); } catch (e) {} };
-}
-function writeEvents(events) {
-  if (!term || !events || !events.length) return;
-  var out = "";
-  for (var i = 0; i < events.length; i++) out += eventText(events[i]);
-  if (out) term.write(out);
-}
-
-/* ===== replay ===== */
-function startReplay(id) {
-  showMode("replay");
-  var box = $("player");
-  box.textContent = "";
-  if (!window.AsciinemaPlayer) {
-    box.appendChild(el("div", "player-msg", "asciinema vendor assets failed to load"));
-    return;
-  }
-  box.appendChild(el("div", "player-msg", "loading replay\u2026"));
-  fetch("/api/runs/" + encodeURIComponent(id) + "/cast").then(function (res) {
-    if (!res.ok) throw new Error("http " + res.status);
-    return res.text();
-  }).then(function (cast) {
-    if (selectedId !== id) return;
-    box.textContent = "";
-    if (cast && cast.trim()) player = window.AsciinemaPlayer.create({ data: cast }, box);
-    else box.appendChild(el("div", "player-msg", "no replay available for this run"));
-  }).catch(function () {
-    if (selectedId !== id) return;
-    box.textContent = "";
-    box.appendChild(el("div", "player-msg", "no replay available for this run"));
+  feed = window.HarnessFeed.create($("feed"));
+  feedConn = window.HarnessFeed.connect(feed, {
+    runId: id,
+    token: TOKEN,
+    onRecord: upsertRun
   });
 }
 
@@ -449,7 +355,7 @@ function tick() {
   renderMeta();
 }
 function init() {
-  showMode("empty");
+  showFeed(false);
   renderAggregate();
   fetch("/api/runs").then(function (res) {
     if (!res.ok) throw new Error("http " + res.status);
@@ -465,9 +371,6 @@ function init() {
     list.appendChild(el("div", "list-empty", "failed to load runs (/api/runs)"));
   });
   connectRunsSocket();
-  window.addEventListener("resize", function () {
-    if (fitAddon && term) { try { fitAddon.fit(); } catch (e) {} }
-  });
   setInterval(tick, 1000);
 }
 init();
