@@ -195,6 +195,14 @@
     return d != null && typeof d === "object" ? d : null;
   }
 
+  /** Kiro metadata heartbeats carry all-zero tokens and no credits: nothing to say. */
+  function usageIsEmpty(ev) {
+    var u = (ev && ev.usage) || {};
+    var tok = (u.inputTokens || 0) + (u.outputTokens || 0) + (u.cacheReadTokens || 0) + (u.cacheWriteTokens || 0);
+    var credits = u.extra && u.extra.credits;
+    return tok === 0 && !isFiniteNum(credits) && !isFiniteNum(u.costUsd);
+  }
+
   function usageLine(ev) {
     var u = (ev && ev.usage) || {};
     var parts = [
@@ -519,7 +527,7 @@
           line(tsOf(ev), "hf-err", typeof ev.message === "string" && ev.message !== "" ? ev.message : "error");
           return;
         case "usage":
-          line(tsOf(ev), "hf-dim", usageLine(ev));
+          if (!usageIsEmpty(ev)) line(tsOf(ev), "hf-dim", usageLine(ev));
           return;
         case "done": {
           endStream();
