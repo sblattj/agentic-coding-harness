@@ -40,7 +40,7 @@ harness serve --http --port 8398 --token "$TOKEN"
   Flag wins over env; env over unset. No token anywhere means loopback-only
   binding plus a stderr warning that auth is off.
 - Readiness: unauthenticated `GET /health` →
-  `{"status":"ok","version":"0.5.2"}`; probe it before routing.
+  `{"status":"ok","version":"0.6.1"}`; probe it before routing.
 - Shutdown: SIGINT/SIGTERM stop accepting, drain 5s, then exit; in-flight
   async jobs are left as registry records (see Persistence).
 - Registers every tool — sync run, agents, report, emit, stats, four async
