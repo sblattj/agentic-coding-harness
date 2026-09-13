@@ -1,0 +1,21 @@
+{
+  "name": "output-guard-trial",
+  "description": "Trial agent for the spill-and-notice output guard A/B (arm B = OUTPUT_GUARD=1).",
+  "prompt": "You are a trial agent. When asked to run a command, use the shell tool exactly as instructed and answer briefly.",
+  "mcpServers": {},
+  "tools": ["read", "write", "shell", "grep", "glob"],
+  "toolAliases": {},
+  "allowedTools": [],
+  "resources": [],
+  "toolsSettings": {},
+  "includeMcpJson": false,
+  "model": null,
+  "hooks": {
+    "postToolUse": [
+      {
+        "matcher": "shell",
+        "command": "bash /Users/sblatt/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"
+      }
+    ]
+  }
+}

@@ -207,7 +207,7 @@ cost_usd = ( inputTokens        × price.input
   (exception: credit-metered kiro records, below).
 - **Reported beats computed:** the transcript tap prefers `costUSD` when the row carries it;
   the driver accumulates computed cost otherwise. Provider-reported figures always win.
-- The CLI transcript tap prices unpriced rows through this same `Pricer` (`cli/harness.ts`) — the
+- The CLI transcript tap prices unpriced rows through this same `Pricer` (`cli/ach.ts`) — the
   old `cli/lib.ts estimateCostUsd` prefix table is gone (that merge is closed).
 
 ### Credit metering (kiro) and multi-model runs

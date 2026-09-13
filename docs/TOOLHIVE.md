@@ -1,4 +1,4 @@
-# Running agent-harness behind ToolHive
+# Running agentic-coding-harness behind ToolHive
 
 Team deployment: agent execution runs on a host with the agent CLIs (claude,
 codex, opencode, gemini, kiro) installed and authenticated. ToolHive supplies
@@ -35,7 +35,7 @@ harness serve --http --port 8398 --token "$TOKEN"
   `POST /mcp`, JSON responses, protocol version `2025-06-18`.
 - `harness serve` defaults to port 8398 and `harness web` defaults to 8399,
   so both can run on one host without an explicit `--port`.
-- Token: set `AGENT_HARNESS_HTTP_TOKEN` in the service env, or have ToolHive
+- Token: set `AGENTIC_CODING_HARNESS_HTTP_TOKEN` in the service env, or have ToolHive
   forward it as a secret into that env — never on argv (`ps` leaks argv).
   Flag wins over env; env over unset. No token anywhere means loopback-only
   binding plus a stderr warning that auth is off.
@@ -62,8 +62,8 @@ harness serve --http --gateway --root /srv/work --max-jobs 4
   warning in the result. `--max-output-bytes` caps output size.
 - Langfuse emit is disabled (no outbound publishing): `harness_emit` with
   `format: "langfuse"` errors `disabled in gateway mode`.
-- Env mirrors: `AGENT_HARNESS_GATEWAY=1`, `AGENT_HARNESS_ROOT`,
-  `AGENT_HARNESS_MAX_JOBS`.
+- Env mirrors: `AGENTIC_CODING_HARNESS_GATEWAY=1`, `AGENTIC_CODING_HARNESS_ROOT`,
+  `AGENTIC_CODING_HARNESS_MAX_JOBS`.
 
 ## Async job flow
 
@@ -101,7 +101,7 @@ a single call.
 ## Persistence across restarts
 
 Jobs are run-registry records at `<stateDir>/runs/<runId>.json` (default
-`~/.agent-harness`; move with `AGENT_HARNESS_STATE_DIR`). A restart loses
+`~/.agentic-coding-harness`; move with `AGENTIC_CODING_HARNESS_STATE_DIR`). A restart loses
 nothing: finished runs stay terminal (`success`/`error`/`aborted`), in-flight
 runs report `interrupted` — the registry re-evaluates liveness instead of
 trusting the stale `running` — and transcripts/reports stay addressable via
@@ -113,25 +113,25 @@ Point each client at the gateway URL with the bearer token.
 
 Claude Code (`.mcp.json`):
 ```json
-{"mcpServers": {"agent-harness": {"type": "http", "url": "https://<gateway-host>:4443/mcp",
+{"mcpServers": {"agentic-coding-harness": {"type": "http", "url": "https://<gateway-host>:4443/mcp",
   "headers": {"Authorization": "Bearer <token>"}}}}
 ```
 
 OpenCode (`opencode.json`):
 ```json
-{"mcp": {"agent-harness": {"type": "remote", "url": "https://<gateway-host>:4443/mcp",
+{"mcp": {"agentic-coding-harness": {"type": "remote", "url": "https://<gateway-host>:4443/mcp",
   "headers": {"Authorization": "Bearer <token>"}, "enabled": true}}}
 ```
 
 Kiro (`.kiro/settings/mcp.json`):
 ```json
-{"mcpServers": {"agent-harness": {"url": "https://<gateway-host>:4443/mcp",
+{"mcpServers": {"agentic-coding-harness": {"url": "https://<gateway-host>:4443/mcp",
   "headers": {"Authorization": "Bearer <token>"}, "disabled": false}}}
 ```
 
 Codex (`~/.codex/config.toml`):
 ```toml
-[mcp_servers.agent-harness]
+[mcp_servers.agentic-coding-harness]
 url = "https://<gateway-host>:4443/mcp"
 http_headers = { "Authorization" = "Bearer <token>" }
 ```
@@ -150,13 +150,13 @@ Env defaults (per-run tool args beat these; these beat the built-ins):
 
 | env var | purpose |
 |---|---|
-| `AGENT_HARNESS_STATE_DIR` | state dir (default `~/.agent-harness`) |
-| `AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG` | `1` = claude runs use the default `CLAUDE_CONFIG_DIR` instead of a per-run one. Required on a Mac whose Claude Code login is keychain-bound OAuth (no `~/.claude/.credentials.json`): a custom config dir cannot see that token and every run ends `Not logged in`. Trade-off: transcripts land under `~/.claude/projects`, and concurrent claude runs share one config. |
-| `AGENT_HARNESS_HTTP_TOKEN` | bearer token for `serve --http` |
-| `AGENT_HARNESS_GATEWAY` | `1` enables the gateway profile |
-| `AGENT_HARNESS_ROOT` | gateway cwd root (mirrors `--root`) |
-| `AGENT_HARNESS_MAX_JOBS` | gateway concurrency cap (mirrors `--max-jobs`) |
-| `AGENT_HARNESS_BUDGET_USD` / `AGENT_HARNESS_MAX_TURNS` / `AGENT_HARNESS_WALL_MS` / `AGENT_HARNESS_IDLE_MS` | default spend / turn / wall-clock / idle-gap caps |
+| `AGENTIC_CODING_HARNESS_STATE_DIR` | state dir (default `~/.agentic-coding-harness`) |
+| `AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG` | `1` = claude runs use the default `CLAUDE_CONFIG_DIR` instead of a per-run one. Required on a Mac whose Claude Code login is keychain-bound OAuth (no `~/.claude/.credentials.json`): a custom config dir cannot see that token and every run ends `Not logged in`. Trade-off: transcripts land under `~/.claude/projects`, and concurrent claude runs share one config. |
+| `AGENTIC_CODING_HARNESS_HTTP_TOKEN` | bearer token for `serve --http` |
+| `AGENTIC_CODING_HARNESS_GATEWAY` | `1` enables the gateway profile |
+| `AGENTIC_CODING_HARNESS_ROOT` | gateway cwd root (mirrors `--root`) |
+| `AGENTIC_CODING_HARNESS_MAX_JOBS` | gateway concurrency cap (mirrors `--max-jobs`) |
+| `AGENTIC_CODING_HARNESS_BUDGET_USD` / `AGENTIC_CODING_HARNESS_MAX_TURNS` / `AGENTIC_CODING_HARNESS_WALL_MS` / `AGENTIC_CODING_HARNESS_IDLE_MS` | default spend / turn / wall-clock / idle-gap caps |
 
 ## Verification without paid tasks
 

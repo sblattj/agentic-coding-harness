@@ -268,7 +268,7 @@ async function harnessStats(args: Record<string, unknown>): Promise<unknown> {
 // ---------------------------------------------------------------- registration
 
 export function registerInspectTools(server: McpServer, opts: ToolOpts): void {
-  if (opts.stateDir) process.env.AGENT_HARNESS_STATE_DIR = opts.stateDir;
+  if (opts.stateDir) process.env.AGENTIC_CODING_HARNESS_STATE_DIR = opts.stateDir;
   server.registerTool({
     name: "harness_report",
     description:

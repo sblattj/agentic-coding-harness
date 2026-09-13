@@ -57,7 +57,7 @@ function makeClient(
     startupMs: opts.startupMs ?? 15_000,
     termGraceMs: opts.termGraceMs ?? 300,
     killGraceMs: opts.killGraceMs ?? 300,
-    clientInfo: { name: 'agent-harness-test', version: '0.0.1' },
+    clientInfo: { name: 'agentic-coding-harness-test', version: '0.0.1' },
   });
   clients.push(client);
   client.start();

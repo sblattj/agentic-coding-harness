@@ -1,4 +1,4 @@
-# `agh dash` build plan — contracts all seats code against
+# `ach dash` build plan — contracts all seats code against
 
 ## Run registry (new, seat D1 owns)
 
@@ -47,8 +47,8 @@ No signature changes to existing public APIs (additive only).
 
 ## CLI surface (seat D3 owns)
 
-- package.json bin gains `"agh": "./src/cli/harness.ts"`.
-- New subcommand: `harness dash` (and thus `agh dash`).
+- package.json bin gains `"agh": "./src/cli/ach.ts"`.
+- New subcommand: `harness dash` (and thus `ach dash`).
   - Default: terminal live view, redraw ~2/s, ANSI, no deps. Columns:
     STATUS(●/✓/✗) AGENT RUNID(short) SESSION(short) ELAPSED IN OUT CACHE COST CREDITS LAST-EVENT
   - Footer: totals across visible runs + "q to quit".
@@ -61,7 +61,7 @@ No signature changes to existing public APIs (additive only).
 
 - `tests/registry.test.ts`: write/read/list/isLive (fake pids via process.pid
   for alive and a dead pid like 999999 for dead), atomicity (no partial JSON).
-- `tests/dash.test.ts`: `agh dash --json` subprocess against a tmp state dir
+- `tests/dash.test.ts`: `ach dash --json` subprocess against a tmp state dir
   seeded with registry records → parses, sorted correctly, live flagging.
 - Driver-hook integration: existing stub-adapter driver tests gain one case
   asserting a RunRecord file appears with status success and correct totals.

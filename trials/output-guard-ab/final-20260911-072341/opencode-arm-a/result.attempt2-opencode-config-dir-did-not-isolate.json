@@ -1,0 +1,281 @@
+{
+  "sessionId": "ses_f6f20e7c6ffeLrm0X6pWv3Xdue",
+  "events": [
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f6f20e7c6ffeLrm0X6pWv3Xdue",
+      "timestamp": 1789136944660
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789136944661
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 5874,
+        "outputTokens": 53,
+        "cacheReadTokens": 51456,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 24,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 57407,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 57407,
+              "input": 5874,
+              "output": 53,
+              "reasoning": 24,
+              "cache": {
+                "read": 51456,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 57407,
+          "input": 5874,
+          "output": 53,
+          "reasoning": 24,
+          "cache": {
+            "read": 51456,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789136946372
+    },
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f6f20e7c6ffeLrm0X6pWv3Xdue",
+      "timestamp": 1789136960411
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789136960411
+    },
+    {
+      "type": "message",
+      "agent": "opencode",
+      "source": "agent",
+      "content": "The command ran; output was intercepted. Checking the saved file's last line:",
+      "timestamp": 1789136963042
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 210,
+        "outputTokens": 106,
+        "cacheReadTokens": 57088,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 57404,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 57404,
+              "input": 210,
+              "output": 106,
+              "reasoning": 0,
+              "cache": {
+                "read": 57088,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 57404,
+          "input": 210,
+          "output": 106,
+          "reasoning": 0,
+          "cache": {
+            "read": 57088,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789136963114
+    },
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f6f20e7c6ffeLrm0X6pWv3Xdue",
+      "timestamp": 1789136969190
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789136969190
+    },
+    {
+      "type": "message",
+      "agent": "opencode",
+      "source": "agent",
+      "content": "The last number printed was **200000**.",
+      "timestamp": 1789136969511
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 309,
+        "outputTokens": 22,
+        "cacheReadTokens": 57344,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 57675,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 57675,
+              "input": 309,
+              "output": 22,
+              "reasoning": 0,
+              "cache": {
+                "read": 57344,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 57675,
+          "input": 309,
+          "output": 22,
+          "reasoning": 0,
+          "cache": {
+            "read": 57344,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789136969580
+    }
+  ],
+  "tokens": [
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 5874,
+      "outputTokens": 53,
+      "cacheReadTokens": 51456,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 24,
+      "costUsd": 0,
+      "extra": {
+        "totalTokens": 57407,
+        "durationMs": null,
+        "raw": {
+          "tokens": {
+            "total": 57407,
+            "input": 5874,
+            "output": 53,
+            "reasoning": 24,
+            "cache": {
+              "read": 51456,
+              "write": 0
+            }
+          },
+          "cost": 0
+        }
+      },
+      "timestamp": 1789136946372
+    },
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 210,
+      "outputTokens": 106,
+      "cacheReadTokens": 57088,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "extra": {
+        "totalTokens": 57404,
+        "durationMs": null,
+        "raw": {
+          "tokens": {
+            "total": 57404,
+            "input": 210,
+            "output": 106,
+            "reasoning": 0,
+            "cache": {
+              "read": 57088,
+              "write": 0
+            }
+          },
+          "cost": 0
+        }
+      },
+      "timestamp": 1789136963114
+    },
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 309,
+      "outputTokens": 22,
+      "cacheReadTokens": 57344,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "extra": {
+        "totalTokens": 57675,
+        "durationMs": null,
+        "raw": {
+          "tokens": {
+            "total": 57675,
+            "input": 309,
+            "output": 22,
+            "reasoning": 0,
+            "cache": {
+              "read": 57344,
+              "write": 0
+            }
+          },
+          "cost": 0
+        }
+      },
+      "timestamp": 1789136969580
+    }
+  ],
+  "totalCost": 0,
+  "durationMs": 35761,
+  "exitStatus": "success",
+  "warnings": [
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed",
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed",
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed"
+  ]
+}

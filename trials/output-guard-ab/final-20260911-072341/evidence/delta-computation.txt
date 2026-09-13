@@ -1,0 +1,19 @@
+claude-arm-a     in=      972 out=   746 cacheR=   62,750 cacheW=  8,297 ctxLoaded=   72,019 cost=$0.102545 dur=16.0s exit=success
+claude-arm-b     in=      974 out= 1,127 cacheR=   78,718 cacheW=  7,871 ctxLoaded=   87,563 cost=$0.117502 dur=20.3s exit=success
+opencode-arm-a   in=  604,606 out=    72 cacheR=  108,800 cacheW=      0 ctxLoaded=  713,406 cost=$0.000000 dur=111.1s exit=success
+opencode-arm-b   in=   10,939 out=   162 cacheR=  149,495 cacheW=      0 ctxLoaded=  160,434 cost=$0.000000 dur=29.7s exit=success
+
+claude    inputTokens      A=    972.0000 B=    974.0000 delta=     +2.0000 (+0.2%)
+claude    outputTokens     A=    746.0000 B=  1,127.0000 delta=   +381.0000 (+51.1%)
+claude    cacheReadTokens  A= 62,750.0000 B= 78,718.0000 delta=+15,968.0000 (+25.4%)
+claude    cacheWriteTokens A=  8,297.0000 B=  7,871.0000 delta=   -426.0000 (-5.1%)
+claude    ctx              A= 72,019.0000 B= 87,563.0000 delta=+15,544.0000 (+21.6%)
+claude    costUsd          A=      0.1025 B=      0.1175 delta=     +0.0150 (+14.6%)
+
+opencode  inputTokens      A=604,606.0000 B= 10,939.0000 delta=-593,667.0000 (-98.2%)
+opencode  outputTokens     A=     72.0000 B=    162.0000 delta=    +90.0000 (+125.0%)
+opencode  cacheReadTokens  A=108,800.0000 B=149,495.0000 delta=+40,695.0000 (+37.4%)
+opencode  cacheWriteTokens A=      0.0000 B=      0.0000 delta=     +0.0000 (+nan%)
+opencode  ctx              A=713,406.0000 B=160,434.0000 delta=-552,972.0000 (-77.5%)
+opencode  costUsd          A=      0.0000 B=      0.0000 delta=     +0.0000 (+nan%)
+

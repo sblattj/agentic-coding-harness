@@ -270,12 +270,12 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
     for (const s of states.splice(0)) rmSync(s, { recursive: true, force: true });
   });
 
-  it('GET / serves the dashboard HTML with the agent-harness title', async () => {
+  it('GET / serves the dashboard HTML with the agentic-coding-harness title', async () => {
     const res = await fetch(urlOf(seeded!, '/'));
     assert.equal(res.status, 200);
     assert.ok((res.headers.get('content-type') ?? '').includes('text/html'));
     const html = await res.text();
-    assert.ok(html.includes('<title>agent-harness</title>'), 'title tag missing');
+    assert.ok(html.includes('<title>agentic-coding-harness</title>'), 'title tag missing');
     assert.ok(html.length > 500, 'dashboard HTML suspiciously small');
   });
 

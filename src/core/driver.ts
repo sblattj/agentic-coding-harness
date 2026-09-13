@@ -313,7 +313,7 @@ export function createDriver(options: DriverOptions): Driver {
         };
         writeRunRecordThrottled(true);
       }
-      // Same summing rule as cmdRun (src/cli/harness.ts): canonical token
+      // Same summing rule as cmdRun (src/cli/ach.ts): canonical token
       // fields summed per usage record; extra.credits (kiro MITM metering
       // units, not USD) kept separate from costUsd.
       let nativeCredits: number | undefined;

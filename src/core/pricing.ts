@@ -205,7 +205,7 @@ export function createPricer(costMapPath?: string): Pricer {
     const model = rec.model;
     // Credit-metered records (kiro MITM tap carriers): extra.credits is the
     // metering signal in kiro units, NOT USD (the "never priced" contract in
-    // driver.ts / adapters/kiro.ts / cli/harness.ts), and kiro v2's wire
+    // driver.ts / adapters/kiro.ts / cli/ach.ts), and kiro v2's wire
     // exposes no model id — the model here is undefined or the 'unknown'
     // sentinel filled in upstream. There is nothing to price: return 0 with
     // no warning (a warning per record spammed every kiro run 8x).

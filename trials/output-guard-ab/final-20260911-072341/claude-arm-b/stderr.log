@@ -1,0 +1,12 @@
+[07:28:05] step
+[07:28:07] text    I'll run that command now.
+[07:28:08] text    
+[07:28:12] text    
+[07:28:13] text    The command ran; its output was too large to display inline…
+[07:28:15] text    
+[07:28:17] text    
+[07:28:18] text    
+[07:28:21] text    
+[07:28:22] text    
+[07:28:25] text    **200000** was the last number printed. I ran `seq 1 200000…
+[07:28:25] usage

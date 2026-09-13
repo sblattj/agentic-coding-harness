@@ -1,0 +1,189 @@
+{
+  "sessionId": "ses_f6f23bb1affeoaGEHFQdJ50ze5",
+  "events": [
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f6f23bb1affeoaGEHFQdJ50ze5",
+      "timestamp": 1789136763825
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789136763826
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 15046,
+        "outputTokens": 79,
+        "cacheReadTokens": 42240,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 89,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 57454,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 57454,
+              "input": 15046,
+              "output": 79,
+              "reasoning": 89,
+              "cache": {
+                "read": 42240,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 57454,
+          "input": 15046,
+          "output": 79,
+          "reasoning": 89,
+          "cache": {
+            "read": 42240,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789136768714
+    },
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f6f23bb1affeoaGEHFQdJ50ze5",
+      "timestamp": 1789136774766
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789136774766
+    },
+    {
+      "type": "message",
+      "agent": "opencode",
+      "source": "agent",
+      "content": "200000",
+      "timestamp": 1789136776083
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 333,
+        "outputTokens": 17,
+        "cacheReadTokens": 57088,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 35,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 57473,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 57473,
+              "input": 333,
+              "output": 17,
+              "reasoning": 35,
+              "cache": {
+                "read": 57088,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 57473,
+          "input": 333,
+          "output": 17,
+          "reasoning": 35,
+          "cache": {
+            "read": 57088,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789136776147
+    }
+  ],
+  "tokens": [
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 15046,
+      "outputTokens": 79,
+      "cacheReadTokens": 42240,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 89,
+      "costUsd": 0,
+      "extra": {
+        "totalTokens": 57454,
+        "durationMs": null,
+        "raw": {
+          "tokens": {
+            "total": 57454,
+            "input": 15046,
+            "output": 79,
+            "reasoning": 89,
+            "cache": {
+              "read": 42240,
+              "write": 0
+            }
+          },
+          "cost": 0
+        }
+      },
+      "timestamp": 1789136768714
+    },
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 333,
+      "outputTokens": 17,
+      "cacheReadTokens": 57088,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 35,
+      "costUsd": 0,
+      "extra": {
+        "totalTokens": 57473,
+        "durationMs": null,
+        "raw": {
+          "tokens": {
+            "total": 57473,
+            "input": 333,
+            "output": 17,
+            "reasoning": 35,
+            "cache": {
+              "read": 57088,
+              "write": 0
+            }
+          },
+          "cost": 0
+        }
+      },
+      "timestamp": 1789136776147
+    }
+  ],
+  "totalCost": 0,
+  "durationMs": 27674,
+  "exitStatus": "success",
+  "warnings": [
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed",
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed"
+  ]
+}

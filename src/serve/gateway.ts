@@ -15,7 +15,7 @@
 //     allowExtraArgs: flags.allowExtraArgs, // "pat1,pat2" or string[]
 //   }, process.env);
 //   if (gateway.enabled && !gateway.root) {
-//     throw new HarnessError("--gateway requires --root (or AGENT_HARNESS_ROOT)", "USAGE", 2);
+//     throw new HarnessError("--gateway requires --root (or AGENTIC_CODING_HARNESS_ROOT)", "USAGE", 2);
 //   }
 //   if (gateway.enabled && gateway.root) {
 //     // The server's own cwd must be under root — startup-time check:
@@ -76,24 +76,24 @@ function parseAllowExtraArgs(raw: string | string[] | undefined): string[] {
 
 /** Build the gateway profile from serve flags + env mirrors. Flags win over
  *  env (an explicitly-passed boolean beats the env mirror; an absent flag
- *  defers to it). Env mirrors: AGENT_HARNESS_GATEWAY=1, AGENT_HARNESS_ROOT,
- *  AGENT_HARNESS_MAX_JOBS, AGENT_HARNESS_MAX_OUTPUT_BYTES,
- *  AGENT_HARNESS_ALLOW_EXTRA_ARGS (comma-separated). `env` defaults to
+ *  defers to it). Env mirrors: AGENTIC_CODING_HARNESS_GATEWAY=1, AGENTIC_CODING_HARNESS_ROOT,
+ *  AGENTIC_CODING_HARNESS_MAX_JOBS, AGENTIC_CODING_HARNESS_MAX_OUTPUT_BYTES,
+ *  AGENTIC_CODING_HARNESS_ALLOW_EXTRA_ARGS (comma-separated). `env` defaults to
  *  process.env so pure callers can omit it. */
 export function gatewayConfigFromFlags(
   flags: GatewayFlags,
   env: NodeJS.ProcessEnv = process.env,
 ): GatewayConfig {
   const enabled =
-    flags.gateway !== undefined ? flags.gateway : env.AGENT_HARNESS_GATEWAY === "1";
-  const rootRaw = flags.root ?? env.AGENT_HARNESS_ROOT;
+    flags.gateway !== undefined ? flags.gateway : env.AGENTIC_CODING_HARNESS_GATEWAY === "1";
+  const rootRaw = flags.root ?? env.AGENTIC_CODING_HARNESS_ROOT;
   const maxJobs =
-    flags.maxJobs ?? parsePositiveInt(env.AGENT_HARNESS_MAX_JOBS ?? "") ?? DEFAULT_GATEWAY_MAX_JOBS;
+    flags.maxJobs ?? parsePositiveInt(env.AGENTIC_CODING_HARNESS_MAX_JOBS ?? "") ?? DEFAULT_GATEWAY_MAX_JOBS;
   const maxOutputBytes =
     flags.maxOutputBytes ??
-    parsePositiveInt(env.AGENT_HARNESS_MAX_OUTPUT_BYTES ?? "");
+    parsePositiveInt(env.AGENTIC_CODING_HARNESS_MAX_OUTPUT_BYTES ?? "");
   const allowExtraArgs = parseAllowExtraArgs(
-    flags.allowExtraArgs ?? env.AGENT_HARNESS_ALLOW_EXTRA_ARGS,
+    flags.allowExtraArgs ?? env.AGENTIC_CODING_HARNESS_ALLOW_EXTRA_ARGS,
   );
   return {
     enabled,
@@ -124,7 +124,7 @@ export function checkCwd(
   if (cfg.root === undefined) {
     return {
       ok: false,
-      error: "gateway root: required in gateway mode (pass --root or set AGENT_HARNESS_ROOT)",
+      error: "gateway root: required in gateway mode (pass --root or set AGENTIC_CODING_HARNESS_ROOT)",
     };
   }
   if (cwd === undefined) return { ok: true };

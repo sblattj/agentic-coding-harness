@@ -1,0 +1,18 @@
+[38;5;11m
+⚠️  WARNING: [0mFailed to retrieve MCP settings; MCP functionality disabled.
+Try running `kiro-cli login` to re-authenticate, or `kiro-cli profile` to select a profile.
+
+[32mAll tools are now trusted ([0m[31m![0m[32m). Kiro will execute tools without asking for confirmation.[0m
+Agents can sometimes do unexpected things so understand the risks.
+
+Learn more at [38;5;141mhttps://kiro.dev/docs/cli/chat/security/#using-tools-trust-all-safely[0m
+
+
+
+[38;5;252m[0m[?25l[?25l[0m[0m⢀⠀ [38;5;12m0[39m of [38;5;12m1[39m hooks finished⡀⠀ [38;5;12m0[39m of [38;5;12m1[39m hooks finished[1G[2K[?25l[38;5;9m✗ [0mpostToolUse "bash /Users/sblatt/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"[38;5;9m failed with exit code: 2, stderr: TOOL OUTPUT OVERSIZE (133333 bytes) — full output saved to /tmp/og-cap/20260910T214431-62170.txt. Read it selectively (grep/sed ranges). Do NOT cat the whole file.)
+[0m[38;5;12m[38;5;9m✗[39m [38;5;12m0[39m of [38;5;12m1[39m hooks finished in [38;5;11m0.09 s
+[0m[?25l[0m[0m[0m
+[38;5;8m
+ ▸ Credits: 0.30 • Time: 8s
+
+[0m[1G[0m[0m[?25h

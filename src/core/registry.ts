@@ -1,6 +1,6 @@
 // Run registry: one JSON file per run under <stateDir>/runs/.
 //
-// The driver records run lifecycle here so `agh dash` can show live + recent
+// The driver records run lifecycle here so `ach dash` can show live + recent
 // runs. Writes are atomic (tmp+rename, sync — called on hot event paths);
 // reads are tolerant: a corrupt or partial file is skipped, never thrown.
 import fs from "node:fs";

@@ -10,7 +10,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agent-harness · Concept A: Observability Trio</title>
+<title>agentic-coding-harness · Concept A: Observability Trio</title>
 <style>
 *{box-sizing:border-box;margin:0}
 html{scroll-behavior:auto}
@@ -134,7 +134,7 @@ footer.min .tbody{display:none}
 <header>
   <div class="mark">
     <svg width="17" height="17" viewBox="0 0 17 17" aria-hidden="true"><rect x="1" y="6" width="3" height="10" rx="1" fill="#bb9af7"/><rect x="7" y="1" width="3" height="15" rx="1" fill="#5eead4"/><rect x="13" y="9" width="3" height="7" rx="1" fill="#7aa2f7"/></svg>
-    agent-harness <small>OBSERVABILITY TRIO</small>
+    agentic-coding-harness <small>OBSERVABILITY TRIO</small>
   </div>
   <a class="back" href="b-terminal-grid.html" aria-label="back to terminal grid">&larr; grid</a>
   <nav class="tabs" id="tabs" aria-label="agent runs"></nav>
@@ -430,7 +430,7 @@ $('termIn').addEventListener('keydown',e=>{
  for(const line of fn(RUNS[state.i]))termPrint(line[0],line[1])});
 
 $('totalCost').textContent='$'+RUNS.reduce((a,r)=>a+costOf(usage(r)),0).toFixed(2);
-termPrint('agent-harness pty · recorded stream replay (mock)','dim');
+termPrint('agentic-coding-harness pty · recorded stream replay (mock)','dim');
 termPrint('try: status · tokens · cost · spans · logs · clear','dim');
 select((()=>{const q=new URLSearchParams(location.search).get('run');const i=RUNS.findIndex(r=>r.agent===q);return i>=0?i:0})());
 $('termIn').focus();

@@ -1,0 +1,9 @@
+[07:27:29] step
+[07:27:31] text    I'll run that command.
+[07:27:32] text    
+[07:27:36] text    
+[07:27:36] text    The command ran fully; its output was too large to display …
+[07:27:38] text    
+[07:27:41] text    
+[07:27:44] text    I ran `seq 1 200000` verbatim via Bash. The output (1.2MB) …
+[07:27:44] usage

@@ -10,13 +10,13 @@ import { after, afterEach, before, describe, it } from 'node:test';
 // HTTP transport (src/serve/PLAN.md §C): `harness serve --port N --token T`
 // speaks Streamable-HTTP MCP on POST /mcp (JSON in, JSON out; batches OK),
 // GET /health is unauthenticated, missing bearer → 401, SIGTERM drains and
-// exits. State sandboxed via AGENT_HARNESS_STATE_DIR.
+// exits. State sandboxed via AGENTIC_CODING_HARNESS_STATE_DIR.
 //
-// EXPECTED-RED until seat W3 lands the `serve` command (src/cli/harness.ts +
+// EXPECTED-RED until seat W3 lands the `serve` command (src/cli/ach.ts +
 // src/mcp/http.ts). Every failure message carries the child's stderr tail.
 // ---------------------------------------------------------------------------
 
-const CLI = new URL('../src/cli/harness.ts', import.meta.url).pathname;
+const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
 const TOKEN = 'testtok';
 
 const EXPECTED_TOOLS = [
@@ -46,7 +46,7 @@ function serveChild(extraArgs: string[], env: Record<string, string> = {}): Chil
   const args = isBun ? [CLI, 'serve', ...extraArgs] : ['--import', 'tsx', CLI, 'serve', ...extraArgs];
   const c = spawn(isBun ? 'bun' : process.execPath, args, {
     cwd: cwdTmp,
-    env: { ...process.env, AGENT_HARNESS_STATE_DIR: stateTmp, ...env },
+    env: { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: stateTmp, ...env },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   c.stderr!.setEncoding('utf8');

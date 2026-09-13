@@ -1,0 +1,13 @@
+[07:33:38] session
+[07:33:38] step
+[07:33:43] usage
+[07:33:49] session
+[07:33:49] step
+[07:33:51] usage
+[07:33:57] session
+[07:33:57] step
+[07:33:57] text    200000
+[07:33:57] usage
+[warn] pricing: unknown model "unknown" (alias "unknown"); cost not computed
+[warn] pricing: unknown model "unknown" (alias "unknown"); cost not computed
+[warn] pricing: unknown model "unknown" (alias "unknown"); cost not computed

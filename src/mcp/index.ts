@@ -1,4 +1,4 @@
-// MCP stdio server entrypoint for agent-harness.
+// MCP stdio server entrypoint for agentic-coding-harness.
 //
 // Speaks MCP (protocolVersion 2025-06-18) over stdio: newline-delimited
 // JSON-RPC on stdout, tolerating Content-Length framing on read. All
@@ -16,7 +16,7 @@ import { stateDir } from '../core/store.ts';
 import { VERSION } from '../version.ts';
 
 async function main(): Promise<void> {
-  const server = createMcpServer({ name: 'agent-harness', version: VERSION });
+  const server = createMcpServer({ name: 'agentic-coding-harness', version: VERSION });
   const opts = { stateDir: stateDir() };
   registerRunTools(server, opts);
   registerInspectTools(server, opts);

@@ -7,7 +7,7 @@ import path from "node:path";
 
 import { formatSummary } from "../src/cli/lib.ts";
 
-const CLI = new URL("../src/cli/harness.ts", import.meta.url).pathname;
+const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
 
 interface RunOut {
   code: number;
@@ -146,7 +146,7 @@ describe("harness cli", () => {
 
   // HOME is overridden so scanAll sees only the fake machine transcripts and
   // the opencode store lookup finds nothing.
-  const env = () => ({ AGENT_HARNESS_STATE_DIR: stateDir, HOME: home });
+  const env = () => ({ AGENTIC_CODING_HARNESS_STATE_DIR: stateDir, HOME: home });
 
   test("stats --json merges scanAll + stateDir, dedupes, and uses {total, byAgent, byDay}", () => {
     const r = runCli(["stats", "--json"], env());
@@ -274,16 +274,16 @@ describe("harness cli", () => {
     assert.equal(r.stdout, "");
   });
 
-  test("run honors AGENT_HARNESS_* env defaults and CLI flags win over them", async () => {
+  test("run honors AGENTIC_CODING_HARNESS_* env defaults and CLI flags win over them", async () => {
     // Bad env default surfaces a clean usage error naming the env var...
-    let r = runCli(["run", "--agent", "claude", "hi"], { ...env(), AGENT_HARNESS_IDLE_MS: "abc" });
+    let r = runCli(["run", "--agent", "claude", "hi"], { ...env(), AGENTIC_CODING_HARNESS_IDLE_MS: "abc" });
     assert.equal(r.code, 1);
-    assert.ok(r.stderr.includes("AGENT_HARNESS_IDLE_MS expects a non-negative number"), r.stderr);
+    assert.ok(r.stderr.includes("AGENTIC_CODING_HARNESS_IDLE_MS expects a non-negative number"), r.stderr);
     assert.doesNotMatch(r.stderr, /\n\s+at /);
 
     // ...and a valid flag suppresses the invalid env default entirely: the
     // run proceeds (fake kiro CLI, tap off) and completes instead of
-    // erroring on AGENT_HARNESS_MAX_TURNS=abc.
+    // erroring on AGENTIC_CODING_HARNESS_MAX_TURNS=abc.
     const fakeKiroCli = path.join(tmpExtra, "fake-kiro-env-flag.sh");
     await fs.writeFile(
       fakeKiroCli,
@@ -294,7 +294,7 @@ describe("harness cli", () => {
       ...env(),
       KIRO_CLI_BIN: fakeKiroCli,
       MITMDUMP_BIN: "/nonexistent/mitmdump", // deterministic tap-off degrade
-      AGENT_HARNESS_MAX_TURNS: "abc", // would fail if the flag did not win
+      AGENTIC_CODING_HARNESS_MAX_TURNS: "abc", // would fail if the flag did not win
     });
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /^exit       success$/m);

@@ -28,7 +28,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
 
-const CLI = new URL("../src/cli/harness.ts", import.meta.url).pathname;
+const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
 
 const ENABLED = process.env.KIRO_CALIBRATION === "1";
 const SKIP_REASON = "set KIRO_CALIBRATION=1 to run the paid calibration (spends credits)";
@@ -186,7 +186,7 @@ function calibrate(transport: "headless" | "acp"): void {
     PROMPT,
   ];
 
-  const out = runCli(args, { AGENT_HARNESS_STATE_DIR: stateDir });
+  const out = runCli(args, { AGENTIC_CODING_HARNESS_STATE_DIR: stateDir });
   const json = parseJsonStdout(out, transport);
 
   // --- the run itself -----------------------------------------------------

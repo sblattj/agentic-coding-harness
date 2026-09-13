@@ -1,4 +1,4 @@
-// Canonical type contracts for agent-harness — the single source of truth.
+// Canonical type contracts for agentic-coding-harness — the single source of truth.
 //
 // This module merges the three parallel dialects that grew up side by side:
 //   - driver lane (src/core/driver.ts, tests/driver.test.ts):

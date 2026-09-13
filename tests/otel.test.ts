@@ -54,7 +54,7 @@ describe('toOtlpJson', () => {
   it('emits one resource span scope with root + tool + chat spans', () => {
     assert.equal(json.resourceSpans.length, 1);
     assert.deepEqual(json.resourceSpans[0].resource.attributes, [
-      { key: 'service.name', value: { stringValue: 'agent-harness' } },
+      { key: 'service.name', value: { stringValue: 'agentic-coding-harness' } },
     ]);
     assert.deepEqual(spans.map((s) => s.name), [
       'invoke_agent harness-agent',

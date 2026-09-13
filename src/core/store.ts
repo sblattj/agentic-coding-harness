@@ -16,10 +16,10 @@ import type { CanonicalTokenRecord } from "./types.js";
 const OFFSETS_VERSION = 1;
 export type OffsetMap = { v: number; files: Record<string, number> };
 
-/** Root state dir. Override with AGENT_HARNESS_STATE_DIR (tests, sandboxes). */
+/** Root state dir. Override with AGENTIC_CODING_HARNESS_STATE_DIR (tests, sandboxes). */
 export function stateDir(): string {
   return (
-    process.env.AGENT_HARNESS_STATE_DIR || path.join(os.homedir(), ".agent-harness")
+    process.env.AGENTIC_CODING_HARNESS_STATE_DIR || path.join(os.homedir(), ".agentic-coding-harness")
   );
 }
 

@@ -1,6 +1,6 @@
 // web — dashboard server CLI (src/web/server.ts over Bun.serve).
 // Serves the live-run dashboard (HTML + /api/runs + ws tails) and opens the
-// browser to it. Without a token (--token or env AGENT_HARNESS_HTTP_TOKEN)
+// browser to it. Without a token (--token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
 // the server binds loopback only and runs unauthenticated with a stderr
 // warning, mirroring serve.
 import { spawnSync } from "node:child_process";
@@ -43,7 +43,7 @@ export async function cmdWeb(rest: string[]): Promise<number> {
   const port = optPort(args.values.port, "--port");
   const dir = args.values.dir ?? stateDir();
   // CLI flag wins over env; when both are unset: warn + force loopback.
-  const token = args.values.token ?? (process.env.AGENT_HARNESS_HTTP_TOKEN || undefined);
+  const token = args.values.token ?? (process.env.AGENTIC_CODING_HARNESS_HTTP_TOKEN || undefined);
   let host = args.values.host ?? DEFAULT_HOST;
   if (token === undefined) {
     process.stderr.write("web: no token set — unauthenticated loopback only\n");

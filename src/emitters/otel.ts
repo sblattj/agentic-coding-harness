@@ -48,7 +48,7 @@ export interface CreateTracerOptions {
 
 export function createTracer(opts: CreateTracerOptions = {}): TracerBundle {
   const endpoint = opts.endpoint ?? 'http://localhost:4318/v1/traces';
-  const serviceName = opts.serviceName ?? 'agent-harness';
+  const serviceName = opts.serviceName ?? 'agentic-coding-harness';
   const provider = new NodeTracerProvider({
     resource: resourceFromAttributes({ 'service.name': serviceName }),
     // OTel SDK v2: processors are constructor config; addSpanProcessor() is gone.
@@ -56,7 +56,7 @@ export function createTracer(opts: CreateTracerOptions = {}): TracerBundle {
   });
   if (opts.register !== false) provider.register();
   return {
-    tracer: provider.getTracer('agent-harness'),
+    tracer: provider.getTracer('agentic-coding-harness'),
     provider,
     shutdown: () => provider.shutdown(),
   };
@@ -250,7 +250,7 @@ export function toOtlpJson(
   events: AgentEvent[],
   opts: Omit<EmitRunOptions, 'events'> & { serviceName?: string },
 ): OtlpResourceSpansJson {
-  const serviceName = opts.serviceName ?? 'agent-harness';
+  const serviceName = opts.serviceName ?? 'agentic-coding-harness';
   const { root, children } = deriveSpans(events, opts);
   const { traceId, spanId: rootSpanId } = newIds();
 
@@ -281,7 +281,7 @@ export function toOtlpJson(
         },
         scopeSpans: [
           {
-            scope: { name: 'agent-harness', version: VERSION },
+            scope: { name: 'agentic-coding-harness', version: VERSION },
             spans: [rootJson, ...childJson],
           },
         ],

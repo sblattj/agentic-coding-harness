@@ -1,17 +1,16 @@
 {
-  "name": "agent-harness",
+  "name": "agentic-coding-harness",
   "version": "0.6.2",
   "private": true,
   "type": "module",
   "bin": {
-    "agh": "./src/cli/harness.ts",
-    "harness": "./src/cli/harness.ts"
+    "ach": "./src/cli/ach.ts"
   },
   "scripts": {
     "test": "tsx --test tests/*.test.ts src/adapters/*.test.ts",
     "test:bun": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
-    "build": "bun build src/cli/harness.ts --outdir dist --target bun"
+    "build": "bun build src/cli/ach.ts --outdir dist --target bun"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",

@@ -14,9 +14,9 @@ opencode (`opencode.json`) — local server, `command` array:
 ```json
 {
   "mcp": {
-    "agent-harness": {
+    "agentic-coding-harness": {
       "type": "local",
-      "command": ["bun", "/absolute/path/to/agent-harness/src/mcp/index.ts"],
+      "command": ["bun", "/absolute/path/to/agentic-coding-harness/src/mcp/index.ts"],
       "enabled": true
     }
   }
@@ -28,16 +28,16 @@ Claude Code (`.mcp.json`):
 ```json
 {
   "mcpServers": {
-    "agent-harness": {
+    "agentic-coding-harness": {
       "command": "bun",
-      "args": ["/absolute/path/to/agent-harness/src/mcp/index.ts"]
+      "args": ["/absolute/path/to/agentic-coding-harness/src/mcp/index.ts"]
     }
   }
 }
 ```
 
-Both shapes accept a per-server `env` key; set `AGENT_HARNESS_STATE_DIR` there
-to move state off the default `~/.agent-harness`.
+Both shapes accept a per-server `env` key; set `AGENTIC_CODING_HARNESS_STATE_DIR` there
+to move state off the default `~/.agentic-coding-harness`.
 
 ## Tools
 

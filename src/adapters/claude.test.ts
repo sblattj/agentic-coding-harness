@@ -62,7 +62,7 @@ interface Captured {
 }
 
 function makeAdapter(extra: Partial<ClaudeAdapterOptions> = {}): { adapter: ClaudeCodeAdapter; captured: Captured; stateDir: string } {
-  const stateDir = mkdtempSync(path.join(tmpdir(), 'agent-harness-test-'));
+  const stateDir = mkdtempSync(path.join(tmpdir(), 'agentic-coding-harness-test-'));
   const captured = {} as Captured;
   const spawnFn: SpawnFn = (command, args, opts) => {
     const child = new FakeChild([...args]);
@@ -132,25 +132,25 @@ describe('ClaudeCodeAdapter.spawn', () => {
     cleanup(stateDir);
   });
 
-  it('AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1 has the same effect; any other value keeps the per-run dir', async () => {
-    const prev = process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG;
+  it('AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1 has the same effect; any other value keeps the per-run dir', async () => {
+    const prev = process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG;
     try {
-      process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG = '1';
+      process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = '1';
       const a = makeAdapter();
       a.adapter.spawn({ prompt: 'x' });
       a.captured.child.end(0);
       assert.equal(a.captured.options.env?.CLAUDE_CONFIG_DIR, undefined);
       cleanup(a.stateDir);
 
-      process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG = '0';
+      process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = '0';
       const b = makeAdapter();
       b.adapter.spawn({ prompt: 'x' });
       b.captured.child.end(0);
       assert.ok(b.captured.options.env?.CLAUDE_CONFIG_DIR, 'control: per-run dir still set');
       cleanup(b.stateDir);
     } finally {
-      if (prev === undefined) delete process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG;
-      else process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG = prev;
+      if (prev === undefined) delete process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG;
+      else process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = prev;
     }
   });
 
@@ -451,7 +451,7 @@ describe('ClaudeCodeAdapter.abort', () => {
       queueMicrotask(() => void opts);
       return child;
     };
-    const stateDir = mkdtempSync(path.join(tmpdir(), 'agent-harness-test-'));
+    const stateDir = mkdtempSync(path.join(tmpdir(), 'agentic-coding-harness-test-'));
     const adapter = new ClaudeCodeAdapter({ stateDir, spawnFn });
     adapter.spawn({ prompt: 'stubborn task' });
     adapter.abort();

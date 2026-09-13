@@ -15,10 +15,10 @@ describe('store readAllRecords driver transcripts', () => {
 
   before(() => {
     stateDir = mkdtempSync(join(tmpdir(), 'harness-store-'));
-    process.env.AGENT_HARNESS_STATE_DIR = stateDir;
+    process.env.AGENTIC_CODING_HARNESS_STATE_DIR = stateDir;
     mkdirSync(join(stateDir, 'raw'), { recursive: true });
 
-    // Real-shape claude usage event (observed under ~/.agent-harness/raw/):
+    // Real-shape claude usage event (observed under ~/.agentic-coding-harness/raw/):
     // no top-level sessionId, canonical field names nested in `usage`.
     const claudeUsage = {
       type: 'usage',
@@ -104,7 +104,7 @@ describe('store readAllRecords driver transcripts', () => {
   });
 
   after(() => {
-    delete process.env.AGENT_HARNESS_STATE_DIR;
+    delete process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
     rmSync(stateDir, { recursive: true, force: true });
   });
 

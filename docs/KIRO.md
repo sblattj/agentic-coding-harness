@@ -1,6 +1,6 @@
 # Kiro adapter
 
-How `agent-harness` drives `kiro-cli`, what it can *prove* about the configuration a run used,
+How `agentic-coding-harness` drives `kiro-cli`, what it can *prove* about the configuration a run used,
 and what it can and cannot tell you about usage. Everything below was measured against
 **kiro-cli 2.21.2** (engine v2, API-key auth) on 2026-09-12; fixtures under `tests/fixtures/kiro/`
 are sanitized captures from that binary, and the automated tests run only against those fixtures
@@ -195,7 +195,7 @@ transport, ~50 s wall. Measured 2026-09-12 against kiro-cli 2.21.2: **0.0556 cre
 **0.0166 credits** ACP = **0.0722 credits** for the file.
 
 **What it proves.** It drives the real `harness run --json` entry point (`spawnSync` on
-`src/cli/harness.ts`, fresh `AGENT_HARNESS_STATE_DIR`) once per transport and asserts, per run:
+`src/cli/ach.ts`, fresh `AGENTIC_CODING_HARNESS_STATE_DIR`) once per transport and asserts, per run:
 
 - `exitStatus: "success"` and `warnings: []`.
 - `usage.credits.value` equals `sources.stream` equals `sources['session-store']` within `1e-9`,

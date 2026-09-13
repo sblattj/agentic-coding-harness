@@ -40,51 +40,51 @@ import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 
-const USAGE = `harness — unified agent run harness
+const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 
 usage:
-  harness run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
+  ach run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
-                           AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
+                           AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
               kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                          [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                          [--kiro-startup-ms MS] [--kiro-require-model-ack]
                          [--kiro-mcp-server '<json>']...
-  harness preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
+  ach preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
                     [--cwd DIR] [--json] [--kiro-startup-ms MS] [--kiro-mcp-server '<json>']...
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
-  harness watch [--dir <transcriptDir>]
-  harness stats [--agent A] [--days N] [--json] [--state-only]
+  ach watch [--dir <transcriptDir>]
+  ach stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
                  --state-only skips machine transcript dirs)
-  harness emit --input <events.json> --format <atif|otel|langfuse> [--out path]
+  ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
                 --langfuse-url/--langfuse-public-key/--langfuse-secret-key or
                 env LANGFUSE_URL|LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY,
                 LANGFUSE_SECRET_KEY)
-  harness report <trials-dir> [--out path]
+  ach report <trials-dir> [--out path]
                  (single-file HTML comparison; a trials/ root scans subdirs)
-  harness dash [--json] [--all] [--dir <stateDir>]
+  ach dash [--json] [--all] [--dir <stateDir>]
                (live run dashboard; --json dumps RunRecords and exits)
-  harness serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
+  ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
-                 token via --token or env AGENT_HARNESS_HTTP_TOKEN)
-  harness web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
+                 token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
+  ach web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
               [--dir D] [--no-open]
                 (browser dashboard over the live registry; token via --token
-                 or env AGENT_HARNESS_HTTP_TOKEN; --no-open skips the browser)
+                 or env AGENTIC_CODING_HARNESS_HTTP_TOKEN; --no-open skips the browser)
 
 env:
-  AGENT_HARNESS_STATE_DIR   state root (default ~/.agent-harness)
-  AGENT_HARNESS_HTTP_TOKEN  default for serve --token (CLI flags win over env)
-  AGENT_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
-  AGENT_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
-  AGENT_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
-  AGENT_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)`;
+  AGENTIC_CODING_HARNESS_STATE_DIR   state root (default ~/.agentic-coding-harness)
+  AGENTIC_CODING_HARNESS_HTTP_TOKEN  default for serve --token (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)`;
 
 // ---------------------------------------------------------------- helpers
 
@@ -238,7 +238,7 @@ async function cmdRun(rest: string[]): Promise<number> {
 
   // The adapter registry takes no options (driver.ts defaultAdapters), so the
   // flag travels as the env var the Claude adapter already honours.
-  if (args.values["claude-default-config"]) process.env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
+  if (args.values["claude-default-config"]) process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
 
   const onEvent = (e: AgentEvent) => process.stderr.write(formatEventLine(e) + "\n");
   const driver = createDriver({
@@ -256,10 +256,10 @@ async function cmdRun(rest: string[]): Promise<number> {
       model: args.values.model,
       resume: args.values.resume,
       budget: {
-        usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENT_HARNESS_BUDGET_USD"),
-        maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENT_HARNESS_MAX_TURNS"),
-        wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENT_HARNESS_WALL_MS"),
-        idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENT_HARNESS_IDLE_MS"),
+        usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
+        maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
+        wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
+        idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
       },
       extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
       ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
@@ -319,7 +319,7 @@ async function cmdRun(rest: string[]): Promise<number> {
 
 // ------------------------------------------------------------ preflight
 
-/** `harness preflight --agent kiro` — see src/adapters/kiro-preflight.ts.
+/** `ach preflight --agent kiro` — see src/adapters/kiro-preflight.ts.
  *  Exit 0 only when no check failed. Kiro is the only agent with a preflight
  *  today; another agent is a USAGE error, never a silent pass. */
 async function cmdPreflight(rest: string[]): Promise<number> {
@@ -451,7 +451,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
     };
     // Only records scanAll cannot see (opencode SQLite) are persisted to the
     // state dir; claude/codex/gemini history is read straight from the
-    // machine transcript dirs by `harness stats`, so copying them into
+    // machine transcript dirs by `ach stats`, so copying them into
     // stateDir/raw would double-count.
     const fresh: StatRecord[] = [];
 

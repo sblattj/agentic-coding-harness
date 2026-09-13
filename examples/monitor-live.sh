@@ -13,12 +13,12 @@ TASK="Say hello in one sentence and exit"
 HARNESS=""
 if command -v harness >/dev/null 2>&1; then
   HARNESS="harness"
-elif [ -f "$REPO/src/cli/harness.ts" ] && command -v bun >/dev/null 2>&1; then
-  HARNESS="bun $REPO/src/cli/harness.ts"
-elif [ -f "$REPO/src/cli/harness.ts" ]; then
-  HARNESS="npx tsx $REPO/src/cli/harness.ts"
+elif [ -f "$REPO/src/cli/ach.ts" ] && command -v bun >/dev/null 2>&1; then
+  HARNESS="bun $REPO/src/cli/ach.ts"
+elif [ -f "$REPO/src/cli/ach.ts" ]; then
+  HARNESS="npx tsx $REPO/src/cli/ach.ts"
 else
-  echo "error: no harness CLI — see src/cli/harness.ts" >&2
+  echo "error: no harness CLI — see src/cli/ach.ts" >&2
   exit 1
 fi
 

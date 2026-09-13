@@ -1,4 +1,4 @@
-# agent-harness — Architecture
+# agentic-coding-harness — Architecture
 
 > **STATUS (2026-09-09):** written against the actual `src/` tree (`core/`, `adapters/`, `cli/`,
 > `emitters/`, `monitors/`). Items that exist only by name are marked `[planned]` (the kiro
@@ -6,7 +6,7 @@
 > earlier revisions are closed (§9); anything still diverging in `docs/TOKEN-COUNTING.md` keeps
 > its flag — this doc describes the interfaces as they stand, not as they should be.
 
-agent-harness is a headless-first orchestration and observability layer over coding-agent CLIs
+agentic-coding-harness is a headless-first orchestration and observability layer over coding-agent CLIs
 (Claude Code, Codex CLI, OpenCode, Gemini CLI, Kiro). One harness, many agents: normalized events,
 cache-aware token accounting, persisted trajectories, and live dashboards — without giving up each
 agent's native strength.
@@ -110,7 +110,7 @@ mismatch, never fabricated zeros):
 | Tap | Reads today | Where |
 |---|---|---|
 | Headless stream parsing | native JSONL lines mapped by each adapter's `parse*Line`; usage payloads re-normalized by `core/normalize.ts` (`normalizeClaude`, `normalizeOpencode`, `normalizeCodex`, `normalizeGemini`, `normalizeKiro`) | `src/adapters/*.ts`, `src/core/normalize.ts` |
-| Transcript files | Claude Code transcripts tailed byte-exactly by offset (`cli/lib.ts extractClaudeRecordFromLine`; `cli/harness.ts watch` grows-only over `~/.claude/projects/**/*.jsonl`) | `src/cli/lib.ts` |
+| Transcript files | Claude Code transcripts tailed byte-exactly by offset (`cli/lib.ts extractClaudeRecordFromLine`; `cli/ach.ts watch` grows-only over `~/.claude/projects/**/*.jsonl`) | `src/cli/lib.ts` |
 | Agent SQLite | opencode's local store via `statsFromDb` (stub: schema probe returns `[]` until the real mapping lands; `bun:sqlite` readonly) | `src/adapters/opencode.ts` |
 | kiro MITM | `KiroAdapter.launch()` auto-starts `mitmdump` with the inline EventStream addon (default: on when `mitmdump` is on PATH — probe cached; explicit `mitm` option overrides), binds the first free port in 8900-8999, routes kiro-cli through `HTTPS_PROXY`/`SSL_CERT_FILE` (`tapEnv`), and interleaves the tap's records with stdout events; metering credits land in `extra.credits` (metering units, **not USD** — never priced), token counts stay on the stdout usage events (tap events carry zeros). Parser handles both the pre-2.10 `tokenUsage` wire shape and the 2.21 AWS EventStream frames. Degrades gracefully (stderr warning, untapped run) when `mitmdump` is missing or no port binds | `src/monitors/kiro-mitm.ts`, `src/adapters/kiro.ts` |
 | LiteLLM proxy `[planned]` | model-agnostic spend ledger for calls routed through it | — |
@@ -224,8 +224,8 @@ explicitly not billing-grade figure.
   child GENERATION with the exclusive usage buckets — via `GET /api/public/v2/observations`
   (the legacy `GET /api/public/traces` list endpoint is disabled on v4 events-only deployments)
   and the v4 events store itself.
-- **State store** (`core/store.ts`, JSONL not SQLite): root at `~/.agent-harness`
-  (`AGENT_HARNESS_STATE_DIR` overrides). Canonical records append to `<stateDir>/raw/<agent>/<sessionId>.jsonl`;
+- **State store** (`core/store.ts`, JSONL not SQLite): root at `~/.agentic-coding-harness`
+  (`AGENTIC_CODING_HARNESS_STATE_DIR` overrides). Canonical records append to `<stateDir>/raw/<agent>/<sessionId>.jsonl`;
   `harness watch` keeps byte offsets in `offsets.json` so restarts resume without replay;
   `readAllRecords` powers `harness stats` (`aggregate()` → totals/byAgent/byDay buckets).
 
@@ -241,7 +241,7 @@ flowchart LR
     CANON --> PRICE["Pricer<br/>per-1M cache-aware + warnings"]
     EVT --> ATIF["AtifWriter<br/>trajectory.json (ATIF-v1.7)"]
     EVT --> OTEL["emitters/otel<br/>gen_ai spans → OTLP :4318"]
-    PRICE --> STORE[("store<br/>~/.agent-harness/raw/**.jsonl")]
+    PRICE --> STORE[("store<br/>~/.agentic-coding-harness/raw/**.jsonl")]
     OTEL --> SINKS["Langfuse (langfuse emitter) / OpenLIT"]
     STORE --> STATS["harness stats<br/>totals · byAgent · byDay"]
     ATIF --> EVAL["eval / replay / diff"]
@@ -264,5 +264,5 @@ The cross-file conflicts flagged ⚠ in earlier revisions of this doc are closed
   to `emitters/{atif,otel,langfuse}.ts`.
 - driver `launch`-style vs adapter `spawn`-style contract → all five adapters implement
   `launch()` natively (bridged via `launchDriverHandle`, `adapters/shared.ts`).
-- `cli/harness.ts` imports → `core/types.ts` exports `AGENTS`/`isKnownAgent`/`RunResult`/
+- `cli/ach.ts` imports → `core/types.ts` exports `AGENTS`/`isKnownAgent`/`RunResult`/
   `HarnessError`, and the CLI transcript fallback prices through `core/pricing.ts`.

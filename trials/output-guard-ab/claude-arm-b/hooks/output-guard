@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Trial-only PostToolUse hook: intercept huge Bash stdout, save to disk, hand the model a notice."""
+import json
+import os
+import sys
+import uuid
+
+
+def main() -> None:
+    try:
+        payload = json.load(sys.stdin)
+        if os.environ.get("OUTPUT_GUARD") != "1" or payload.get("tool_name") != "Bash":
+            return
+        response = payload.get("tool_response")
+        if not isinstance(response, dict):
+            return
+        stdout = response.get("stdout")
+        if not isinstance(stdout, str):
+            return
+        stdout_bytes = len(stdout.encode("utf-8", "replace"))
+        if stdout_bytes <= 20000:
+            return
+        state_dir = os.environ.get("OUTPUT_GUARD_STATE_DIR") or os.path.expanduser(
+            "~/.local/state/claude/output-guard"
+        )
+        os.makedirs(state_dir, exist_ok=True)
+        path = os.path.join(state_dir, uuid.uuid4().hex + ".txt")
+        with open(path, "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(stdout)
+        notice = (
+            f"[Output guard: {stdout_bytes} bytes exceeds the 20,000-byte inline limit.] "
+            f"Full intercepted output saved to: {path}. "
+            "Use Grep with a specific pattern or Read with offset/limit to inspect small sections."
+        )
+        updated = dict(response)
+        updated["stdout"] = notice
+        updated.setdefault("stderr", "")
+        updated.setdefault("interrupted", False)
+        updated.setdefault("isImage", False)
+        updated.setdefault("noOutputExpected", False)
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PostToolUse",
+                        "updatedToolOutput": updated,
+                    }
+                }
+            )
+        )
+    except Exception:
+        return
+
+
+if __name__ == "__main__":
+    main()

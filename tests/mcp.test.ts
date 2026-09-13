@@ -83,8 +83,8 @@ describe('mcp framing (__testables__.FramingParser)', () => {
 //
 // Spawns the MCP entrypoint (src/mcp/index.ts, wired by another seat) as a
 // child process speaking NDJSON stdio JSON-RPC. State is sandboxed via
-// AGENT_HARNESS_STATE_DIR (src/core/store.ts stateDir()) so nothing touches
-// the real ~/.agent-harness. Expected to fail until the entrypoint lands.
+// AGENTIC_CODING_HARNESS_STATE_DIR (src/core/store.ts stateDir()) so nothing touches
+// the real ~/.agentic-coding-harness. Expected to fail until the entrypoint lands.
 // ---------------------------------------------------------------------------
 
 // Real entrypoint (src/mcp/index.ts, wired by another seat). The env
@@ -121,7 +121,7 @@ function startServer(): void {
   const args = isBun ? [ENTRY] : ['--import', 'tsx', ENTRY];
   child = spawn(isBun ? 'bun' : process.execPath, args, {
     cwd: cwdTmp,
-    env: { ...process.env, AGENT_HARNESS_STATE_DIR: stateTmp },
+    env: { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: stateTmp },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   child.stdout.setEncoding('utf8');

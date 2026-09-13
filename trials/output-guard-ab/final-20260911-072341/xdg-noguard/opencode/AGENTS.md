@@ -1,0 +1,1 @@
+/Users/sblatt/.local/state/dotai/generated/opencode.md

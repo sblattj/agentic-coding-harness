@@ -93,7 +93,7 @@ No prompt is sent. Checks, each `{name, status:'verified'|'failed'|'unproven', d
 
 ## Amendment 2026-09-12: token counts (owner request "expose token counts as well as credits")
 
-Measured on 2.21.2 with one tapped Haiku headless run (`AGENT_HARNESS_STATE_DIR=/tmp/... harness run --agent kiro --json`):
+Measured on 2.21.2 with one tapped Haiku headless run (`AGENTIC_CODING_HARNESS_STATE_DIR=/tmp/... harness run --agent kiro --json`):
 
 | Source | Token fields | Value observed |
 |---|---|---|

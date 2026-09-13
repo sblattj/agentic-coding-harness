@@ -62,7 +62,7 @@ Tools (zod-validated, errors name the field, same conventions as tools-run.ts):
   AND batches; responds application/json (no SSE streams needed for v1 —
   declare 'Streamable' via the single-endpoint shape: POST-only, JSON
   responses; initialize advertises protocolVersion 2025-06-18).
-- Auth: when --token set (or AGENT_HARNESS_HTTP_TOKEN env — env wins over
+- Auth: when --token set (or AGENTIC_CODING_HARNESS_HTTP_TOKEN env — env wins over
   nothing, flag wins over env), require `Authorization: Bearer <token>`;
   401 JSON-RPC error otherwise. When unset, bind 127.0.0.1 only and warn on
   stderr that auth is off.
@@ -90,7 +90,7 @@ Tools (zod-validated, errors name the field, same conventions as tools-run.ts):
   match); stripped args → warning in result, not silent.
 - emit tool with format langfuse DISABLED under --gateway (no outbound
   publishing): error `disabled in gateway mode`.
-- Env mirrors: AGENT_HARNESS_GATEWAY=1, AGENT_HARNESS_ROOT, AGENT_HARNESS_MAX_JOBS.
+- Env mirrors: AGENTIC_CODING_HARNESS_GATEWAY=1, AGENTIC_CODING_HARNESS_ROOT, AGENTIC_CODING_HARNESS_MAX_JOBS.
 
 ## E. ToolHive docs (seat W5) — docs/TOOLHIVE.md
 
@@ -116,4 +116,4 @@ cancel), gateway profile flags, and a worked example per client.
   auth 401 without token when set, /health 200 without auth, batch request.
 - gateway: cwd escape rejected, max-jobs rejection, extraArgs stripped +
   warning, langfuse emit disabled.
-- All subprocess tests: AGENT_HARNESS_STATE_DIR tmp, 30s timeouts.
+- All subprocess tests: AGENTIC_CODING_HARNESS_STATE_DIR tmp, 30s timeouts.

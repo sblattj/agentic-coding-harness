@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "output-guard",
+      "description": "Spill oversized shell tool output to a file and notify. INERT on kiro-cli 2.21.2 (v3 engine does not load .kiro/hooks/); activates on CLI 3.0+. Env-gated: OUTPUT_GUARD=1 arms it.",
+      "trigger": "PostToolUse",
+      "matcher": "shell|execute_bash|run_command",
+      "action": {
+        "type": "command",
+        "command": "bash /Users/sblatt/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"
+      },
+      "timeout": 30
+    }
+  ]
+}

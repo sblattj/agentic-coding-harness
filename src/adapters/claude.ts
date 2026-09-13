@@ -1,5 +1,5 @@
 /**
- * Claude Code driver adapter for agent-harness.
+ * Claude Code driver adapter for agentic-coding-harness.
  *
  * Spawns the `claude` CLI headless (`-p`) with stream-json output, parses the
  * NDJSON stdout stream into harness AgentEvents, and exposes attach()/abort().
@@ -454,7 +454,7 @@ function claudeEventToCore(event: AgentEvent): CoreAgentEvent {
 // ---------------------------------------------------------------------------
 
 export interface ClaudeAdapterOptions {
-  /** Harness state dir. Default: $AGENT_HARNESS_STATE_DIR or ~/.agent-harness/state */
+  /** Harness state dir. Default: $AGENTIC_CODING_HARNESS_STATE_DIR or ~/.agentic-coding-harness/state */
   stateDir?: string;
   /** claude binary override (tests, PATH pinning). Default: 'claude'. */
   command?: string;
@@ -464,7 +464,7 @@ export interface ClaudeAdapterOptions {
    * Do NOT set a per-run CLAUDE_CONFIG_DIR; let the child use Claude Code's
    * default config so a keychain-bound OAuth login (macOS, no
    * ~/.claude/.credentials.json) authenticates. Also enabled by the env var
-   * AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1. Trade-off: the transcript file
+   * AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1. Trade-off: the transcript file
    * lands under ~/.claude/projects instead of the state dir, and concurrent
    * runs share one config. Issue #3.
    */
@@ -473,7 +473,7 @@ export interface ClaudeAdapterOptions {
 
 /** True when the run should use the default (authenticated) Claude config. */
 export function useDefaultClaudeConfig(opts: ClaudeAdapterOptions, env: NodeJS.ProcessEnv = process.env): boolean {
-  return opts.useDefaultClaudeConfig === true || env.AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG === '1';
+  return opts.useDefaultClaudeConfig === true || env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG === '1';
 }
 
 export class ClaudeCodeAdapter implements CoreAgentAdapter {
@@ -509,8 +509,8 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
   constructor(options: ClaudeAdapterOptions = {}) {
     const stateDir =
       options.stateDir ??
-      process.env.AGENT_HARNESS_STATE_DIR ??
-      path.join(os.homedir(), '.agent-harness', 'state');
+      process.env.AGENTIC_CODING_HARNESS_STATE_DIR ??
+      path.join(os.homedir(), '.agentic-coding-harness', 'state');
     this.opts = { ...options, stateDir, command: options.command ?? 'claude' };
   }
 

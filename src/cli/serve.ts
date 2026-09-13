@@ -1,7 +1,7 @@
 // serve — expose the harness MCP server over streamable HTTP (Bun.serve).
 // Registers every tool family (run, inspect, jobs) and answers POST /mcp
 // (single or batch JSON-RPC), GET /health, with optional bearer-token auth.
-// Without a token (--token or env AGENT_HARNESS_HTTP_TOKEN) the server binds
+// Without a token (--token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN) the server binds
 // loopback only and runs unauthenticated with a stderr warning.
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
@@ -90,7 +90,7 @@ export async function cmdServe(rest: string[]): Promise<number> {
   );
   if (gateway.enabled && gateway.root === undefined) {
     throw new HarnessError(
-      "--gateway requires --root (or env AGENT_HARNESS_ROOT)",
+      "--gateway requires --root (or env AGENTIC_CODING_HARNESS_ROOT)",
       "USAGE",
     );
   }
@@ -98,14 +98,14 @@ export async function cmdServe(rest: string[]): Promise<number> {
   // (PLAN §D) — no boot-time containment gate on process.cwd(); clients may
   // also target any dir the server account can reach, root-policed per call.
   // CLI flag wins over env; when both are unset: warn + force loopback.
-  const token = args.values.token ?? (process.env.AGENT_HARNESS_HTTP_TOKEN || undefined);
+  const token = args.values.token ?? (process.env.AGENTIC_CODING_HARNESS_HTTP_TOKEN || undefined);
   let host = args.values.host ?? DEFAULT_HOST;
   if (token === undefined) {
     process.stderr.write("serve: no token set — unauthenticated loopback only\n");
     host = DEFAULT_HOST;
   }
 
-  const server = createMcpServer({ name: "agent-harness", version: VERSION });
+  const server = createMcpServer({ name: "agentic-coding-harness", version: VERSION });
   const opts = { stateDir: stateDir(), gateway };
   registerRunTools(server, opts);
   registerInspectTools(server, opts);

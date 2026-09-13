@@ -8,17 +8,17 @@ import { frame } from '../src/cli/dash.ts';
 import type { RunRecord } from '../src/core/registry.ts';
 
 // ---------------------------------------------------------------------------
-// agh dash (integration, real subprocess)
+// ach dash (integration, real subprocess)
 //
-// Spawns the CLI entrypoint (src/cli/harness.ts, wired by another seat) with
+// Spawns the CLI entrypoint (src/cli/ach.ts, wired by another seat) with
 // pipes for stdio — i.e. non-TTY, where the documented fallback dumps the
 // current RunRecord[] as JSON and exits (the --json flag forces the same).
-// State is sandboxed via AGENT_HARNESS_STATE_DIR (src/core/store.ts
-// stateDir()) so nothing touches the real ~/.agent-harness. Expected to fail
+// State is sandboxed via AGENTIC_CODING_HARNESS_STATE_DIR (src/core/store.ts
+// stateDir()) so nothing touches the real ~/.agentic-coding-harness. Expected to fail
 // until the dash subcommand lands.
 // ---------------------------------------------------------------------------
 
-const CLI = new URL('../src/cli/harness.ts', import.meta.url).pathname;
+const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
 
 // bun runs .ts natively; node needs the tsx loader (same rule as mcp.test.ts).
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
@@ -48,7 +48,7 @@ function dashArgs(stateDir: string, extra: string[] = []): string[] {
 function runCli(args: string[], stateDir: string): { code: number; stdout: string; stderr: string } {
   const cli = isBun ? [CLI, ...args] : ['--import', 'tsx', CLI, ...args];
   const p = spawnSync(isBun ? 'bun' : process.execPath, cli, {
-    env: { ...process.env, AGENT_HARNESS_STATE_DIR: stateDir },
+    env: { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: stateDir },
     encoding: 'utf8',
     timeout: 15_000,
     killSignal: 'SIGKILL',
@@ -72,7 +72,7 @@ function runRec(over: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-describe('agh dash --json (real subprocess, non-TTY)', () => {
+describe('ach dash --json (real subprocess, non-TTY)', () => {
   it('reports live, interrupted, and finished runs, sorted by startedAt desc, with correct live flags', { timeout: 20_000 }, () => {
     const state = mkState();
     const now = Date.now();

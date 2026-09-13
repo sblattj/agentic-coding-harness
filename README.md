@@ -1,10 +1,10 @@
-# agent-harness
+# agentic-coding-harness
 
 Headless orchestration and observability over coding-agent CLIs — Claude Code, OpenCode, Kiro,
 Codex CLI, Gemini CLI. One normalized event model regardless of vendor; per-token, per-credit,
 per-cost accounting verified against each CLI's own ground-truth records; every run persisted as
 a replayable artifact (ATIF v1.7 trajectory, OTel `gen_ai` spans, Langfuse trace, single-file
-HTML report). One binary, two names: `harness` and `agh`.
+HTML report). One binary, two names: `harness` and `ach`.
 
 ## Demo
 
@@ -23,15 +23,15 @@ cost       $0.0612
 duration   31.4s
 exit       success
 
-$ agh dash
-harness dash — /Users/me/.agent-harness
+$ ach dash
+harness dash — /Users/me/.agentic-coding-harness
 STATUS AGENT    RUNID    SESSION  ELAPSED       IN      OUT     CACHE     COST  CREDITS LAST EVENT
 +      claude   7c1f0a2e 7c1f0a2e     31s     4.8k     933    39.3k  $0.0612          step
 ●      kiro     91b3ce11 91b3ce11     12s       0       0        0  $0.0000   0.05cr tool    Bash
 
 2 runs  in 4.8k  out 933  cost $0.0612  credits 0.05cr  q quit
 
-$ agh dash --json | jq -c '.[0] | {agent, runId, status, cost: .totals.costUsd}'
+$ ach dash --json | jq -c '.[0] | {agent, runId, status, cost: .totals.costUsd}'
 {"agent":"claude","runId":"7c1f0a2e-4b9d-4e1a-9c33-8f2a1d5b6e70","status":"success","cost":0.0612}
 
 $ harness report trials/20260911-141210
@@ -43,7 +43,7 @@ langfuse: posted 27 spans to http://localhost:3000 — trace 3f2a91c0-8e47-4b1d-
 $ examples/trial-all.sh            # same task on every installed agent, then the comparison
 skip: codex (CLI not installed)
 task: List the files in the current directory and summarize the project in 3 bullet points
-out:  /Users/me/src/agent-harness/trials/20260911-142401
+out:  /Users/me/src/agentic-coding-harness/trials/20260911-142401
 run:  claude
 run:  kiro
 
@@ -85,7 +85,7 @@ kiro              0          0          0        n/a       44 success
   prompt. Token counts are reported `n/a` when no source carries them (kiro-cli 2.21.x) — never
   fabricated zeros; credits and derived context tokens are shown instead. See
   [docs/KIRO.md](docs/KIRO.md).
-- **Run registry + `agh dash`** — live TUI over `<stateDir>/runs` (redraws 2×/s, ANSI status
+- **Run registry + `ach dash`** — live TUI over `<stateDir>/runs` (redraws 2×/s, ANSI status
   glyphs, totals footer); `--json` dumps RunRecords for tools, `--all` widens past the last hour.
 - **MCP server** — stdio JSON-RPC, 10 tools (`harness_run{,_async,_status,_events,_cancel}`, `harness_kiro_preflight`, `report/emit/stats/agents`) so any MCP
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
@@ -115,15 +115,15 @@ harness dash [--json] [--all] [--dir <stateDir>]   # live run dashboard; q quits
 harness web [trials-dir] [--port N=8399] [--host H] [--token T] [--dir D] [--no-open]
 ```
 
-`agh` is the same binary (`package.json` `bin`). Budget flags (`--budget-usd`, `--max-turns`,
-`--wall-ms`, `--idle-ms`) take per-run values; `AGENT_HARNESS_BUDGET_USD`, `AGENT_HARNESS_MAX_TURNS`,
-`AGENT_HARNESS_WALL_MS`, `AGENT_HARNESS_IDLE_MS` supply env defaults. State lives under
-`~/.agent-harness` (`AGENT_HARNESS_STATE_DIR`).
+`ach` is the same binary (`package.json` `bin`). Budget flags (`--budget-usd`, `--max-turns`,
+`--wall-ms`, `--idle-ms`) take per-run values; `AGENTIC_CODING_HARNESS_BUDGET_USD`, `AGENTIC_CODING_HARNESS_MAX_TURNS`,
+`AGENTIC_CODING_HARNESS_WALL_MS`, `AGENTIC_CODING_HARNESS_IDLE_MS` supply env defaults. State lives under
+`~/.agentic-coding-harness` (`AGENTIC_CODING_HARNESS_STATE_DIR`).
 
 Claude runs get a fresh per-run `CLAUDE_CONFIG_DIR` under the state dir so transcripts are captured
 by construction. On a Mac whose Claude Code login is keychain-bound OAuth (no
 `~/.claude/.credentials.json`) that dir cannot see the token and every run ends `Not logged in`;
-pass `--claude-default-config` (or set `AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1`) to run against the
+pass `--claude-default-config` (or set `AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1`) to run against the
 default config instead. Transcripts then land under `~/.claude/projects` and concurrent claude runs
 share one config, so pair it with sequential runs when isolation matters.
 
@@ -151,10 +151,10 @@ Every limit aborts the run mid-flight and records why in `exitStatus`.
 
 | limit      | flag           | env default                 | enforcement                          | default                  |
 |------------|----------------|-----------------------------|--------------------------------------|--------------------------|
-| spend      | `--budget-usd` | `AGENT_HARNESS_BUDGET_USD`  | abort, `exitStatus: budget_exceeded` | unlimited                |
-| turns      | `--max-turns`  | `AGENT_HARNESS_MAX_TURNS`   | abort, `exitStatus: turn_limit`      | claude 250, others unset |
-| wall clock | `--wall-ms`    | `AGENT_HARNESS_WALL_MS`     | abort, `exitStatus: timeout`         | unlimited                |
-| idle gap   | `--idle-ms`    | `AGENT_HARNESS_IDLE_MS`     | abort, `exitStatus: timeout`         | unlimited                |
+| spend      | `--budget-usd` | `AGENTIC_CODING_HARNESS_BUDGET_USD`  | abort, `exitStatus: budget_exceeded` | unlimited                |
+| turns      | `--max-turns`  | `AGENTIC_CODING_HARNESS_MAX_TURNS`   | abort, `exitStatus: turn_limit`      | claude 250, others unset |
+| wall clock | `--wall-ms`    | `AGENTIC_CODING_HARNESS_WALL_MS`     | abort, `exitStatus: timeout`         | unlimited                |
+| idle gap   | `--idle-ms`    | `AGENTIC_CODING_HARNESS_IDLE_MS`     | abort, `exitStatus: timeout`         | unlimited                |
 
 Precedence: per-run flag > env default > built-in default. Claude enforces its turn cap natively
 (`--max-turns`); the driver enforces the rest against the live event stream.

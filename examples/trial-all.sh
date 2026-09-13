@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # trial-all.sh — trial every installed agent on the same small task and print a comparison table.
 #
-# Drives the harness CLI (src/cli/harness.ts). Resolution order: `harness` on PATH,
-# else `bun src/cli/harness.ts`, else `npx tsx src/cli/harness.ts`.
+# Drives the harness CLI (src/cli/ach.ts). Resolution order: `harness` on PATH,
+# else `bun src/cli/ach.ts`, else `npx tsx src/cli/ach.ts`.
 # Output shape per `harness run --json` is the RunResult envelope; parsing below
 # tolerates both contested variants (.tokens.{input,..} and .tokens.inputTokens; .costUsd/.totalCost).
 set -u -o pipefail
@@ -15,12 +15,12 @@ AGENTS="claude codex opencode gemini kiro"
 HARNESS=""
 if command -v harness >/dev/null 2>&1; then
   HARNESS="harness"
-elif [ -f "$REPO/src/cli/harness.ts" ] && command -v bun >/dev/null 2>&1; then
-  HARNESS="bun $REPO/src/cli/harness.ts"
-elif [ -f "$REPO/src/cli/harness.ts" ]; then
-  HARNESS="npx tsx $REPO/src/cli/harness.ts"
+elif [ -f "$REPO/src/cli/ach.ts" ] && command -v bun >/dev/null 2>&1; then
+  HARNESS="bun $REPO/src/cli/ach.ts"
+elif [ -f "$REPO/src/cli/ach.ts" ]; then
+  HARNESS="npx tsx $REPO/src/cli/ach.ts"
 else
-  echo "error: no 'harness' on PATH and $REPO/src/cli/harness.ts not found" >&2
+  echo "error: no 'harness' on PATH and $REPO/src/cli/ach.ts not found" >&2
   exit 1
 fi
 

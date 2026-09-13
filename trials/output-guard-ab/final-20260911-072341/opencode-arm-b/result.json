@@ -1,0 +1,274 @@
+{
+  "sessionId": "ses_f6f1cb89effeISLxFaPpPfdPIz",
+  "events": [
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f6f1cb89effeISLxFaPpPfdPIz",
+      "timestamp": 1789137218752
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789137218753
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 10817,
+        "outputTokens": 55,
+        "cacheReadTokens": 42496,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 97,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 53465,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 53465,
+              "input": 10817,
+              "output": 55,
+              "reasoning": 97,
+              "cache": {
+                "read": 42496,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 53465,
+          "input": 10817,
+          "output": 55,
+          "reasoning": 97,
+          "cache": {
+            "read": 42496,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789137223252
+    },
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f6f1cb89effeISLxFaPpPfdPIz",
+      "timestamp": 1789137229755
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789137229755
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 0,
+        "outputTokens": 90,
+        "cacheReadTokens": 53495,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 1,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 53586,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 53586,
+              "input": 0,
+              "output": 90,
+              "reasoning": 1,
+              "cache": {
+                "read": 53495,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 53586,
+          "input": 0,
+          "output": 90,
+          "reasoning": 1,
+          "cache": {
+            "read": 53495,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789137231611
+    },
+    {
+      "type": "session",
+      "agent": "opencode",
+      "sessionId": "ses_f6f1cb89effeISLxFaPpPfdPIz",
+      "timestamp": 1789137237715
+    },
+    {
+      "type": "step",
+      "agent": "opencode",
+      "timestamp": 1789137237715
+    },
+    {
+      "type": "message",
+      "agent": "opencode",
+      "source": "agent",
+      "content": "200000",
+      "timestamp": 1789137237715
+    },
+    {
+      "type": "usage",
+      "agent": "opencode",
+      "usage": {
+        "agent": "opencode",
+        "model": "unknown",
+        "inputTokens": 122,
+        "outputTokens": 17,
+        "cacheReadTokens": 53504,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 1,
+        "costUsd": 0,
+        "extra": {
+          "totalTokens": 53644,
+          "durationMs": null,
+          "raw": {
+            "tokens": {
+              "total": 53644,
+              "input": 122,
+              "output": 17,
+              "reasoning": 1,
+              "cache": {
+                "read": 53504,
+                "write": 0
+              }
+            },
+            "cost": 0
+          }
+        }
+      },
+      "data": {
+        "tokens": {
+          "total": 53644,
+          "input": 122,
+          "output": 17,
+          "reasoning": 1,
+          "cache": {
+            "read": 53504,
+            "write": 0
+          }
+        },
+        "cost": 0
+      },
+      "timestamp": 1789137237788
+    }
+  ],
+  "tokens": [
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 10817,
+      "outputTokens": 55,
+      "cacheReadTokens": 42496,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 97,
+      "costUsd": 0,
+      "extra": {
+        "totalTokens": 53465,
+        "durationMs": null,
+        "raw": {
+          "tokens": {
+            "total": 53465,
+            "input": 10817,
+            "output": 55,
+            "reasoning": 97,
+            "cache": {
+              "read": 42496,
+              "write": 0
+            }
+          },
+          "cost": 0
+        }
+      },
+      "timestamp": 1789137223252
+    },
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 0,
+      "outputTokens": 90,
+      "cacheReadTokens": 53495,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 1,
+      "costUsd": 0,
+      "extra": {
+        "totalTokens": 53586,
+        "durationMs": null,
+        "raw": {
+          "tokens": {
+            "total": 53586,
+            "input": 0,
+            "output": 90,
+            "reasoning": 1,
+            "cache": {
+              "read": 53495,
+              "write": 0
+            }
+          },
+          "cost": 0
+        }
+      },
+      "timestamp": 1789137231611
+    },
+    {
+      "agent": "opencode",
+      "model": "unknown",
+      "inputTokens": 122,
+      "outputTokens": 17,
+      "cacheReadTokens": 53504,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 1,
+      "costUsd": 0,
+      "extra": {
+        "totalTokens": 53644,
+        "durationMs": null,
+        "raw": {
+          "tokens": {
+            "total": 53644,
+            "input": 122,
+            "output": 17,
+            "reasoning": 1,
+            "cache": {
+              "read": 53504,
+              "write": 0
+            }
+          },
+          "cost": 0
+        }
+      },
+      "timestamp": 1789137237788
+    }
+  ],
+  "totalCost": 0,
+  "durationMs": 29651,
+  "exitStatus": "success",
+  "warnings": [
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed",
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed",
+    "pricing: unknown model \"unknown\" (alias \"unknown\"); cost not computed"
+  ]
+}

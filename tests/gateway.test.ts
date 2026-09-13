@@ -16,9 +16,9 @@ import {
 //
 // UNIT half: real signatures (seat W4 landed):
 //   gatewayConfigFromFlags(flags: GatewayFlags, env: NodeJS.ProcessEnv):
-//       GatewayConfig — flags win over env mirrors (AGENT_HARNESS_GATEWAY=1,
-//       AGENT_HARNESS_ROOT, AGENT_HARNESS_MAX_JOBS, AGENT_HARNESS_MAX_OUTPUT_BYTES,
-//       AGENT_HARNESS_ALLOW_EXTRA_ARGS); root is path.resolve()d.
+//       GatewayConfig — flags win over env mirrors (AGENTIC_CODING_HARNESS_GATEWAY=1,
+//       AGENTIC_CODING_HARNESS_ROOT, AGENTIC_CODING_HARNESS_MAX_JOBS, AGENTIC_CODING_HARNESS_MAX_OUTPUT_BYTES,
+//       AGENTIC_CODING_HARNESS_ALLOW_EXTRA_ARGS); root is path.resolve()d.
 //   checkCwd(cfg: GatewayConfig | undefined, cwd?: string):
 //       {ok:true} | {ok:false, error} — off→ok; on+undefined→ok;
 //       on+outside root→error naming the cwd.
@@ -30,7 +30,7 @@ import {
 // command (src/cli/serve.ts + src/mcp/http.ts).
 // ---------------------------------------------------------------------------
 
-const CLI = new URL('../src/cli/harness.ts', import.meta.url).pathname;
+const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
 const TOKEN = 'testtok';
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
 
@@ -147,27 +147,27 @@ describe('gateway policy: checkArtifactPath', () => {
 });
 
 describe('gateway policy: gatewayConfigFromFlags (env/flag precedence)', () => {
-  it('AGENT_HARNESS_GATEWAY=1 with no flags → enabled, root from env', () => {
-    const cfg = gatewayConfigFromFlags({}, { AGENT_HARNESS_GATEWAY: '1', AGENT_HARNESS_ROOT: '/tmp/envroot' });
+  it('AGENTIC_CODING_HARNESS_GATEWAY=1 with no flags → enabled, root from env', () => {
+    const cfg = gatewayConfigFromFlags({}, { AGENTIC_CODING_HARNESS_GATEWAY: '1', AGENTIC_CODING_HARNESS_ROOT: '/tmp/envroot' });
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.root, resolve('/tmp/envroot'));
   });
 
-  it('explicit flag wins over env (gateway:false beats AGENT_HARNESS_GATEWAY=1)', () => {
-    const cfg = gatewayConfigFromFlags({ gateway: false }, { AGENT_HARNESS_GATEWAY: '1' });
+  it('explicit flag wins over env (gateway:false beats AGENTIC_CODING_HARNESS_GATEWAY=1)', () => {
+    const cfg = gatewayConfigFromFlags({ gateway: false }, { AGENTIC_CODING_HARNESS_GATEWAY: '1' });
     assert.equal(cfg.enabled, false);
   });
 
-  it('flag root wins over AGENT_HARNESS_ROOT', () => {
+  it('flag root wins over AGENTIC_CODING_HARNESS_ROOT', () => {
     const cfg = gatewayConfigFromFlags(
       { gateway: true, root: '/tmp/flagroot' },
-      { AGENT_HARNESS_ROOT: '/tmp/envroot' },
+      { AGENTIC_CODING_HARNESS_ROOT: '/tmp/envroot' },
     );
     assert.equal(cfg.root, resolve('/tmp/flagroot'));
   });
 
-  it('AGENT_HARNESS_MAX_JOBS respected; default is 4', () => {
-    assert.equal(gatewayConfigFromFlags({}, { AGENT_HARNESS_MAX_JOBS: '7' }).maxJobs, 7);
+  it('AGENTIC_CODING_HARNESS_MAX_JOBS respected; default is 4', () => {
+    assert.equal(gatewayConfigFromFlags({}, { AGENTIC_CODING_HARNESS_MAX_JOBS: '7' }).maxJobs, 7);
     assert.equal(gatewayConfigFromFlags({}, {}).maxJobs, 4);
   });
 
@@ -191,7 +191,7 @@ describe('harness serve --gateway (subprocess integration)', () => {
   function spawnServer(args: string[]): ChildProcess {
     const full = isBun ? [CLI, 'serve', ...args] : ['--import', 'tsx', CLI, 'serve', ...args];
     return spawn(isBun ? 'bun' : process.execPath, full, {
-      env: { ...process.env, AGENT_HARNESS_STATE_DIR: stateTmp },
+      env: { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: stateTmp },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
   }
