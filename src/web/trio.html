@@ -1,9 +1,10 @@
 <!doctype html>
 <!--
   Observability Trio — detail view for ONE run (Concept A).
-  Three synchronized panes (Traces | Metrics | Logs) + replay terminal drawer.
+  Three synchronized panes (Traces | Metrics | Logs) + a live log drawer.
   Reads ?run=<runId>&token=<token>; all data from same-origin /api/* endpoints;
-  structured feed (pane pending migration). No frameworks, no external requests.
+  the drawer is the shared structured feed (/feed.js) over the run's /ws
+  socket. No frameworks, no external requests.
 -->
 <html lang="en">
 <head>
@@ -177,8 +178,8 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3f
 .log .sp.hit { color: var(--cyan); }
 .log .m { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* ===== terminal drawer ===== */
-footer { flex: none; height: 220px; display: flex; flex-direction: column; background: #0b0f16; border-top: 1px solid var(--line); transition: height .2s ease; }
+/* ===== feed drawer ===== */
+footer { flex: none; height: 320px; display: flex; flex-direction: column; background: #0b0f16; border-top: 1px solid var(--line); transition: height .2s ease; }
 footer.min { height: 35px; }
 .tbar {
   display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; flex: none;
@@ -189,8 +190,19 @@ footer.min { height: 35px; }
 footer.min #drawerToggle { transform: rotate(180deg); }
 footer.min .tbody { display: none; }
 .tbody { flex: 1; min-height: 0; overflow: auto; position: relative; }
-#playerBox { position: absolute; inset: 0; padding: 10px 14px; overflow: auto; }
-.player-msg { color: var(--dim); font: 11.5px var(--mono); padding: 8px 2px; }
+#feedBox {
+  position: absolute; inset: 0; overflow: auto;
+  /* page theme -> feed theme (see /feed.js) */
+  --feed-bg: #0b0f16;
+  --feed-fg: var(--fg);
+  --feed-dim: var(--faint);
+  --feed-line: var(--line);
+  --feed-green: var(--green);
+  --feed-red: var(--red);
+  --feed-yellow: var(--amber);
+  --feed-blue: var(--blue);
+  --feed-mono: var(--mono);
+}
 
 /* ===== responsive + motion ===== */
 @media (max-width: 1080px) {
@@ -250,13 +262,14 @@ footer.min .tbody { display: none; }
 
 <footer id="drawer">
   <div class="tbar">
-    <span>Terminal &middot; replay</span>
+    <span>Feed &middot; live log</span>
     <span class="pmeta" id="termMeta"></span>
-    <button id="drawerToggle" aria-expanded="true" aria-label="collapse terminal" style="margin-left:auto">&#9662;</button>
+    <button id="drawerToggle" aria-expanded="true" aria-label="collapse feed" style="margin-left:auto">&#9662;</button>
   </div>
-  <div class="tbody"><div id="playerBox"></div></div>
+  <div class="tbody"><div id="feedBox"></div></div>
 </footer>
 
+<script src="/feed.js"></script>
 <script>
 (function () {
 "use strict";
@@ -295,7 +308,10 @@ var obs = null;   // /observability payload
 var rec = null;   // matching RunRecord from /api/runs (may be null)
 var sel = null;   // selected span: {id, name, startMs, endMs}
 var pollTimer = null;
-var castLoaded = false;
+var feedOpened = false;
+var feed = null;       // HarnessFeed handle
+var feedConn = null;   // HarnessFeed.connect() handle
+var feedEnded = false; // the run's stream reported `end` (terminal)
 var chartPts = null; // display points for the crosshair
 
 function api(path) { return fetch(path).then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r; }); }
@@ -581,16 +597,30 @@ function clearSel() {
   applySel();
 }
 
-/* ===== terminal drawer ===== */
-function loadCast() {
-  // The replay player is gone: this pane is pending migration to the
-  // structured HarnessFeed (see /feed.js and src/web/index.html).
-  if (castLoaded || !RUN_ID) return;
-  castLoaded = true;
-  var box = $("playerBox");
-  $("termMeta").textContent = "transcript";
-  box.textContent = "";
-  box.appendChild(el("div", "player-msg", "feed pending migration \u2014 open the dashboard for the live log feed"));
+/* ===== feed drawer ===== */
+function openFeed() {
+  if (feedOpened || !RUN_ID) return;
+  var box = $("feedBox");
+  if (!window.HarnessFeed) {
+    $("termMeta").textContent = "feed unavailable";
+    box.textContent = "/feed.js failed to load";
+    return;
+  }
+  feedOpened = true;
+  $("termMeta").textContent = "connecting";
+  feed = window.HarnessFeed.create(box);
+  feedConn = window.HarnessFeed.connect(feed, {
+    runId: RUN_ID,
+    token: TOKEN,
+    onRecord: function (r) { rec = r; renderHeader(); },
+    onStatus: function (s) {
+      // "ended" is terminal: the socket's own close event fires after it and
+      // must not downgrade the label back to "idle".
+      if (feedEnded) return;
+      if (s === "ended") feedEnded = true;
+      $("termMeta").textContent = s === "open" ? "live" : s === "closed" ? "idle" : s;
+    },
+  });
 }
 
 /* ===== data loading ===== */
@@ -659,11 +689,17 @@ $("traceList").addEventListener("keydown", function (e) {
 $("logFilter").addEventListener("click", clearSel);
 $("chartbox").addEventListener("mousemove", chartMove);
 $("chartbox").addEventListener("mouseleave", chartLeave);
+var DRAWER_KEY = "harness.trio.drawer";
+function setDrawer(min, persist) {
+  $("drawer").classList.toggle("min", min);
+  var btn = $("drawerToggle");
+  btn.setAttribute("aria-expanded", String(!min));
+  btn.setAttribute("aria-label", min ? "expand feed" : "collapse feed");
+  if (persist) { try { sessionStorage.setItem(DRAWER_KEY, min ? "min" : "open"); } catch (e) { /* noop */ } }
+  if (!min) openFeed();
+}
 $("drawerToggle").addEventListener("click", function () {
-  var min = $("drawer").classList.toggle("min");
-  this.setAttribute("aria-expanded", String(!min));
-  this.setAttribute("aria-label", min ? "expand terminal" : "collapse terminal");
-  if (!min) loadCast();
+  setDrawer(!$("drawer").classList.contains("min"), true);
 });
 
 /* ===== init ===== */
@@ -677,7 +713,10 @@ function init() {
     .then(function () {
       renderAll();
       startPollingIfLive();
-      loadCast();
+      var stored = null;
+      try { stored = sessionStorage.getItem(DRAWER_KEY); } catch (e) { /* noop */ }
+      if (stored === "min") setDrawer(true, false);
+      openFeed();
     })
     .catch(function (err) {
       var msg = err && err.message === "http 404"

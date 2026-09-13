@@ -103,7 +103,7 @@ main { flex: 1; display: block; }
 #grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(250px, auto);
+  grid-auto-rows: 340px;
   gap: 10px;
   padding: 10px;
 }
@@ -175,23 +175,34 @@ main { flex: 1; display: block; }
 }
 .trio:hover { background: var(--cyan); color: #000; }
 
+.tprompt {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--dim);
+  background: #090e0b;
+  border-bottom: 1px solid var(--edge);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tbody {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.5;
   user-select: text;
   overscroll-behavior: contain;
+  /* page theme -> feed theme (see /feed.js) */
+  --feed-bg: var(--panel);
+  --feed-fg: var(--text);
+  --feed-dim: var(--faint);
+  --feed-line: var(--edge);
+  --feed-green: var(--green);
+  --feed-red: var(--red);
+  --feed-yellow: var(--amber);
+  --feed-blue: var(--cyan);
+  --feed-mono: var(--mono);
 }
-.line { white-space: pre-wrap; word-break: break-word; color: var(--text); }
-.line.typing::after { content: "▍"; color: var(--green); animation: blink .9s steps(1) infinite; }
-@keyframes blink { 50% { opacity: 0; } }
-.line.dim { color: var(--dim); }
-.line.faint { color: var(--faint); font-style: italic; }
-.line.ok { color: var(--green); }
-.line.err { color: var(--red); }
-.line.tool { color: var(--cyan); }
 .tbody::-webkit-scrollbar { width: 8px; }
 .tbody::-webkit-scrollbar-thumb { background: #1c2921; border-radius: 4px; }
 .tbody::-webkit-scrollbar-track { background: transparent; }
@@ -223,7 +234,6 @@ main { flex: 1; display: block; }
 /* ===== reduced motion ===== */
 @media (prefers-reduced-motion: reduce) {
   .dot.pulse { animation: none; }
-  .line.typing::after { animation: none; content: ""; }
   .tile, .trio { transition: none; }
 }
 </style>
@@ -258,6 +268,7 @@ main { flex: 1; display: block; }
   </footer>
 </div>
 
+<script src="/feed.js"></script>
 <script>
 (function () {
   "use strict";
@@ -265,8 +276,6 @@ main { flex: 1; display: block; }
   var QS = new URLSearchParams(window.location.search);
   var TOKEN = QS.get("token") || "";
   var LIVE_MS = 60000;
-  var MAX_LINES = 80;
-  var REDUCED = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   var grid = document.getElementById("grid");
   var elRuns = document.getElementById("st-runs");
@@ -354,55 +363,26 @@ main { flex: 1; display: block; }
     bar.appendChild(cost);
     bar.appendChild(elapsed);
 
+    var prompt = document.createElement("div");
+    prompt.className = "tprompt";
+    prompt.textContent = "❯ " + (rec.promptPreview || "(no prompt)");
+
     var body = document.createElement("div");
     body.className = "tbody";
 
     tile.appendChild(bar);
+    tile.appendChild(prompt);
     tile.appendChild(body);
 
-    return { tile: tile, dot: dot, name: name, model: model, trio: trio, tok: tok, cost: cost, elapsed: elapsed, body: body };
+    return {
+      tile: tile, dot: dot, name: name, model: model, trio: trio,
+      tok: tok, cost: cost, elapsed: elapsed, prompt: prompt, body: body
+    };
   }
 
   function statusLabel(st, live) {
     if (st === "running" && !live) return "interrupted";
     return st;
-  }
-
-  function classify(text) {
-    var t = text || "";
-    if (/^\s*[✓✔ok]/i.test(t) || /passed\b/i.test(t)) return "line ok";
-    if (/^\s*[✗✖x]/i.test(t) || /\berror\b|\bfail(ed|ure)?\b/i.test(t)) return "line err";
-    if (/^\s*(⏺|⏿|●)/.test(t) || /^\s*\[(tool|bash|read|edit|write|search)\b/i.test(t)) return "line tool";
-    return "line";
-  }
-
-  function appendLine(st, text, cls) {
-    var body = st.dom.body;
-    var div = document.createElement("div");
-    div.className = cls || classify(text);
-    div.textContent = text; // escaped by construction
-    // typewriter caret on the newest live line (motion-safe only)
-    if (!REDUCED && st.streaming && st.typingEl) st.typingEl.classList.remove("typing");
-    if (!REDUCED && st.streaming) {
-      div.classList.add("typing");
-      st.typingEl = div;
-    }
-    // auto-scroll only when the user is parked at (or near) the bottom
-    var near = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
-    body.appendChild(div);
-    while (body.childElementCount > MAX_LINES) body.removeChild(body.firstChild);
-    if (near) body.scrollTop = body.scrollHeight;
-  }
-
-  function setSummary(st) {
-    var rec = st.rec;
-    st.dom.body.textContent = "";
-    st.typingEl = null;
-    appendLine(st, "❯ " + (rec.promptPreview || "(no prompt)"), "line dim");
-    var label = statusLabel(rec.status, st.live);
-    var cls = label === "success" ? "line ok" : label === "error" ? "line err" : "line faint";
-    appendLine(st, "— " + label.toUpperCase() + " —", cls);
-    if (rec.lastEvent) appendLine(st, rec.lastEvent, "line dim");
   }
 
   function updateHeader(st) {
@@ -435,74 +415,32 @@ main { flex: 1; display: block; }
     st.dom.elapsed.appendChild(b);
   }
 
-  // ------- per-run live stream -------
+  // ------- per-run structured feed -------
 
-  function openRunSocket(st) {
-    if (st.ended || st.sock) return;
-    st.streaming = true;
-    appendLine(st, "— connecting to stream —", "line faint");
-    var sock;
-    try {
-      sock = new WebSocket(wsUrl("runId=" + encodeURIComponent(st.rec.runId)));
-    } catch (e) {
-      st.streaming = false;
-      return;
-    }
-    st.sock = sock;
-    sock.onmessage = function (ev) {
-      var msg;
-      try { msg = JSON.parse(ev.data); } catch (e) { return; }
-      if (msg.type === "record" && msg.record) {
-        st.rec = msg.record;
+  // Every tile — live or finished — gets the shared HarnessFeed. A finished run
+  // receives its backlog followed by `end`, so the tile shows the whole run.
+  function openRunFeed(st) {
+    if (st.conn || !st.feed || !window.HarnessFeed) return;
+    st.ended = false;
+    st.conn = window.HarnessFeed.connect(st.feed, {
+      runId: st.rec.runId,
+      token: TOKEN,
+      onRecord: function (record) {
+        st.rec = record;
         st.live = isLive(st.rec, Date.now());
         updateHeader(st);
         updateElapsed(st, Date.now());
-        return;
-      }
-      if (msg.type === "backlog" && Array.isArray(msg.events)) {
-        st.dom.body.textContent = "";
-        st.typingEl = null;
-        var events = msg.events.length > MAX_LINES ? msg.events.slice(msg.events.length - MAX_LINES) : msg.events;
-        for (var i = 0; i < events.length; i++) {
-          var text = events[i] && (events[i].text || (events[i].event && events[i].event.text));
-          if (typeof text === "string" && text.length > 0) appendLine(st, text);
-        }
-        st.dom.body.scrollTop = st.dom.body.scrollHeight;
-        return;
-      }
-      if (msg.type === "event") {
-        var t = msg.text || (msg.event && msg.event.text);
-        if (typeof t === "string" && t.length > 0) appendLine(st, t);
-        return;
-      }
-      if (msg.type === "end") {
-        finishRun(st, "— stream ended —");
-      }
-    };
-    sock.onclose = function () {
-      st.sock = null;
-      st.streaming = false;
-      if (st.typingEl) { st.typingEl.classList.remove("typing"); st.typingEl = null; }
-      if (!st.ended && isLive(st.rec, Date.now())) {
-        // transient drop while the run is still live: retry with backoff
-        st.backoff = Math.min(15000, (st.backoff || 1000) * 2);
-        st.reconnectTimer = window.setTimeout(function () {
-          st.reconnectTimer = null;
-          if (!st.ended && isLive(st.rec, Date.now())) openRunSocket(st);
-        }, st.backoff);
-      }
-    };
-    sock.onerror = function () { try { sock.close(); } catch (e) { /* noop */ } };
+      },
+      onEnd: function () { finishRun(st); },
+    });
   }
 
-  function finishRun(st, note) {
-    if (st.ended && note === undefined) return;
+  // State bookkeeping only: the feed appends its own "— stream ended —" row.
+  function finishRun(st) {
+    if (st.ended) return;
     st.ended = true;
-    st.streaming = false;
-    if (st.reconnectTimer) { window.clearTimeout(st.reconnectTimer); st.reconnectTimer = null; }
-    if (st.sock) { try { st.sock.close(); } catch (e) { /* noop */ } st.sock = null; }
-    if (st.typingEl) { st.typingEl.classList.remove("typing"); st.typingEl = null; }
-    if (note) appendLine(st, note, "line faint");
+    if (st.conn) { try { st.conn.close(); } catch (e) { /* noop */ } st.conn = null; }
+    if (st.feed) st.feed.setEnded();
   }
 
   // ------- runs list -------
@@ -556,10 +494,7 @@ main { flex: 1; display: block; }
       var live = isLive(rec, Date.now());
       if (!st) {
         var dom = makeTile(rec);
-        st = {
-          rec: rec, live: live, ended: !live, streaming: false,
-          sock: null, backoff: 1000, reconnectTimer: null, typingEl: null, dom: dom
-        };
+        st = { rec: rec, live: live, ended: false, conn: null, feed: null, dom: dom };
         (function (state) {
           state.dom.tile.addEventListener("click", function () { select(state.rec.runId); });
           state.dom.tile.addEventListener("keydown", function (ev) {
@@ -572,27 +507,24 @@ main { flex: 1; display: block; }
         })(st);
         runs.set(rec.runId, st);
         grid.appendChild(dom.tile);
-        if (live) {
-          st.ended = false;
-          appendLine(st, "❯ " + (rec.promptPreview || "(no prompt)"), "line dim");
-          openRunSocket(st);
+        if (window.HarnessFeed) {
+          st.feed = window.HarnessFeed.create(dom.body, { compact: true, maxItems: 2000 });
         } else {
-          setSummary(st);
+          dom.body.textContent = "feed unavailable (/feed.js failed to load)";
         }
+        openRunFeed(st);
       } else {
         st.rec = rec;
-        if (live && !st.live) {
-          // transitioned to live (e.g. heartbeat resumed)
+        st.dom.prompt.textContent = "❯ " + (rec.promptPreview || "(no prompt)");
+        if (live && !st.live && st.ended) {
+          // transitioned back to live (e.g. heartbeat resumed): replay from scratch
           st.live = true;
-          st.ended = false;
-          st.dom.body.textContent = "";
-          st.typingEl = null;
-          appendLine(st, "❯ " + (rec.promptPreview || "(no prompt)"), "line dim");
-          openRunSocket(st);
+          if (st.feed) st.feed.reset();
+          openRunFeed(st);
         } else if (!live && st.live) {
+          // the run just stopped; the server still owes this socket an `end`,
+          // which is what closes the feed out.
           st.live = false;
-          finishRun(st, "— stream ended —");
-          if (st.rec.status === "running") setSummary(st);
         }
       }
       st.live = live;
@@ -701,8 +633,8 @@ main { flex: 1; display: block; }
       if (st.live && !live) {
         // heartbeat went stale without a registry write: degrade gracefully
         st.live = false;
-        finishRun(st, "— stream ended —");
-        if (st.rec.status === "running") setSummary(st);
+        finishRun(st);
+        updateHeader(st);
         liveChanged = true;
       }
     });

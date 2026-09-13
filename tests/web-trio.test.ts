@@ -260,6 +260,9 @@ describe('grid/trio routes + observability API (bun subprocess)', { skip: isBun 
     const html = await res.text();
     assert.ok(/<!doctype html/i.test(html), 'missing doctype');
     assert.ok(html.includes('<html'), 'missing <html tag');
+    assert.ok(html.includes('/feed.js'), 'grid must load the shared feed module');
+    assert.ok(!/asciinema/i.test(html), 'grid must not reference asciinema');
+    assert.ok(!/xterm/i.test(html), 'grid must not reference xterm');
   });
 
   it('GET /trio → 200 HTML with a doctype', async () => {
@@ -269,6 +272,9 @@ describe('grid/trio routes + observability API (bun subprocess)', { skip: isBun 
     const html = await res.text();
     assert.ok(/<!doctype html/i.test(html), 'missing doctype');
     assert.ok(html.includes('<html'), 'missing <html tag');
+    assert.ok(html.includes('/feed.js'), 'trio must load the shared feed module');
+    assert.ok(!/asciinema/i.test(html), 'trio must not reference asciinema');
+    assert.ok(!/xterm/i.test(html), 'trio must not reference xterm');
   });
 
   it('GET /api/runs/<runId>/observability → 200 with spans/metrics/logs arrays', async () => {
