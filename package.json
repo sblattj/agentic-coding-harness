@@ -1,17 +1,48 @@
 {
   "name": "agentic-coding-harness",
   "version": "0.7.0",
-  "private": true,
+  "description": "Run, watch, and meter coding agents — Claude Code, OpenCode, Kiro, Codex CLI, Gemini CLI — with normalized events, cost accounting, and replayable run artifacts.",
+  "keywords": [
+    "coding-agent",
+    "agent-orchestration",
+    "claude",
+    "opencode",
+    "codex",
+    "gemini",
+    "kiro",
+    "cli",
+    "observability",
+    "opentelemetry",
+    "cost-tracking"
+  ],
+  "author": "Stephen Blatt",
+  "license": "MIT",
   "type": "module",
   "bin": {
-    "ach": "./src/cli/ach.ts"
+    "ach": "./dist/cli/ach.js"
   },
+  "engines": {
+    "node": ">=18.19"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sblattj/agentic-coding-harness.git"
+  },
+  "homepage": "https://github.com/sblattj/agentic-coding-harness#readme",
+  "bugs": "https://github.com/sblattj/agentic-coding-harness/issues",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "test": "tsx --test tests/*.test.ts src/adapters/*.test.ts",
     "test:bun": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
-    "build": "bun build src/cli/ach.ts --outdir dist --target bun",
-    "build:node": "bun build src/cli/ach.ts --target node --external bun-pty --outfile dist/ach.mjs"
+    "build": "npm run build:node && npm run build:bun",
+    "build:node": "rm -rf dist/cli && bun build src/cli/ach.ts --outdir dist/cli --target node --external bun-pty --banner \"#!/usr/bin/env node\" && cp src/web/index.html src/web/grid.html src/web/trio.html src/web/term-pane.html src/web/feed.js dist/cli/ && cp -R src/web/vendor dist/cli/vendor",
+    "build:bun": "bun build src/cli/ach.ts --outdir dist/bun --target bun --banner \"#!/usr/bin/env bun\"",
+    "prepack": "npm run build && npm test"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
