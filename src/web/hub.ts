@@ -7,7 +7,13 @@
 // jsonl as AgentEvents before live push takes over.
 import fs from "node:fs";
 import type { AgentEvent } from "../core/types.ts";
-import { type RunRecord, listRunRecords, readRunRecord, registryDir } from "../core/registry.ts";
+import {
+  type RunRecord,
+  listRunRecords,
+  readRunRecord,
+  registryDir,
+  resolveRawTranscript,
+} from "../core/registry.ts";
 
 export const RUN_TOPIC_PREFIX = "run:";
 export const RUNS_TOPIC = "runs";
@@ -67,7 +73,7 @@ export class RunEventHub {
     if (!rec) return [];
     let text: string;
     try {
-      text = await fs.promises.readFile(rec.rawTranscript, "utf8");
+      text = await fs.promises.readFile(resolveRawTranscript(this.stateDir, rec), "utf8");
     } catch {
       return [];
     }
