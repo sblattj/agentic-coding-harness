@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentic-coding-harness"
-version = "0.7.0"
+version = "0.7.1"
 description = "run/watch/meter coding agents"
 authors = [{ name = "Stephen Blatt" }]
 license = { text = "MIT" }
