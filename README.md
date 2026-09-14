@@ -4,7 +4,7 @@
   <a href="https://www.npmjs.com/package/agentic-coding-harness"><img alt="npm version" src="https://img.shields.io/npm/v/agentic-coding-harness"></a>
   <a href="https://pypi.org/project/agentic-coding-harness/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/agentic-coding-harness"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="node >=18.19" src="https://img.shields.io/badge/node-%3E%3D18.19-brightgreen">
+  <img alt="Node.js 18.19 or newer" src="https://img.shields.io/badge/node-%3E%3D18.19-brightgreen">
 </p>
 
 **Agents hide the burn. This is the receipt — tokens, credits, and dollars, verified against each CLI's own records.**
