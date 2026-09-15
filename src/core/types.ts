@@ -27,6 +27,19 @@ export function isKnownAgent(a: string): a is AgentName {
   return (AGENTS as readonly string[]).includes(a);
 }
 
+/**
+ * Finite positive number schema (timeouts and budget caps). Rejects NaN and
+ * ±Infinity (which plain z.number() checks like .positive() would let through
+ * as "positive" or with an opaque type error), zero, and negatives — with one
+ * clear message naming the constraint. Validation contract: #10.
+ */
+function finitePositive(what: string) {
+  const error = `${what} must be a finite number > 0`;
+  return z
+    .number({ error })
+    .refine((v) => Number.isFinite(v) && v > 0, { error });
+}
+
 // ------------------------------------------------------- CLI capabilities
 // (moved from src/adapters/types.ts; re-exported there)
 
@@ -497,7 +510,7 @@ export const KiroConfigSchema = z
     tools: z.union([z.literal("all"), z.literal("none"), z.array(z.string())]).optional(),
     requireMcpStartup: z.boolean().optional(),
     mcpServers: z.array(AcpMcpServerSchema).optional(),
-    startupMs: z.number().positive().optional(),
+    startupMs: finitePositive("kiro.startupMs").optional(),
     requireModelAck: z.boolean().optional(),
   })
   .strict();
@@ -604,6 +617,18 @@ export const UsageAvailabilitySchema = z.object({
     .optional(),
 });
 
+/** Spend/time caps for one run (RunSpec.budget); every field optional. */
+export interface RunBudget {
+  /** Cumulative USD cost cap, enforced where tokens can be priced. */
+  usd?: number;
+  /** Maximum native turns/steps. */
+  maxTurns?: number;
+  /** Whole-run wall-clock cap in ms (top-level alias: RunSpec.timeoutMs). */
+  wallMs?: number;
+  /** No-event idle cap in ms (top-level alias: RunSpec.idleTimeoutMs). */
+  idleMs?: number;
+}
+
 /** Run request as accepted by Driver.run(). Extra keys pass through. */
 export interface RunSpec {
   prompt: string;
@@ -617,7 +642,7 @@ export interface RunSpec {
   cwd?: string;
   model?: string;
   resume?: string;
-  budget?: { usd?: number; maxTurns?: number; wallMs?: number; idleMs?: number };
+  budget?: RunBudget;
   /**
    * Top-level alias for budget.wallMs (whole-run wall-clock cap, ms). Explicit
    * budget.wallMs wins when both are given. Watchdog-style consumers
@@ -646,22 +671,42 @@ export interface RunSpec {
   [key: string]: unknown;
 }
 
-/** Zod mirror of RunSpec (passthrough: adapter-specific keys ride along). */
+/**
+ * Zod mirror of RunSpec (passthrough: adapter-specific keys ride along).
+ *
+ * Validation contract (#10): required fields present (prompt non-empty),
+ * timeouts/budget caps finite and > 0, budget shape closed (unknown budget
+ * keys are typos that would silently disable a cap, so they fail fast).
+ * Driver.run() validates every spec through this schema via
+ * src/core/validate.ts parseRunSpec() before any adapter launches.
+ */
 export const RunSpecSchema = z
   .object({
-    prompt: z.string(),
+    prompt: z
+      .string({ error: "prompt is required and must be a non-empty string" })
+      .min(1, { error: "prompt is required and must be a non-empty string" }),
     runId: z.string().optional(),
     cwd: z.string().optional(),
     model: z.string().optional(),
     resume: z.string().optional(),
     budget: z
       .object({
-        usd: z.number().positive().optional(),
-        maxTurns: z.number().int().positive().optional(),
-        wallMs: z.number().positive().optional(),
-        idleMs: z.number().positive().optional(),
+        usd: finitePositive("budget.usd").optional(),
+        maxTurns: z
+          .number({ error: "budget.maxTurns must be a finite integer > 0" })
+          .refine((v) => Number.isFinite(v) && Number.isInteger(v) && v > 0, {
+            error: "budget.maxTurns must be a finite integer > 0",
+          })
+          .optional(),
+        wallMs: finitePositive("budget.wallMs").optional(),
+        idleMs: finitePositive("budget.idleMs").optional(),
       })
+      .strict()
       .optional(),
+    // Watchdog-style top-level aliases (#5): resolve to budget.wallMs / idleMs;
+    // an explicit budget.* value always wins.
+    timeoutMs: finitePositive("timeoutMs").optional(),
+    idleTimeoutMs: finitePositive("idleTimeoutMs").optional(),
     env: z.record(z.string(), z.string()).optional(),
     extraArgs: z.array(z.string()).optional(),
     stateDir: z.string().optional(),
@@ -712,6 +757,13 @@ export interface AgentAdapter {
   launch(spec: RunSpec): Promise<AgentHandle>;
   /** When true, the adapter enforces budget.maxTurns itself. */
   enforcesBudget?: boolean;
+  /**
+   * When true, this adapter cannot run without an explicit RunSpec.model —
+   * Driver.run() fails fast on an unpinned model (#10). Spec-conditional
+   * requirements (e.g. kiro.requireModelAck) live in parseRunSpec instead,
+   * because they depend on the run spec, not the adapter alone.
+   */
+  requiresModel?: boolean;
 }
 
 /** Working-directory/env options shared by the CLI-lane adapters. */
