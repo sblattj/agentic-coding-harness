@@ -14,6 +14,7 @@ import { OpenCodeAdapter } from '../adapters/opencode.js';
 import { KiroAdapter } from '../adapters/kiro.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { GeminiAdapter } from '../adapters/gemini.js';
+import { takeOnOutput } from '../adapters/shared.js';
 
 /** Normalize EventTimestamp (ISO string | epoch ms | Date | undefined) to epoch ms. */
 function toMs(ts: EventTimestamp): number {
@@ -111,6 +112,14 @@ export interface DriverOptions {
   /** Optional streaming tap: called for every event as it is consumed. */
   onEvent?: (event: AgentEvent) => void;
   /**
+   * Optional raw stdout tap: forwarded into every adapter launch so callers
+   * receive each chunk of the agent CLI's raw stdout EXACTLY as received,
+   * alongside the canonical parsed events (RunSpec.onOutput overrides this
+   * per-run). Transports without a child process (kiro ACP, opencode
+   * preferServer) have no stdout to tap. A throwing tap never breaks a run.
+   */
+  onOutput?: (chunk: string) => void;
+  /**
    * Optional run registry (dash live view, src/dash/PLAN.md): when present,
    * run() writes a RunRecord under <registry.stateDir>/runs/ at spawn,
    * heartbeats totals/lastEvent per event (writes throttled to >= 500ms), and
@@ -204,7 +213,10 @@ export function createDriver(options: DriverOptions): Driver {
       const idleMs = parsed.budget?.idleMs;
 
       const start = Date.now();
-      const handle = await adapter.launch(parsed);
+      // Raw stdout tap precedence: RunSpec.onOutput wins over the driver-wide
+      // DriverOptions.onOutput; merged here so every adapter sees one field.
+      const onOutput = takeOnOutput(parsed) ?? options.onOutput;
+      const handle = await adapter.launch(onOutput ? { ...parsed, onOutput } : parsed);
       const sessionId = handle.sessionId;
       // Cancellation hook for driver.abort(runId) until the run settles.
       activeRuns.set(runId, () => {

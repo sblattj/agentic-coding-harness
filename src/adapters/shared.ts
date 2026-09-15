@@ -127,6 +127,13 @@ export interface JsonlRunConfig {
   /** Grace period between SIGTERM and SIGKILL on abort. */
   killGraceMs?: number;
   /**
+   * Raw stdout tap: called with each stdout chunk EXACTLY as received (chunk
+   * boundaries preserved, no line assembly) BEFORE the chunk is fed to
+   * parseLine — so raw stdout is populated alongside canonical events. A
+   * throwing tap never breaks the run (the exception is swallowed).
+   */
+  onOutput?: (chunk: string) => void;
+  /**
    * Optional stderr hook. stderr lines are ALWAYS forwarded as `progress`
    * events (unchanged behaviour); when this is present it is called first for
    * every non-blank line and any events it returns are pushed BEFORE the
@@ -137,12 +144,22 @@ export interface JsonlRunConfig {
 }
 
 /**
+ * Extract a function-typed `onOutput` from a passthrough RunSpec/RunOptions
+ * (RunSpecSchema is .passthrough(), so callers can smuggle anything in).
+ * Returns undefined for anything that is not a function.
+ */
+export function takeOnOutput(spec: { onOutput?: unknown; [key: string]: unknown }): ((chunk: string) => void) | undefined {
+  return typeof spec.onOutput === 'function' ? (spec.onOutput as (chunk: string) => void) : undefined;
+}
+
+/**
  * Shared run loop: spawn the CLI, feed stdout JSONL through parseLine, forward
  * stderr as progress events, and surface a non-zero exit as an error event.
  */
 export function runJsonlCli(config: JsonlRunConfig): RunHandle {
   const { spec, parseLine } = config;
   const onStderrLine = config.onStderrLine;
+  const onOutput = config.onOutput;
   const spawnFn = config.spawnFn ?? defaultSpawnFn;
   const killGraceMs = config.killGraceMs ?? 5000;
 
@@ -173,6 +190,15 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
 
     const assembler = new LineAssembler();
     proc.stdout?.on('data', (chunk: Buffer | string) => {
+      // Raw tap first (exact chunk, boundaries preserved), always guarded:
+      // a consumer tap must never break the run loop.
+      if (onOutput) {
+        try {
+          onOutput(String(chunk));
+        } catch {
+          /* tap errors are deliberately swallowed */
+        }
+      }
       for (const line of assembler.push(String(chunk))) {
         if (line.trim() === '') continue;
         try {

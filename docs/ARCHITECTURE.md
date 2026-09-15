@@ -50,7 +50,10 @@ Three driving lanes, in strict preference order:
 
 All lanes converge on normalized events. The stream plumbing is shared: `adapters/shared.ts`
 provides `runJsonlCli` (spawn → `LineAssembler` → `parseLine` → `EventQueue`), with an injectable
-`SpawnFn` so tests replay recorded NDJSON fixtures through production plumbing.
+`SpawnFn` so tests replay recorded NDJSON fixtures through production plumbing. An optional
+`onOutput` tap (RunOptions/RunSpec per-run, or DriverOptions.onOutput driver-wide, per-run wins)
+receives each raw stdout chunk exactly as received — un-line-assembled — alongside the parsed
+canonical events; it never fires for childless transports (kiro ACP, opencode preferServer).
 
 ### Canonical events
 

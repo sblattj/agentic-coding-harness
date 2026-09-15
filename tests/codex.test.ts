@@ -221,6 +221,75 @@ describe('codex spawn integration (fake child, real plumbing)', () => {
     assert.ok(!calls[0]!.args.includes('-m'));
   });
 
+  it('forwards raw stdout chunks to opts.onOutput exactly as received, alongside canonical events', async () => {
+    const child = new FakeChild();
+    const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child) });
+    const chunks: string[] = [];
+    const handle = adapter.spawn('list the files', {
+      onOutput: (chunk) => chunks.push(chunk),
+    });
+    const collected = collect(handle);
+    const [head, tail] = splitMidFirstLine(FIXTURE);
+    child.writeStdout(head);
+    child.writeStdout(tail);
+    child.writeStdout('{"type":"turn.completed"}\n');
+    child.close(0);
+    const { events, code } = await collected;
+    assert.equal(code, 0);
+    // Raw tap: exact chunk strings, boundaries preserved (no line assembly).
+    assert.deepEqual(chunks, [head, tail, '{"type":"turn.completed"}\n']);
+    // Canonical events still parsed from the same chunks.
+    assert.ok(events.some((e) => e.type === 'session'), 'session event parsed');
+    assert.ok(events.some((e) => e.type === 'usage'), 'usage parsed across the chunk boundary');
+  });
+
+  it('a throwing onOutput tap never breaks the run', async () => {
+    const child = new FakeChild();
+    const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child) });
+    const handle = adapter.spawn('x', {
+      onOutput: () => {
+        throw new Error('tap exploded');
+      },
+    });
+    const collected = collect(handle);
+    child.writeStdout(FIXTURE);
+    child.close(0);
+    const { events, code } = await collected;
+    assert.equal(code, 0, 'tap exception swallowed, run completes');
+    assert.ok(events.some((e) => e.type === 'session'), 'events still parsed');
+  });
+
+  it('launch() forwards a RunSpec onOutput tap through the driver contract', async () => {
+    const child = new FakeChild();
+    const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child) });
+    const chunks: string[] = [];
+    const handle = await adapter.launch({ prompt: 'list the files', onOutput: (c) => chunks.push(c) });
+    const collected = (async () => {
+      const events: unknown[] = [];
+      for await (const event of handle.attach()) events.push(event);
+      return { events, exit: await handle.wait() };
+    })();
+    child.writeStdout(FIXTURE);
+    child.close(0);
+    const { events, exit } = await collected;
+    assert.equal(exit, 'success');
+    assert.deepEqual(chunks, [FIXTURE], 'raw passthrough RunSpec tap received the exact chunk');
+    assert.ok(events.some((e) => (e as { type: string }).type === 'session'));
+  });
+
+  it('launch() ignores a non-function onOutput passthrough value', async () => {
+    const child = new FakeChild();
+    const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child) });
+    const handle = await adapter.launch({ prompt: 'x', onOutput: 'not-a-function' } as unknown as import('../src/core/types.js').RunSpec);
+    const collected = (async () => {
+      for await (const _ of handle.attach()) void _;
+      return handle.wait();
+    })();
+    child.writeStdout(FIXTURE);
+    child.close(0);
+    assert.equal(await collected, 'success');
+  });
+
   it('resume runs `codex exec resume <sessionId> --json <prompt>`', async () => {
     const child = new FakeChild();
     const calls: FakeSpawnCall[] = [];

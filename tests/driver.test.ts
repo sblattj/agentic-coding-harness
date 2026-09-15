@@ -852,3 +852,39 @@ describe('kiro usage truth', () => {
     assert.equal(result.exitStatus, 'turn_limit');
   });
 });
+
+describe('driver onOutput raw-stdout tap forwarding', () => {
+  /** Adapter that records the launch spec and resolves immediately. */
+  class SpecCaptureAdapter implements AgentAdapter {
+    readonly name = 'specap';
+    lastSpec?: RunSpec;
+    async launch(spec: RunSpec): Promise<AgentHandle> {
+      this.lastSpec = spec;
+      return new MockHandle([]);
+    }
+  }
+
+  it('forwards DriverOptions.onOutput into the adapter launch spec', async () => {
+    const adapter = new SpecCaptureAdapter();
+    const driver = createDriver({ adapters: { specap: adapter }, stateDir: tmpStateDir(), onOutput: () => {} });
+    await driver.run('specap', { prompt: 'hi' });
+    assert.equal(typeof adapter.lastSpec?.onOutput, 'function', 'driver-level tap reached the adapter');
+  });
+
+  it('a per-run RunSpec.onOutput overrides the driver-level tap', async () => {
+    const adapter = new SpecCaptureAdapter();
+    const driverTap = (): void => {};
+    const runTap = (): void => {};
+    const driver = createDriver({ adapters: { specap: adapter }, stateDir: tmpStateDir(), onOutput: driverTap });
+    await driver.run('specap', { prompt: 'hi', onOutput: runTap });
+    assert.equal(adapter.lastSpec?.onOutput, runTap, 'spec tap wins');
+    assert.notEqual(adapter.lastSpec?.onOutput, driverTap);
+  });
+
+  it('launch spec carries no onOutput when neither source provides one', async () => {
+    const adapter = new SpecCaptureAdapter();
+    const driver = createDriver({ adapters: { specap: adapter }, stateDir: tmpStateDir() });
+    await driver.run('specap', { prompt: 'hi' });
+    assert.equal(adapter.lastSpec?.onOutput, undefined);
+  });
+});

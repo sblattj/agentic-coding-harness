@@ -11,6 +11,7 @@ import {
   runJsonlCli,
   launchDriverHandle,
   houseEventToCore,
+  takeOnOutput,
   type HouseEventLike,
   LineAssembler,
   EventQueue,
@@ -301,6 +302,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
       ...(spec.env ? { env: spec.env } : {}),
       ...(spec.preferServer === true ? { preferServer: true } : {}),
+      ...(takeOnOutput(spec) ? { onOutput: takeOnOutput(spec) } : {}),
     };
     const handle = this.spawn(task);
     return launchDriverHandle({
@@ -389,6 +391,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
       // (step events, usage.cost); the shared loop only types the base union.
       parseLine: parseLine as (line: string) => CanonicalEvent[],
       spawnFn: this.#spawnFn,
+      onOutput: task.onOutput,
     });
     return this.#enrich(handle, () => handle.wait().then((exitCode) => ({ exitCode, ...state })));
   }

@@ -626,6 +626,12 @@ export interface RunSpec {
   stateDir?: string;
   /** Kiro-specific configuration (ignored by other adapters). */
   kiro?: KiroConfig;
+  /**
+   * Raw stdout tap for this run (overrides DriverOptions.onOutput): forwarded
+   * through the adapter into the CLI child's raw stdout stream. Ignored by
+   * transports without a child process (kiro ACP, opencode preferServer).
+   */
+  onOutput?: (chunk: string) => void;
   [key: string]: unknown;
 }
 
@@ -705,6 +711,13 @@ export interface RunOptions {
   env?: Record<string, string>;
   /** Model override; adapters pass it as their native flag (e.g. -m). */
   model?: string;
+  /**
+   * Raw stdout tap: called with each chunk of raw CLI stdout EXACTLY as
+   * received (chunk boundaries preserved, no line assembly), alongside the
+   * canonical parsed events. A throwing tap never breaks the run. Childless
+   * transports (e.g. opencode preferServer, kiro ACP) have no stdout to tap.
+   */
+  onOutput?: (chunk: string) => void;
 }
 
 /**

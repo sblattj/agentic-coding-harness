@@ -25,7 +25,7 @@ import type {
   CanonicalTokenRecord as CoreTokenRecord,
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
-import { launchDriverHandle, toCoreTokenRecord, type HouseTokens } from './shared.ts';
+import { launchDriverHandle, takeOnOutput, toCoreTokenRecord, type HouseTokens } from './shared.ts';
 
 // ---------------------------------------------------------------------------
 // Local adapter-lane types (kept exported for existing tests; the core
@@ -40,6 +40,8 @@ export interface RunSpec {
   cwd?: string;
   env?: Record<string, string>;
   extraArgs?: string[];
+  /** Raw stdout tap (RunOptions.onOutput semantics; guarded, never breaks the run). */
+  onOutput?: (chunk: string) => void;
 }
 
 export interface ModelTokenUsage {
@@ -528,6 +530,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       cwd: spec.cwd,
       env: spec.env,
       extraArgs: spec.extraArgs,
+      onOutput: takeOnOutput(spec),
     });
     this.launchedRunners.add(runner);
     void runner.waitExit().finally(() => this.launchedRunners.delete(runner));
@@ -600,6 +603,14 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     let buf = '';
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
+      // Raw stdout tap (guarded: a consumer tap must never break the run).
+      if (task.onOutput) {
+        try {
+          task.onOutput(chunk);
+        } catch {
+          /* tap errors are deliberately swallowed */
+        }
+      }
       buf += chunk;
       let idx: number;
       while ((idx = buf.indexOf('\n')) >= 0) {

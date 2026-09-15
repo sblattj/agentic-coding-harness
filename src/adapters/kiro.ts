@@ -64,6 +64,7 @@ import {
   launchDriverHandle,
   houseEventToCore,
   defaultSpawnFn,
+  takeOnOutput,
   EventQueue,
   type HouseEventLike,
   type SpawnFn,
@@ -539,6 +540,7 @@ export class KiroAdapter implements CoreAgentAdapter {
         cwd: task.cwd,
         env: buildKiroEnv(task.env),
       },
+      onOutput: task.onOutput,
       parseLine: (line): CanonicalEvent[] => {
         const events = normalizer.pushHeadlessLine(line);
         // The normalizer only captures a session id from envelopes it knows.
@@ -828,6 +830,7 @@ export class KiroAdapter implements CoreAgentAdapter {
       ...(spec.kiro !== undefined ? { kiro: spec.kiro } : {}),
       ...(spec.extraArgs !== undefined ? { extraArgs: spec.extraArgs } : {}),
       ...(spec.env ? { env: spec.env } : {}),
+      ...(takeOnOutput(spec) ? { onOutput: takeOnOutput(spec) } : {}),
     });
     return launchDriverHandle({
       agent: 'kiro',

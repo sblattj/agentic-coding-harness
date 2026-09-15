@@ -5,7 +5,7 @@ import type {
   AgentHandle as CoreAgentHandle,
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
-import { runJsonlCli, launchDriverHandle, houseEventToCore, type JsonlRunSpec, type SpawnFn } from './shared.ts';
+import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, type JsonlRunSpec, type SpawnFn } from './shared.ts';
 
 export const CODEX_CAPABILITIES: AdapterCapabilities = {
   headless: true,
@@ -209,7 +209,7 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
       cwd: opts.cwd,
       env: opts.env,
     };
-    return this.#run(spec);
+    return this.#run(spec, opts.onOutput);
   }
 
   resume(sessionId: string, prompt: string, opts: RunOptions = {}): RunHandle {
@@ -219,7 +219,7 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
       cwd: opts.cwd,
       env: opts.env,
     };
-    return this.#run(spec);
+    return this.#run(spec, opts.onOutput);
   }
 
   /** Driver contract (src/core/driver.ts): launch one run for a RunSpec. */
@@ -234,7 +234,7 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
       cwd: spec.cwd,
       env: spec.env,
     };
-    const handle = this.#run(jsonlSpec);
+    const handle = this.#run(jsonlSpec, takeOnOutput(spec));
     return launchDriverHandle({
       agent: 'codex',
       events: handle.events,
@@ -250,8 +250,8 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
     this.#current?.abort();
   }
 
-  #run(spec: JsonlRunSpec): RunHandle {
-    const handle = runJsonlCli({ spec, parseLine: parseCodexLine, spawnFn: this.#spawnFn });
+  #run(spec: JsonlRunSpec, onOutput?: (chunk: string) => void): RunHandle {
+    const handle = runJsonlCli({ spec, parseLine: parseCodexLine, spawnFn: this.#spawnFn, onOutput });
     this.#current = handle;
     void handle.wait().finally(() => {
       if (this.#current === handle) this.#current = null;
