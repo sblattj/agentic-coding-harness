@@ -157,6 +157,29 @@ pass `--claude-default-config` (or set `AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CO
 default config instead. Transcripts then land under `~/.claude/projects` and concurrent claude runs
 share one config, so pair it with sequential runs when isolation matters.
 
+## Use as a library
+
+The npm package exports its programmatic API directly — importing it never runs the CLI:
+
+```js
+import { createDriver, defaultAdapters } from 'agentic-coding-harness';
+
+const driver = createDriver({ adapters: await defaultAdapters(), stateDir: './harness-state' });
+const result = await driver.run('codex', {
+  prompt: 'fix the failing test',
+  runId: 'my-watchdog-1',      // echo + driver.abort(runId) addressable
+  timeoutMs: 120_000,          // alias for budget.wallMs
+  idleTimeoutMs: 30_000,       // alias for budget.idleMs
+});
+// result.exitStatus: 'success' | 'aborted' | 'timeout' | 'error' | ...
+driver.abort('my-watchdog-1'); // out-of-band cancel while a run is in flight
+```
+
+Exported: `createDriver`, `defaultAdapters`, `ClaudeCodeAdapter`, `KiroAdapter`, `CodexAdapter`,
+`GeminiAdapter`, `OpenCodeAdapter`, `VERSION`. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
+raw stdout tap (each chunk exactly as received) alongside the parsed canonical events. Importing the
+`ach` bin bundle (`dist/cli/ach.js`) as a module yields the same exports with no side effects.
+
 ## `ach web`: the browser dashboard in detail
 
 `ach web` (default port 8399) serves a same-origin browser dashboard over the same state dir:

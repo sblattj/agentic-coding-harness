@@ -99,6 +99,10 @@ const RunSpecSchema = z.object({
       idleMs: z.number().positive().optional(),
     })
     .optional(),
+  // Watchdog-style top-level aliases (#5): resolve to budget.wallMs / idleMs;
+  // an explicit budget.* value always wins.
+  timeoutMs: z.number().positive().optional(),
+  idleTimeoutMs: z.number().positive().optional(),
   // Adapter-specific keys pass through untouched.
   // Note: key regex covers provider-specific options; validated loosely.
 }).passthrough();
@@ -209,8 +213,10 @@ export function createDriver(options: DriverOptions): Driver {
       const runId = typeof spec.runId === 'string' && spec.runId ? spec.runId : randomUUID();
       const budgetUsd = parsed.budget?.usd;
       const maxTurns = parsed.budget?.maxTurns;
-      const wallMs = parsed.budget?.wallMs;
-      const idleMs = parsed.budget?.idleMs;
+      // Explicit budget.* wins; timeoutMs / idleTimeoutMs are watchdog-style
+      // top-level aliases (#5).
+      const wallMs = parsed.budget?.wallMs ?? parsed.timeoutMs;
+      const idleMs = parsed.budget?.idleMs ?? parsed.idleTimeoutMs;
 
       const start = Date.now();
       // Raw stdout tap precedence: RunSpec.onOutput wins over the driver-wide

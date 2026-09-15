@@ -618,6 +618,17 @@ export interface RunSpec {
   model?: string;
   resume?: string;
   budget?: { usd?: number; maxTurns?: number; wallMs?: number; idleMs?: number };
+  /**
+   * Top-level alias for budget.wallMs (whole-run wall-clock cap, ms). Explicit
+   * budget.wallMs wins when both are given. Watchdog-style consumers
+   * (agentic-coding-harness#5) call the driver with this shape.
+   */
+  timeoutMs?: number;
+  /**
+   * Top-level alias for budget.idleMs (no-event idle cap, ms). Explicit
+   * budget.idleMs wins when both are given.
+   */
+  idleTimeoutMs?: number;
   /** Extra env vars layered over process.env. */
   env?: Record<string, string>;
   /** Extra CLI args appended verbatim (escape hatch for provider flags). */

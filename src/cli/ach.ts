@@ -1,11 +1,19 @@
 // harness — unified CLI for driving agents, watching usage, aggregating
 // stats, and emitting interchange formats. Single entry, hand-rolled dispatch
 // (node:util parseArgs); no external CLI framework. Stdlib + zod only.
+//
+// This module doubles as the legacy LIBRARY import surface: importing
+// dist/cli/ach.js (or this source) as a module yields the programmatic API
+// via the re-export below with NO CLI side effects — main() only runs when
+// this file is the process entry point (bin execution).
+export * from "../index.ts";
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import {
   AGENTS,
   AcpMcpServerSchema,
@@ -908,14 +916,37 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-main(process.argv.slice(2))
-  .catch((err: unknown) => {
-    if (err instanceof HarnessError) {
-      process.stderr.write(`harness: ${err.message}\n`);
-      return err.exitCode;
-    }
-    const msg = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ""}` : String(err);
-    process.stderr.write(`harness: unexpected error — ${msg}\n`);
-    return 1;
-  })
-  .then((code) => process.exit(code));
+/**
+ * True only when this module IS the running program: the resolved process
+ * entry (argv[1]) and this file are the same file on disk (realpath on both
+ * sides, so npm bin symlinks and launchers resolve to the real bundle).
+ *
+ * - bin execution (`ach …`, `node dist/cli/ach.js …`, `bun dist/bun/ach.js …`,
+ *   `tsx src/cli/ach.ts …`): argv[1] is this file -> run the CLI.
+ * - library import (`import('agentic-coding-harness')`,
+ *   `await import(pathToFileURL('…/dist/cli/ach.js').href)`): argv[1] is the
+ *   CONSUMER's entry (its script / test runner) -> no CLI, no process.exit.
+ */
+function invokedAsCli(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
+  main(process.argv.slice(2))
+    .catch((err: unknown) => {
+      if (err instanceof HarnessError) {
+        process.stderr.write(`harness: ${err.message}\n`);
+        return err.exitCode;
+      }
+      const msg = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ""}` : String(err);
+      process.stderr.write(`harness: unexpected error — ${msg}\n`);
+      return 1;
+    })
+    .then((code) => process.exit(code));
+}

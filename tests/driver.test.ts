@@ -888,3 +888,52 @@ describe('driver onOutput raw-stdout tap forwarding', () => {
     assert.equal(adapter.lastSpec?.onOutput, undefined);
   });
 });
+
+// Watchdog-style timeout/cancellation run shape (#5): top-level timeoutMs /
+// idleTimeoutMs aliases plus out-of-band driver.abort(runId).
+describe('timeoutMs / idleTimeoutMs aliases and driver.abort(runId)', () => {
+  it('timeoutMs acts as budget.wallMs (wall-clock cap)', async () => {
+    const adapter = new HeartbeatAdapter();
+    const driver = createDriver({ adapters: { heartbeat: adapter }, stateDir: tmpStateDir() });
+    const result: RunResult = await driver.run('heartbeat', { prompt: 'hi', timeoutMs: 300 });
+    assert.equal(result.exitStatus, 'timeout');
+    assert.ok(result.warnings.some((w) => w === 'budget: wall-clock 300ms exceeded'), result.warnings.join(' | '));
+    assert.ok(adapter.lastHandle!.aborted, 'handle.abort() was called');
+  });
+
+  it('idleTimeoutMs acts as budget.idleMs (no-event cap)', async () => {
+    const adapter = new SilentThenHangAdapter();
+    const driver = createDriver({ adapters: { 'silent-hang': adapter }, stateDir: tmpStateDir() });
+    const result: RunResult = await driver.run('silent-hang', { prompt: 'hi', idleTimeoutMs: 200 });
+    assert.equal(result.exitStatus, 'timeout');
+    assert.ok(result.warnings.some((w) => w === 'budget: idle 200ms exceeded (no events)'), result.warnings.join(' | '));
+  });
+
+  it('an explicit budget.wallMs wins over the timeoutMs alias', async () => {
+    const adapter = new HeartbeatAdapter();
+    const driver = createDriver({ adapters: { heartbeat: adapter }, stateDir: tmpStateDir() });
+    const result: RunResult = await driver.run('heartbeat', {
+      prompt: 'hi',
+      budget: { wallMs: 250 },
+      timeoutMs: 60_000,
+    });
+    assert.equal(result.exitStatus, 'timeout');
+    // The alias (60s) never fired; the run ended at the explicit 250ms cap.
+    assert.ok(result.warnings.some((w) => w === 'budget: wall-clock 250ms exceeded'), result.warnings.join(' | '));
+    // Generous margin: under load the timer callback can overshoot the cap.
+    assert.ok(result.durationMs < 5000, `durationMs ${result.durationMs} should be well under 5s`);
+  });
+
+  it('driver.abort(runId) cancels an in-flight run and resolves it as aborted', async () => {
+    const adapter = new SilentThenHangAdapter();
+    const driver = createDriver({ adapters: { 'silent-hang': adapter }, stateDir: tmpStateDir() });
+    const pending = driver.run('silent-hang', { prompt: 'hi', runId: 'watchdog-1' });
+    await new Promise((r) => setTimeout(r, 25)); // let launch() + attach() start
+    assert.equal(driver.abort('watchdog-1'), true, 'active run matched');
+    assert.equal(driver.abort('no-such-run'), false, 'unknown run id rejected');
+    const result = await pending;
+    assert.equal(result.exitStatus, 'aborted');
+    assert.ok(adapter.lastHandle!.aborted, 'adapter handle was signalled');
+    assert.equal(result.runId, 'watchdog-1', 'caller-chosen runId echoed back');
+  });
+});
