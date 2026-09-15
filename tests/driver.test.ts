@@ -937,3 +937,106 @@ describe('timeoutMs / idleTimeoutMs aliases and driver.abort(runId)', () => {
     assert.equal(result.runId, 'watchdog-1', 'caller-chosen runId echoed back');
   });
 });
+
+// ---------------------------------------------------------------------------
+// installSignalAbort (#11): opt-in SIGTERM/SIGINT → abort(runId) wiring.
+// These tests NEVER raise a real signal in the test process — they diff
+// process.listeners(sig) around the install call to capture the exact handler
+// this call registered, then invoke that handler directly.
+// ---------------------------------------------------------------------------
+
+describe('installSignalAbort (signal-based abort helper)', () => {
+  const sigListeners = (sig: NodeJS.Signals): Array<() => void> =>
+    process.listeners(sig) as Array<() => void>;
+
+  it('first signal aborts the run, self-uninstalls, and the disposer stays a no-op', async () => {
+    const preTerm = new Set(sigListeners('SIGTERM'));
+    const preInt = new Set(sigListeners('SIGINT'));
+    const adapter = new SilentThenHangAdapter();
+    const driver = createDriver({ adapters: { 'silent-hang': adapter }, stateDir: tmpStateDir() });
+    const dispose = driver.installSignalAbort('sig-1');
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size + 1, 'one SIGTERM handler added');
+    assert.equal(sigListeners('SIGINT').length, preInt.size + 1, 'one SIGINT handler added');
+    const oursTerm = sigListeners('SIGTERM').find((fn) => !preTerm.has(fn));
+    const oursInt = sigListeners('SIGINT').find((fn) => !preInt.has(fn));
+    assert.ok(oursTerm && oursInt, 'captured the newly installed handlers');
+    assert.equal(oursTerm, oursInt, 'one shared handler across both signals');
+
+    const pending = driver.run('silent-hang', { prompt: 'hi', runId: 'sig-1' });
+    await new Promise((r) => setTimeout(r, 25)); // let launch() + attach() start
+
+    oursTerm!(); // simulate SIGTERM delivery to the captured handler
+    const result: RunResult = await pending;
+    assert.equal(result.exitStatus, 'aborted');
+    assert.ok(adapter.lastHandle!.aborted, 'signal handler called driver.abort(runId)');
+
+    // One-shot: both listeners are gone after the first fire, so later
+    // signals fall through to Node's default semantics (no eternal swallow).
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size, 'SIGTERM handler self-removed');
+    assert.equal(sigListeners('SIGINT').length, preInt.size, 'SIGINT handler self-removed');
+    // Disposer after the self-uninstall must not throw or double-remove.
+    dispose();
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size);
+  });
+
+  it('disposer removes exactly the installed listeners and is repeat-safe', () => {
+    const preTerm = new Set(sigListeners('SIGTERM'));
+    const preInt = new Set(sigListeners('SIGINT'));
+    const driver = createDriver({ adapters: {}, stateDir: tmpStateDir() });
+    const dispose = driver.installSignalAbort('sig-dispose');
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size + 1);
+    assert.equal(sigListeners('SIGINT').length, preInt.size + 1);
+    dispose();
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size, 'SIGTERM listener removed');
+    assert.equal(sigListeners('SIGINT').length, preInt.size, 'SIGINT listener removed');
+    dispose(); // idempotent: removing an absent listener is a no-op
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size);
+    assert.equal(sigListeners('SIGINT').length, preInt.size);
+  });
+
+  it('honors a custom signals list', () => {
+    const preHup = new Set(sigListeners('SIGHUP'));
+    const preTerm = new Set(sigListeners('SIGTERM'));
+    const driver = createDriver({ adapters: {}, stateDir: tmpStateDir() });
+    const dispose = driver.installSignalAbort('sig-hup', ['SIGHUP']);
+    assert.equal(sigListeners('SIGHUP').length, preHup.size + 1, 'SIGHUP handler added');
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size, 'defaults NOT installed');
+    dispose();
+    assert.equal(sigListeners('SIGHUP').length, preHup.size);
+  });
+
+  it('each install is independent: firing one leaves the other installed and untouched', async () => {
+    const adapterA = new SilentThenHangAdapter();
+    const adapterB = new SilentThenHangAdapter();
+    const driver = createDriver({
+      adapters: { a: adapterA, b: adapterB },
+      stateDir: tmpStateDir(),
+    });
+    const preTerm = new Set(sigListeners('SIGTERM'));
+    const disposeA = driver.installSignalAbort('run-a');
+    const handlerA = sigListeners('SIGTERM').find((fn) => !preTerm.has(fn));
+    assert.ok(handlerA, "captured A's handler");
+    const disposeB = driver.installSignalAbort('run-b');
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size + 2, 'two installs → two handlers');
+
+    const pendingA = driver.run('a', { prompt: 'hi', runId: 'run-a' });
+    const pendingB = driver.run('b', { prompt: 'hi', runId: 'run-b' });
+    await new Promise((r) => setTimeout(r, 25)); // let both launches start
+
+    handlerA!(); // the signal reaches A's handler only
+    const resultA = await pendingA;
+    assert.equal(resultA.exitStatus, 'aborted');
+    assert.ok(adapterA.lastHandle!.aborted, "A's run aborted");
+    assert.ok(!adapterB.lastHandle!.aborted, "B's run untouched by A's signal");
+    // A's one-shot removed only A's handler; B's is still installed.
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size + 1, "B's handler survives");
+
+    // B ends via the normal abort path, then its own disposer cleans up.
+    driver.abort('run-b');
+    const resultB = await pendingB;
+    assert.equal(resultB.exitStatus, 'aborted');
+    disposeB();
+    disposeA(); // already self-removed by its one-shot fire: harmless no-op
+    assert.equal(sigListeners('SIGTERM').length, preTerm.size, 'no listener leaks');
+  });
+});
