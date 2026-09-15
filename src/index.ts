@@ -10,6 +10,8 @@
 
 export { createDriver, defaultAdapters, type DriverOptions, type Driver } from './core/driver.ts';
 export type {
+  AdapterProfileCheck,
+  AdapterProfileIssue,
   AgentAdapter,
   AgentEvent,
   AgentHandle,
@@ -17,6 +19,12 @@ export type {
   RunResult,
   RunSpec,
 } from './core/types.ts';
+export {
+  WorkspaceEscapeError,
+  assertInsideWorkspace,
+  canonicalPath,
+  isInsideWorkspace,
+} from './core/workspace.ts';
 export { ClaudeCodeAdapter } from './adapters/claude.ts';
 export { KiroAdapter } from './adapters/kiro.ts';
 export { CodexAdapter } from './adapters/codex.ts';

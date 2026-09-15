@@ -5,6 +5,8 @@ import { Readable, Writable } from 'node:stream';
 import type { CanonicalEvent, RunHandle, RunOptions } from './types.ts';
 import type {
   AdapterExit,
+  AdapterProfileCheck,
+  AdapterProfileIssue,
   AgentEvent as CoreAgentEvent,
   AgentHandle as CoreAgentHandle,
   CanonicalTokenRecord as CoreTokenRecord,
@@ -150,6 +152,48 @@ export interface JsonlRunConfig {
  */
 export function takeOnOutput(spec: { onOutput?: unknown; [key: string]: unknown }): ((chunk: string) => void) | undefined {
   return typeof spec.onOutput === 'function' ? (spec.onOutput as (chunk: string) => void) : undefined;
+}
+
+// ---------------------------------------------------------------- profiles
+
+/** Build an ok profile check (issue #9); warnings pass through untouched. */
+export function profileCheckOk(warnings: AdapterProfileIssue[] = []): AdapterProfileCheck {
+  return { ok: true, errors: [], warnings };
+}
+
+/**
+ * Common spec sanity every CLI-lane adapter owns for itself (issue #9):
+ * `model` and `resume` flow into CLI argv as bare values, so empty strings,
+ * whitespace, and path separators are malformed, and a leading '-' risks the
+ * CLI parsing the value as one of its own flags. Session ids never start
+ * with '-' (they are uuid-ish tokens), so that is an error for resume and a
+ * warning for model (exotic model ids at least plausibly exist).
+ */
+export function validateCliSessionProfile(
+  spec: { model?: unknown; resume?: unknown },
+): AdapterProfileCheck {
+  const errors: AdapterProfileIssue[] = [];
+  const warnings: AdapterProfileIssue[] = [];
+
+  if (spec.model !== undefined) {
+    if (typeof spec.model !== 'string' || spec.model.trim() === '') {
+      errors.push({ field: 'model', message: 'must be a non-empty string when provided' });
+    } else if (spec.model.startsWith('-')) {
+      warnings.push({ field: 'model', message: `'${spec.model}' starts with '-' and may be parsed as a CLI flag` });
+    }
+  }
+
+  if (spec.resume !== undefined) {
+    if (typeof spec.resume !== 'string' || spec.resume.trim() === '') {
+      errors.push({ field: 'resume', message: 'must be a non-empty session id when provided' });
+    } else if (/[\s/\\]/.test(spec.resume)) {
+      errors.push({ field: 'resume', message: `session id '${spec.resume}' must not contain whitespace or path separators` });
+    } else if (spec.resume.startsWith('-')) {
+      errors.push({ field: 'resume', message: `session id '${spec.resume}' starts with '-' and would be parsed as a CLI flag` });
+    }
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
 }
 
 /**
