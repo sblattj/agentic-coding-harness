@@ -17,6 +17,7 @@
 // discriminants. CanonicalTokenRecord is the normalize.ts shape plus the
 // legacy optional aliases the emitters read.
 import { z } from "zod";
+import type { AttachmentManifest } from "./attachments.js";
 
 // ---------------------------------------------------------------- agents
 
@@ -643,6 +644,14 @@ export interface RunSpec {
    * transports without a child process (kiro ACP, opencode preferServer).
    */
   onOutput?: (chunk: string) => void;
+  /**
+   * File paths to attach to the prompt (agentic-coding-harness#12): the
+   * driver reads them, enforces a total byte cap (attachmentsMaxBytes,
+   * default 1 MiB), and launches the adapter with the composed prompt.
+   */
+  attachments?: string[];
+  /** Total byte cap across attachments (default 1 MiB). */
+  attachmentsMaxBytes?: number;
   [key: string]: unknown;
 }
 
@@ -666,6 +675,8 @@ export const RunSpecSchema = z
     extraArgs: z.array(z.string()).optional(),
     stateDir: z.string().optional(),
     kiro: KiroConfigSchema.optional(),
+    attachments: z.array(z.string()).optional(),
+    attachmentsMaxBytes: z.number().int().positive().optional(),
   })
   .passthrough();
 
@@ -771,6 +782,8 @@ export interface RunResult {
   kiro?: KiroEffective;
   /** What token/credit/usd numbers are actually known for this run. */
   usage?: UsageAvailability;
+  /** Attachment manifest when RunSpec.attachments was used (#12). */
+  attachments?: AttachmentManifest;
 }
 
 /** Zod mirror of RunResult (events/tokens kept structurally tolerant). */
@@ -794,6 +807,13 @@ export const RunResultSchema = z.object({
   warnings: z.array(z.string()),
   kiro: KiroEffectiveSchema.optional(),
   usage: UsageAvailabilitySchema.optional(),
+  attachments: z
+    .object({
+      files: z.array(z.object({ path: z.string(), sha256: z.string(), bytes: z.number().int().nonnegative() })),
+      promptSha256: z.string(),
+      totalBytes: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 
 // ---------------------------------------------------------------- errors

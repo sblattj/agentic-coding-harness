@@ -7,6 +7,7 @@ import { normalizeAuto } from './normalize.js';
 import { createPricer, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { computeUsageAvailability } from './usage-availability.js';
+import { composePrompt, type AttachmentManifest } from './attachments.js';
 import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
 import type { AdapterExit, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec } from './types.js';
 import { ClaudeCodeAdapter } from '../adapters/claude.js';
@@ -103,6 +104,9 @@ const RunSpecSchema = z.object({
   // an explicit budget.* value always wins.
   timeoutMs: z.number().positive().optional(),
   idleTimeoutMs: z.number().positive().optional(),
+  // Prompt attachments (#12): composed into spec.prompt before launch.
+  attachments: z.array(z.string()).optional(),
+  attachmentsMaxBytes: z.number().int().positive().optional(),
   // Adapter-specific keys pass through untouched.
   // Note: key regex covers provider-specific options; validated loosely.
 }).passthrough();
@@ -219,10 +223,25 @@ export function createDriver(options: DriverOptions): Driver {
       const idleMs = parsed.budget?.idleMs ?? parsed.idleTimeoutMs;
 
       const start = Date.now();
+      // Prompt attachments (#12): compose file blocks into the prompt BEFORE
+      // launch so every adapter receives the final prompt; the attachment keys
+      // are stripped so adapters never see (or act on) them twice.
+      let launchSpec = parsed;
+      let attachmentManifest: AttachmentManifest | undefined;
+      if (parsed.attachments !== undefined && parsed.attachments.length > 0) {
+        const { prompt: composedPrompt, manifest } = await composePrompt(parsed.prompt, parsed.attachments, {
+          maxTotalBytes: parsed.attachmentsMaxBytes,
+        });
+        attachmentManifest = manifest;
+        const { attachments: _a, attachmentsMaxBytes: _m, ...rest } = parsed;
+        void _a;
+        void _m;
+        launchSpec = { ...rest, prompt: composedPrompt };
+      }
       // Raw stdout tap precedence: RunSpec.onOutput wins over the driver-wide
       // DriverOptions.onOutput; merged here so every adapter sees one field.
       const onOutput = takeOnOutput(parsed) ?? options.onOutput;
-      const handle = await adapter.launch(onOutput ? { ...parsed, onOutput } : parsed);
+      const handle = await adapter.launch(onOutput ? { ...launchSpec, onOutput } : launchSpec);
       const sessionId = handle.sessionId;
       // Cancellation hook for driver.abort(runId) until the run settles.
       activeRuns.set(runId, () => {
@@ -594,6 +613,7 @@ export function createDriver(options: DriverOptions): Driver {
         warnings,
         usage,
         ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
+        ...(attachmentManifest !== undefined ? { attachments: attachmentManifest } : {}),
       };
     },
   };
