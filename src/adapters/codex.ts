@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { AdapterCapabilities, AgentAdapter, CanonicalEvent, RunHandle, RunOptions } from './types.ts';
 import type {
+  AdapterProfileCheck,
   AgentAdapter as CoreAgentAdapter,
   AgentHandle as CoreAgentHandle,
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
-import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, type JsonlRunSpec, type SpawnFn } from './shared.ts';
+import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, validateCliSessionProfile, type JsonlRunSpec, type SpawnFn } from './shared.ts';
 
 export const CODEX_CAPABILITIES: AdapterCapabilities = {
   headless: true,
@@ -220,6 +221,15 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
       env: opts.env,
     };
     return this.#run(spec, opts.onOutput);
+  }
+
+  /**
+   * Adapter-owned profile validation (issue #9): the shared model/resume
+   * surface (`-m <model>`, `exec resume <sessionId>` positional) must be sane
+   * CLI tokens.
+   */
+  validateProfile(spec: CoreRunSpec): AdapterProfileCheck {
+    return validateCliSessionProfile(spec);
   }
 
   /** Driver contract (src/core/driver.ts): launch one run for a RunSpec. */
