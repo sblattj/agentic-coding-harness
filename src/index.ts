@@ -14,6 +14,8 @@ export type {
   AgentEvent,
   AgentHandle,
   ExitStatus,
+  NormalizedUsageTokens,
+  ReportedUsageCost,
   RunResult,
   RunSpec,
 } from './core/types.ts';

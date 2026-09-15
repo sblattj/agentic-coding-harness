@@ -527,6 +527,56 @@ export const KiroEffectiveSchema = z.object({
   configHash: z.string(),
 });
 
+/**
+ * Normalized run-total token counts (issue #7). Canonical field names,
+ * identical semantics to CanonicalTokenRecord: inputTokens is UNCACHED input;
+ * derive input + cacheRead + cacheWrite + output at render time.
+ * reasoningTokens is informational (already inside outputTokens for
+ * OpenAI/Gemini billing).
+ */
+export interface NormalizedUsageTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Present only when at least one summed record reported reasoning tokens. */
+  reasoningTokens?: number;
+}
+
+/**
+ * Normalized usage/cost on the run result (issue #7), computed per adapter
+ * from that adapter's native output so consumers never re-parse raw CLI
+ * stdout. costAvailability is "reported" ONLY when the provider's own output
+ * carried a trustworthy USD cost (claude result.total_cost_usd, opencode
+ * per-step cost) — never the pricer's estimate (that is `usd`) and never
+ * kiro's metering credits (those are `credits`). "unavailable" always pairs
+ * with reportedCostUsd: null. Comparison/scoring across providers is
+ * deliberately out of scope: this only surfaces the normalized fields.
+ */
+export interface ReportedUsageCost {
+  costAvailability: 'reported' | 'unavailable';
+  /** Provider-reported USD total; null exactly when costAvailability is "unavailable". */
+  reportedCostUsd: number | null;
+  /** Run-total normalized counts, present when any source reported tokens. */
+  tokens?: NormalizedUsageTokens;
+}
+
+/** Zod mirror of NormalizedUsageTokens. */
+export const NormalizedUsageTokensSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cacheReadTokens: z.number(),
+  cacheWriteTokens: z.number(),
+  reasoningTokens: z.number().optional(),
+});
+
+/** Zod mirror of ReportedUsageCost (the issue #7 normalized shape). */
+export const ReportedUsageCostSchema = z.object({
+  costAvailability: z.enum(['reported', 'unavailable']),
+  reportedCostUsd: z.number().nullable(),
+  tokens: NormalizedUsageTokensSchema.optional(),
+});
+
 /** Truthful usage reporting: what is known, from where — never fabricated zeros. */
 export interface UsageAvailability {
   tokens: {
@@ -561,6 +611,13 @@ export interface UsageAvailability {
     tokens?: number;
     model?: string;
   };
+  /**
+   * Normalized provider-reported usage/cost (issue #7): the one shape
+   * consumers read instead of adapter stdout. Computed per adapter by
+   * computeUsageAvailability from the same usage records the run collected;
+   * optional because records serialized before issue #7 lack it.
+   */
+  cost?: ReportedUsageCost;
 }
 
 export const UsageAvailabilitySchema = z.object({
@@ -602,6 +659,7 @@ export const UsageAvailabilitySchema = z.object({
       model: z.string().optional(),
     })
     .optional(),
+  cost: ReportedUsageCostSchema.optional(),
 });
 
 /** Run request as accepted by Driver.run(). Extra keys pass through. */
