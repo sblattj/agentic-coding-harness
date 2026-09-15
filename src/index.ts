@@ -9,6 +9,8 @@
 // and the adapter classes must be importable from the npm package directly.
 
 export { createDriver, defaultAdapters, type DriverOptions, type Driver } from './core/driver.ts';
+export { runToDirectory, type RunToDirectoryOptions, type RunToDirectoryOutcome } from './core/run-to-directory.ts';
+export type { RunDirStatus, RunInvocation, RunStatusFile } from './core/run-artifacts.ts';
 export type {
   AgentAdapter,
   AgentEvent,

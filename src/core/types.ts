@@ -635,6 +635,14 @@ export interface RunSpec {
   extraArgs?: string[];
   /** Per-run state directory override (transcripts land under <stateDir>/raw). */
   stateDir?: string;
+  /**
+   * Run-to-directory mode (agentic-coding-harness#6): write the run's whole
+   * artifact set here — invocation.json, events.jsonl, stdout.txt,
+   * stderr.txt, result.json, and a durable atomic status.json that is left
+   * in a terminal state on every exit path (timeout / idle-timeout / abort /
+   * crash included). See src/core/run-artifacts.ts.
+   */
+  outputDir?: string;
   /** Kiro-specific configuration (ignored by other adapters). */
   kiro?: KiroConfig;
   /**
@@ -665,6 +673,7 @@ export const RunSpecSchema = z
     env: z.record(z.string(), z.string()).optional(),
     extraArgs: z.array(z.string()).optional(),
     stateDir: z.string().optional(),
+    outputDir: z.string().optional(),
     kiro: KiroConfigSchema.optional(),
   })
   .passthrough();
