@@ -9,6 +9,14 @@
 // and the adapter classes must be importable from the npm package directly.
 
 export { createDriver, defaultAdapters, type DriverOptions, type Driver } from './core/driver.ts';
+export {
+  composePrompt,
+  DEFAULT_MAX_ATTACHMENT_BYTES,
+  type AttachmentFile,
+  type AttachmentManifest,
+  type ComposePromptOptions,
+  type ComposePromptResult,
+} from './core/attachments.ts';
 export type {
   AgentAdapter,
   AgentEvent,
