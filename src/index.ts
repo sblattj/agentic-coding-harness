@@ -9,14 +9,30 @@
 // and the adapter classes must be importable from the npm package directly.
 
 export { createDriver, defaultAdapters, type DriverOptions, type Driver } from './core/driver.ts';
-export type {
-  AgentAdapter,
-  AgentEvent,
-  AgentHandle,
-  ExitStatus,
-  RunResult,
-  RunSpec,
+export {
+  AGENTS,
+  HarnessError,
+  RunResultSchema,
+  RunSpecSchema,
+  isKnownAgent,
+  type AdapterCapabilities,
+  type AdapterExit,
+  type AgentAdapter,
+  type AgentEvent,
+  type AgentHandle,
+  type AgentName,
+  type CanonicalTokenRecord,
+  type ExitStatus,
+  type KiroConfig,
+  type KiroEffective,
+  type RunBudget,
+  type RunExit,
+  type RunHandle,
+  type RunOptions,
+  type RunResult,
+  type RunSpec,
 } from './core/types.ts';
+export { parseRunSpec, type RunSpecValidationOptions } from './core/validate.ts';
 export { ClaudeCodeAdapter } from './adapters/claude.ts';
 export { KiroAdapter } from './adapters/kiro.ts';
 export { CodexAdapter } from './adapters/codex.ts';
