@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeAuto } from './normalize.js';
 import { createPricer, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
+import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { computeUsageAvailability } from './usage-availability.js';
 import { parseRunSpec } from './validate.js';
 import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
@@ -206,382 +207,439 @@ export function createDriver(options: DriverOptions): Driver {
       const idleMs = parsed.budget?.idleMs ?? parsed.idleTimeoutMs;
 
       const start = Date.now();
+      const warnings: string[] = [];
+
+      // --- run-to-directory mode (#6) ---
+      // When the spec carries outputDir, mirror the whole run into it and
+      // leave a terminal status.json on EVERY exit path below (settleArtifacts
+      // runs on the settled path, in the outer catch on any throw). Artifact
+      // write failures never break the run: they drain into warnings.
+      const outputDir = typeof parsed.outputDir === 'string' && parsed.outputDir !== '' ? parsed.outputDir : undefined;
+      let artifacts: RunArtifacts | null = null;
+      let artifactsSettled = false;
+      const settleArtifacts = async (status: Parameters<RunArtifacts['finish']>[0], result?: RunResult): Promise<void> => {
+        if (artifacts === null || artifactsSettled) return;
+        artifactsSettled = true;
+        try {
+          await artifacts.finish(status, result);
+        } catch (err) {
+          warnings.push(`outputDir: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      };
+      if (outputDir !== undefined) {
+        const invocation: RunInvocation = {
+          runId,
+          command: agentName,
+          args: Array.isArray(parsed.extraArgs) ? parsed.extraArgs : [],
+          cwd: typeof parsed.cwd === 'string' && parsed.cwd !== '' ? parsed.cwd : process.cwd(),
+          startedAt: start,
+          prompt: parsed.prompt,
+          ...(parsed.model !== undefined ? { model: parsed.model } : {}),
+        };
+        artifacts = await RunArtifacts.open(outputDir, invocation);
+      }
+
       // Raw stdout tap precedence: RunSpec.onOutput wins over the driver-wide
       // DriverOptions.onOutput; merged here so every adapter sees one field.
-      const onOutput = takeOnOutput(parsed) ?? options.onOutput;
-      const handle = await adapter.launch(onOutput ? { ...parsed, onOutput } : parsed);
-      const sessionId = handle.sessionId;
-      // Cancellation hook for driver.abort(runId) until the run settles.
-      activeRuns.set(runId, () => {
-        void Promise.resolve(handle.abort()).catch(() => {});
-      });
-
-      const rawDir = join(stateDir, 'raw');
-      await mkdir(rawDir, { recursive: true });
-      const transcriptPath = join(rawDir, `${agentName}-${sessionId}.jsonl`);
-      const transcript = createWriteStream(transcriptPath, { flags: 'a' });
-
-      const events: AgentEvent[] = [];
-      const tokens: CanonicalTokenRecord[] = [];
-      const warnings: string[] = [];
-      const pricer = options.pricer ?? createPricer();
-      warnings.push(...pricer.drainWarnings());
-
-      let cumulativeCost = 0;
-      let steps = 0;
-      // One model warning per run, whichever cause fires first (a rejected ack
-      // wins over the post-hoc session-store mismatch: same cause, one line).
-      let modelAckWarned = false;
-      let enforcedStatus: ExitStatus | null = null;
-
-      const drainPricerWarnings = () => warnings.push(...pricer.drainWarnings());
-      // Truthful budgets: kiro bills in CREDITS, and nothing maps credits to
-      // USD, so a --budget-usd cap silently never fires there. Say so up front
-      // rather than let the caller believe the run is capped.
-      if (budgetUsd !== undefined && agentName === 'kiro') {
-        warnings.push(
-          'budget: usd cap is not enforceable for kiro (credits only); wall/idle/maxTurns still apply',
-        );
-      }
-      // Highest cumulative credit figure the live stream reported
-      // (kiro-events puts it on every usage record's extra.creditsCumulative).
-      let streamCreditsCumulative: number | null = null;
-      // True once the pricer returned a real (non-NaN) price for some record.
-      let pricerPriced = false;
-
-      // --- wall-clock / idle budget timers ---
-      // Armed right after launch (wallMs measures from launch) and the idle
-      // timer is reset on every AgentEvent. Tripping aborts the handle and
-      // forces the 'timeout' verdict with a distinguishing warning; both
-      // timers are cleared in the loop's finally below so a dangling timeout
-      // can never hold the process open after run() settles.
-      let wallTimer: ReturnType<typeof setTimeout> | null = null;
-      let idleTimer: ReturnType<typeof setTimeout> | null = null;
-      let budgetTripped = false;
-      const tripBudget = (warning: string): void => {
-        if (budgetTripped) return;
-        budgetTripped = true;
-        enforcedStatus = 'timeout';
-        warnings.push(warning);
-        if (wallTimer !== null) clearTimeout(wallTimer);
-        if (idleTimer !== null) clearTimeout(idleTimer);
-        wallTimer = null;
-        idleTimer = null;
-        void Promise.resolve(handle.abort()).catch(() => {});
-      };
-      if (wallMs !== undefined) {
-        wallTimer = setTimeout(() => tripBudget(`budget: wall-clock ${wallMs}ms exceeded`), wallMs);
-      }
-      const armIdleTimer = (): void => {
-        if (idleMs === undefined) return;
-        if (idleTimer !== null) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => tripBudget(`budget: idle ${idleMs}ms exceeded (no events)`), idleMs);
-      };
-      armIdleTimer();
-
-      // --- run registry hook (dash live view; contract in src/dash/PLAN.md) ---
-      // Every registry call is best-effort: failures drain into `warnings`
-      // and never break the run. Heartbeat writes are throttled to one per
-      // 500ms; the final write is always forced through.
-      const registryStateDir = options.registry?.stateDir;
-      let rec: RunRecord | null = null;
-      let lastRegistryWrite = 0;
-      const registryWarn = (err: unknown): void => {
-        warnings.push(`registry: ${err instanceof Error ? err.message : String(err)}`);
-      };
-      const writeRunRecordThrottled = (force: boolean): void => {
-        if (!registryStateDir || !rec) return;
-        const now = Date.now();
-        if (!force && now - lastRegistryWrite < 500) return;
-        lastRegistryWrite = now;
-        rec.updatedAt = now;
-        rec.totals.costUsd = cumulativeCost;
-        try {
-          writeRunRecord(registryStateDir, rec);
-        } catch (err) {
-          registryWarn(err);
-        }
-      };
-      if (registryStateDir) {
-        rec = {
-          runId,
-          agent: agentName,
-          sessionId,
-          pid: process.pid,
-          cwd: typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd(),
-          promptPreview: parsed.prompt.slice(0, 120),
-          startedAt: start,
-          updatedAt: Date.now(),
-          status: 'running',
-          totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
-          rawTranscript: transcriptPath,
-        };
-        writeRunRecordThrottled(true);
-      }
-      // Same summing rule as cmdRun (src/cli/ach.ts): canonical token
-      // fields summed per usage record; extra.credits (kiro MITM metering
-      // units, not USD) kept separate from costUsd.
-      let nativeCredits: number | undefined;
-      let tapCreditsSum: number | undefined;
-      const bumpRegistryTotals = (c: CanonicalTokenRecord): void => {
-        if (!rec) return;
-        // A record that declares extra.tokensAvailable === false carries
-        // PLACEHOLDER zeros (kiro reports no token counts on 2.21.x). It is
-        // still kept in RunResult.tokens as evidence, but it must never touch
-        // the four token counters — summing placeholders manufactures a
-        // confident "0 in / 0 out" where the truth is "unknown". Credits below
-        // are real and are still summed.
-        if ((c.extra as Record<string, unknown> | undefined)?.tokensAvailable !== false) {
-          rec.totals.inputTokens += c.inputTokens;
-          rec.totals.outputTokens += c.outputTokens;
-          rec.totals.cacheReadTokens += c.cacheReadTokens;
-          rec.totals.cacheWriteTokens += c.cacheWriteTokens;
-        }
-        // Credits: one charge, possibly observed twice (kiro's own metadata
-        // frames stamp extra.source:'native'; the MITM tap stamps 'tap').
-        // Native wins the moment it appears; the tap is the fallback. Never
-        // the sum of both — that doubles every tapped headless run.
-        const credits = c.extra?.credits;
-        if (typeof credits === 'number' && Number.isFinite(credits)) {
-          if (c.extra?.source === 'native') {
-            nativeCredits = (nativeCredits ?? 0) + credits;
-          } else {
-            tapCreditsSum = (tapCreditsSum ?? 0) + credits;
-          }
-          rec.totals.credits = nativeCredits ?? tapCreditsSum;
-        }
-      };
-      const finalizeRunRecord = (exit: ExitStatus): void => {
-        if (!rec) return;
-        // timeout (driver wall/idle budget enforcement, adapter timeouts)
-        // counts as aborted, not errored: the run was cut short on purpose.
-        rec.status =
-          exit === 'success'
-            ? 'success'
-            : exit === 'aborted' || exit === 'cancelled' || exit === 'budget_exceeded' || exit === 'turn_limit' || exit === 'timeout'
-              ? 'aborted'
-              : 'error';
-        rec.exitStatus = exit;
-        // Bridged handles resolve the real session id late; prefer it when
-        // the stream never carried a session event.
-        if (handle.sessionId) rec.sessionId = handle.sessionId;
-        writeRunRecordThrottled(true);
-      };
-
-      try {
-        for await (const event of handle.attach()) {
-          armIdleTimer(); // every AgentEvent defers the idle deadline
-          events.push(event);
-          transcript.write(`${JSON.stringify(event)}\n`);
-          onEvent?.(event);
-
-          if (rec) {
-            rec.lastEvent = eventPreview(event);
-            if (typeof event.sessionId === 'string' && event.sessionId) rec.sessionId = event.sessionId;
-          }
-
-          if (event.type === 'usage_raw' || event.type === 'usage') {
-            const ts = toMs(event.timestamp);
-            let normalized: CanonicalTokenRecord | null = null;
-            if (event.type === 'usage_raw') {
-              normalized = normalizeAuto(agentName, event.data, ts);
-            } else {
-              const pre = event.usage;
-              if (pre) {
-                normalized = fromPreNormalized(agentName, pre, ts);
-              } else if (event.data !== undefined) {
-                // Legacy shape: {type:'usage', data:<raw provider payload>}.
-                normalized = normalizeAuto(agentName, event.data, ts);
-              }
+      // In outputDir mode the artifact mirror is chained ahead of the caller's
+      // tap so stdout.txt still fills when neither caller provides one.
+      const callerOutput = takeOnOutput(parsed) ?? options.onOutput;
+      const onOutput =
+        artifacts !== null
+          ? (chunk: string): void => {
+              artifacts?.stdoutChunk(chunk);
+              callerOutput?.(chunk);
             }
-            if (normalized) {
-              tokens.push(normalized);
-              bumpRegistryTotals(normalized);
-              const nx = normalized.extra as Record<string, unknown> | undefined;
-              const cum = nx?.creditsCumulative;
-              if (typeof cum === 'number' && Number.isFinite(cum)) {
-                streamCreditsCumulative = Math.max(streamCreditsCumulative ?? 0, cum);
-              }
-              if (nx?.tokensAvailable === false) {
-                // Placeholder zeros with no token counts to price (kiro
-                // 2.21.x): pricing them would only emit an "unknown model"
-                // warning about a record that carries nothing priceable.
+          : callerOutput;
+      // One try/catch spans the whole run lifecycle so the run-to-directory mode
+      // (#6) can settle status.json on EVERY exit path: the settled path above
+      // plus any throw (launch failure, event-stream crash, post-loop hooks).
+      try {
+        const handle = await adapter.launch(onOutput ? { ...parsed, onOutput } : parsed);
+        const sessionId = handle.sessionId;
+        // Cancellation hook for driver.abort(runId) until the run settles.
+        activeRuns.set(runId, () => {
+          void Promise.resolve(handle.abort()).catch(() => {});
+        });
+
+        const rawDir = join(stateDir, 'raw');
+        await mkdir(rawDir, { recursive: true });
+        const transcriptPath = join(rawDir, `${agentName}-${sessionId}.jsonl`);
+        const transcript = createWriteStream(transcriptPath, { flags: 'a' });
+
+        const events: AgentEvent[] = [];
+        const tokens: CanonicalTokenRecord[] = [];
+        const pricer = options.pricer ?? createPricer();
+        warnings.push(...pricer.drainWarnings());
+
+        let cumulativeCost = 0;
+        let steps = 0;
+        // One model warning per run, whichever cause fires first (a rejected ack
+        // wins over the post-hoc session-store mismatch: same cause, one line).
+        let modelAckWarned = false;
+        let enforcedStatus: ExitStatus | null = null;
+
+        const drainPricerWarnings = () => warnings.push(...pricer.drainWarnings());
+        // Truthful budgets: kiro bills in CREDITS, and nothing maps credits to
+        // USD, so a --budget-usd cap silently never fires there. Say so up front
+        // rather than let the caller believe the run is capped.
+        if (budgetUsd !== undefined && agentName === 'kiro') {
+          warnings.push(
+            'budget: usd cap is not enforceable for kiro (credits only); wall/idle/maxTurns still apply',
+          );
+        }
+        // Highest cumulative credit figure the live stream reported
+        // (kiro-events puts it on every usage record's extra.creditsCumulative).
+        let streamCreditsCumulative: number | null = null;
+        // True once the pricer returned a real (non-NaN) price for some record.
+        let pricerPriced = false;
+
+        // --- wall-clock / idle budget timers ---
+        // Armed right after launch (wallMs measures from launch) and the idle
+        // timer is reset on every AgentEvent. Tripping aborts the handle and
+        // forces the 'timeout' verdict with a distinguishing warning; both
+        // timers are cleared in the loop's finally below so a dangling timeout
+        // can never hold the process open after run() settles.
+        let wallTimer: ReturnType<typeof setTimeout> | null = null;
+        let idleTimer: ReturnType<typeof setTimeout> | null = null;
+        let budgetTripped = false;
+        // Which budget timer tripped ('wall' | 'idle') — the run-to-directory
+        // status lifecycle (#6) distinguishes 'timeout' from 'idle-timeout' on it.
+        let budgetTripKind: 'wall' | 'idle' | null = null;
+        const tripBudget = (kind: 'wall' | 'idle', warning: string): void => {
+          if (budgetTripped) return;
+          budgetTripped = true;
+          budgetTripKind = kind;
+          enforcedStatus = 'timeout';
+          warnings.push(warning);
+          if (wallTimer !== null) clearTimeout(wallTimer);
+          if (idleTimer !== null) clearTimeout(idleTimer);
+          wallTimer = null;
+          idleTimer = null;
+          void Promise.resolve(handle.abort()).catch(() => {});
+        };
+        if (wallMs !== undefined) {
+          wallTimer = setTimeout(() => tripBudget('wall', `budget: wall-clock ${wallMs}ms exceeded`), wallMs);
+        }
+        const armIdleTimer = (): void => {
+          if (idleMs === undefined) return;
+          if (idleTimer !== null) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => tripBudget('idle', `budget: idle ${idleMs}ms exceeded (no events)`), idleMs);
+        };
+        armIdleTimer();
+
+        // --- run registry hook (dash live view; contract in src/dash/PLAN.md) ---
+        // Every registry call is best-effort: failures drain into `warnings`
+        // and never break the run. Heartbeat writes are throttled to one per
+        // 500ms; the final write is always forced through.
+        const registryStateDir = options.registry?.stateDir;
+        let rec: RunRecord | null = null;
+        let lastRegistryWrite = 0;
+        const registryWarn = (err: unknown): void => {
+          warnings.push(`registry: ${err instanceof Error ? err.message : String(err)}`);
+        };
+        const writeRunRecordThrottled = (force: boolean): void => {
+          if (!registryStateDir || !rec) return;
+          const now = Date.now();
+          if (!force && now - lastRegistryWrite < 500) return;
+          lastRegistryWrite = now;
+          rec.updatedAt = now;
+          rec.totals.costUsd = cumulativeCost;
+          try {
+            writeRunRecord(registryStateDir, rec);
+          } catch (err) {
+            registryWarn(err);
+          }
+        };
+        if (registryStateDir) {
+          rec = {
+            runId,
+            agent: agentName,
+            sessionId,
+            pid: process.pid,
+            cwd: typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd(),
+            promptPreview: parsed.prompt.slice(0, 120),
+            startedAt: start,
+            updatedAt: Date.now(),
+            status: 'running',
+            totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+            rawTranscript: transcriptPath,
+          };
+          writeRunRecordThrottled(true);
+        }
+        // Same summing rule as cmdRun (src/cli/ach.ts): canonical token
+        // fields summed per usage record; extra.credits (kiro MITM metering
+        // units, not USD) kept separate from costUsd.
+        let nativeCredits: number | undefined;
+        let tapCreditsSum: number | undefined;
+        const bumpRegistryTotals = (c: CanonicalTokenRecord): void => {
+          if (!rec) return;
+          // A record that declares extra.tokensAvailable === false carries
+          // PLACEHOLDER zeros (kiro reports no token counts on 2.21.x). It is
+          // still kept in RunResult.tokens as evidence, but it must never touch
+          // the four token counters — summing placeholders manufactures a
+          // confident "0 in / 0 out" where the truth is "unknown". Credits below
+          // are real and are still summed.
+          if ((c.extra as Record<string, unknown> | undefined)?.tokensAvailable !== false) {
+            rec.totals.inputTokens += c.inputTokens;
+            rec.totals.outputTokens += c.outputTokens;
+            rec.totals.cacheReadTokens += c.cacheReadTokens;
+            rec.totals.cacheWriteTokens += c.cacheWriteTokens;
+          }
+          // Credits: one charge, possibly observed twice (kiro's own metadata
+          // frames stamp extra.source:'native'; the MITM tap stamps 'tap').
+          // Native wins the moment it appears; the tap is the fallback. Never
+          // the sum of both — that doubles every tapped headless run.
+          const credits = c.extra?.credits;
+          if (typeof credits === 'number' && Number.isFinite(credits)) {
+            if (c.extra?.source === 'native') {
+              nativeCredits = (nativeCredits ?? 0) + credits;
+            } else {
+              tapCreditsSum = (tapCreditsSum ?? 0) + credits;
+            }
+            rec.totals.credits = nativeCredits ?? tapCreditsSum;
+          }
+        };
+        const finalizeRunRecord = (exit: ExitStatus): void => {
+          if (!rec) return;
+          // timeout (driver wall/idle budget enforcement, adapter timeouts)
+          // counts as aborted, not errored: the run was cut short on purpose.
+          rec.status =
+            exit === 'success'
+              ? 'success'
+              : exit === 'aborted' || exit === 'cancelled' || exit === 'budget_exceeded' || exit === 'turn_limit' || exit === 'timeout'
+                ? 'aborted'
+                : 'error';
+          rec.exitStatus = exit;
+          // Bridged handles resolve the real session id late; prefer it when
+          // the stream never carried a session event.
+          if (handle.sessionId) rec.sessionId = handle.sessionId;
+          writeRunRecordThrottled(true);
+        };
+
+        try {
+          for await (const event of handle.attach()) {
+            armIdleTimer(); // every AgentEvent defers the idle deadline
+            events.push(event);
+            transcript.write(`${JSON.stringify(event)}\n`);
+            artifacts?.event(event);
+            onEvent?.(event);
+
+            if (rec) {
+              rec.lastEvent = eventPreview(event);
+              if (typeof event.sessionId === 'string' && event.sessionId) rec.sessionId = event.sessionId;
+            }
+
+            if (event.type === 'usage_raw' || event.type === 'usage') {
+              const ts = toMs(event.timestamp);
+              let normalized: CanonicalTokenRecord | null = null;
+              if (event.type === 'usage_raw') {
+                normalized = normalizeAuto(agentName, event.data, ts);
               } else {
-                const cost = pricer.price(normalized);
-                if (Number.isNaN(cost)) {
-                  drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
-                } else {
-                  cumulativeCost += cost;
-                  pricerPriced = true;
+                const pre = event.usage;
+                if (pre) {
+                  normalized = fromPreNormalized(agentName, pre, ts);
+                } else if (event.data !== undefined) {
+                  // Legacy shape: {type:'usage', data:<raw provider payload>}.
+                  normalized = normalizeAuto(agentName, event.data, ts);
                 }
               }
+              if (normalized) {
+                tokens.push(normalized);
+                bumpRegistryTotals(normalized);
+                const nx = normalized.extra as Record<string, unknown> | undefined;
+                const cum = nx?.creditsCumulative;
+                if (typeof cum === 'number' && Number.isFinite(cum)) {
+                  streamCreditsCumulative = Math.max(streamCreditsCumulative ?? 0, cum);
+                }
+                if (nx?.tokensAvailable === false) {
+                  // Placeholder zeros with no token counts to price (kiro
+                  // 2.21.x): pricing them would only emit an "unknown model"
+                  // warning about a record that carries nothing priceable.
+                } else {
+                  const cost = pricer.price(normalized);
+                  if (Number.isNaN(cost)) {
+                    drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
+                  } else {
+                    cumulativeCost += cost;
+                    pricerPriced = true;
+                  }
+                }
+              }
+              if (budgetUsd !== undefined && cumulativeCost > budgetUsd) {
+                enforcedStatus = 'budget_exceeded';
+                await handle.abort();
+                break;
+              }
             }
-            if (budgetUsd !== undefined && cumulativeCost > budgetUsd) {
-              enforcedStatus = 'budget_exceeded';
-              await handle.abort();
-              break;
+
+            if (event.type === 'step') {
+              // Same payload accessor as countsAsTurn(): an adapter may emit
+              // `payload` directly, and houseEventToCore renames it to `data`.
+              const raw = (event as { payload?: unknown }).payload ?? (event as { data?: unknown }).data;
+              const p = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : undefined;
+              // A rejected --model is otherwise silent: the run completes on the
+              // CLI default and nothing in the result says the override was lost.
+              if (p?.kind === 'modelAck' && p.modelAck === 'unsupported' && !modelAckWarned) {
+                modelAckWarned = true;
+                const asked = typeof p.model === 'string' && p.model !== '' ? p.model : (parsed.model ?? 'unknown');
+                warnings.push(
+                  `kiro: requested model '${asked}' was not applied (kiro-cli rejected --model: Method not found); the run used the CLI default`,
+                );
+              }
+              // Classified stderr notices carry their own operator-facing text.
+              if (p?.kind === 'stderrNotice' && typeof p.warning === 'string') {
+                if (!warnings.includes(p.warning)) warnings.push(p.warning);
+              }
+            }
+
+            if (event.type === 'step' && countsAsTurn(agentName, event)) {
+              steps++;
+              // Enforce the turn ceiling only when the adapter doesn't do it itself.
+              if (maxTurns !== undefined && !adapter.enforcesBudget && steps > maxTurns) {
+                enforcedStatus = 'turn_limit';
+                await handle.abort();
+                break;
+              }
+            }
+
+            writeRunRecordThrottled(false);
+          }
+        } catch (err) {
+          finalizeRunRecord('error');
+          throw err;
+        } finally {
+          // Timer-leak safety: whatever way the stream ends (natural, abort,
+          // break, or throw), no budget timer outlives run().
+          if (wallTimer !== null) clearTimeout(wallTimer);
+          if (idleTimer !== null) clearTimeout(idleTimer);
+          wallTimer = null;
+          idleTimer = null;
+          activeRuns.delete(runId);
+        }
+
+        // Await full flush so the NDJSON transcript is on disk when run() resolves.
+        await new Promise<void>((resolve) => transcript.end(() => resolve()));
+        drainPricerWarnings();
+
+        let adapterExit: AdapterExit = 'success';
+        try {
+          adapterExit = await handle.wait();
+        } catch {
+          adapterExit = 'error';
+        }
+
+        // --- kiro effective config + truthful usage (PLAN § Usage availability,
+        // amendment 2026-09-12). Both are read AFTER wait() so the child has
+        // flushed its session store and the ACP client has settled its config.
+        // Every step here is best-effort: a failure becomes a warning.
+        let kiroEffective: KiroEffective | undefined;
+        const kiroHook = (handle as { kiro?: () => unknown }).kiro;
+        if (typeof kiroHook === 'function') {
+          try {
+            const value = kiroHook.call(handle);
+            if (value && typeof value === 'object') kiroEffective = value as KiroEffective;
+          } catch (err) {
+            warnings.push(`kiro: effective-config hook failed (${err instanceof Error ? err.message : String(err)})`);
+          }
+        }
+
+        let sessionStore: ParsedKiroSessionStore | null = null;
+        if (agentName === 'kiro') {
+          if (tokens.length === 0) {
+            warnings.push('kiro: no usage records; tokens/credits/usd unavailable');
+          }
+          // Native session id, best source first: the registry record (the id the
+          // stream reported), the adapter's own effective config, then any usage
+          // record's extra.kiroSessionId.
+          let nativeSessionId: string | undefined =
+            (typeof rec?.sessionId === 'string' && rec.sessionId !== '' ? rec.sessionId : undefined) ??
+            kiroEffective?.nativeSessionId;
+          if (nativeSessionId === undefined) {
+            for (const t of tokens) {
+              const id = (t.extra as Record<string, unknown> | undefined)?.kiroSessionId;
+              if (typeof id === 'string' && id !== '') {
+                nativeSessionId = id;
+                break;
+              }
             }
           }
-
-          if (event.type === 'step') {
-            // Same payload accessor as countsAsTurn(): an adapter may emit
-            // `payload` directly, and houseEventToCore renames it to `data`.
-            const raw = (event as { payload?: unknown }).payload ?? (event as { data?: unknown }).data;
-            const p = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : undefined;
-            // A rejected --model is otherwise silent: the run completes on the
-            // CLI default and nothing in the result says the override was lost.
-            if (p?.kind === 'modelAck' && p.modelAck === 'unsupported' && !modelAckWarned) {
+          // The harness namespaces the session id as `kiro-<uuid>`; the store is
+          // keyed by the bare uuid.
+          const bare = nativeSessionId?.startsWith('kiro-') === true ? nativeSessionId.slice(5) : nativeSessionId;
+          const read = await readKiroSessionStore(bare);
+          if (read.ok) {
+            sessionStore = read.store;
+            // 2.21.x leaves kiro token records with model:'unknown' (the stream
+            // never names a model). The session store does. Backfilling it here
+            // is post-hoc: pricing already ran per event and is NOT redone, so
+            // USD stays unavailable — kiro is a credits-only lane.
+            if (sessionStore.model !== undefined) {
+              for (const t of tokens) {
+                if (!t.model || t.model === 'unknown') t.model = sessionStore.model;
+              }
+            }
+            // The ACP transport (and any future CLI that accepts --model and then
+            // ignores it) drops the override with no stderr notice at all. The
+            // store is the only witness. Skipped when the ack already explained it.
+            if (
+              parsed.model !== undefined &&
+              sessionStore.model !== undefined &&
+              sessionStore.model !== parsed.model &&
+              !modelAckWarned
+            ) {
               modelAckWarned = true;
-              const asked = typeof p.model === 'string' && p.model !== '' ? p.model : (parsed.model ?? 'unknown');
               warnings.push(
-                `kiro: requested model '${asked}' was not applied (kiro-cli rejected --model: Method not found); the run used the CLI default`,
+                `kiro: requested model '${parsed.model}' but the session store recorded '${sessionStore.model}'`,
               );
             }
-            // Classified stderr notices carry their own operator-facing text.
-            if (p?.kind === 'stderrNotice' && typeof p.warning === 'string') {
-              if (!warnings.includes(p.warning)) warnings.push(p.warning);
-            }
+          } else {
+            warnings.push(`kiro: ${read.reason}`);
           }
-
-          if (event.type === 'step' && countsAsTurn(agentName, event)) {
-            steps++;
-            // Enforce the turn ceiling only when the adapter doesn't do it itself.
-            if (maxTurns !== undefined && !adapter.enforcesBudget && steps > maxTurns) {
-              enforcedStatus = 'turn_limit';
-              await handle.abort();
-              break;
-            }
-          }
-
-          writeRunRecordThrottled(false);
         }
+
+        const { usage, warnings: usageWarnings } = computeUsageAvailability({
+          agent: agentName,
+          tokens,
+          sessionStore,
+          streamCreditsCumulative,
+          totalCost: cumulativeCost,
+          pricerPriced,
+        });
+        warnings.push(...usageWarnings);
+        if (rec) {
+          rec.usage = usage;
+          if (usage.context?.available === true && usage.context.tokens !== undefined) {
+            rec.totals.contextTokens = usage.context.tokens;
+          }
+        }
+
+        // Driver enforcement verdicts override whatever the adapter reported.
+        const exitStatus: ExitStatus = enforcedStatus ?? adapterExit;
+        finalizeRunRecord(exitStatus);
+
+        // Read the sessionId late: bridged handles expose a getter that reports
+        // the agent's real session id once the stream has carried it.
+        const result: RunResult = {
+          runId,
+          sessionId: handle.sessionId,
+          events,
+          tokens,
+          totalCost: cumulativeCost,
+          durationMs: Date.now() - start,
+          exitStatus,
+          warnings,
+          usage,
+          ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
+        };
+        // Run-to-directory settle (#6): the terminal status.json lands last,
+        // after every other artifact (result.json included) is on disk.
+        await settleArtifacts(exitStatusToRunStatus(exitStatus, budgetTripKind), result);
+        return result;
       } catch (err) {
-        finalizeRunRecord('error');
+        await settleArtifacts('error');
         throw err;
-      } finally {
-        // Timer-leak safety: whatever way the stream ends (natural, abort,
-        // break, or throw), no budget timer outlives run().
-        if (wallTimer !== null) clearTimeout(wallTimer);
-        if (idleTimer !== null) clearTimeout(idleTimer);
-        wallTimer = null;
-        idleTimer = null;
-        activeRuns.delete(runId);
       }
-
-      // Await full flush so the NDJSON transcript is on disk when run() resolves.
-      await new Promise<void>((resolve) => transcript.end(() => resolve()));
-      drainPricerWarnings();
-
-      let adapterExit: AdapterExit = 'success';
-      try {
-        adapterExit = await handle.wait();
-      } catch {
-        adapterExit = 'error';
-      }
-
-      // --- kiro effective config + truthful usage (PLAN § Usage availability,
-      // amendment 2026-09-12). Both are read AFTER wait() so the child has
-      // flushed its session store and the ACP client has settled its config.
-      // Every step here is best-effort: a failure becomes a warning.
-      let kiroEffective: KiroEffective | undefined;
-      const kiroHook = (handle as { kiro?: () => unknown }).kiro;
-      if (typeof kiroHook === 'function') {
-        try {
-          const value = kiroHook.call(handle);
-          if (value && typeof value === 'object') kiroEffective = value as KiroEffective;
-        } catch (err) {
-          warnings.push(`kiro: effective-config hook failed (${err instanceof Error ? err.message : String(err)})`);
-        }
-      }
-
-      let sessionStore: ParsedKiroSessionStore | null = null;
-      if (agentName === 'kiro') {
-        if (tokens.length === 0) {
-          warnings.push('kiro: no usage records; tokens/credits/usd unavailable');
-        }
-        // Native session id, best source first: the registry record (the id the
-        // stream reported), the adapter's own effective config, then any usage
-        // record's extra.kiroSessionId.
-        let nativeSessionId: string | undefined =
-          (typeof rec?.sessionId === 'string' && rec.sessionId !== '' ? rec.sessionId : undefined) ??
-          kiroEffective?.nativeSessionId;
-        if (nativeSessionId === undefined) {
-          for (const t of tokens) {
-            const id = (t.extra as Record<string, unknown> | undefined)?.kiroSessionId;
-            if (typeof id === 'string' && id !== '') {
-              nativeSessionId = id;
-              break;
-            }
-          }
-        }
-        // The harness namespaces the session id as `kiro-<uuid>`; the store is
-        // keyed by the bare uuid.
-        const bare = nativeSessionId?.startsWith('kiro-') === true ? nativeSessionId.slice(5) : nativeSessionId;
-        const read = await readKiroSessionStore(bare);
-        if (read.ok) {
-          sessionStore = read.store;
-          // 2.21.x leaves kiro token records with model:'unknown' (the stream
-          // never names a model). The session store does. Backfilling it here
-          // is post-hoc: pricing already ran per event and is NOT redone, so
-          // USD stays unavailable — kiro is a credits-only lane.
-          if (sessionStore.model !== undefined) {
-            for (const t of tokens) {
-              if (!t.model || t.model === 'unknown') t.model = sessionStore.model;
-            }
-          }
-          // The ACP transport (and any future CLI that accepts --model and then
-          // ignores it) drops the override with no stderr notice at all. The
-          // store is the only witness. Skipped when the ack already explained it.
-          if (
-            parsed.model !== undefined &&
-            sessionStore.model !== undefined &&
-            sessionStore.model !== parsed.model &&
-            !modelAckWarned
-          ) {
-            modelAckWarned = true;
-            warnings.push(
-              `kiro: requested model '${parsed.model}' but the session store recorded '${sessionStore.model}'`,
-            );
-          }
-        } else {
-          warnings.push(`kiro: ${read.reason}`);
-        }
-      }
-
-      const { usage, warnings: usageWarnings } = computeUsageAvailability({
-        agent: agentName,
-        tokens,
-        sessionStore,
-        streamCreditsCumulative,
-        totalCost: cumulativeCost,
-        pricerPriced,
-      });
-      warnings.push(...usageWarnings);
-      if (rec) {
-        rec.usage = usage;
-        if (usage.context?.available === true && usage.context.tokens !== undefined) {
-          rec.totals.contextTokens = usage.context.tokens;
-        }
-      }
-
-      // Driver enforcement verdicts override whatever the adapter reported.
-      const exitStatus: ExitStatus = enforcedStatus ?? adapterExit;
-      finalizeRunRecord(exitStatus);
-
-      // Read the sessionId late: bridged handles expose a getter that reports
-      // the agent's real session id once the stream has carried it.
-      return {
-        runId,
-        sessionId: handle.sessionId,
-        events,
-        tokens,
-        totalCost: cumulativeCost,
-        durationMs: Date.now() - start,
-        exitStatus,
-        warnings,
-        usage,
-        ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
-      };
     },
   };
 }

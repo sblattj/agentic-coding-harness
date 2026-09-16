@@ -32,6 +32,8 @@ export {
   type RunResult,
   type RunSpec,
 } from './core/types.ts';
+export { runToDirectory, type RunToDirectoryOptions, type RunToDirectoryOutcome } from './core/run-to-directory.ts';
+export type { RunDirStatus, RunInvocation, RunStatusFile } from './core/run-artifacts.ts';
 export { parseRunSpec, type RunSpecValidationOptions } from './core/validate.ts';
 export { ClaudeCodeAdapter } from './adapters/claude.ts';
 export { KiroAdapter } from './adapters/kiro.ts';
