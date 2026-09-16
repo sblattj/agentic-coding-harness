@@ -25,6 +25,8 @@ export {
   type ExitStatus,
   type KiroConfig,
   type KiroEffective,
+  type NormalizedUsageTokens,
+  type ReportedUsageCost,
   type RunBudget,
   type RunExit,
   type RunHandle,
