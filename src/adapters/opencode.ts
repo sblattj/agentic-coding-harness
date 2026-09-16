@@ -205,6 +205,14 @@ export interface OpencodeRunSpec extends RunOptions {
   resume?: { sessionId: string } | 'continue';
   /** POST to a running `opencode serve` instead of spawning a child. */
   preferServer?: boolean;
+  /**
+   * Sandbox policy (issue #8): `opencode run` has no CLI flags for
+   * allowedTools/disallowedTools/permissionMode/mcpConfig — those fields are
+   * omitted (use extraArgs, e.g. `--config permission.edit=deny`). Only
+   * scrubEnv applies (child-process runs; the `opencode serve` path spawns
+   * no child).
+   */
+  sandbox?: RunOptions['sandbox'];
 }
 
 /**
@@ -302,6 +310,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
       ...(spec.env ? { env: spec.env } : {}),
       ...(spec.preferServer === true ? { preferServer: true } : {}),
+      ...(spec.sandbox !== undefined ? { sandbox: spec.sandbox } : {}),
       ...(takeOnOutput(spec) ? { onOutput: takeOnOutput(spec) } : {}),
     };
     const handle = this.spawn(task);
@@ -386,7 +395,13 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
       return parsed.events;
     };
     const handle = runJsonlCli({
-      spec: { command: this.#command, args: buildRunArgs(task), cwd: task.cwd, env: task.env },
+      spec: {
+        command: this.#command,
+        args: buildRunArgs(task),
+        cwd: task.cwd,
+        env: task.env,
+        scrubEnv: task.sandbox?.scrubEnv,
+      },
       // OpencodeEvent[] is a strict superset of CanonicalEvent[] at runtime
       // (step events, usage.cost); the shared loop only types the base union.
       parseLine: parseLine as (line: string) => CanonicalEvent[],

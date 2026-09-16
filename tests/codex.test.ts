@@ -186,7 +186,10 @@ describe('codex spawn integration (fake child, real plumbing)', () => {
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0]!.args, ['exec', '--json', 'list the files']);
     assert.equal(calls[0]!.command, 'codex');
-    assert.equal(calls[0]!.opts.env, process.env);
+    // Env handed to spawn is a SNAPSHOT copy of process.env (never a live
+    // reference — scrubEnv support, issue #8) carrying the same entries.
+    assert.notEqual(calls[0]!.opts.env, process.env);
+    assert.deepEqual({ ...calls[0]!.opts.env }, { ...process.env });
 
     const types = events.map((e) => e.type);
     // stderr was written while the first stdout line was still incomplete, so
