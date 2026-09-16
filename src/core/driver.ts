@@ -2,11 +2,11 @@ import { createWriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { z } from 'zod';
 import { normalizeAuto } from './normalize.js';
 import { createPricer, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { computeUsageAvailability } from './usage-availability.js';
+import { parseRunSpec } from './validate.js';
 import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
 import type { AdapterExit, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec } from './types.js';
 import { ClaudeCodeAdapter } from '../adapters/claude.js';
@@ -88,24 +88,8 @@ export function countsAsTurn(agent: string, event: AgentEvent): boolean {
   return payload?.countsAsTurn !== false;
 }
 
-const RunSpecSchema = z.object({
-  prompt: z.string(),
-  model: z.string().optional(),
-  budget: z
-    .object({
-      usd: z.number().positive().optional(),
-      maxTurns: z.number().int().positive().optional(),
-      wallMs: z.number().positive().optional(),
-      idleMs: z.number().positive().optional(),
-    })
-    .optional(),
-  // Watchdog-style top-level aliases (#5): resolve to budget.wallMs / idleMs;
-  // an explicit budget.* value always wins.
-  timeoutMs: z.number().positive().optional(),
-  idleTimeoutMs: z.number().positive().optional(),
-  // Adapter-specific keys pass through untouched.
-  // Note: key regex covers provider-specific options; validated loosely.
-}).passthrough();
+// RunSpec validation lives in src/core/validate.ts (RunSpecSchema in
+// src/core/types.ts) — see run() below for the parseRunSpec call.
 
 export interface DriverOptions {
   adapters: Record<string, AgentAdapter>;
@@ -207,7 +191,10 @@ export function createDriver(options: DriverOptions): Driver {
       if (!adapter) {
         throw new Error(`driver: unknown agent "${agentName}"; registered: ${Object.keys(adapters).join(', ') || 'none'}`);
       }
-      const parsed = RunSpecSchema.parse(spec);
+      // Fail fast on invalid specs (#10): field-path errors, finite positive
+      // timeouts, closed budget shape, and model pinning where required
+      // (adapter.requiresModel / kiro.requireModelAck).
+      const parsed = parseRunSpec(agentName, spec, { requiresModel: adapter.requiresModel === true });
       // Caller-chosen run id (async job tools pass a uuid so the registry
       // record is addressable before spawn); generated otherwise.
       const runId = typeof spec.runId === 'string' && spec.runId ? spec.runId : randomUUID();
