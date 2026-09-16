@@ -175,10 +175,30 @@ const result = await driver.run('codex', {
 driver.abort('my-watchdog-1'); // out-of-band cancel while a run is in flight
 ```
 
-Exported: `createDriver`, `defaultAdapters`, `ClaudeCodeAdapter`, `KiroAdapter`, `CodexAdapter`,
-`GeminiAdapter`, `OpenCodeAdapter`, `VERSION`. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
+Exported: `createDriver`, `defaultAdapters`, `runToDirectory`, `ClaudeCodeAdapter`, `KiroAdapter`,
+`CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `VERSION`. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
 raw stdout tap (each chunk exactly as received) alongside the parsed canonical events. Importing the
 `ach` bin bundle (`dist/cli/ach.js`) as a module yields the same exports with no side effects.
+
+### Run-to-directory mode (durable status.json)
+
+Give a run an `outputDir` (or call the `runToDirectory()` helper) and the whole run is mirrored into
+that directory: `invocation.json` (resolved command/args/cwd/startedAt), `events.jsonl` (one event
+per line), `stdout.txt` / `stderr.txt`, `result.json`, and `status.json` — written atomically and
+guaranteed to reach a terminal state `success | error | timeout | idle-timeout | aborted` on every
+exit path, including watchdog kills and crashes:
+
+```js
+import { runToDirectory } from 'agentic-coding-harness';
+
+const { result } = await runToDirectory({
+  agent: 'codex',
+  spec: { prompt: 'fix the failing test', timeoutMs: 120_000 },
+  outputDir: '/var/run/watchdog/job-42',
+});
+// /var/run/watchdog/job-42/status.json survives even a killed run:
+// { "runId": "...", "status": "timeout", "updatedAt": ..., "eventCount": 7, ... }
+```
 
 ## `ach web`: the browser dashboard in detail
 
