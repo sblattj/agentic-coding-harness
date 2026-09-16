@@ -16,6 +16,7 @@ export type {
   ExitStatus,
   RunResult,
   RunSpec,
+  SandboxPolicy,
 } from './core/types.ts';
 export { ClaudeCodeAdapter } from './adapters/claude.ts';
 export { KiroAdapter } from './adapters/kiro.ts';

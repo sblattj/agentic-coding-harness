@@ -22,6 +22,7 @@ import {
   defaultSpawnFn,
   EventQueue,
   LineAssembler,
+  scrubEnvVars,
   type ChildProcessLike,
   type SpawnFn,
 } from './shared.ts';
@@ -179,6 +180,12 @@ export interface KiroAcpClientOptions {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /**
+   * SandboxPolicy.scrubEnv (issue #8): scrub provider credential/config-dir
+   * env vars from the merged child env before spawn (`true` = known set,
+   * string array = exactly those names).
+   */
+  scrubEnv?: boolean | string[];
   spawnFn?: SpawnFn;
   /** Per-phase deadline for initialize/session/new/session/set_model. Measured initialize ≈ 15 s. */
   startupMs?: number;
@@ -208,6 +215,7 @@ export class KiroAcpClient {
   readonly #args: string[];
   readonly #cwd: string | undefined;
   readonly #env: Record<string, string> | undefined;
+  readonly #scrubEnv: boolean | string[] | undefined;
   readonly #spawnFn: SpawnFn;
   readonly #startupMs: number;
   readonly #clientInfo: { name: string; version: string };
@@ -234,6 +242,7 @@ export class KiroAcpClient {
     this.#args = opts.args;
     this.#cwd = opts.cwd;
     this.#env = opts.env;
+    this.#scrubEnv = opts.scrubEnv;
     this.#spawnFn = opts.spawnFn ?? defaultSpawnFn;
     this.#startupMs = opts.startupMs ?? 60_000;
     this.#clientInfo = opts.clientInfo ?? { name: 'agentic-coding-harness', version: VERSION };
@@ -258,7 +267,10 @@ export class KiroAcpClient {
     try {
       child = this.#spawnFn(this.#command, this.#args, {
         cwd: this.#cwd,
-        env: this.#env ? { ...process.env, ...this.#env } : process.env,
+        env: scrubEnvVars(
+          this.#env ? { ...process.env, ...this.#env } : process.env,
+          this.#scrubEnv,
+        ),
         stdio: ['pipe', 'pipe', 'pipe'],
       }) as ChildProcessLike & { pid?: number };
     } catch (err) {
