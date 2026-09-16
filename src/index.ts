@@ -34,6 +34,14 @@ export {
   type RunResult,
   type RunSpec,
 } from './core/types.ts';
+export {
+  composePrompt,
+  DEFAULT_MAX_ATTACHMENT_BYTES,
+  type AttachmentFile,
+  type AttachmentManifest,
+  type ComposePromptOptions,
+  type ComposePromptResult,
+} from './core/attachments.ts';
 export { runToDirectory, type RunToDirectoryOptions, type RunToDirectoryOutcome } from './core/run-to-directory.ts';
 export type { RunDirStatus, RunInvocation, RunStatusFile } from './core/run-artifacts.ts';
 export { parseRunSpec, type RunSpecValidationOptions } from './core/validate.ts';
