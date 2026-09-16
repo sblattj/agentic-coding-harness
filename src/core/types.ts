@@ -457,6 +457,88 @@ export type ExitStatus =
 /** What an adapter's handle.wait() may report. Driver verdicts override. */
 export type AdapterExit = "success" | "error" | "timeout" | "aborted" | "cancelled";
 
+// ---------------------------------------------------------------- sandbox
+
+/**
+ * Cross-adapter sandbox/permission policy (issue #8): one typed surface for
+ * tool allow/deny lists, permission mode, MCP server config, and provider
+ * credential scrubbing, instead of callers hand-assembling CLI flags and
+ * stripping env vars before spawn. Each adapter translates the fields into
+ * its own CLI/runtime invocation and OMITS whatever its backing CLI has no
+ * flag for (extraArgs remains the verbatim escape hatch):
+ *
+ * - claude: allowedTools → `--allowedTools <csv>`; disallowedTools →
+ *   `--disallowedTools <csv>`; permissionMode → `--permission-mode`
+ *   ("ask"→"default", "dontAsk"→"bypassPermissions", other values verbatim);
+ *   mcpConfig → `--mcp-config` (a string passes verbatim, an object is
+ *   JSON-stringified inline); scrubEnv → env scrub below.
+ * - codex: permissionMode → `--ask-for-approval` ("ask"→"on-request",
+ *   "dontAsk"→"never", other values verbatim). allowedTools/disallowedTools/
+ *   mcpConfig have no `codex exec` flags — omitted (use extraArgs, e.g.
+ *   `-c sandbox_mode=...`).
+ * - gemini: allowedTools → `--allowed-tools <csv>`; disallowedTools →
+ *   `--blocked-tools <csv>`; permissionMode → `--approval-mode`
+ *   ("ask"→"default", "dontAsk"→"yolo", other values verbatim; replaces the
+ *   adapter's default `yolo`); mcpConfig → `--mcp-config` (prefer a string
+ *   file path — gemini documents a path there, unlike claude's inline JSON);
+ *   scrubEnv → env scrub below.
+ * - opencode: `opencode run` has no CLI flags for any policy field — all
+ *   omitted (use extraArgs, e.g. `--config permission.edit=deny`); scrubEnv
+ *   still applies.
+ * - kiro: allowedTools maps onto the native trust policy as
+ *   `kiro.tools = allowedTools` (→ `--trust-tools=<csv>` headless / ACP) —
+ *   ONLY when `spec.kiro.tools` is not already set (the native config wins).
+ *   disallowedTools/permissionMode/mcpConfig are omitted (kiro's trust flag
+ *   is the permission mechanism; MCP servers go through `kiro.mcpServers`);
+ *   scrubEnv applies on every transport.
+ *
+ * scrubEnv semantics (all adapters, before the child is spawned): `true`
+ * removes the known provider credential/config-dir env vars
+ * (PROVIDER_CREDENTIAL_ENV_VARS in src/adapters/shared.ts: ANTHROPIC_API_KEY,
+ * OPENAI_API_KEY, GEMINI_API_KEY, KIRO_API_KEY, the AWS_* chain, config-dir
+ * overrides, …) from the merged child env AFTER spec.env overlays, so a
+ * credential the caller layered in is scrubbed too; a string array removes
+ * exactly those vars instead. Adapters re-apply their own harness-managed
+ * vars (e.g. claude's per-run CLAUDE_CONFIG_DIR) after the scrub, so
+ * isolation plumbing survives.
+ */
+export interface SandboxPolicy {
+  /** Tool allowlist. Adapters without a native allowlist flag omit it. */
+  allowedTools?: string[];
+  /** Tool denylist. Adapters without a native denylist flag omit it. */
+  disallowedTools?: string[];
+  /**
+   * Permission mode: "ask" and "dontAsk" are the portable spellings, mapped
+   * per adapter (see above); any other string passes through verbatim as the
+   * adapter's native mode value (e.g. claude "acceptEdits", codex
+   * "on-failure", gemini "auto").
+   */
+  permissionMode?: "ask" | "dontAsk" | (string & {});
+  /**
+   * MCP server config: a string (file path, passed verbatim) or an inline
+   * object (JSON-stringified; claude accepts inline JSON, gemini wants a
+   * path). Omitted by adapters without an MCP-config flag.
+   */
+  mcpConfig?: string | Record<string, unknown>;
+  /**
+   * Remove provider credential/config-dir env vars before spawn: `true`
+   * scrubs the known set, a string array scrubs exactly those names. Applied
+   * after spec.env overlays, before harness-managed vars are re-applied.
+   */
+  scrubEnv?: boolean | string[];
+}
+
+/** Zod mirror of SandboxPolicy. */
+export const SandboxPolicySchema = z
+  .object({
+    allowedTools: z.array(z.string()).optional(),
+    disallowedTools: z.array(z.string()).optional(),
+    permissionMode: z.string().optional(),
+    mcpConfig: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
+    scrubEnv: z.union([z.boolean(), z.array(z.string())]).optional(),
+  })
+  .strict();
+
 // ---------------------------------------------------------------- kiro config
 
 /**
@@ -730,6 +812,12 @@ export interface RunSpec {
   /** Kiro-specific configuration (ignored by other adapters). */
   kiro?: KiroConfig;
   /**
+   * Typed sandbox/permission policy translated per adapter (issue #8). See
+   * SandboxPolicy for the field-by-field adapter mapping; scrubEnv applies
+   * to every adapter.
+   */
+  sandbox?: SandboxPolicy;
+  /**
    * Raw stdout tap for this run (overrides DriverOptions.onOutput): forwarded
    * through the adapter into the CLI child's raw stdout stream. Ignored by
    * transports without a child process (kiro ACP, opencode preferServer).
@@ -789,6 +877,7 @@ export const RunSpecSchema = z
     kiro: KiroConfigSchema.optional(),
     attachments: z.array(z.string()).optional(),
     attachmentsMaxBytes: z.number().int().positive().optional(),
+    sandbox: SandboxPolicySchema.optional(),
   })
   .passthrough();
 
@@ -859,6 +948,11 @@ export interface RunOptions {
    * transports (e.g. opencode preferServer, kiro ACP) have no stdout to tap.
    */
   onOutput?: (chunk: string) => void;
+  /**
+   * Typed sandbox/permission policy (issue #8). Same field-by-field adapter
+   * mapping as RunSpec.sandbox — see SandboxPolicy.
+   */
+  sandbox?: SandboxPolicy;
 }
 
 /**

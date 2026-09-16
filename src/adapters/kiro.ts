@@ -33,8 +33,10 @@
 // resolved argv minus the prompt, trust flag, engine, agent, model, native
 // session id, model ack, configHash). It reaches the driver through
 // `AgentHandle.kiro()` — see PLAN-kiro-acp.md, "Handle -> driver hand-off".
-// KIRO_API_KEY passes through to the child process, never stripped, so
-// kiro-cli authenticates headless with the caller's ambient credentials.
+// KIRO_API_KEY passes through to the child process by default (never
+// stripped), so kiro-cli authenticates headless with the caller's ambient
+// credentials — EXCEPT when spec.sandbox.scrubEnv asks for provider
+// credentials to be scrubbed before spawn (issue #8).
 //
 // Token metering: kiro-cli's own stream-json usage events are under-documented;
 // the reliable source is the MITM tap in src/monitors/kiro-mitm.ts. launch()
@@ -90,6 +92,27 @@ export interface KiroRunSpec extends RunOptions {
   kiro?: KiroConfig;
   /** Extra argv appended verbatim after every flag, before the prompt. */
   extraArgs?: string[];
+  /**
+   * Sandbox policy (issue #8). Only allowedTools maps — onto the native trust
+   * policy (`kiro.tools` → `--trust-tools=<csv>` / ACP) when the native
+   * `kiro.tools` is not already set (native wins); disallowedTools /
+   * permissionMode / mcpConfig are omitted (kiro has no flags for them; MCP
+   * servers go through `kiro.mcpServers`). scrubEnv scrubs provider
+   * credentials (incl. KIRO_API_KEY) from the child env before spawn.
+   */
+  sandbox?: RunOptions['sandbox'];
+}
+
+/**
+ * Fold SandboxPolicy.allowedTools into the kiro trust policy (issue #8):
+ * sets `kiro.tools = allowedTools` — the `--trust-tools=<csv>` allowlist —
+ * unless the native `kiro.tools` is already set (native config wins). Pure;
+ * exported for tests.
+ */
+export function applySandboxToKiroSpec<T extends { sandbox?: RunOptions['sandbox']; kiro?: KiroConfig }>(spec: T): T {
+  const allowed = spec.sandbox?.allowedTools;
+  if (!allowed?.length || spec.kiro?.tools !== undefined) return spec;
+  return { ...spec, kiro: { ...spec.kiro, tools: allowed } };
 }
 
 /**
@@ -519,8 +542,10 @@ export class KiroAdapter implements CoreAgentAdapter {
   /** Task-style spawn: full spec object (model, resume). */
   spawn(task: KiroRunSpec): KiroRunHandle;
   spawn(promptOrTask: string | KiroRunSpec, opts: RunOptions = {}): KiroRunHandle {
-    const task: KiroRunSpec =
+    const raw: KiroRunSpec =
       typeof promptOrTask === 'string' ? { prompt: promptOrTask, ...opts } : promptOrTask;
+    // Sandbox allowedTools folds into the native trust policy (native wins).
+    const task = applySandboxToKiroSpec(raw);
     const requested: KiroConfig = task.kiro ?? {};
     const args = buildKiroArgs(task);
     // argv evidence excludes the prompt (last positional): it is run input,
@@ -539,6 +564,7 @@ export class KiroAdapter implements CoreAgentAdapter {
         args,
         cwd: task.cwd,
         env: buildKiroEnv(task.env),
+        scrubEnv: task.sandbox?.scrubEnv,
       },
       onOutput: task.onOutput,
       parseLine: (line): CanonicalEvent[] => {
@@ -773,6 +799,7 @@ export class KiroAdapter implements CoreAgentAdapter {
       ...(spec.model !== undefined ? { model: spec.model } : {}),
       ...(spec.kiro !== undefined ? { kiro: spec.kiro } : {}),
       ...(spec.extraArgs !== undefined ? { extraArgs: spec.extraArgs } : {}),
+      ...(spec.sandbox !== undefined ? { sandbox: spec.sandbox } : {}),
       // tapEnv's NodeJS.ProcessEnv typing is `string | undefined` per key;
       // both keys are always set, so the cast is safe for the child env.
       env: { ...(spec.env ?? {}), ...(tapEnv(mitm.port) as Record<string, string>) },
@@ -830,6 +857,7 @@ export class KiroAdapter implements CoreAgentAdapter {
       ...(spec.kiro !== undefined ? { kiro: spec.kiro } : {}),
       ...(spec.extraArgs !== undefined ? { extraArgs: spec.extraArgs } : {}),
       ...(spec.env ? { env: spec.env } : {}),
+      ...(spec.sandbox !== undefined ? { sandbox: spec.sandbox } : {}),
       ...(takeOnOutput(spec) ? { onOutput: takeOnOutput(spec) } : {}),
     });
     return launchDriverHandle({
@@ -852,18 +880,22 @@ export class KiroAdapter implements CoreAgentAdapter {
    * routed through the MITM proxy so per-run credit/token records are
    * captured; failures degrade to the untapped path with a warning. */
   async launch(spec: CoreRunSpec): Promise<CoreAgentHandle> {
-    if (spec.kiro?.transport === 'acp') return launchKiroAcp(spec, { command: this.#command, ...(this.#spawnFn ? { spawnFn: this.#spawnFn } : {}) });
+    // Sandbox allowedTools folds into the kiro trust policy before either
+    // transport consumes spec.kiro (issue #8); native kiro.tools wins.
+    const effectiveSpec = applySandboxToKiroSpec(spec);
+    if (effectiveSpec.kiro?.transport === 'acp')
+      return launchKiroAcp(effectiveSpec, { command: this.#command, ...(this.#spawnFn ? { spawnFn: this.#spawnFn } : {}) });
     // The version probe runs CONCURRENTLY with the run: launch() must spawn
     // the child synchronously (driver/test contract — a caller may close the
     // child right after launch() returns), so the run never waits on the
     // probe. `version.settle()` makes wait() resolve only after the probe
     // did, so `handle.kiro()` read after wait() always carries the version.
     const version = this.#versionProbe();
-    if (!this.#mitmRequested()) return this.#launchPlain(spec, version);
+    if (!this.#mitmRequested()) return this.#launchPlain(effectiveSpec, version);
     const merged = new EventQueue<KiroLaneEvent>();
     const mitm = await this.#startMitmTap((rec) => merged.push(mitmRecordToUsageEvent(rec)));
-    if (!mitm) return this.#launchPlain(spec, version);
-    return this.#launchWithMitmTap(spec, mitm, version, merged);
+    if (!mitm) return this.#launchPlain(effectiveSpec, version);
+    return this.#launchWithMitmTap(effectiveSpec, mitm, version, merged);
   }
 
   /** Start (or reuse) the cached `--version` probe as a VersionProbe. */

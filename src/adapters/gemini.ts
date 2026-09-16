@@ -5,7 +5,8 @@ import type {
   AgentHandle as CoreAgentHandle,
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
-import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, type JsonlRunSpec, type SpawnFn } from './shared.ts';
+import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, mcpConfigToken, type JsonlRunSpec, type SpawnFn } from './shared.ts';
+import type { SandboxPolicy } from '../core/types.js';
 
 export const GEMINI_CAPABILITIES: AdapterCapabilities = {
   headless: true,
@@ -204,6 +205,32 @@ export interface GeminiAdapterOptions {
   extraArgs?: string[];
 }
 
+/**
+ * SandboxPolicy → gemini CLI flags (issue #8): allowedTools →
+ * `--allowed-tools <csv>`, disallowedTools → `--blocked-tools <csv>`,
+ * permissionMode → `--approval-mode` ("ask"→"default", "dontAsk"→"yolo",
+ * native spellings verbatim — replaces the adapter's default `yolo`),
+ * mcpConfig → `--mcp-config` (prefer a string path; gemini documents a file
+ * path there, an object is JSON-stringified inline). Pure; exported for
+ * tests.
+ */
+export function geminiSandboxArgs(sandbox: SandboxPolicy): string[] {
+  const args: string[] = [];
+  if (sandbox.allowedTools?.length) args.push('--allowed-tools', sandbox.allowedTools.join(','));
+  if (sandbox.disallowedTools?.length) args.push('--blocked-tools', sandbox.disallowedTools.join(','));
+  if (sandbox.permissionMode !== undefined) {
+    const mode =
+      sandbox.permissionMode === 'ask'
+        ? 'default'
+        : sandbox.permissionMode === 'dontAsk'
+          ? 'yolo'
+          : sandbox.permissionMode;
+    args.push('--approval-mode', mode);
+  }
+  if (sandbox.mcpConfig !== undefined) args.push('--mcp-config', mcpConfigToken(sandbox.mcpConfig));
+  return args;
+}
+
 export class GeminiAdapter implements AgentAdapter, CoreAgentAdapter {
   readonly id = 'gemini';
   readonly name = 'gemini';
@@ -223,9 +250,20 @@ export class GeminiAdapter implements AgentAdapter, CoreAgentAdapter {
   spawn(prompt: string, opts: RunOptions = {}): RunHandle {
     const spec: JsonlRunSpec = {
       command: this.#command,
-      args: ['-p', prompt, '--output-format', 'stream-json', '--approval-mode', 'yolo', ...this.#extraArgs],
+      args: [
+        '-p',
+        prompt,
+        '--output-format',
+        'stream-json',
+        // Default approval mode; a sandbox.permissionMode replaces it via
+        // geminiSandboxArgs (exactly one --approval-mode is emitted).
+        ...(opts.sandbox?.permissionMode === undefined ? ['--approval-mode', 'yolo'] : []),
+        ...(opts.sandbox ? geminiSandboxArgs(opts.sandbox) : []),
+        ...this.#extraArgs,
+      ],
       cwd: opts.cwd,
       env: opts.env,
+      scrubEnv: opts.sandbox?.scrubEnv,
     };
     return this.#run(spec, opts.onOutput);
   }
@@ -233,9 +271,20 @@ export class GeminiAdapter implements AgentAdapter, CoreAgentAdapter {
   resume(sessionId: string, prompt: string, opts: RunOptions = {}): RunHandle {
     const spec: JsonlRunSpec = {
       command: this.#command,
-      args: ['-r', sessionId, '-p', prompt, '--output-format', 'stream-json', '--approval-mode', 'yolo', ...this.#extraArgs],
+      args: [
+        '-r',
+        sessionId,
+        '-p',
+        prompt,
+        '--output-format',
+        'stream-json',
+        ...(opts.sandbox?.permissionMode === undefined ? ['--approval-mode', 'yolo'] : []),
+        ...(opts.sandbox ? geminiSandboxArgs(opts.sandbox) : []),
+        ...this.#extraArgs,
+      ],
       cwd: opts.cwd,
       env: opts.env,
+      scrubEnv: opts.sandbox?.scrubEnv,
     };
     return this.#run(spec, opts.onOutput);
   }
@@ -251,14 +300,15 @@ export class GeminiAdapter implements AgentAdapter, CoreAgentAdapter {
         spec.prompt,
         '--output-format',
         'stream-json',
-        '--approval-mode',
-        'yolo',
+        ...(spec.sandbox?.permissionMode === undefined ? ['--approval-mode', 'yolo'] : []),
+        ...(spec.sandbox ? geminiSandboxArgs(spec.sandbox) : []),
         ...modelArgs,
         ...this.#extraArgs,
         ...(spec.extraArgs ?? []),
       ],
       cwd: spec.cwd,
       env: spec.env,
+      scrubEnv: spec.sandbox?.scrubEnv,
     };
     const handle = this.#run(jsonlSpec, takeOnOutput(spec));
     return launchDriverHandle({

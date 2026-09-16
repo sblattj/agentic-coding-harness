@@ -33,6 +33,7 @@ export {
   type RunOptions,
   type RunResult,
   type RunSpec,
+  type SandboxPolicy,
 } from './core/types.ts';
 export {
   composePrompt,
