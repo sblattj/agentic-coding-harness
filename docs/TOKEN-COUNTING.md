@@ -225,3 +225,34 @@ cost_usd = ( inputTokens        × price.input
   CLI-reported `costUsd` when present, else its tokens at its own model's rates; one unpriceable
   slice voids the record (NaN + warning, never a partial sum). The record's model label is the
   dominant slice by cost (fallback `multi`), never first/last key order.
+
+---
+
+## 4. Normalized usage/cost on the run result (#7)
+
+`RunResult.usage.cost` (type `ReportedUsageCost`, computed in
+`src/core/usage-availability.ts`) is the one normalized shape consumers read
+instead of re-parsing adapter stdout:
+
+```ts
+result.usage.cost = {
+  costAvailability: 'reported' | 'unavailable',
+  reportedCostUsd: number | null,   // null exactly when "unavailable"
+  tokens?: {                        // run totals, canonical field names
+    inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+    reasoningTokens?
+  }
+}
+```
+
+- **`reported` only when the provider itself stated a USD figure** — claude
+  `result.total_cost_usd` (whole-run) and opencode `step-finish` `cost`
+  (per-step, summed). Codex and Gemini emit token usage but no native cost;
+  kiro is credits-only. In those cases: `'unavailable'` + `null` — never the
+  pricer's estimate (`usage.usd`) and never kiro credits laundered into USD.
+- `tokens` totals follow the same truth rules as the registry counters:
+  placeholder records (`extra.tokensAvailable === false`, kiro 2.21.x) are
+  skipped, and the key is omitted entirely when nothing usable remains. For
+  kiro the session store's per-turn counts win when it carries real ones.
+- Provider comparison/scoring is out of scope by design: the field surfaces
+  the numbers, it never ranks them.

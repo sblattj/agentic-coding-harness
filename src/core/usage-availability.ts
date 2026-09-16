@@ -12,7 +12,7 @@
 // labelled `source:'derived'` so nobody mistakes it for billed tokens).
 //
 // Pure: no I/O, no clock, no env. The driver does the reading.
-import type { CanonicalTokenRecord, UsageAvailability } from './types.js';
+import type { CanonicalTokenRecord, NormalizedUsageTokens, ReportedUsageCost, UsageAvailability } from './types.js';
 import type { ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
 
 /** Credits agreeing to within this absolute delta are treated as one charge. */
@@ -98,6 +98,56 @@ function streamContextPercentage(tokens: CanonicalTokenRecord[]): number | undef
     if (pct !== undefined) return pct;
   }
   return undefined;
+}
+
+/**
+ * Sum the provider-reported USD cost across records (issue #7). `costUsd` on a
+ * record exists ONLY when the provider's own output stated a USD figure
+ * (claude result.total_cost_usd, opencode per-step cost); the pricer's
+ * estimate never writes it and kiro credits live in extra.credits. Null when
+ * no record reported one — a missing cost never silently becomes $0.
+ */
+function sumReportedCostUsd(tokens: CanonicalTokenRecord[]): number | null {
+  let total: number | null = null;
+  for (const rec of tokens) {
+    const cost = finite(rec.costUsd);
+    if (cost === undefined) continue;
+    total = (total ?? 0) + cost;
+  }
+  return total;
+}
+
+/** Sum store turns into run-total counts (kiro's native per-turn records). */
+function sumStoreTurns(store: ParsedKiroSessionStore): NormalizedUsageTokens {
+  const total: NormalizedUsageTokens = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  for (const t of store.turns) {
+    total.inputTokens += t.inputTokens;
+    total.outputTokens += t.outputTokens;
+    total.cacheReadTokens += t.cacheReadTokens;
+    total.cacheWriteTokens += t.cacheWriteTokens;
+  }
+  return total;
+}
+
+/**
+ * Sum run-total counts from the usage records. Placeholder records
+ * (extra.tokensAvailable === false, kiro 2.21.x zeros) are skipped — the same
+ * rule the registry totals use. Null when nothing real remains.
+ */
+function sumRecordTokens(tokens: CanonicalTokenRecord[]): NormalizedUsageTokens | null {
+  const usable = tokens.filter((rec) => extraOf(rec).tokensAvailable !== false);
+  if (usable.length === 0) return null;
+  const total: NormalizedUsageTokens = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  let reasoning: number | undefined;
+  for (const rec of usable) {
+    total.inputTokens += rec.inputTokens ?? 0;
+    total.outputTokens += rec.outputTokens ?? 0;
+    total.cacheReadTokens += rec.cacheReadTokens ?? 0;
+    total.cacheWriteTokens += rec.cacheWriteTokens ?? 0;
+    if (rec.reasoningTokens !== undefined) reasoning = (reasoning ?? 0) + rec.reasoningTokens;
+  }
+  if (reasoning !== undefined) total.reasoningTokens = reasoning;
+  return total;
 }
 
 /**
@@ -196,5 +246,18 @@ export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsage
           ...(model !== undefined ? { model } : {}),
         };
 
-  return { usage: { tokens, credits, usd, context }, warnings };
+  // ------------------------------------------------- reported cost (issue #7)
+  // Per adapter from native output, one normalized shape (ReportedUsageCost):
+  // "reported" only when a provider-stated USD figure exists; tokens totals
+  // prefer the kiro session store (turn-scoped, complete) over stream records,
+  // mirroring the `tokens` availability preference above.
+  const reportedCostUsd = sumReportedCostUsd(input.tokens);
+  const tokenTotals = storeTokens ? sumStoreTurns(store) : sumRecordTokens(input.tokens);
+  const cost: ReportedUsageCost = {
+    costAvailability: reportedCostUsd !== null ? 'reported' : 'unavailable',
+    reportedCostUsd,
+    ...(tokenTotals !== null ? { tokens: tokenTotals } : {}),
+  };
+
+  return { usage: { tokens, credits, usd, context, cost }, warnings };
 }
