@@ -24,8 +24,16 @@ import type {
   AgentHandle as CoreAgentHandle,
   CanonicalTokenRecord as CoreTokenRecord,
   RunSpec as CoreRunSpec,
+  SandboxPolicy,
 } from '../core/types.js';
-import { launchDriverHandle, takeOnOutput, toCoreTokenRecord, type HouseTokens } from './shared.ts';
+import {
+  launchDriverHandle,
+  mcpConfigToken,
+  scrubEnvVars,
+  takeOnOutput,
+  toCoreTokenRecord,
+  type HouseTokens,
+} from './shared.ts';
 
 // ---------------------------------------------------------------------------
 // Local adapter-lane types (kept exported for existing tests; the core
@@ -40,6 +48,14 @@ export interface RunSpec {
   cwd?: string;
   env?: Record<string, string>;
   extraArgs?: string[];
+  /**
+   * Typed sandbox/permission policy (issue #8): allowedTools →
+   * `--allowedTools <csv>`, disallowedTools → `--disallowedTools <csv>`,
+   * permissionMode → `--permission-mode` ("ask"→"default", "dontAsk"→
+   * "bypassPermissions", else verbatim), mcpConfig → `--mcp-config` (path or
+   * inline JSON), scrubEnv scrubs provider credential env vars before spawn.
+   */
+  sandbox?: SandboxPolicy;
   /** Raw stdout tap (RunOptions.onOutput semantics; guarded, never breaks the run). */
   onOutput?: (chunk: string) => void;
 }
@@ -478,6 +494,30 @@ export function useDefaultClaudeConfig(opts: ClaudeAdapterOptions, env: NodeJS.P
   return opts.useDefaultClaudeConfig === true || env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG === '1';
 }
 
+/**
+ * SandboxPolicy → claude CLI flags (issue #8): `--allowedTools <csv>`,
+ * `--disallowedTools <csv>`, `--permission-mode` ("ask"→"default",
+ * "dontAsk"→"bypassPermissions", native spellings verbatim), `--mcp-config`
+ * (path string verbatim, object inline JSON). Empty allow/deny lists emit no
+ * flag. Pure; exported for tests. scrubEnv is handled on the env side.
+ */
+export function claudeSandboxArgs(sandbox: SandboxPolicy): string[] {
+  const args: string[] = [];
+  if (sandbox.allowedTools?.length) args.push('--allowedTools', sandbox.allowedTools.join(','));
+  if (sandbox.disallowedTools?.length) args.push('--disallowedTools', sandbox.disallowedTools.join(','));
+  if (sandbox.permissionMode !== undefined) {
+    const mode =
+      sandbox.permissionMode === 'ask'
+        ? 'default'
+        : sandbox.permissionMode === 'dontAsk'
+          ? 'bypassPermissions'
+          : sandbox.permissionMode;
+    args.push('--permission-mode', mode);
+  }
+  if (sandbox.mcpConfig !== undefined) args.push('--mcp-config', mcpConfigToken(sandbox.mcpConfig));
+  return args;
+}
+
 export class ClaudeCodeAdapter implements CoreAgentAdapter {
   readonly name = 'claude';
   readonly capabilities = capabilities();
@@ -530,6 +570,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       cwd: spec.cwd,
       env: spec.env,
       extraArgs: spec.extraArgs,
+      sandbox: spec.sandbox,
       onOutput: takeOnOutput(spec),
     });
     this.launchedRunners.add(runner);
@@ -562,7 +603,14 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     if (this.child) throw new Error('claude adapter: spawn called twice on the same adapter');
 
     const runId = task.resume ?? randomUUID();
-    const childEnv: NodeJS.ProcessEnv = { ...process.env, ...task.env };
+    // Sandbox scrub (issue #8) runs BEFORE the config-dir logic so ambient
+    // provider credentials and an inherited CLAUDE_CONFIG_DIR are dropped,
+    // while the adapter's own per-run config dir (isolation plumbing, not a
+    // credential) is still applied below.
+    const childEnv: NodeJS.ProcessEnv = scrubEnvVars(
+      { ...process.env, ...task.env },
+      task.sandbox?.scrubEnv,
+    );
     if (useDefaultClaudeConfig(this.opts)) {
       // Default config: a custom CLAUDE_CONFIG_DIR cannot see a keychain-bound
       // OAuth token ("Not logged in · Please run /login"), so drop any
@@ -586,6 +634,9 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     ];
     if (task.resume) {
       args.push('--resume', task.resume);
+    }
+    if (task.sandbox) {
+      args.push(...claudeSandboxArgs(task.sandbox));
     }
     if (task.extraArgs?.length) {
       args.push(...task.extraArgs);

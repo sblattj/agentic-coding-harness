@@ -117,6 +117,13 @@ export interface JsonlRunSpec {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /**
+   * SandboxPolicy.scrubEnv (issue #8): `true` removes the known provider
+   * credential/config-dir vars from the merged child env just before spawn;
+   * a string array removes exactly those names. Applied AFTER spec.env
+   * overlays process.env.
+   */
+  scrubEnv?: boolean | string[];
 }
 
 export interface JsonlRunConfig {
@@ -152,6 +159,62 @@ export function takeOnOutput(spec: { onOutput?: unknown; [key: string]: unknown 
   return typeof spec.onOutput === 'function' ? (spec.onOutput as (chunk: string) => void) : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Sandbox policy translation helpers (issue #8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Provider credential / config-dir env vars removed by
+ * SandboxPolicy.scrubEnv:true before spawn. Credentials for the five backed
+ * CLIs (claude: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
+ * CLAUDE_CODE_OAUTH_TOKEN; codex: OPENAI_API_KEY; gemini: GEMINI_API_KEY,
+ * GOOGLE_API_KEY, GOOGLE_APPLICATION_CREDENTIALS; kiro: KIRO_API_KEY plus
+ * the AWS_* chain it authenticates through) and the config-dir overrides
+ * that point a child at the caller's real authenticated config.
+ * Harness-managed vars (e.g. the per-run CLAUDE_CONFIG_DIR the claude
+ * adapter creates) are re-applied by each adapter after the scrub.
+ */
+export const PROVIDER_CREDENTIAL_ENV_VARS: readonly string[] = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'KIRO_API_KEY',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'CLAUDE_CONFIG_DIR',
+  'CODEX_HOME',
+  'OPENCODE_CONFIG',
+];
+
+/**
+ * Return a copy of `env` with the scrubbed vars removed (issue #8):
+ * `true` drops PROVIDER_CREDENTIAL_ENV_VARS; a string array drops exactly
+ * those names; undefined/false returns the input unchanged (no copy).
+ */
+export function scrubEnvVars<T extends Record<string, string | undefined>>(
+  env: T,
+  policy: boolean | string[] | undefined,
+): T {
+  if (policy === undefined || policy === false) return env;
+  const drop = policy === true ? PROVIDER_CREDENTIAL_ENV_VARS : policy;
+  const out = { ...env };
+  for (const name of drop) delete out[name];
+  return out;
+}
+
+/**
+ * SandboxPolicy.mcpConfig as a CLI token: a string (file path) passes through
+ * verbatim; an object is JSON-stringified for CLIs that accept inline JSON.
+ */
+export function mcpConfigToken(mcpConfig: string | Record<string, unknown>): string {
+  return typeof mcpConfig === 'string' ? mcpConfig : JSON.stringify(mcpConfig);
+}
+
 /**
  * Shared run loop: spawn the CLI, feed stdout JSONL through parseLine, forward
  * stderr as progress events, and surface a non-zero exit as an error event.
@@ -178,7 +241,10 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
   const start = (): ChildProcessLike => {
     const opts: SpawnOptions = {
       cwd: spec.cwd,
-      env: spec.env ? { ...process.env, ...spec.env } : process.env,
+      // Snapshot the merged env (never alias live process.env into the
+      // spawn options) and apply scrubEnv (issue #8) so ambient credentials
+      // and anything layered in via spec.env are both covered.
+      env: scrubEnvVars({ ...process.env, ...spec.env }, spec.scrubEnv),
       stdio: ['pipe', 'pipe', 'pipe'],
     };
     const proc = spawnFn(spec.command, spec.args, opts);

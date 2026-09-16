@@ -6,6 +6,7 @@ import type {
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
 import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, type JsonlRunSpec, type SpawnFn } from './shared.ts';
+import type { SandboxPolicy } from '../core/types.js';
 
 export const CODEX_CAPABILITIES: AdapterCapabilities = {
   headless: true,
@@ -185,6 +186,24 @@ export interface CodexAdapterOptions {
   extraArgs?: string[];
 }
 
+/**
+ * SandboxPolicy → codex CLI flags (issue #8). Only permissionMode maps
+ * ("ask"→`--ask-for-approval on-request`, "dontAsk"→`--ask-for-approval
+ * never`, native spellings verbatim); `codex exec` has no flags for
+ * allowedTools/disallowedTools/mcpConfig — those are omitted (use extraArgs,
+ * e.g. `-c sandbox_mode=workspace-write`). Pure; exported for tests.
+ */
+export function codexSandboxArgs(sandbox: SandboxPolicy): string[] {
+  if (sandbox.permissionMode === undefined) return [];
+  const approval =
+    sandbox.permissionMode === 'ask'
+      ? 'on-request'
+      : sandbox.permissionMode === 'dontAsk'
+        ? 'never'
+        : sandbox.permissionMode;
+  return ['--ask-for-approval', approval];
+}
+
 export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
   readonly id = 'codex';
   readonly name = 'codex';
@@ -205,9 +224,17 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
     const modelArgs = opts.model !== undefined ? ['-m', opts.model] : [];
     const spec: JsonlRunSpec = {
       command: this.#command,
-      args: ['exec', '--json', ...modelArgs, ...this.#extraArgs, prompt],
+      args: [
+        'exec',
+        '--json',
+        ...(opts.sandbox ? codexSandboxArgs(opts.sandbox) : []),
+        ...modelArgs,
+        ...this.#extraArgs,
+        prompt,
+      ],
       cwd: opts.cwd,
       env: opts.env,
+      scrubEnv: opts.sandbox?.scrubEnv,
     };
     return this.#run(spec, opts.onOutput);
   }
@@ -215,9 +242,18 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
   resume(sessionId: string, prompt: string, opts: RunOptions = {}): RunHandle {
     const spec: JsonlRunSpec = {
       command: this.#command,
-      args: ['exec', 'resume', sessionId, '--json', ...this.#extraArgs, prompt],
+      args: [
+        'exec',
+        'resume',
+        sessionId,
+        '--json',
+        ...(opts.sandbox ? codexSandboxArgs(opts.sandbox) : []),
+        ...this.#extraArgs,
+        prompt,
+      ],
       cwd: opts.cwd,
       env: opts.env,
+      scrubEnv: opts.sandbox?.scrubEnv,
     };
     return this.#run(spec, opts.onOutput);
   }
@@ -229,10 +265,27 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
     const jsonlSpec: JsonlRunSpec = {
       command: this.#command,
       args: spec.resume
-        ? ['exec', 'resume', spec.resume, '--json', ...modelArgs, ...extra, spec.prompt]
-        : ['exec', '--json', ...modelArgs, ...extra, spec.prompt],
+        ? [
+            'exec',
+            'resume',
+            spec.resume,
+            '--json',
+            ...(spec.sandbox ? codexSandboxArgs(spec.sandbox) : []),
+            ...modelArgs,
+            ...extra,
+            spec.prompt,
+          ]
+        : [
+            'exec',
+            '--json',
+            ...(spec.sandbox ? codexSandboxArgs(spec.sandbox) : []),
+            ...modelArgs,
+            ...extra,
+            spec.prompt,
+          ],
       cwd: spec.cwd,
       env: spec.env,
+      scrubEnv: spec.sandbox?.scrubEnv,
     };
     const handle = this.#run(jsonlSpec, takeOnOutput(spec));
     return launchDriverHandle({

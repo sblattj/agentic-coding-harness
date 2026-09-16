@@ -121,6 +121,7 @@ export async function launchKiroAcp(
     args,
     ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
     ...(spec.env !== undefined ? { env: spec.env } : {}),
+    ...(spec.sandbox?.scrubEnv !== undefined ? { scrubEnv: spec.sandbox.scrubEnv } : {}),
     ...(opts.spawnFn !== undefined ? { spawnFn: opts.spawnFn } : {}),
     ...(kiro.startupMs !== undefined ? { startupMs: kiro.startupMs } : {}),
     ...(opts.onPermission !== undefined ? { onPermission: opts.onPermission } : {}),
