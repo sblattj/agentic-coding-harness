@@ -10,7 +10,9 @@ import { computeUsageAvailability } from './usage-availability.js';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
 import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
-import type { AdapterExit, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec } from './types.js';
+import type { AdapterExit, AdapterProfileCheck, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec } from './types.js';
+import { HarnessError } from './types.js';
+import { assertInsideWorkspace } from './workspace.js';
 import { ClaudeCodeAdapter } from '../adapters/claude.js';
 import { OpenCodeAdapter } from '../adapters/opencode.js';
 import { KiroAdapter } from '../adapters/kiro.js';
@@ -117,6 +119,19 @@ export interface DriverOptions {
    * they drain into run warnings.
    */
   registry?: { stateDir: string };
+  /**
+   * Workspace root for confinement (issue #9). Used only when
+   * confineToWorkspace is true; defaults to process.cwd() at run time.
+   */
+  workspaceRoot?: string;
+  /**
+   * Confine caller-supplied paths on a run spec to workspaceRoot (issue #9):
+   * RunSpec.cwd and RunSpec.stateDir are resolved to their REAL paths
+   * (symlinks followed, `..` collapsed) and must land inside the root, or
+   * the run fails with a WORKSPACE_ESCAPE HarnessError before anything is
+   * launched.
+   */
+  confineToWorkspace?: boolean;
 }
 
 export interface Driver {
@@ -147,6 +162,8 @@ const ABORT_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
 /** Launch-capable subset every bundled adapter class implements natively. */
 interface LaunchableAdapter {
   launch(spec: RunSpec): Promise<AgentHandle>;
+  /** Adapter-owned profile/config validation (issue #9); optional. */
+  validateProfile?(spec: RunSpec): AdapterProfileCheck;
 }
 
 /**
@@ -176,6 +193,11 @@ export async function defaultAdapters(): Promise<Record<string, AgentAdapter>> {
       adapters[name] = {
         name,
         ...(name === 'claude' ? { enforcesBudget: true } : {}),
+        // Profile validation reads only constructor options + the spec, so
+        // the probe instance answers it; launch keeps a fresh instance per run.
+        ...(typeof probe.validateProfile === 'function'
+          ? { validateProfile: (spec: RunSpec): AdapterProfileCheck => probe.validateProfile!(spec) }
+          : {}),
         launch: (spec: RunSpec): Promise<AgentHandle> => make().launch(spec),
       };
     } catch (err) {
@@ -230,6 +252,32 @@ export function createDriver(options: DriverOptions): Driver {
       // timeouts, closed budget shape, and model pinning where required
       // (adapter.requiresModel / kiro.requireModelAck).
       const parsed = parseRunSpec(agentName, spec, { requiresModel: adapter.requiresModel === true });
+      // --- workspace confinement (issue #9) ---
+      // Resolve caller-supplied paths to real paths (symlinks followed, `..`
+      // collapsed) and refuse any that escape the workspace root, BEFORE
+      // anything is launched. Applied to every caller-supplied file path on
+      // the spec the library acts on: the agent subprocess cwd and the
+      // per-run stateDir override.
+      if (options.confineToWorkspace === true) {
+        const root = options.workspaceRoot ?? process.cwd();
+        for (const field of ['cwd', 'stateDir'] as const) {
+          const value = (parsed as Record<string, unknown>)[field];
+          if (typeof value === 'string' && value !== '') {
+            assertInsideWorkspace(root, value, { label: `spec.${field}` });
+          }
+        }
+      }
+      // --- adapter-owned profile validation (issue #9) ---
+      // The adapter that owns the config validates it; the driver only
+      // enforces the verdict. Warnings drain into the run's warnings.
+      const profile = adapter.validateProfile?.(parsed);
+      if (profile && !profile.ok) {
+        throw new HarnessError(
+          `agent "${agentName}" profile validation failed: ${profile.errors.map((e) => `${e.field}: ${e.message}`).join('; ')}`,
+          'INVALID_PROFILE',
+        );
+      }
+      const profileWarnings = profile?.warnings ?? [];
       // Caller-chosen run id (async job tools pass a uuid so the registry
       // record is addressable before spawn); generated otherwise.
       const runId = typeof spec.runId === 'string' && spec.runId ? spec.runId : randomUUID();
@@ -242,6 +290,9 @@ export function createDriver(options: DriverOptions): Driver {
 
       const start = Date.now();
       const warnings: string[] = [];
+      // Profile-validation warnings (issue #9) precede everything else: they
+      // describe the config the run launched with, not what it produced.
+      for (const w of profileWarnings) warnings.push(`${agentName}: profile warning — ${w.field}: ${w.message}`);
 
       // --- run-to-directory mode (#6) ---
       // When the spec carries outputDir, mirror the whole run into it and

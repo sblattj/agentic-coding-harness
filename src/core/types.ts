@@ -931,6 +931,33 @@ export interface AgentAdapter {
    * because they depend on the run spec, not the adapter alone.
    */
   requiresModel?: boolean;
+  /**
+   * Adapter-owned profile/config validation (issue #9): check the
+   * agent-specific parts of a spec WITHOUT launching. The driver calls this
+   * before launch and fails the run on errors; consumers that want the same
+   * guarantees call it (or the driver) instead of re-implementing the checks
+   * per adapter. Adapters without a profile/config leave it undefined
+   * (no-op default).
+   */
+  validateProfile?(spec: RunSpec): AdapterProfileCheck;
+}
+
+/** One validation finding from AgentAdapter.validateProfile (issue #9). */
+export interface AdapterProfileIssue {
+  /** Dotted path into the spec/config (e.g. "kiro.mcpServers.0.name"). */
+  field: string;
+  message: string;
+}
+
+/**
+ * Result of AgentAdapter.validateProfile (issue #9): `ok` is true iff
+ * `errors` is empty; `warnings` describe config that runs but will not take
+ * effect as written.
+ */
+export interface AdapterProfileCheck {
+  ok: boolean;
+  errors: AdapterProfileIssue[];
+  warnings: AdapterProfileIssue[];
 }
 
 /** Working-directory/env options shared by the CLI-lane adapters. */
