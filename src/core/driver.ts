@@ -8,6 +8,7 @@ import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { computeUsageAvailability } from './usage-availability.js';
 import { parseRunSpec } from './validate.js';
+import { composePrompt, type AttachmentManifest } from './attachments.js';
 import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
 import type { AdapterExit, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec } from './types.js';
 import { ClaudeCodeAdapter } from '../adapters/claude.js';
@@ -272,6 +273,22 @@ export function createDriver(options: DriverOptions): Driver {
         artifacts = await RunArtifacts.open(outputDir, invocation);
       }
 
+      // Prompt attachments (#12): compose file blocks into the prompt BEFORE
+      // launch so every adapter receives the final prompt; the attachment keys
+      // are stripped so adapters never see (or act on) them twice.
+      let launchSpec = parsed;
+      let attachmentManifest: AttachmentManifest | undefined;
+      if (parsed.attachments !== undefined && parsed.attachments.length > 0) {
+        const { prompt: composedPrompt, manifest } = await composePrompt(parsed.prompt, parsed.attachments, {
+          maxTotalBytes: parsed.attachmentsMaxBytes,
+        });
+        attachmentManifest = manifest;
+        const { attachments: _a, attachmentsMaxBytes: _m, ...rest } = parsed;
+        void _a;
+        void _m;
+        launchSpec = { ...rest, prompt: composedPrompt };
+      }
+
       // Raw stdout tap precedence: RunSpec.onOutput wins over the driver-wide
       // DriverOptions.onOutput; merged here so every adapter sees one field.
       // In outputDir mode the artifact mirror is chained ahead of the caller's
@@ -288,7 +305,7 @@ export function createDriver(options: DriverOptions): Driver {
       // (#6) can settle status.json on EVERY exit path: the settled path above
       // plus any throw (launch failure, event-stream crash, post-loop hooks).
       try {
-        const handle = await adapter.launch(onOutput ? { ...parsed, onOutput } : parsed);
+        const handle = await adapter.launch(onOutput ? { ...launchSpec, onOutput } : launchSpec);
         const sessionId = handle.sessionId;
         // Cancellation hook for driver.abort(runId) until the run settles.
         activeRuns.set(runId, () => {
@@ -664,6 +681,7 @@ export function createDriver(options: DriverOptions): Driver {
           warnings,
           usage,
           ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
+          ...(attachmentManifest !== undefined ? { attachments: attachmentManifest } : {}),
         };
         // Run-to-directory settle (#6): the terminal status.json lands last,
         // after every other artifact (result.json included) is on disk.
