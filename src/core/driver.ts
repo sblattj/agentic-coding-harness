@@ -126,9 +126,22 @@ export interface Driver {
    * matched and abort was signalled.
    */
   abort(runId: string): boolean;
+  /**
+   * Opt-in signal abort (#11): install process handlers for SIGTERM/SIGINT
+   * (or the given signals) that call abort(runId), so consumers don't each
+   * install and clean up their own signal handlers. Returns a disposer that
+   * removes exactly the listeners this call added. The handlers are
+   * one-shot: the first signal uninstalls them and aborts the run, so
+   * subsequent signals fall through to Node's default semantics instead of
+   * being swallowed forever.
+   */
+  installSignalAbort(runId: string, signals?: readonly NodeJS.Signals[]): () => void;
 }
 
 const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini'] as const;
+
+/** Default signals wired by installSignalAbort (#11). */
+const ABORT_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
 
 /** Launch-capable subset every bundled adapter class implements natively. */
 interface LaunchableAdapter {
@@ -179,12 +192,32 @@ export function createDriver(options: DriverOptions): Driver {
   // Active-run abort handles keyed by resolved RunSpec.runId (see abort()).
   const activeRuns = new Map<string, () => void>();
 
+  // Shared abort path for the public abort(runId) and installSignalAbort's
+  // captured signal handlers (#11).
+  const abortRun = (runId: string): boolean => {
+    const abort = activeRuns.get(runId);
+    if (!abort) return false;
+    abort();
+    return true;
+  };
+
   return {
-    abort(runId: string): boolean {
-      const abort = activeRuns.get(runId);
-      if (!abort) return false;
-      abort();
-      return true;
+    abort: abortRun,
+
+    installSignalAbort(runId: string, signals: readonly NodeJS.Signals[] = ABORT_SIGNALS): () => void {
+      // One handler shared across the requested signals; the disposer removes
+      // exactly the listeners THIS call added, never the host's own.
+      const onSignal = (): void => {
+        // Uninstall FIRST (one-shot): the handler cannot re-enter while the
+        // abort is in flight, and later signals keep Node's default
+        // termination semantics instead of being swallowed forever (#11).
+        for (const sig of signals) process.removeListener(sig, onSignal);
+        abortRun(runId);
+      };
+      for (const sig of signals) process.on(sig, onSignal);
+      return () => {
+        for (const sig of signals) process.removeListener(sig, onSignal);
+      };
     },
 
     async run(agentName: string, spec: RunSpec): Promise<RunResult> {

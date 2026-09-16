@@ -173,7 +173,16 @@ const result = await driver.run('codex', {
 });
 // result.exitStatus: 'success' | 'aborted' | 'timeout' | 'error' | ...
 driver.abort('my-watchdog-1'); // out-of-band cancel while a run is in flight
+
+// Opt-in (#11): wire SIGTERM/SIGINT to abort the run; dispose when done.
+const stopSignalAbort = driver.installSignalAbort('my-watchdog-1');
+stopSignalAbort(); // removes exactly those listeners
 ```
+
+The signal helper is one-shot: the first SIGTERM/SIGINT aborts the run and
+uninstalls the handlers, so later signals keep Node's default termination
+semantics. An optional second argument overrides the wired signals
+(`driver.installSignalAbort(runId, ['SIGHUP'])`).
 
 Exported: `createDriver`, `defaultAdapters`, `runToDirectory`, `ClaudeCodeAdapter`, `KiroAdapter`,
 `CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `VERSION`. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
