@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { AdapterCapabilities, AgentAdapter, CanonicalEvent, RunHandle, RunOptions } from './types.ts';
 import type {
+  AdapterProfileCheck,
   AgentAdapter as CoreAgentAdapter,
   AgentHandle as CoreAgentHandle,
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
-import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, mcpConfigToken, type JsonlRunSpec, type SpawnFn } from './shared.ts';
+import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, mcpConfigToken, validateCliSessionProfile, type JsonlRunSpec, type SpawnFn } from './shared.ts';
 import type { SandboxPolicy } from '../core/types.js';
 
 export const GEMINI_CAPABILITIES: AdapterCapabilities = {
@@ -290,6 +291,14 @@ export class GeminiAdapter implements AgentAdapter, CoreAgentAdapter {
   }
 
   /** Driver contract (src/core/driver.ts): launch one run for a RunSpec. */
+  /**
+   * Adapter-owned profile validation (issue #9): the shared model/resume
+   * surface (`-m <model>`, `-r <sessionId>`) must be sane CLI tokens.
+   */
+  validateProfile(spec: CoreRunSpec): AdapterProfileCheck {
+    return validateCliSessionProfile(spec);
+  }
+
   async launch(spec: CoreRunSpec): Promise<CoreAgentHandle> {
     const modelArgs = spec.model !== undefined ? ['-m', spec.model] : [];
     const jsonlSpec: JsonlRunSpec = {

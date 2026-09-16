@@ -19,6 +19,7 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { z } from 'zod';
 import type {
+  AdapterProfileCheck,
   AgentAdapter as CoreAgentAdapter,
   AgentEvent as CoreAgentEvent,
   AgentHandle as CoreAgentHandle,
@@ -32,6 +33,7 @@ import {
   scrubEnvVars,
   takeOnOutput,
   toCoreTokenRecord,
+  validateCliSessionProfile,
   type HouseTokens,
 } from './shared.ts';
 
@@ -554,6 +556,17 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       process.env.AGENTIC_CODING_HARNESS_STATE_DIR ??
       path.join(os.homedir(), '.agentic-coding-harness', 'state');
     this.opts = { ...options, stateDir, command: options.command ?? 'claude' };
+  }
+
+  /**
+   * Adapter-owned profile validation (issue #9). Claude has no structured
+   * run profile beyond the shared model/resume surface (its adapter options
+   * are validated at construction), so this owns exactly those checks:
+   * `--model <value>` and `--resume <sessionId>` flow into claude's argv as
+   * bare values and must be sane tokens.
+   */
+  validateProfile(spec: CoreRunSpec): AdapterProfileCheck {
+    return validateCliSessionProfile(spec);
   }
 
   /**

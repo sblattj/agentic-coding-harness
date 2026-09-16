@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import type { AdapterCapabilities, CanonicalEvent, CanonicalTokenRecord, RunOptions } from './types.ts';
 import type {
+  AdapterProfileCheck,
   AgentAdapter as CoreAgentAdapter,
   AgentHandle as CoreAgentHandle,
   RunSpec as CoreRunSpec,
@@ -12,6 +13,7 @@ import {
   launchDriverHandle,
   houseEventToCore,
   takeOnOutput,
+  validateCliSessionProfile,
   type HouseEventLike,
   LineAssembler,
   EventQueue,
@@ -299,6 +301,14 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
   /** House-style resume: continue a prior session by id (`-s <sessionId>`). */
   resume(sessionId: string, prompt: string, opts: RunOptions = {}): OpencodeRunHandle {
     return this.spawn({ prompt, resume: { sessionId }, ...opts });
+  }
+
+  /**
+   * Adapter-owned profile validation (issue #9): the shared model/resume
+   * surface (model flag, `-s <sessionId>` resume) must be sane CLI tokens.
+   */
+  validateProfile(spec: CoreRunSpec): AdapterProfileCheck {
+    return validateCliSessionProfile(spec);
   }
 
   /** Driver contract (src/core/driver.ts): launch one run for a RunSpec. */

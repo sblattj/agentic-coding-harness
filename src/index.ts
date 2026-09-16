@@ -17,6 +17,8 @@ export {
   isKnownAgent,
   type AdapterCapabilities,
   type AdapterExit,
+  type AdapterProfileCheck,
+  type AdapterProfileIssue,
   type AgentAdapter,
   type AgentEvent,
   type AgentHandle,
@@ -46,6 +48,12 @@ export {
 export { runToDirectory, type RunToDirectoryOptions, type RunToDirectoryOutcome } from './core/run-to-directory.ts';
 export type { RunDirStatus, RunInvocation, RunStatusFile } from './core/run-artifacts.ts';
 export { parseRunSpec, type RunSpecValidationOptions } from './core/validate.ts';
+export {
+  WorkspaceEscapeError,
+  assertInsideWorkspace,
+  canonicalPath,
+  isInsideWorkspace,
+} from './core/workspace.ts';
 export { ClaudeCodeAdapter } from './adapters/claude.ts';
 export { KiroAdapter } from './adapters/kiro.ts';
 export { CodexAdapter } from './adapters/codex.ts';

@@ -51,6 +51,8 @@
 
 import type { AdapterCapabilities, CanonicalEvent, CanonicalTokenRecord, RunOptions } from './types.ts';
 import type {
+  AdapterProfileCheck,
+  AdapterProfileIssue,
   AgentAdapter as CoreAgentAdapter,
   AgentEvent as CoreAgentEvent,
   AgentHandle as CoreAgentHandle,
@@ -60,6 +62,7 @@ import type {
   KiroModelAck,
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
+import { KiroConfigSchema } from '../core/types.js';
 import { createHash } from 'node:crypto';
 import {
   runJsonlCli,
@@ -67,6 +70,7 @@ import {
   houseEventToCore,
   defaultSpawnFn,
   takeOnOutput,
+  validateCliSessionProfile,
   EventQueue,
   type HouseEventLike,
   type SpawnFn,
@@ -509,6 +513,64 @@ export interface KiroAdapterOptions {
 }
 
 /**
+ * Kiro-owned profile/config validation (issue #9): everything provable about
+ * a spec's kiro configuration WITHOUT a CLI spawn — schema shape (the strict
+ * KiroConfigSchema) plus semantic checks (MCP server naming, transport-aware
+ * field applicability). Consumers call this (or the driver, which calls it
+ * via AgentAdapter.validateProfile) instead of re-implementing kiro config
+ * checks.
+ */
+export function validateKiroProfile(spec: CoreRunSpec): AdapterProfileCheck {
+  const errors: AdapterProfileIssue[] = [];
+  const warnings: AdapterProfileIssue[] = [];
+  const common = validateCliSessionProfile(spec);
+  errors.push(...common.errors);
+  warnings.push(...common.warnings);
+
+  const kiro = spec.kiro;
+  if (kiro !== undefined) {
+    const parsed = KiroConfigSchema.safeParse(kiro);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        errors.push({
+          field: `kiro.${issue.path.join('.') || '(root)'}`,
+          message: issue.message,
+        });
+      }
+    } else {
+      const cfg = parsed.data;
+      const seenNames = new Set<string>();
+      for (const [i, srv] of (cfg.mcpServers ?? []).entries()) {
+        if (srv.name.trim() === '') {
+          errors.push({ field: `kiro.mcpServers.${i}.name`, message: 'MCP server name must be a non-empty string' });
+        } else if (seenNames.has(srv.name)) {
+          errors.push({ field: `kiro.mcpServers.${i}.name`, message: `duplicate MCP server name '${srv.name}'` });
+        } else {
+          seenNames.add(srv.name);
+        }
+        if (srv.command.trim() === '') {
+          errors.push({ field: `kiro.mcpServers.${i}.command`, message: 'MCP server command must be a non-empty string' });
+        }
+      }
+      if (cfg.transport !== 'acp') {
+        // buildKiroArgs never reads these; only the ACP handshake does.
+        if ((cfg.mcpServers ?? []).length > 0) {
+          warnings.push({ field: 'kiro.mcpServers', message: "mcpServers is ACP-only; ignored on the headless transport" });
+        }
+        if (cfg.requireModelAck) {
+          warnings.push({ field: 'kiro.requireModelAck', message: 'requireModelAck is ACP-only; ignored on the headless transport' });
+        }
+      }
+      if (cfg.requireMcpStartup && (cfg.mcpServers ?? []).length === 0) {
+        warnings.push({ field: 'kiro.requireMcpStartup', message: 'requireMcpStartup is set but no mcpServers are configured' });
+      }
+    }
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+/**
  * Kiro CLI adapter.
  *
  * Headless `kiro-cli chat ... --output-format stream-json` with pipes, stdout
@@ -873,6 +935,11 @@ export class KiroAdapter implements CoreAgentAdapter {
       fallbackSessionId: spec.resume,
       kiro: () => handle.effective(version.value()),
     });
+  }
+
+  /** Adapter-owned profile validation (issue #9); see validateKiroProfile. */
+  validateProfile(spec: CoreRunSpec): AdapterProfileCheck {
+    return validateKiroProfile(spec);
   }
 
   /** Driver contract (src/core/driver.ts): launch one run for a RunSpec.
