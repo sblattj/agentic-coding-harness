@@ -19,6 +19,7 @@ import { WebSocketServer, type RawData, type WebSocket as WsSocket } from "ws";
 import type { AgentEvent } from "../core/types.ts";
 import { readRunRecord } from "../core/registry.ts";
 import { createRunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
+import { COMPARE_GROUP_KEYS, computeCompareRows, resolveCompareGroupBy } from "./compare.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
 import { deriveRunObservability } from "./derive.ts";
 import { PtyManager } from "./pty-manager.ts";
@@ -431,6 +432,23 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
 
         if (get && pathname === "/api/runs") {
           return sendJson(res, 200, { records: hub.snapshotRuns() });
+        }
+
+        // Compare rollup (spec §6.1). Sits under the same access rule as
+        // /api/runs above: the JSON API is unauthenticated — the token only
+        // gates the /ws family (see resolveWsRoute).
+        if (get && pathname === "/api/compare") {
+          const rawBy = url.searchParams.get("by");
+          const keys = rawBy === null ? [] : rawBy.split(",");
+          if (keys.some((k) => !(COMPARE_GROUP_KEYS as readonly string[]).includes(k))) {
+            return jsonError(
+              res,
+              400,
+              `by must be a comma list of: ${COMPARE_GROUP_KEYS.join(", ")}`,
+            );
+          }
+          const groupBy = resolveCompareGroupBy(keys);
+          return sendJson(res, 200, { groupBy, rows: computeCompareRows(hub.snapshotRuns(), groupBy) });
         }
 
         const runAction = RUN_ACTION_ROUTE.exec(pathname);
