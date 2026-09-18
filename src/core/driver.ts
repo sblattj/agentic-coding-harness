@@ -435,6 +435,9 @@ export function createDriver(options: DriverOptions): Driver {
         // 500ms; the final write is always forced through.
         const registryStateDir = options.registry?.stateDir;
         let rec: RunRecord | null = null;
+        // totals became optional on RunRecord (external producers omit it); the
+        // driver always keeps this local object and hands it to the record.
+        const totals: RunRecord["totals"] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
         let lastRegistryWrite = 0;
         const registryWarn = (err: unknown): void => {
           warnings.push(`registry: ${err instanceof Error ? err.message : String(err)}`);
@@ -445,7 +448,7 @@ export function createDriver(options: DriverOptions): Driver {
           if (!force && now - lastRegistryWrite < 500) return;
           lastRegistryWrite = now;
           rec.updatedAt = now;
-          rec.totals.costUsd = cumulativeCost;
+          totals.costUsd = cumulativeCost;
           try {
             writeRunRecord(registryStateDir, rec);
           } catch (err) {
@@ -463,7 +466,7 @@ export function createDriver(options: DriverOptions): Driver {
             startedAt: start,
             updatedAt: Date.now(),
             status: 'running',
-            totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+            totals,
             rawTranscript: transcriptPath,
           };
           writeRunRecordThrottled(true);
@@ -482,10 +485,10 @@ export function createDriver(options: DriverOptions): Driver {
           // confident "0 in / 0 out" where the truth is "unknown". Credits below
           // are real and are still summed.
           if ((c.extra as Record<string, unknown> | undefined)?.tokensAvailable !== false) {
-            rec.totals.inputTokens += c.inputTokens;
-            rec.totals.outputTokens += c.outputTokens;
-            rec.totals.cacheReadTokens += c.cacheReadTokens;
-            rec.totals.cacheWriteTokens += c.cacheWriteTokens;
+            totals.inputTokens += c.inputTokens;
+            totals.outputTokens += c.outputTokens;
+            totals.cacheReadTokens += c.cacheReadTokens;
+            totals.cacheWriteTokens += c.cacheWriteTokens;
           }
           // Credits: one charge, possibly observed twice (kiro's own metadata
           // frames stamp extra.source:'native'; the MITM tap stamps 'tap').
@@ -498,7 +501,7 @@ export function createDriver(options: DriverOptions): Driver {
             } else {
               tapCreditsSum = (tapCreditsSum ?? 0) + credits;
             }
-            rec.totals.credits = nativeCredits ?? tapCreditsSum;
+            totals.credits = nativeCredits ?? tapCreditsSum;
           }
         };
         const finalizeRunRecord = (exit: ExitStatus): void => {
@@ -711,7 +714,7 @@ export function createDriver(options: DriverOptions): Driver {
         if (rec) {
           rec.usage = usage;
           if (usage.context?.available === true && usage.context.tokens !== undefined) {
-            rec.totals.contextTokens = usage.context.tokens;
+            totals.contextTokens = usage.context.tokens;
           }
         }
 
