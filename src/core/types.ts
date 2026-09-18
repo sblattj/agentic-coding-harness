@@ -781,6 +781,12 @@ export interface RunSpec {
   runId?: string;
   /** Working directory for the agent subprocess. */
   cwd?: string;
+  /**
+   * Compare-view variant label (spec §6.3): echoed onto RunResult so trial
+   * reports can group the comparison by variant instead of agent, matching
+   * the live /compare view. Absent on plain runs.
+   */
+  variant?: string;
   model?: string;
   resume?: string;
   budget?: RunBudget;
@@ -850,6 +856,7 @@ export const RunSpecSchema = z
       .min(1, { error: "prompt is required and must be a non-empty string" }),
     runId: z.string().optional(),
     cwd: z.string().optional(),
+    variant: z.string().min(1).optional(),
     model: z.string().optional(),
     resume: z.string().optional(),
     budget: z
@@ -1012,6 +1019,8 @@ export interface RunResult {
   sessionId: string;
   /** Agent name, when the caller echoes it into the result. */
   agent?: string;
+  /** RunSpec.variant echoed back (spec §6.3); absent when the spec had none. */
+  variant?: string;
   events: AgentEvent[];
   tokens: CanonicalTokenRecord[];
   totalCost: number;
@@ -1031,6 +1040,7 @@ export const RunResultSchema = z.object({
   runId: z.string(),
   sessionId: z.string(),
   agent: z.string().optional(),
+  variant: z.string().min(1).optional(),
   events: z.array(z.record(z.string(), z.unknown())),
   tokens: z.array(CanonicalTokenRecordSchema),
   totalCost: z.number(),

@@ -323,8 +323,14 @@ function contextCell(r: LoadedRun): string {
 function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
   const showCredits = runs.some((r) => r.credits !== null);
   const showContext = runs.some((r) => r.usage?.context?.available === true);
+  // Identity column (spec §6.3): when ANY run carries a variant label the
+  // comparison groups by variant (matching the live /compare view's default
+  // experiment×variant rollup); otherwise the historical by-agent column.
+  // Both groupings render through this one table builder.
+  const byVariant = runs.some((r) => r.variant !== undefined);
+  const groupKey = byVariant ? "variant" : "agent";
   const head = [
-    `<th data-k="agent" data-t="s">agent</th>`,
+    `<th data-k="${groupKey}" data-t="s">${groupKey}</th>`,
     ...(multiTrial ? [`<th data-k="trial" data-t="s">trial</th>`] : []),
     `<th data-k="model" data-t="s">model</th>`,
     `<th data-k="input" data-t="n" class="num">input</th>`,
@@ -349,7 +355,9 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
       const tokenCell = (v: number): string =>
         r.tokensUnavailable ? NA_CELL : `<td data-v="${v}" class="num">${fmtInt(v)}</td>`;
       const cells = [
-        `<td data-v="${esc(r.agent)}" class="agent-cell">${esc(r.agent)}</td>`,
+        byVariant
+          ? `<td data-v="${esc(r.variant ?? "")}" class="agent-cell">${r.variant ? esc(r.variant) : '<span class="muted">—</span>'}</td>`
+          : `<td data-v="${esc(r.agent)}" class="agent-cell">${esc(r.agent)}</td>`,
         ...(multiTrial ? [`<td data-v="${esc(r.trialLabel)}">${esc(r.trialLabel)}</td>`] : []),
         `<td data-v="${esc(r.model ?? "")}">${r.model ? esc(r.model) : '<span class="muted">—</span>'}</td>`,
         tokenCell(r.inputTokens),

@@ -43,6 +43,8 @@ export interface LoadedRun {
   credits: number | null;
   /** The run's prompt/task text when recoverable from the event stream. */
   task: string | null;
+  /** RunSpec.variant echoed on the result (spec §6.3); absent on legacy runs. */
+  variant?: string;
   /** RunResult.usage when the artifact carries one (absent on older runs). */
   usage?: UsageAvailability;
   /** True when the run states its token counts are unknowable (render n/a). */
@@ -159,6 +161,7 @@ export function toLoadedRun(
     costUsd,
     credits,
     task: extractTask(events),
+    ...(typeof result.variant === "string" && result.variant !== "" ? { variant: result.variant } : {}),
     ...(usage !== undefined ? { usage } : {}),
     tokensUnavailable,
     usdUnavailable,

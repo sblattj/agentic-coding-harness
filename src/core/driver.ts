@@ -734,6 +734,7 @@ export function createDriver(options: DriverOptions): Driver {
           exitStatus,
           warnings,
           usage,
+          ...(typeof parsed.variant === 'string' && parsed.variant !== '' ? { variant: parsed.variant } : {}),
           ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
           ...(attachmentManifest !== undefined ? { attachments: attachmentManifest } : {}),
         };
