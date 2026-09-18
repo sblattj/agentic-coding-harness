@@ -50,7 +50,7 @@
     "test:bun": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
     "build": "npm run build:node && npm run build:bun && npm run build:lib",
-    "build:node": "rm -rf dist/cli && bun build src/cli/ach.ts --outdir dist/cli --target node --external bun-pty --banner \"#!/usr/bin/env node\" && cp src/web/index.html src/web/grid.html src/web/trio.html src/web/term-pane.html src/web/feed.js dist/cli/ && cp -R src/web/vendor dist/cli/vendor",
+    "build:node": "rm -rf dist/cli && bun build src/cli/ach.ts --outdir dist/cli --target node --external bun-pty --banner \"#!/usr/bin/env node\" && cp src/web/index.html src/web/grid.html src/web/compare.html src/web/trio.html src/web/term-pane.html src/web/feed.js dist/cli/ && cp -R src/web/vendor dist/cli/vendor",
     "build:bun": "bun build src/cli/ach.ts --outdir dist/bun --target bun --banner \"#!/usr/bin/env bun\"",
     "build:lib": "bun build src/index.ts --outfile dist/index.js --target node --external bun-pty",
     "prepack": "npm run build && npm test"

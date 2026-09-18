@@ -47,6 +47,13 @@ body {
   border-bottom: 1px solid var(--line);
 }
 #brand .logo { margin-right: 6px; color: var(--dim); }
+#pagenav { display: flex; gap: 2px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+#pagenav a {
+  color: var(--dim); text-decoration: none; font-size: 11px;
+  padding: 2px 8px; border: 1px solid transparent; border-radius: 3px;
+}
+#pagenav a:hover { color: var(--fg); border-color: var(--line); }
+#pagenav a.active { color: var(--green); border-color: var(--line); }
 #runlist { flex: 1; overflow-y: auto; padding: 4px 0; }
 .row {
   display: grid;
@@ -122,6 +129,11 @@ body {
 
 <aside id="sidebar">
   <header id="brand"><span class="logo">&#9618;</span>agentic-coding-harness</header>
+  <nav id="pagenav" aria-label="pages">
+    <a data-nav="grid" href="/grid">grid</a>
+    <a data-nav="compare" href="/compare">compare</a>
+    <a data-nav="observability" href="/trio">observability</a>
+  </nav>
   <div id="runlist"></div>
   <footer id="agg"></footer>
 </aside>
@@ -151,12 +163,19 @@ var GLYPH = { running: "\u25b6", success: "\u2714", error: "\u2716", aborted: "\
 var LIVE_WINDOW_MS = 60000;
 var TOKEN = new URLSearchParams(location.search).get("token") || "";
 
+(function () {
+  var qs = TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "";
+  var links = document.querySelectorAll("#pagenav a");
+  for (var i = 0; i < links.length; i++) links[i].href += qs;
+})();
+
 var runs = [];
 var selectedId = null;
 var feed = null, feedConn = null, runsSocket = null;
 var runsRetry = 0;
 
 function isLive(r) {
+  if (r && r.source === "external") return r.endedAt == null;
   return !!r && r.status === "running" && Date.now() - (r.updatedAt || 0) < LIVE_WINDOW_MS;
 }
 function findRun(id) {

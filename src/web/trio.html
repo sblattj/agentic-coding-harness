@@ -55,6 +55,13 @@ header {
   transition: border-color .15s, background .15s;
 }
 .back:hover { border-color: var(--cyan); background: color-mix(in oklab, var(--cyan) 10%, transparent); }
+.pagenav { display: flex; gap: 2px; white-space: nowrap; }
+.pagenav a {
+  color: var(--dim); text-decoration: none; font: 600 11px var(--mono); letter-spacing: .06em;
+  padding: 3px 9px; border: 1px solid transparent; border-radius: 6px;
+}
+.pagenav a:hover { color: var(--fg); border-color: var(--line2); }
+.pagenav a.active { color: var(--cyan); border-color: var(--line2); }
 .runmeta { display: flex; align-items: center; gap: 8px; min-width: 0; font: 12px var(--mono); }
 .runmeta b { font-weight: 600; }
 .rid { color: var(--faint); }
@@ -222,6 +229,7 @@ footer.min .tbody { display: none; }
 .mtog + .mtog { border-left: 1px solid var(--line2); }
 .mtog:hover { color: var(--fg); background: var(--panel2); }
 .mtog.on { color: var(--cyan); background: color-mix(in oklab, var(--cyan) 12%, transparent); }
+.mtog:disabled { opacity: .4; cursor: default; }
 .tright { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 #termSize { color: var(--dim); font-size: 14px; line-height: 1; padding: 0 4px; }
 #termSize:hover { color: var(--cyan); }
@@ -323,6 +331,11 @@ footer.min .tbody { display: none; }
     agentic-coding-harness <small>OBSERVABILITY TRIO</small>
   </div>
   <a class="back" id="backBtn" href="/grid" aria-label="back to run grid">&larr; grid</a>
+  <nav class="pagenav" aria-label="pages">
+    <a data-nav="grid" href="/grid">grid</a>
+    <a data-nav="compare" href="/compare">compare</a>
+    <a data-nav="observability" class="active" href="/trio">observability</a>
+  </nav>
   <div class="runmeta" id="runmeta"></div>
   <div class="pulse" id="pulse"><i></i><span id="pulseTxt">&hellip;</span></div>
   <div class="tcost"><span>&Sigma; cost</span><b id="totalCost">&ndash;</b></div>
@@ -405,6 +418,11 @@ var RUN_ID = QS.get("run") || "";
 var TOKEN = QS.get("token") || "";
 var BACK_HREF = "/grid" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
 $("backBtn").href = BACK_HREF;
+(function () {
+  var qs = TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "";
+  var links = document.querySelectorAll(".pagenav a");
+  for (var i = 0; i < links.length; i++) links[i].href += qs;
+})();
 var LIVE_WINDOW_MS = 60000; // matches server NOT_LIVE_AFTER_MS
 
 /* ===== state ===== */
@@ -421,7 +439,10 @@ var chartPts = null; // display points for the crosshair
 function api(path) { return fetch(path).then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r; }); }
 
 /* ===== header ===== */
-function isLive() { return !!rec && rec.status === "running" && Date.now() - (rec.updatedAt || 0) < LIVE_WINDOW_MS; }
+function isLive() {
+  if (rec && rec.source === "external") return rec.endedAt == null;
+  return !!rec && rec.status === "running" && Date.now() - (rec.updatedAt || 0) < LIVE_WINDOW_MS;
+}
 function renderHeader() {
   var box = $("runmeta");
   box.textContent = "";
@@ -434,6 +455,9 @@ function renderHeader() {
   box.appendChild(el("span", "stlabel", status));
   var pulse = $("pulse");
   var live = isLive();
+  var external = !!(rec && rec.source === "external");
+  $("modeLive").disabled = external;
+  $("modeLive").title = external ? "external run — no local terminal" : "";
   pulse.classList.toggle("on", live);
   if (live) {
     var end = Date.now();
@@ -936,6 +960,11 @@ function startLive() {
   var seq = ++liveSeq;
   var box = $("liveBox");
   box.textContent = "";
+  if (rec && rec.source === "external") {
+    box.appendChild(el("div", "player-msg", "external run — no local terminal to attach"));
+    $("termMeta").textContent = "external run";
+    return;
+  }
   box.appendChild(el("div", "player-msg", "spawning live session\u2026"));
   $("termMeta").textContent = "live pty";
   var cmd = agentCommand(rec && rec.agent);
