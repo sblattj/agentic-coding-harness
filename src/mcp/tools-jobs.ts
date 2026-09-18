@@ -285,7 +285,7 @@ export function registerJobTools(
       }
       if (!rec) return { cancelled: false, status };
       if (rec.status === "running") {
-        if (pidAlive(rec.pid)) {
+        if (rec.pid !== undefined && pidAlive(rec.pid)) {
           try {
             process.kill(rec.pid, "SIGTERM");
           } catch {

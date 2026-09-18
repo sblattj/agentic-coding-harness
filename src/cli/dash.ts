@@ -70,7 +70,7 @@ function padL(s: string, w: number): string {
 // STATUS glyphs: plain ASCII base, colored when the terminal allows it
 // (● green running / ✓ success / ✗ red error / ! yellow aborted, and the
 // same ! yellow for interrupted — derived via effectiveStatus, never stored).
-type Status = RunRecord["status"];
+type Status = NonNullable<RunRecord["status"]>;
 const GLYPHS: Record<Status, string> = {
   running: "*",
   success: "+",
@@ -114,24 +114,27 @@ const HEADER =
 function isVisible(rec: RunRecord, now: number, showAll: boolean): boolean {
   if (showAll) return true;
   if (isLive(rec, now)) return true;
-  return rec.status !== "running" && now - rec.updatedAt < HOUR_MS;
+  return rec.status !== "running" && now - (rec.updatedAt ?? rec.startedAt) < HOUR_MS;
 }
 
 function tableRow(rec: RunRecord, now: number, ansi: boolean, lastW: number): string {
   const live = isLive(rec, now);
-  const end = live ? now : rec.updatedAt;
-  const cache = rec.totals.cacheReadTokens + rec.totals.cacheWriteTokens;
+  const end = live ? now : (rec.updatedAt ?? rec.startedAt);
+  // Local records always carry totals; an exotic record without one still
+  // renders a row (zeros) rather than crashing the table.
+  const t = rec.totals ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
+  const cache = t.cacheReadTokens + t.cacheWriteTokens;
   const cells = [
     statusCell(rec, ansi, COL.status),
     padR(rec.agent, COL.agent),
     padR(rec.runId.slice(0, COL.runId), COL.runId),
     padR((rec.sessionId ?? "-").slice(0, COL.session), COL.session),
     padL(fmtElapsed(end - rec.startedAt), COL.elapsed),
-    padL(tokensUnavailable(rec) ? "n/a" : compact(rec.totals.inputTokens), COL.in),
-    padL(tokensUnavailable(rec) ? "n/a" : compact(rec.totals.outputTokens), COL.out),
+    padL(tokensUnavailable(rec) ? "n/a" : compact(t.inputTokens), COL.in),
+    padL(tokensUnavailable(rec) ? "n/a" : compact(t.outputTokens), COL.out),
     padL(tokensUnavailable(rec) ? "n/a" : compact(cache), COL.cache),
-    padL(usdUnavailable(rec) ? "n/a" : fmtCost(rec.totals.costUsd), COL.cost),
-    padL(fmtCredits(rec.totals.credits), COL.credits),
+    padL(usdUnavailable(rec) ? "n/a" : fmtCost(t.costUsd), COL.cost),
+    padL(fmtCredits(t.credits), COL.credits),
     padL(fmtContext(rec), COL.ctx),
     padR(rec.lastEvent ?? "", lastW),
   ];
@@ -147,13 +150,14 @@ function footer(visible: RunRecord[]): string {
   for (const r of visible) {
     // Unavailable rows contribute nothing: a fleet total must not silently
     // absorb a credits-only run as "0 tokens, $0".
-    if (!tokensUnavailable(r)) {
-      input += r.totals.inputTokens;
-      output += r.totals.outputTokens;
+    const t = r.totals;
+    if (t !== undefined && !tokensUnavailable(r)) {
+      input += t.inputTokens;
+      output += t.outputTokens;
     }
-    if (!usdUnavailable(r)) cost += r.totals.costUsd;
-    if (r.totals.credits !== undefined) {
-      credits += r.totals.credits;
+    if (t !== undefined && !usdUnavailable(r)) cost += t.costUsd;
+    if (t?.credits !== undefined) {
+      credits += t.credits;
       hasCredits = true;
     }
   }
