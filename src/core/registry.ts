@@ -197,7 +197,10 @@ export function isLive(rec: RunRecord, now: number = Date.now()): boolean {
 /** Consumer view of status: a `running` record whose process is gone (dead
  *  pid or stale heartbeat — see isLive) reports `interrupted` without the
  *  file being mutated; terminal states pass through unchanged. */
-export function effectiveStatus(rec: RunRecord, now: number = Date.now()): RunRecord["status"] {
+export function effectiveStatus(rec: RunRecord, now: number = Date.now()): NonNullable<RunRecord["status"]> {
+  // A record with no status at all (external producer) is never "running":
+  // it reports interrupted, same derived verdict as a dead local process.
+  if (rec.status === undefined) return "interrupted";
   if (rec.status !== "running") return rec.status;
   return isLive(rec, now) ? "running" : "interrupted";
 }

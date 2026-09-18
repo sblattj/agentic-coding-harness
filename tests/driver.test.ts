@@ -338,9 +338,9 @@ describe('driver → run registry hook', () => {
     assert.equal(record.agent, 'regstub');
     assert.equal(record.status, 'success');
     assert.equal(record.exitStatus, 'success');
-    assert.equal(record.totals.inputTokens, 100);
-    assert.equal(record.totals.outputTokens, 20);
-    assert.ok(record.rawTranscript.endsWith('.jsonl'), `rawTranscript: ${record.rawTranscript}`);
+    assert.equal(record.totals!.inputTokens, 100);
+    assert.equal(record.totals!.outputTokens, 20);
+    assert.ok(record.rawTranscript!.endsWith('.jsonl'), `rawTranscript: ${record.rawTranscript}`);
   });
 });
 
@@ -633,7 +633,7 @@ describe('kiro usage truth', () => {
     // credits summed, derived context recorded, usage mirrored.
     const recs = listRunRecords(regDir);
     assert.equal(recs.length, 1);
-    const totals = recs[0]!.totals;
+    const totals = recs[0]!.totals!;
     assert.equal(totals.inputTokens, 0);
     assert.equal(totals.outputTokens, 0);
     assert.equal(totals.cacheReadTokens, 0);
@@ -684,7 +684,7 @@ describe('kiro usage truth', () => {
       'a credits-only record must not be priced (no "unknown model" warning)',
     );
 
-    const totals = listRunRecords(regDir)[0]!.totals;
+    const totals = listRunRecords(regDir)[0]!.totals!;
     assert.equal(totals.credits, FIXTURE_CREDITS, 'registry credits are the native figure, not native + tap');
   });
 

@@ -53,7 +53,8 @@ describe('FsRunSource', () => {
     writeRunRecord(dir, older);
     writeRunRecord(dir, newer);
     const src = new FsRunSource(dir);
-    assert.deepEqual(src.snapshot(), [newer, older]);
+    // Records written without `source` parse back with the 0.9.0 default.
+    assert.deepEqual(src.snapshot(), [{ ...newer, source: 'local' }, { ...older, source: 'local' }]);
   });
 
   it('start(onChange) delivers the full snapshot after a write (debounced)', async () => {
@@ -108,6 +109,6 @@ describe('RunSource seam behind the hub', () => {
     assert.equal(typeof disposer, 'function');
     assert.deepEqual(hub.snapshotRuns(), src.snapshot());
     disposer();
-    assert.deepEqual(hub.snapshotRuns(), [expected]);
+    assert.deepEqual(hub.snapshotRuns(), [{ ...expected, source: 'local' }]);
   });
 });

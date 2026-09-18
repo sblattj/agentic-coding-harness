@@ -169,7 +169,7 @@ function rawToString(msg: RawData): string {
 function isRunLive(stateDir: string, runId: string): boolean {
   const rec = readRunRecord(stateDir, runId);
   if (rec === null) return false;
-  return rec.status === "running" && Date.now() - rec.updatedAt <= NOT_LIVE_AFTER_MS;
+  return rec.status === "running" && Date.now() - (rec.updatedAt ?? 0) <= NOT_LIVE_AFTER_MS;
 }
 
 export async function startWebServer(opts: WebServerOptions): Promise<WebServerHandle> {

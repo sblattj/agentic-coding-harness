@@ -59,7 +59,8 @@ describe('run registry', () => {
       existsSync(join(registryDir(dir), `${full.runId}.json`)),
       'record must land at <stateDir>/runs/<runId>.json',
     );
-    assert.deepEqual(readRunRecord(dir, full.runId), full);
+    // Parse fills the 0.9.0 `source` default on records written without one.
+    assert.deepEqual(readRunRecord(dir, full.runId), { ...full, source: 'local' });
   });
 
   it('writeRunRecord is atomic: no .tmp-* residue remains after the call returns', () => {
