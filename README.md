@@ -143,6 +143,8 @@ ach emit --input events.json --format atif|otel|langfuse [--out path]
 ach report <trials-dir> [--out path]           # single-file HTML comparison
 ach dash [--json] [--all] [--dir <stateDir>]   # live run dashboard; q quits
 ach web [trials-dir] [--port N=8399] [--host H] [--token T] [--dir D] [--no-open]
+          [--source URL] [--source-token T] [--source-mode poll|sse|ws]
+          [--source-poll-ms N=3000] [--source-merge state|only]
 ```
 
 The binary is `ach` (the npm/PyPI package name is `agentic-coding-harness`). Budget flags (`--budget-usd`, `--max-turns`,
@@ -185,7 +187,10 @@ semantics. An optional second argument overrides the wired signals
 (`driver.installSignalAbort(runId, ['SIGHUP'])`).
 
 Exported: `createDriver`, `defaultAdapters`, `runToDirectory`, `ClaudeCodeAdapter`, `KiroAdapter`,
-`CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `VERSION`. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
+`CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `VERSION`, plus the run-record API —
+`RunRecordSchema`, `CanonicalTokenRecordSchema`, `ExternalRunFeedSchema`, `writeRunRecord`,
+`readRunRecord`, `listRunIds`, `listRunRecords`, `registryDir`, and the `RunRecord` /
+`CanonicalTokenRecord` / `ExternalRunFeed` / `RunSource` types. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
 raw stdout tap (each chunk exactly as received) alongside the parsed canonical events. Importing the
 `ach` bin bundle (`dist/cli/ach.js`) as a module yields the same exports with no side effects.
 
@@ -221,11 +226,56 @@ const { result } = await runToDirectory({
   into; the feed stays visible as a strip above it. Closing the pane kills the PTY.
 - **`/trio?run=<runId>`** — traces | metrics | logs for one run, plus a **FEED | LIVE TERMINAL**
   drawer: FEED is the default and shows the same structured feed, LIVE TERMINAL mounts the PTY pane.
+- **`/compare`** — sortable rollup table over all runs, grouped by experiment×variant or
+  workflow×agent (`GET /api/compare?by=…` returns the rows as JSON: `runs`, `avgTotalTokens`,
+  `avgCostUsd`, `avgDurationMs`, `successRate` per group).
+- **`/health`** — liveness plus the configured run source and whether it is healthy
+  (`source`, `sourceHealthy`).
 
 The PTY relay is `POST /api/pty` (spawn) / `GET /api/pty` (list) / `POST /api/pty/<id>/kill` and the
 `/ws/pty/<id>` websocket (server→client raw PTY bytes, client→server keystrokes and `resize` frames).
 Agents are spawned with their non-interactive flags so a live pane does not die on a trust prompt.
 `--token` gates every websocket and PTY route. All assets are vendored under `/vendor/` — no CDN.
+PTY attach is local-only by construction: runs arriving from an external feed (`--source`) are
+refused with `409` and their tiles show no LIVE button, since there is no local process to attach to.
+
+### Watching external run feeds: `--source`
+
+`ach web` normally serves runs from its local state dir. Pass `--source <url>` and it instead
+watches a remote feed of run records — one dashboard in front of many machines:
+
+| flag | env | meaning |
+|---|---|---|
+| `--source <url>` | `AGENTIC_CODING_HARNESS_SOURCE` | base URL of the external run feed |
+| `--source-token <t>` | `AGENTIC_CODING_HARNESS_SOURCE_TOKEN` | bearer token sent on every feed request |
+| `--source-mode poll\|sse\|ws` | `AGENTIC_CODING_HARNESS_SOURCE_MODE` | snapshot polling, Server-Sent Events, or WebSocket (default `poll`) |
+| `--source-poll-ms <n>` | `AGENTIC_CODING_HARNESS_SOURCE_POLL_MS` | poll interval in ms (default 3000; ignored for sse/ws) |
+| `--source-merge state\|only` | `AGENTIC_CODING_HARNESS_SOURCE_MERGE` | `only` (default) serves the external feed alone; `state` unions it with the local state dir, external records winning on `runId` collision |
+
+The feed contract mirrors this dashboard's own API: `GET {source}/runs` →
+`200 {"records": [<RunRecord>...]}` (the same shape as `GET /api/runs`, and the only endpoint every
+mode polls). For live updates the source may additionally expose SSE at `GET {source}/runs/stream`
+(each event `event: runs` with `data: {"records":[...]}`) or a WebSocket at `GET {source}/runs/ws`
+sending `{"type":"runs","records":[...]}` frames. Records that fail schema validation are dropped
+with a counted warning — one malformed record never poisons the dashboard.
+
+### External producers: writing runs into a dashboard's registry
+
+The feed endpoint is the same shape the package itself serves (`GET /api/runs`), so a second
+`ach web` (or any producer that holds the same state-dir layout) can be a source. Producers that
+live in-process can push records directly through the public API: parse with `RunRecordSchema`,
+persist with `writeRunRecord`, and the dashboard's fs watcher picks it up:
+
+```ts
+import { RunRecordSchema, writeRunRecord } from 'agentic-coding-harness';
+
+const rec = RunRecordSchema.parse({
+  runId: 'job-42', agent: 'claude', startedAt: Date.now(), status: 'success',
+  totals: { inputTokens: 4812, outputTokens: 933, cacheReadTokens: 38204, cacheWriteTokens: 1120, costUsd: 0.0612 },
+  source: 'external', producer: 'my-orchestrator',
+});
+writeRunRecord(stateDir, rec);   // lands in <stateDir>/runs/<runId>.json
+```
 
 ## Budgets and spend caps: stop a runaway agent mid-run
 

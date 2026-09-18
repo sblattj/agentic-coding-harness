@@ -91,7 +91,10 @@ safe on hot event paths; the driver heartbeats totals/lastEvent throttled to one
 and forces the final write at exit. `isLive` requires all three: `status === "running"`, a
 heartbeat ≤15s fresh, and a pid that answers `kill(pid, 0)`. Failure isolation is by design:
 readers skip corrupt/partial files (never throw), and registry write failures drain into run
-warnings — a broken registry never breaks a run.
+warnings — a broken registry never breaks a run. Records carry additive provenance fields so an
+external run can be distinguished from a local one: `experiment`, `variant`, `workflow`,
+`source` (`"local"` by default, `"external"` for feed-sourced records), `producer`, `endedAt`,
+and free-form `metadata`.
 
 ### Dash and MCP consumers
 
@@ -103,6 +106,34 @@ back to a `--json` dump (records plus a `live` flag) for tools and tests. The MC
 `createDriver` + `defaultAdapters()` per call (`mcp/tools-run.ts`), `harness_agents` lists the
 adapter registry, and `harness_report`/`harness_emit`/`harness_stats` expose the CLI's inspect
 path over the same `stateDir` (`mcp/tools-inspect.ts`); client config lives in `docs/MCP.md`.
+
+### Run sources (the `RunSource` seam)
+
+The web dashboard's run hub no longer talks to the filesystem directly — it sits behind the
+`RunSource` interface (`web/run-source.ts`: `start(onChange)` / `snapshot()` / `stop()` plus an
+optional `health()`), so the hub is agnostic to where records come from. Three implementations
+ship:
+
+- **`FsRunSource`** — the historical behavior lifted verbatim: `listRunRecords` snapshot plus a
+  debounced `fs.watch` on `<stateDir>/runs` (default when no `--source` is configured).
+- **`HttpRunSource`** (`web/run-source-http.ts`) — watches a remote feed: `GET {url}/runs`
+  returns `{ records: RunRecord[] }` for polling (default, 3s interval); SSE at `{url}/runs/stream`
+  (`event: runs`, `data: {"records":[...]}`) or WebSocket at `{url}/runs/ws`
+  (`{"type":"runs","records":[...]}`) give live pushes. Records are validated against
+  `RunRecordSchema` (`core/external-source.ts` `ExternalRunFeedSchema` wraps the `{records}`
+  envelope); invalid records are dropped with a counted warning, and connection failures flip the
+  source unhealthy without throwing. A `--source-token` rides along as a bearer header.
+- **`MergedRunSource`** (`web/run-source-merged.ts`) — the union of several sources, merged in
+  constructor order so a `runId` seen by multiple sources resolves to the last one (the external
+  feed wins over the local registry); `--source-merge state` composes it, while the default
+  `only` serves the external feed alone. Health is the AND of the children.
+
+The dashboard surfaces source state at `GET /health` (`source`, `sourceHealthy`). The same
+records power the compare path: `web/compare.ts` rolls `hub.snapshotRuns()` into groups
+(`experiment`×`variant` or `workflow`×`agent`) exposed as `GET /api/compare?by=…` (rows carry
+`runs`, `avgTotalTokens`, `avgCostUsd`, `avgDurationMs`, `successRate`) and rendered by the
+`GET /compare` view. PTY attach stays local-only — `POST /api/pty` and `/ws/pty/*` reject
+external runs with `409` because no local process exists to attach to.
 
 ## 2. Token taps
 
