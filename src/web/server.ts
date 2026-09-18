@@ -18,8 +18,9 @@ import type { AddressInfo, Socket } from "node:net";
 import { WebSocketServer, type RawData, type WebSocket as WsSocket } from "ws";
 import type { AgentEvent } from "../core/types.ts";
 import { readRunRecord } from "../core/registry.ts";
-import { createRunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
+import { RunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
 import { COMPARE_GROUP_KEYS, computeCompareRows, resolveCompareGroupBy } from "./compare.ts";
+import type { RunSource } from "./run-source.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
 import { deriveRunObservability } from "./derive.ts";
 import { PtyManager } from "./pty-manager.ts";
@@ -30,6 +31,10 @@ export interface WebServerOptions {
   token?: string;
   stateDir: string;
   ptyManager?: PtyManager;
+  /** Where run records come from; default is the state-dir filesystem. */
+  runSource?: RunSource;
+  /** Public URL of the external source, surfaced by GET /health. */
+  sourceUrl?: string;
 }
 
 export interface WebServerHandle {
@@ -175,7 +180,19 @@ function isRunLive(stateDir: string, runId: string): boolean {
 }
 
 export async function startWebServer(opts: WebServerOptions): Promise<WebServerHandle> {
-  const hub = createRunEventHub(opts.stateDir);
+  // createRunEventHub() takes no source param, so a configured source is
+  // injected through the class constructor; passing undefined selects the
+  // historical FsRunSource default (behavior identical to pre-0.8.0).
+  const hub = new RunEventHub(opts.stateDir, opts.runSource);
+
+  /** True when the current source reports this run as external — no local
+   *  process exists to attach a PTY to. Checked against the source snapshot
+   *  (not the fs-only readRunRecord) so external records are covered. */
+  function isExternalRun(runId: string): boolean {
+    const rec = hub.snapshotRuns().find((r) => r.runId === runId);
+    return rec?.source === "external";
+  }
+
   const tailers = new Set<ReturnType<typeof setInterval>>();
   const ownsPty = opts.ptyManager === undefined;
   const ptyManager = opts.ptyManager ?? new PtyManager();
@@ -362,7 +379,11 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
       } catch {
         sessionId = ptyWs[1] as string;
       }
-      if (ptyManager.get(sessionId) === null) return { reject: { status: 404, message: "not found" } };
+      const info = ptyManager.get(sessionId);
+      if (info === null) return { reject: { status: 404, message: "not found" } };
+      if (info.runId !== undefined && isExternalRun(info.runId)) {
+        return { reject: { status: 409, message: `run ${info.runId} is external — no local PTY exists` } };
+      }
       return { data: { mode: "pty", sessionId, offData: null, offExit: null, closed: false } };
     }
 
@@ -458,6 +479,16 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           return sendJson(res, 200, { groupBy, rows: computeCompareRows(hub.snapshotRuns(), groupBy) });
         }
 
+        // Liveness probe for orchestrators. Auth policy matches /api/runs
+        // (open HTTP surface; the token only gates /ws-family routes).
+        if (get && pathname === "/health") {
+          return sendJson(res, 200, {
+            ok: true,
+            source: opts.sourceUrl ?? null,
+            sourceHealthy: opts.runSource?.health?.().healthy ?? null,
+          });
+        }
+
         const runAction = RUN_ACTION_ROUTE.exec(pathname);
         if (get && runAction !== null) {
           let runId: string;
@@ -505,8 +536,11 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           if (b.rows !== undefined && (!Number.isInteger(b.rows) || (b.rows as number) < 1)) {
             return jsonError(res, 400, "rows must be a positive integer");
           }
-          if (b.runId !== undefined && typeof b.runId !== "string") {
+      if (b.runId !== undefined && typeof b.runId !== "string") {
             return jsonError(res, 400, "runId must be a string");
+          }
+          if (typeof b.runId === "string" && isExternalRun(b.runId)) {
+            return jsonError(res, 409, `run ${b.runId} is external — no local PTY exists`);
           }
           try {
             const info = await ptyManager.spawn({
