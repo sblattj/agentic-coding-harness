@@ -10,6 +10,9 @@ import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
 import { describeListenError } from "./serve.ts";
 import { startWebServer, type WebServerHandle } from "../web/server.ts";
+import { FsRunSource, type RunSource } from "../web/run-source.ts";
+import { HttpRunSource } from "../web/run-source-http.ts";
+import { MergedRunSource } from "../web/run-source-merged.ts";
 
 const DEFAULT_PORT = 8399;
 const DEFAULT_HOST = "127.0.0.1";
@@ -22,6 +25,118 @@ function optPort(v: string | undefined, flag: string): number {
   return n;
 }
 
+// ---------------------------------------------------------------- source flags
+
+/** Raw --source-* flag values plus the dashboard token (fallback for
+ *  --source-token). Kept as a plain input record so resolution is testable
+ *  without a CLI process. */
+export interface SourceFlagValues {
+  source?: string;
+  "source-token"?: string;
+  "source-mode"?: string;
+  "source-poll-ms"?: string;
+  "source-merge"?: string;
+  token?: string;
+}
+
+/** Resolved external run source (spec §5.1): null when none is configured. */
+export interface ResolvedSourceOptions {
+  url: string;
+  host: string;
+  token: string | undefined;
+  mode: "poll" | "sse" | "ws";
+  pollMs: number;
+  merge: "state" | "only";
+}
+
+const SOURCE_ENV = {
+  source: "AGENTIC_CODING_HARNESS_SOURCE",
+  "source-token": "AGENTIC_CODING_HARNESS_SOURCE_TOKEN",
+  "source-mode": "AGENTIC_CODING_HARNESS_SOURCE_MODE",
+  "source-poll-ms": "AGENTIC_CODING_HARNESS_SOURCE_POLL_MS",
+  "source-merge": "AGENTIC_CODING_HARNESS_SOURCE_MERGE",
+} as const;
+
+/** CLI flag wins over its env default; the returned label names the winner
+ *  (flag or env var) for error messages. */
+function flagOrEnv(flags: SourceFlagValues, env: EnvLookup, key: keyof typeof SOURCE_ENV): {
+  value: string | undefined;
+  label: string;
+} {
+  const flagVal = flags[key];
+  if (flagVal !== undefined) return { value: flagVal, label: `--${key}` };
+  const envVal = env[SOURCE_ENV[key]];
+  if (envVal !== undefined && envVal !== "") return { value: envVal, label: SOURCE_ENV[key] };
+  return { value: undefined, label: `--${key}` };
+}
+
+type EnvLookup = Record<string, string | undefined>;
+
+/** Validate + resolve the --source-* option set (flag > env per key).
+ *  Returns null when no source is configured; throws HarnessError("USAGE")
+ *  on any invalid combination. Pure: no process.env reads, no side effects. */
+export function resolveSourceOptions(flags: SourceFlagValues, env: EnvLookup): ResolvedSourceOptions | null {
+  const source = flagOrEnv(flags, env, "source");
+  const sourceToken = flagOrEnv(flags, env, "source-token");
+  const sourceMode = flagOrEnv(flags, env, "source-mode");
+  const sourcePollMs = flagOrEnv(flags, env, "source-poll-ms");
+  const sourceMerge = flagOrEnv(flags, env, "source-merge");
+
+  if (source.value === undefined) {
+    // A token/mode/poll cadence/merge without a source URL configures
+    // nothing — reject it instead of silently ignoring it.
+    for (const f of [sourceToken, sourceMode, sourcePollMs, sourceMerge]) {
+      if (f.value !== undefined) {
+        throw new HarnessError(`${f.label} requires --source`, "USAGE");
+      }
+    }
+    return null;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(source.value);
+  } catch {
+    throw new HarnessError(
+      `${source.label} expects an absolute http(s) URL, got '${source.value}'`,
+      "USAGE",
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new HarnessError(
+      `${source.label} expects an absolute http(s) URL, got '${source.value}'`,
+      "USAGE",
+    );
+  }
+
+  if (sourceMode.value !== undefined && sourceMode.value !== "poll" && sourceMode.value !== "sse" && sourceMode.value !== "ws") {
+    throw new HarnessError(`${sourceMode.label} expects poll|sse|ws, got '${sourceMode.value}'`, "USAGE");
+  }
+  const mode = (sourceMode.value ?? "poll") as "poll" | "sse" | "ws";
+
+  let pollMs = 3000;
+  if (sourcePollMs.value !== undefined) {
+    const n = Number(sourcePollMs.value);
+    if (!Number.isInteger(n) || n < 250) {
+      throw new HarnessError(
+        `${sourcePollMs.label} expects an integer >= 250, got '${sourcePollMs.value}'`,
+        "USAGE",
+      );
+    }
+    pollMs = n;
+  }
+
+  if (sourceMerge.value !== undefined && sourceMerge.value !== "state" && sourceMerge.value !== "only") {
+    throw new HarnessError(`${sourceMerge.label} expects state|only, got '${sourceMerge.value}'`, "USAGE");
+  }
+  const merge = (sourceMerge.value ?? "only") as "state" | "only";
+
+  // The feed token falls back to the dashboard token (spec §5.1/§9).
+  const token = sourceToken.value ?? flags.token;
+
+  return { url: parsed.toString(), host: parsed.host, token, mode, pollMs, merge };
+}
+
 export async function cmdWeb(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
@@ -31,6 +146,11 @@ export async function cmdWeb(rest: string[]): Promise<number> {
       token: { type: "string" },
       dir: { type: "string" },
       "no-open": { type: "boolean", default: false },
+      source: { type: "string" },
+      "source-token": { type: "string" },
+      "source-mode": { type: "string" },
+      "source-poll-ms": { type: "string" },
+      "source-merge": { type: "string" },
     },
     allowPositionals: true,
   });
@@ -52,9 +172,44 @@ export async function cmdWeb(rest: string[]): Promise<number> {
     host = DEFAULT_HOST;
   }
 
+  const source = resolveSourceOptions(
+    {
+      source: args.values.source,
+      "source-token": args.values["source-token"],
+      "source-mode": args.values["source-mode"],
+      "source-poll-ms": args.values["source-poll-ms"],
+      "source-merge": args.values["source-merge"],
+      token,
+    },
+    process.env,
+  );
+  let runSource: RunSource | undefined;
+  let sourceUrl: string | undefined;
+  if (source !== null) {
+    // Spec §9: log the resolved host once the source is validated.
+    process.stderr.write(
+      `web: external run source ${source.host} (mode ${source.mode}, merge ${source.merge})\n`,
+    );
+    const httpSource = new HttpRunSource({
+      url: source.url,
+      token: source.token,
+      mode: source.mode,
+      pollMs: source.pollMs,
+    });
+    // merge=state: local registry first, external feed LAST so it wins
+    // runId collisions. merge=only: the hub consumes just the feed.
+    runSource =
+      source.merge === "state" ? new MergedRunSource([new FsRunSource(dir), httpSource]) : httpSource;
+    sourceUrl = source.url;
+  }
+
   let handle: WebServerHandle;
   try {
-    handle = await startWebServer({ port, host, token, stateDir: dir });
+    handle = await startWebServer(
+      runSource === undefined
+        ? { port, host, token, stateDir: dir }
+        : { port, host, token, stateDir: dir, runSource, sourceUrl },
+    );
   } catch (err) {
     const described = describeListenError(err, host, port);
     if (described !== null) {
