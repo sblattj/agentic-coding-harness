@@ -106,6 +106,7 @@ const text = (m: { default: unknown }): string => m.default as string;
 const embeddedLoaders: Record<string, () => Promise<string>> = {
   "index.html": () => import("./index.html", { with: { type: "text" } }).then(text),
   "grid.html": () => import("./grid.html", { with: { type: "text" } }).then(text),
+  "compare.html": () => import("./compare.html", { with: { type: "text" } }).then(text),
   "trio.html": () => import("./trio.html", { with: { type: "text" } }).then(text),
   "feed.js": () => import("./feed.js", { with: { type: "text" } }).then(text),
   "vendor/xterm/xterm.js": () =>
@@ -405,6 +406,12 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
 
         if (get && pathname === "/grid") {
           const page = await readAsset("grid.html");
+          if (page === null) return notFound(res);
+          return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
+        }
+
+        if (get && pathname === "/compare") {
+          const page = await readAsset("compare.html");
           if (page === null) return notFound(res);
           return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
         }

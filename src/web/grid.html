@@ -94,6 +94,18 @@ body {
 .dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .hctl { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.pagenav { display: flex; gap: 2px; white-space: nowrap; }
+.pagenav a {
+  color: var(--dim);
+  text-decoration: none;
+  font-size: 11px;
+  letter-spacing: .06em;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+.pagenav a:hover { color: var(--text); border-color: var(--edge); }
+.pagenav a.active { color: var(--green); border-color: var(--green2); }
 .wspill { font-size: 11px; color: var(--faint); }
 .wspill.on { color: var(--green2); }
 .clock { color: var(--faint); font-size: 11px; }
@@ -362,6 +374,11 @@ main { flex: 1; display: block; }
       <span class="wordmark">agentic-coding-harness</span>
       <span class="modelabel">grid</span>
     </div>
+    <nav class="pagenav" aria-label="pages">
+      <a data-nav="grid" class="active" href="/grid">grid</a>
+      <a data-nav="compare" href="/compare">compare</a>
+      <a data-nav="observability" href="/trio">observability</a>
+    </nav>
     <div class="hstats">
       <span class="pill live"><span class="dot pulse" aria-hidden="true"></span><b id="st-runs">0</b> runs live</span>
       <span class="pill"><b id="st-tok">0</b> tokens</span>
@@ -555,6 +572,13 @@ function createTermPane(container, opts) {
   var TOKEN = QS.get("token") || "";
   var LIVE_MS = 60000;
 
+  // nav links keep the session token when one is in play
+  (function () {
+    var qs = TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "";
+    var links = document.querySelectorAll(".pagenav a");
+    for (var i = 0; i < links.length; i++) links[i].href += qs;
+  })();
+
   var grid = document.getElementById("grid");
   var elRuns = document.getElementById("st-runs");
   var elTok = document.getElementById("st-tok");
@@ -574,6 +598,7 @@ function createTermPane(container, opts) {
   }
 
   function isLive(rec, now) {
+    if (rec.source === "external") return rec.endedAt == null;
     return rec.status === "running" && (now - rec.updatedAt) < LIVE_MS;
   }
 
@@ -643,7 +668,7 @@ function createTermPane(container, opts) {
     bar.appendChild(model);
     bar.appendChild(space);
     bar.appendChild(trio);
-    bar.appendChild(liveBtn);
+    if (rec.source !== "external") bar.appendChild(liveBtn);   // no local PTY for external runs
     bar.appendChild(tok);
     bar.appendChild(cost);
     bar.appendChild(elapsed);
