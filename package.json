@@ -2,7 +2,7 @@
   "name": "agentic-coding-harness",
   "version": "0.9.0",
   "mcpName": "io.github.sblattj/agentic-coding-harness",
-  "description": "Run, watch, and meter coding agents — Claude Code, OpenCode, Kiro, Codex CLI, Gemini CLI — with normalized events, cost accounting, and replayable run artifacts.",
+  "description": "Run, watch, and meter coding agents — Claude Code, OpenCode, Kiro, Codex CLI, Gemini CLI — with normalized events, cost accounting, A/B experiment/variant comparison, external run sources, and replayable run artifacts.",
   "keywords": [
     "coding-agent",
     "claude-code",
@@ -19,7 +19,18 @@
     "mcp-server",
     "cli",
     "ai-agents",
-    "agent-orchestration"
+    "agent-orchestration",
+    "agent-cost-tracking",
+    "llm-spend",
+    "claude-code-cost",
+    "agent-evals",
+    "experiment-tracking",
+    "ab-testing",
+    "agent-runs-dashboard",
+    "terminal-replay",
+    "browser-terminal",
+    "run-registry",
+    "verified-cost-tracking"
   ],
   "author": "Stephen Blatt",
   "license": "MIT",
