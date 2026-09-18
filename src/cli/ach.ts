@@ -81,9 +81,15 @@ usage:
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
   ach web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
-              [--dir D] [--no-open]
+              [--dir D] [--no-open] [--source URL] [--source-token T]
+              [--source-mode poll|sse|ws] [--source-poll-ms N=3000]
+              [--source-merge state|only=only]
                 (browser dashboard over the live registry; token via --token
-                 or env AGENTIC_CODING_HARNESS_HTTP_TOKEN; --no-open skips the browser)
+                  or env AGENTIC_CODING_HARNESS_HTTP_TOKEN; --no-open skips the browser;
+                  --source reads runs from an external http(s) feed instead of the
+                  state dir — flags or env AGENTIC_CODING_HARNESS_SOURCE[_TOKEN|_MODE|
+                  _POLL_MS|_MERGE]; --source-token falls back to --token;
+                  --source-merge state unions the local registry under the feed)
 
 env:
   AGENTIC_CODING_HARNESS_STATE_DIR   state root (default ~/.agentic-coding-harness)
