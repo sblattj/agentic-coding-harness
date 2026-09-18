@@ -23,6 +23,7 @@ export {
   type AgentEvent,
   type AgentHandle,
   type AgentName,
+  CanonicalTokenRecordSchema,
   type CanonicalTokenRecord,
   type ExitStatus,
   type KiroConfig,
@@ -60,3 +61,10 @@ export { CodexAdapter } from './adapters/codex.ts';
 export { GeminiAdapter } from './adapters/gemini.ts';
 export { OpenCodeAdapter } from './adapters/opencode.ts';
 export { VERSION } from './version.ts';
+
+// --- public run-record contract (0.9.0 spec §3): registry + external feed ---
+
+export { RunRecordSchema, writeRunRecord, readRunRecord, listRunIds, listRunRecords, registryDir } from './core/registry.ts';
+export type { RunRecord } from './core/registry.ts';
+export { ExternalRunFeedSchema } from './core/external-source.ts';
+export type { ExternalRunFeed } from './core/external-source.ts';

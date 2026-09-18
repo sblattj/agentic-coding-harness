@@ -13,18 +13,21 @@ import {
   type UsageAvailability,
 } from "./types.ts";
 
+// Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
+// record (source:"external") validates without inventing a local pid, cwd, or
+// transcript path; the driver always fills them for local runs.
 export interface RunRecord {
   runId: string; // driver-generated uuid
   agent: string; // 'claude' | 'kiro' | ...
   sessionId?: string; // set once the adapter reports it
-  pid: number; // harness CLI process pid
-  cwd: string;
-  promptPreview: string; // first 120 chars of prompt
+  pid?: number; // harness CLI process pid (LOCAL-PROCESS-ONLY)
+  cwd?: string;
+  promptPreview?: string; // first 120 chars of prompt
   startedAt: number; // ms epoch
-  updatedAt: number; // ms epoch — heartbeat
-  status: "running" | "interrupted" | "success" | "error" | "aborted"; // 'interrupted' is derived (effectiveStatus), never written to disk
+  updatedAt?: number; // ms epoch — heartbeat
+  status?: "running" | "interrupted" | "success" | "error" | "aborted"; // 'interrupted' is derived (effectiveStatus), never written to disk
   exitStatus?: string; // final RunResult.exitStatus
-  totals: {
+  totals?: {
     // running aggregates, updated per usage event
     inputTokens: number;
     outputTokens: number;
@@ -36,11 +39,19 @@ export interface RunRecord {
     contextTokens?: number;
   };
   lastEvent?: string; // one-line preview of the latest event
-  rawTranscript: string; // absolute path to <stateDir>/raw/<agent>-<session>.jsonl
+  rawTranscript?: string; // absolute path to <stateDir>/raw/<agent>-<session>.jsonl (LOCAL-PROCESS-ONLY)
   /** Dashboard mirror of RunResult.kiro (kiro runs only). */
   kiro?: Pick<KiroEffective, "transport" | "modelAck" | "nativeSessionId" | "cliVersion">;
   /** Dashboard mirror of RunResult.usage. */
   usage?: UsageAvailability;
+  // --- public run-record contract (0.9.0): provenance + labeling ---
+  experiment?: string; // compare-view grouping label
+  variant?: string; // compare-view variant within an experiment
+  workflow?: string; // e.g. "implement" | "review" | "plan"
+  source?: "local" | "external"; // external records carry no local pid to probe
+  producer?: string; // e.g. "acme-feed/bridge@1"
+  endedAt?: number; // ms epoch — explicit wall-clock end for external runs
+  metadata?: Record<string, unknown>; // free-form provenance (request_id, region, ...)
 }
 
 const TotalsSchema = z.object({
@@ -57,16 +68,16 @@ export const RunRecordSchema = z.object({
   runId: z.string(),
   agent: z.string(),
   sessionId: z.string().optional(),
-  pid: z.number().int(),
-  cwd: z.string(),
-  promptPreview: z.string(),
+  pid: z.number().int().optional(),
+  cwd: z.string().optional(),
+  promptPreview: z.string().optional(),
   startedAt: z.number(),
-  updatedAt: z.number(),
-  status: z.enum(["running", "interrupted", "success", "error", "aborted"]),
+  updatedAt: z.number().optional(),
+  status: z.enum(["running", "interrupted", "success", "error", "aborted"]).optional(),
   exitStatus: z.string().optional(),
-  totals: TotalsSchema,
+  totals: TotalsSchema.optional(),
   lastEvent: z.string().optional(),
-  rawTranscript: z.string(),
+  rawTranscript: z.string().optional(),
   kiro: KiroEffectiveSchema.pick({
     transport: true,
     modelAck: true,
@@ -74,6 +85,13 @@ export const RunRecordSchema = z.object({
     cliVersion: true,
   }).optional(),
   usage: UsageAvailabilitySchema.optional(),
+  experiment: z.string().min(1).optional(),
+  variant: z.string().min(1).optional(),
+  workflow: z.string().min(1).optional(),
+  source: z.enum(["local", "external"]).default("local"),
+  producer: z.string().min(1).optional(),
+  endedAt: z.number().int().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export function registryDir(stateDir: string): string {
@@ -127,10 +145,12 @@ export function readRunRecord(stateDir: string, runId: string): RunRecord | null
  * unchanged so callers keep their existing "missing → empty" behaviour.
  */
 export function resolveRawTranscript(stateDir: string, rec: RunRecord): string {
-  if (fs.existsSync(rec.rawTranscript)) return rec.rawTranscript;
-  const relocated = path.join(stateDir, "raw", path.basename(rec.rawTranscript));
+  const stored = rec.rawTranscript;
+  if (stored === undefined) return ""; // external records carry no transcript path
+  if (fs.existsSync(stored)) return stored;
+  const relocated = path.join(stateDir, "raw", path.basename(stored));
   if (fs.existsSync(relocated)) return relocated;
-  return rec.rawTranscript;
+  return stored;
 }
 
 export function listRunRecords(stateDir: string): RunRecord[] {
@@ -155,10 +175,17 @@ export function listRunRecords(stateDir: string): RunRecord[] {
   return out.sort((a, b) => b.startedAt - a.startedAt);
 }
 
+/** Spec public-API helper: just the runIds of listRunRecords, newest first. */
+export function listRunIds(stateDir: string): string[] {
+  return listRunRecords(stateDir).map((r) => r.runId);
+}
+
 /** Live = still running, heartbeat fresh (<=15s), and the pid answers kill(pid, 0). */
 export function isLive(rec: RunRecord, now: number = Date.now()): boolean {
+  if (rec.source === "external") return false;
+  if (rec.pid === undefined) return false;
   if (rec.status !== "running") return false;
-  if (now - rec.updatedAt > 15_000) return false;
+  if (rec.updatedAt === undefined || now - rec.updatedAt > 15_000) return false;
   try {
     process.kill(rec.pid, 0);
   } catch (e) {
