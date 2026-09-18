@@ -350,7 +350,8 @@ td.num.succ { color: var(--cyan); }
   }
 
   function fetchCompare(path) {
-    var url = path + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+    // The base path already carries a query (?by=...) — append, never blind-concat.
+    var url = path + (TOKEN ? (path.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : "");
     var headers = { accept: "application/json" };
     if (TOKEN) headers.authorization = "Bearer " + TOKEN;
     return fetch(url, { headers: headers }).then(function (r) {
