@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentic-coding-harness"
-version = "0.7.4"
+version = "0.9.0"
 description = "Run, watch, and meter Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro from one CLI — verified cost tracking, token usage, budget caps, OTel gen_ai spans, Langfuse traces, and a live dashboard + MCP server."
 keywords = ["claude-code", "codex-cli", "gemini-cli", "opencode", "kiro", "coding-agent", "agent-observability", "cost-tracking", "token-usage", "opentelemetry", "langfuse", "mcp-server", "llm", "ai-agents", "cli"]
 authors = [{ name = "Stephen Blatt" }]
