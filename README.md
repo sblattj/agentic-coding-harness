@@ -1,5 +1,7 @@
 # agentic-coding-harness — cost tracking and observability for Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro
 
+**Agents hide the burn. `ach` runs, watches, and meters Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro from one CLI — agent cost tracking whose numbers verify against each CLI's own records.**
+
 <p>
   <a href="https://www.npmjs.com/package/agentic-coding-harness"><img alt="npm version" src="https://img.shields.io/npm/v/agentic-coding-harness"></a>
   <a href="https://pypi.org/project/agentic-coding-harness/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/agentic-coding-harness"></a>
@@ -7,24 +9,50 @@
   <img alt="Node.js 18.19 or newer" src="https://img.shields.io/badge/node-%3E%3D18.19-brightgreen">
 </p>
 
-**Agents hide the burn. This is the receipt — tokens, credits, and dollars, verified against each CLI's own records.**
-
-`agentic-coding-harness` (`ach`) runs, watches, and meters AI coding agents from one CLI.
-Launch headless runs on **Claude Code, Codex CLI, Gemini CLI, OpenCode, or Kiro** and get
-token usage — input, output, cache read, cache write, reasoning — plus per-model cost,
-Kiro metering credits, and duration for every run. Costs are not estimated guesses: the
-cache-aware accounting is verified against each CLI's own ground-truth records (Claude
-session JSONL, Kiro session files, provider-reported `costUSD`). Every run persists as a
-replayable artifact — an ATIF trajectory, OpenTelemetry `gen_ai` spans, a Langfuse trace,
-or a single-file HTML report — and a live terminal dashboard, web dashboard, and MCP
-server put usage, cost, and credits for all five agents on one screen.
-
 ![Live web dashboard grid showing token usage and cost across concurrent Claude Code and Kiro agent runs, with interactive terminal panes](docs/assets/dashboard.gif)
 
+## Highlights
+
+- **One CLI, five agents** — `claude`, `opencode`, `kiro`, `codex`, `gemini` adapters normalize five different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
+- **Cost math you can defend** — cache-aware accounting verified against each CLI's own ground truth (Claude session JSONL, Kiro session files, provider-reported `costUSD`); LiteLLM pricing, and unpriced models warn and contribute 0 — never silently.
+- **Live agent runs dashboard** — `ach dash` redraws 2×/s in the terminal; `ach web` (port 8399) grids every run with a browser terminal you can type into — PTY per run, vendored xterm.js, zero CDN.
+- **Terminal replay** — every run renders to an asciinema-format `.cast`, so you can scrub what the agent did and when.
+- **Run registry** — every run persists to `<stateDir>/runs/<runId>.json` with atomic writes; survives kills, dumps as `--json` for tools.
+- **10 MCP tools** — launch runs and read usage from any MCP client over stdio, or streamable HTTP on port 8398 (`ach serve`).
+- **Artifacts out** — ATIF v1.7 trajectories, OpenTelemetry `gen_ai` spans, Langfuse via OTLP, and single-file HTML comparison reports.
+- **New in 0.9.0** — external run feeds (`--source`, poll/SSE/WS), public `RunRecordSchema`/`writeRunRecord` API, `/compare` experiment×variant rollups, `/health`, and 409 PTY refusal for external runs.
+
+## How it compares
+
+| Compared with | Runs and budgets | Events and cost | Registry and output |
+|---|---|---|---|
+| **usage CLIs** (ccusage etc.) | `ach` launches, aborts, and budget-caps the runs it meters | normalized token events across 5 agent CLIs | per-run registry keyed by runId + live web grid |
+| **observability platforms** (Langfuse etc.) | `ach` launches and meters the runs itself | local-first flat files — no account, no ingest step | exports to them via OTLP when you want their charts |
+| **tmux + grep** | one launcher for all five agents | normalized event schema + cost math | run registry + single-file HTML report |
+
+## Is this for you?
+
+- **For you if** you run coding agents locally and want per-run tokens, cost, and credits from one place — including budgets that abort a runaway run mid-flight.
+- **For you if** you A/B compare coding agents: same task, five agents, one comparison table, one local registry.
+- **Not for you if** you need hosted team features (SSO, retention, org-wide dashboards). `ach` is local-first by design and exports to Langfuse and other OTLP backends when you outgrow it.
+
+## Quickstart
+
 ```sh
-npm install -g agentic-coding-harness    # or: pip install agentic-coding-harness
+# no install needed:
+npx -y --package=agentic-coding-harness ach run --agent claude "add a --dry-run flag to scripts/lint.sh"
+
+# or install globally (pip install agentic-coding-harness also works):
+npm install -g agentic-coding-harness
 ach run --agent claude "add a --dry-run flag to scripts/lint.sh"
-ach web                                  # live dashboard on :8399
+```
+
+Dashboard in three lines:
+
+```sh
+ach web                                        # live dashboard on :8399
+ach run --agent codex "fix the failing test"   # launch runs from any terminal
+# open http://localhost:8399 — the grid shows every run; LIVE opens a terminal pane
 ```
 
 ## Demo: one task, five agents, one cost table
@@ -58,18 +86,17 @@ $ ach report trials/20260911-141210          # single-file HTML comparison
 $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel / ATIF
 ```
 
-![Per-run summary showing token usage broken into input, output, cache read, cache write, and reasoning, with cost and duration, for a Claude Code run](docs/assets/cli-run-summary.png)
-
 ## The problem: coding agents hide token usage and cost
 
 - **Agents hide burn.** Kiro exposes metering credits, not tokens; Claude mixes models inside one
-  session, so any single blended price is wrong. Each adapter taps usage at its source and prices
-  per (model, cache tier). Kiro credits stay on their own summary line — never merged into USD.
+  session, so any single blended price is wrong — real Claude Code cost needs per-(model,
+  cache-tier) math. Each adapter taps usage at its source and prices it that way. Kiro credits
+  stay on their own summary line — never merged into USD.
 - **Every CLI speaks a different format.** JSONL transcripts, NDJSON stdout, ACP, SQLite — five
   adapters normalize all of it into one event model and one `CanonicalTokenRecord` (with
   cache-read/write/reasoning split), so dash, stats, emitters, and the MCP server are written once.
-- **Nothing correlated runs across agents — until now.** Runs land in a registry keyed by trial
-  dir; `examples/trial-all.sh` side-by-sides, HTML comparison reports, and cross-agent stats are
+- **Nothing correlated runs across agents — until now.** Runs land in a registry keyed by
+  runId; `examples/trial-all.sh` side-by-sides, HTML comparison reports, and cross-agent stats are
   first-class, not shell archaeology.
 - **Numbers you can defend.** Token/cost columns are checked against ground truth: cache columns
   exact vs each CLI's own session JSONL; Kiro MITM credits bit-for-bit vs Kiro's session files.
@@ -82,7 +109,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 - **LiteLLM multi-model pricing** — bundled LiteLLM extract, external cost-map override;
   unpriced models warn and contribute 0, never silently.
 - **Kiro MITM credit tap** — auto-starts on `ach run --agent kiro` when `mitmdump` is on
-  PATH; captures metering credits (`extra.credits`) and the native `kiroSession` id for grep
+  the PATH; captures metering credits (`extra.credits`) and the native `kiroSession` id for grep
   correlation; degrades to a warning when absent.
 - **Kiro ACP transport + preflight** — `--kiro-transport acp` drives `kiro-cli acp` over JSON-RPC
   and records the *proven* mode/model (`result.kiro.modelAck`); the default headless lane forwards
@@ -96,24 +123,28 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   glyphs, totals footer); `--json` dumps RunRecords for tools, `--all` widens past the last hour.
 - **MCP server** — stdio JSON-RPC, 10 tools (`harness_run{,_async,_status,_events,_cancel}`, `harness_kiro_preflight`, `report/emit/stats/agents`) so any MCP
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
-- **Emitters** — ATIF v1.7 trajectories (self-validating), OTel `gen_ai` spans, Langfuse via OTLP.
+- **Emitters** — ATIF v1.7 trajectories (self-validating), OpenTelemetry `gen_ai` spans, Langfuse via OTLP.
 - **Single-file HTML reports** — charts + timelines comparing every agent in a trial dir.
 - **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini transcript
   dirs plus the opencode SQLite store; `stats` aggregates totals/byAgent/byDay over machine
   transcripts and harness state (`--state-only` to skip transcript scans).
 
-## Compare coding agents side by side — tokens, cost, credits, duration
+## A/B compare coding agents side by side — tokens, cost, credits, duration
 
 Run the same task on every installed agent and get a single comparison: tokens in/out/cache,
-cost, wall-clock duration, and status per agent. No manual log diffing.
+cost, wall-clock duration, and status per agent. No manual log diffing. For lightweight
+experiment tracking, the web dashboard's `/compare` view rolls runs up by experiment×variant
+or workflow×agent straight from the local registry.
 
 ![Cross-agent comparison table showing token usage, cost, duration, and status for Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro run on the same task](docs/assets/cli-compare.png)
 
 ## Live dashboards: terminal (`ach dash`) and web (`ach web`)
 
+One registry, two live agent runs dashboards.
+
 **Web** — a tmux-like grid of every run, plus an observability view per run. A **LIVE** button
-spawns an interactive PTY for the run's agent and expands the tile to a full xterm.js terminal
-you can type into.
+spawns an interactive PTY for the run's agent and expands the tile to a full xterm.js browser
+terminal you can type into.
 
 ![Web dashboard terminal grid showing live agent run tiles with token and cost readouts and interactive terminal panes](docs/assets/web-grid.png)
 
@@ -142,6 +173,9 @@ ach emit --input events.json --format atif|otel|langfuse [--out path]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 ach report <trials-dir> [--out path]           # single-file HTML comparison
 ach dash [--json] [--all] [--dir <stateDir>]   # live run dashboard; q quits
+ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
+            (MCP over streamable HTTP on POST /mcp; GET /health probe;
+             token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
 ach web [trials-dir] [--port N=8399] [--host H] [--token T] [--dir D] [--no-open]
           [--source URL] [--source-token T] [--source-mode poll|sse|ws]
           [--source-poll-ms N=3000] [--source-merge state|only]
@@ -239,6 +273,9 @@ Agents are spawned with their non-interactive flags so a live pane does not die 
 PTY attach is local-only by construction: runs arriving from an external feed (`--source`) are
 refused with `409` and their tiles show no LIVE button, since there is no local process to attach to.
 
+Every run also serves an asciinema-format terminal replay at
+`/api/runs/<runId>/cast` — the same event stream rendered as a scrubbable `.cast`.
+
 ### Watching external run feeds: `--source`
 
 `ach web` normally serves runs from its local state dir. Pass `--source <url>` and it instead
@@ -247,7 +284,7 @@ watches a remote feed of run records — one dashboard in front of many machines
 | flag | env | meaning |
 |---|---|---|
 | `--source <url>` | `AGENTIC_CODING_HARNESS_SOURCE` | base URL of the external run feed |
-| `--source-token <t>` | `AGENTIC_CODING_HARNESS_SOURCE_TOKEN` | bearer token sent on every feed request |
+| `--source-token <t>` | `AGENTIC_CODING_HARNESS_SOURCE_TOKEN` | bearer token sent on every feed request (defaults to `--token`) |
 | `--source-mode poll\|sse\|ws` | `AGENTIC_CODING_HARNESS_SOURCE_MODE` | snapshot polling, Server-Sent Events, or WebSocket (default `poll`) |
 | `--source-poll-ms <n>` | `AGENTIC_CODING_HARNESS_SOURCE_POLL_MS` | poll interval in ms (default 3000; ignored for sse/ws) |
 | `--source-merge state\|only` | `AGENTIC_CODING_HARNESS_SOURCE_MERGE` | `only` (default) serves the external feed alone; `state` unions it with the local state dir, external records winning on `runId` collision |
@@ -277,7 +314,7 @@ const rec = RunRecordSchema.parse({
 writeRunRecord(stateDir, rec);   // lands in <stateDir>/runs/<runId>.json
 ```
 
-## Budgets and spend caps: stop a runaway agent mid-run
+## Budgets and spend caps: stop runaway LLM spend mid-run
 
 Every limit aborts the run mid-flight and records why in `exitStatus`.
 
