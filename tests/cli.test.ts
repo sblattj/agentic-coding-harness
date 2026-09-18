@@ -30,6 +30,12 @@ function runCli(args: string[], env: Record<string, string>): RunOut {
 }
 
 describe("harness cli", () => {
+  test("--version prints the package version and exits 0", () => {
+    const r = runCli(["--version"], {});
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  });
+
   let stateDir: string;
   let home: string;
   let tmpExtra: string;

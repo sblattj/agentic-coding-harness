@@ -2,12 +2,6 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
-## [0.8.1] - 2026-09-16
-
-### Added
-
-- mcpName registry marker for MCP publication (`io.github.sblattj/agentic-coding-harness`).
-
 ## [0.9.0] - 2026-09-18
 
 ### Added
@@ -22,3 +16,9 @@ Note: releases before 0.8.1 predate this changelog.
 - `RunRecord` gained additive provenance fields: `experiment`, `variant`, `workflow`, `source` (`"local"` default, or `"external"`), `producer`, `endedAt`, and `metadata`.
 - PTY attach (`POST /api/pty`, `/ws/pty/*`) is refused with `409` for external runs — there is no local process to attach to — and the LIVE button is hidden on external run tiles.
 - Report variant grouping: runs recorded with a `variant` on their RunSpec group the comparison table by variant (same experiment/agent); legacy runs without a variant keep the by-agent grouping.
+
+## [0.8.1] - 2026-09-16
+
+### Added
+
+- mcpName registry marker for MCP publication (`io.github.sblattj/agentic-coding-harness`).

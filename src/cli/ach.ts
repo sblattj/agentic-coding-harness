@@ -48,8 +48,10 @@ import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
+version: ${VERSION}
 
 usage:
+  ach --version | -v        print the harness version
   ach run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               claude only: [--claude-default-config]  (use the default, authenticated
@@ -914,6 +916,10 @@ async function main(argv: string[]): Promise<number> {
     case "--help":
     case "-h":
       process.stdout.write(USAGE + "\n");
+      return 0;
+    case "--version":
+    case "-v":
+      process.stdout.write(VERSION + "\n");
       return 0;
     default:
       process.stderr.write(USAGE + "\n");
