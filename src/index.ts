@@ -68,3 +68,4 @@ export { RunRecordSchema, writeRunRecord, readRunRecord, listRunIds, listRunReco
 export type { RunRecord } from './core/registry.ts';
 export { ExternalRunFeedSchema } from './core/external-source.ts';
 export type { ExternalRunFeed } from './core/external-source.ts';
+export type { RunSource } from './web/run-source.ts';

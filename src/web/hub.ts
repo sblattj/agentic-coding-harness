@@ -5,15 +5,17 @@
 // "runs" for run-list changes) and calls the publish helpers here.
 // Catch-up is transcript tailing: readTranscript replays a run's persisted
 // jsonl as AgentEvents before live push takes over.
+//
+// Run-record sourcing goes through the RunSource seam (default FsRunSource);
+// the hub never reads the registry dir itself.
 import fs from "node:fs";
 import type { AgentEvent } from "../core/types.ts";
 import {
   type RunRecord,
-  listRunRecords,
   readRunRecord,
-  registryDir,
   resolveRawTranscript,
 } from "../core/registry.ts";
+import { FsRunSource, type RunSource } from "./run-source.ts";
 
 export const RUN_TOPIC_PREFIX = "run:";
 export const RUNS_TOPIC = "runs";
@@ -43,10 +45,12 @@ export type HubMessage = RunEventMessage | RunsMessage;
 
 export class RunEventHub {
   private publisher: WsPublisher | null = null;
-  private watcher: fs.FSWatcher | null = null;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private watching = false;
 
-  constructor(private readonly stateDir: string) {}
+  constructor(
+    private readonly stateDir: string,
+    private readonly source: RunSource = new FsRunSource(stateDir),
+  ) {}
 
   attach(publisher: WsPublisher): void {
     this.publisher = publisher;
@@ -65,7 +69,7 @@ export class RunEventHub {
   }
 
   snapshotRuns(): RunRecord[] {
-    return listRunRecords(this.stateDir);
+    return this.source.snapshot();
   }
 
   async readTranscript(runId: string): Promise<AgentEvent[]> {
@@ -91,34 +95,17 @@ export class RunEventHub {
   }
 
   watchRegistry(): () => void {
-    if (this.watcher) return () => this.close();
-    let dir: string;
-    try {
-      dir = registryDir(this.stateDir);
-      fs.mkdirSync(dir, { recursive: true });
-      this.watcher = fs.watch(dir, () => {
-        if (this.debounceTimer) clearTimeout(this.debounceTimer);
-        this.debounceTimer = setTimeout(() => {
-          this.debounceTimer = null;
-          this.publishRuns(this.snapshotRuns());
-        }, 250);
-      });
-    } catch {
-      this.watcher = null;
-      return () => {};
-    }
+    if (this.watching) return () => this.close();
+    this.watching = true;
+    // FsRunSource teardown is synchronous inside stop(), so close() stays
+    // sync-safe even though stop() is async at the interface level.
+    void this.source.start((records) => this.publishRuns(records));
     return () => this.close();
   }
 
   close(): void {
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    if (this.watcher) {
-      this.watcher.close();
-      this.watcher = null;
-    }
+    this.watching = false;
+    void this.source.stop();
   }
 }
 
