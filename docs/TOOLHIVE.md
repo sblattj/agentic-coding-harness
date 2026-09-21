@@ -4,7 +4,9 @@ Team deployment: agent execution runs on a host with the agent CLIs (claude,
 codex, opencode, gemini, kiro) installed and authenticated. ToolHive supplies
 the gateway/front door; `harness serve --http` runs on the host behind it, and
 clients (Claude Code, OpenCode, Kiro, Codex) connect through it to the full
-MCP toolset with no agent CLI of their own.
+MCP toolset with no agent CLI of their own. For a single local client,
+`ach mcp` (stdio) avoids the gateway entirely; this doc covers the shared-host
+HTTP lane.
 
 ## Topology
 
@@ -43,8 +45,8 @@ harness serve --http --port 8398 --token "$TOKEN"
   `{"status":"ok","version":"0.6.1"}`; probe it before routing.
 - Shutdown: SIGINT/SIGTERM stop accepting, drain 5s, then exit; in-flight
   async jobs are left as registry records (see Persistence).
-- Registers every tool — sync run, agents, report, emit, stats, four async
-  job tools — nine under `tools/list`.
+- Registers every tool — sync run, kiro preflight, agents, report, emit,
+  stats, four async job tools — ten under `tools/list`.
 
 Shared deployments should add the gateway profile:
 
@@ -170,7 +172,7 @@ curl -s -X POST http://127.0.0.1:8398/mcp -H 'content-type: application/json' \
 ```
 
 Then over any configured client, or plain POSTs: `initialize`, `tools/list`
-(all nine tools), `harness_agents` (one row per installed CLI + adapter),
+(all ten tools), `harness_agents` (one row per installed CLI + adapter),
 `harness_stats` (empty rows on a fresh state dir are fine). Finally
 `harness_run` with a bad agent name — `"agent": "nope"` — must error
 cleanly naming the field, not hang. None of these start an agent process:

@@ -1,13 +1,17 @@
 # MCP server
 
-`src/mcp/index.ts` is a stdio MCP server that exposes the harness to any MCP
+`ach mcp` runs a stdio MCP server that exposes the harness to any MCP
 client (opencode, Claude Code, ...): launch coding-agent runs, emit ATIF/OTel/
 Langfuse trajectories, render comparison reports, and read stats over JSON-RPC
-2.0 instead of shelling out to the CLI. Protocol contract lives in
+2.0 instead of shelling out to the CLI. Install the package and run
+`ach mcp` (or `npx -y agentic-coding-harness mcp`); from a repo checkout,
+`bun src/mcp/index.ts` still works. Protocol contract lives in
 [`src/mcp/contract.ts`](../src/mcp/contract.ts) (MCP `2025-06-18`, newline-
 delimited stdio).
 
 ## Client config
+
+Installed `ach` (or npx) — run `ach mcp` as a child process:
 
 opencode (`opencode.json`) — local server, `command` array:
 
@@ -16,7 +20,7 @@ opencode (`opencode.json`) — local server, `command` array:
   "mcp": {
     "agentic-coding-harness": {
       "type": "local",
-      "command": ["bun", "/absolute/path/to/agentic-coding-harness/src/mcp/index.ts"],
+      "command": ["npx", "-y", "agentic-coding-harness", "mcp"],
       "enabled": true
     }
   }
@@ -29,17 +33,40 @@ Claude Code (`.mcp.json`):
 {
   "mcpServers": {
     "agentic-coding-harness": {
-      "command": "bun",
-      "args": ["/absolute/path/to/agentic-coding-harness/src/mcp/index.ts"]
+      "command": "npx",
+      "args": ["-y", "agentic-coding-harness", "mcp"]
     }
   }
 }
 ```
 
+From a checkout, point the same shapes at the source instead: opencode
+`"command": ["bun", "/absolute/path/to/agentic-coding-harness/src/mcp/index.ts"]`,
+Claude Code `"command": "bun", "args": ["/absolute/path/to/.../src/mcp/index.ts"]`.
+
 Both shapes accept a per-server `env` key; set `AGENTIC_CODING_HARNESS_STATE_DIR` there
 to move state off the default `~/.agentic-coding-harness`.
 
+## Transports
+
+`ach mcp` serves stdio: newline-delimited JSON-RPC (Content-Length framing
+tolerated) on stdin/stdout, spawned locally by the client — no port, host, or
+token. stdout carries protocol messages only, diagnostics go to stderr, and
+JSON-RPC batch arrays are supported.
+
+- stdio — `ach mcp`; locally spawned, protocol-only stdout, batch arrays supported.
+- streamable HTTP — `ach serve`; `POST /mcp`, `GET /health` probe, optional
+  bearer token (`--token` or `AGENTIC_CODING_HARNESS_HTTP_TOKEN`).
+- Shared-host / gateway deployment behind ToolHive: [docs/TOOLHIVE.md](TOOLHIVE.md).
+
 ## Tools
+
+`tools/list` exposes ten tools: `harness_run`, `harness_run_async`,
+`harness_run_status`, `harness_run_events`, `harness_run_cancel`,
+`harness_kiro_preflight`, `harness_report`, `harness_emit`, `harness_stats`,
+`harness_agents`. Sections below cover the main ones; the async job tools
+(`harness_run_async` / `_status` / `_events` / `_cancel`) submit a long run and
+poll, page, or cancel it — see [docs/TOOLHIVE.md](TOOLHIVE.md).
 
 ### harness_run
 
@@ -156,3 +183,5 @@ The client resolves it into three `tools/call` invocations:
 - Protocol on **stdout only**, diagnostics on **stderr**. If the client parses
   garbage, something is printing to stdout.
 - Client hangs at startup: check `bun --version` >= 1.3 (NDJSON stdio framing).
+- `ach mcp` needs Node >= 18.19 only — the `bun --version` note applies to the
+  `bun src/mcp/index.ts` checkout form.

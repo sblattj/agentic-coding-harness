@@ -2,6 +2,17 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.10.0] - 2026-09-20
+
+### Added
+
+- `ach mcp` — MCP over stdio (newline-delimited JSON-RPC on stdin/stdout, Content-Length framing tolerated): the same 10-tool surface, handshake, and `--gateway` profile flags as `ach serve --http`, for MCP clients that spawn the CLI as a child process (no port, token, or health probe).
+- Stdio transport now answers JSON-RPC batch arrays (all-notification batches reply `[]`), mirroring the HTTP batch semantics.
+
+### Fixed
+
+- A JSON-RPC object missing (or with an empty) `method` now answers `-32600 Invalid request` on both transports; previously the HTTP lane crashed with a 500 and the stdio lane was the only one to answer.
+
 ## [0.9.0] - 2026-09-18
 
 ### Added
