@@ -7,21 +7,14 @@
 // Client config: see docs/MCP.md.
 
 import { createMcpServer } from './server.ts';
-import { registerRunTools } from './tools-run.ts';
-import { registerInspectTools } from './tools-inspect.ts';
-import { registerJobTools } from './tools-jobs.ts';
-import { registerPreflightTools } from './tools-preflight.ts';
+import { registerHarnessTools } from './register-tools.ts';
 import { stateDir } from '../core/store.ts';
 
 import { VERSION } from '../version.ts';
 
 async function main(): Promise<void> {
   const server = createMcpServer({ name: 'agentic-coding-harness', version: VERSION });
-  const opts = { stateDir: stateDir() };
-  registerRunTools(server, opts);
-  registerInspectTools(server, opts);
-  registerJobTools(server, opts);
-  registerPreflightTools(server);
+  registerHarnessTools(server, { stateDir: stateDir() });
   await server.serve();
 }
 
