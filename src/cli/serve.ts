@@ -9,10 +9,7 @@ import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
 import { createMcpServer } from "../mcp/server.ts";
 import { startHttpServer, type HttpServerHandle } from "../mcp/http.ts";
-import { registerRunTools } from "../mcp/tools-run.ts";
-import { registerPreflightTools } from "../mcp/tools-preflight.ts";
-import { registerInspectTools } from "../mcp/tools-inspect.ts";
-import { registerJobTools } from "../mcp/tools-jobs.ts";
+import { registerHarnessTools } from "../mcp/register-tools.ts";
 import { gatewayConfigFromFlags } from "../serve/gateway.ts";
 
 // Distinct from src/cli/web.ts's DEFAULT_PORT (8399) so `harness serve --http`
@@ -109,11 +106,7 @@ export async function cmdServe(rest: string[]): Promise<number> {
   }
 
   const server = createMcpServer({ name: "agentic-coding-harness", version: VERSION });
-  const opts = { stateDir: stateDir(), gateway };
-  registerRunTools(server, opts);
-  registerInspectTools(server, opts);
-  registerJobTools(server, opts);
-  registerPreflightTools(server, { ...(gateway ? { gateway } : {}) });
+  registerHarnessTools(server, { stateDir: stateDir(), gateway });
   let http: HttpServerHandle;
   try {
     http = await startHttpServer({ server, port, host, token });
