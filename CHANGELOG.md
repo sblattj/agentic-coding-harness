@@ -2,6 +2,12 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.10.1] - 2026-09-21
+
+### Fixed
+
+- The sync `harness_run` MCP tool now persists its per-run RunRecord to `<stateDir>/runs/<runId>.json`, restoring parity with `ach run` and `harness_run_async` (the file was never written on the sync MCP path; downstream clients reading it back got ENOENT). Closes #16.
+
 ## [0.10.0] - 2026-09-20
 
 ### Added
