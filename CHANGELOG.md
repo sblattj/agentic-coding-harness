@@ -12,6 +12,7 @@ Note: releases before 0.8.1 predate this changelog.
 ### Fixed
 
 - A JSON-RPC object missing (or with an empty) `method` now answers `-32600 Invalid request` on both transports; previously the HTTP lane crashed with a 500 and the stdio lane was the only one to answer.
+- `ach mcp` no longer drops in-flight responses when a client half-closes stdin (request, then stdin end): async tool replies (e.g. `harness_stats`) raced the CLI's exit and were lost entirely.
 
 ## [0.9.0] - 2026-09-18
 
