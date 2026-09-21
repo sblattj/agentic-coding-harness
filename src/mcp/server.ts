@@ -76,11 +76,29 @@ export function createMcpServer(opts: { name: string; version: string }): McpSer
   const send = (response: JsonRpcResponse): void => {
     writeLine(JSON.stringify(response));
   };
+  const sendJsonArray = (responses: JsonRpcResponse[]): void => {
+    writeLine(JSON.stringify(responses));
+  };
 
   // Shared by every transport lane (stdio below, HTTP in src/mcp/http.ts).
   // Notifications (no id, or the notifications/* surface) never get a
   // response — including unknown notification methods.
   const dispatch = async (msg: JsonRpcRequest): Promise<JsonRpcResponse | null> => {
+    if (
+      typeof msg !== "object" ||
+      msg === null ||
+      typeof msg.method !== "string" ||
+      msg.method.length === 0
+    ) {
+      if (typeof msg === "object" && msg !== null && "id" in msg) {
+        return errorResponse(
+          (msg as { id: string | number | null }).id,
+          INVALID_REQUEST,
+          "Invalid request",
+        );
+      }
+      return null;
+    }
     const method = msg.method;
     const hasId = 'id' in msg;
     const id = hasId ? msg.id : null;
@@ -152,15 +170,15 @@ export function createMcpServer(opts: { name: string; version: string }): McpSer
       send(errorResponse(null, PARSE_ERROR, 'Parse error'));
       return;
     }
-    if (typeof raw !== 'object' || raw === null) {
-      send(errorResponse(null, INVALID_REQUEST, 'Invalid request'));
+    if (Array.isArray(raw)) {
+      const responses = (
+        await Promise.all(raw.map((m: unknown) => dispatch(m as JsonRpcRequest)))
+      ).filter((r): r is JsonRpcResponse => r !== null);
+      sendJsonArray(responses);
       return;
     }
-    const req = raw as { id?: unknown; method?: unknown; params?: unknown };
-    const hasId = 'id' in req;
-    const id = hasId ? (req.id as string | number | null) : null;
-    if (typeof req.method !== 'string' || req.method.length === 0) {
-      if (hasId) send(errorResponse(id, INVALID_REQUEST, 'Invalid request'));
+    if (typeof raw !== 'object' || raw === null) {
+      send(errorResponse(null, INVALID_REQUEST, 'Invalid request'));
       return;
     }
 

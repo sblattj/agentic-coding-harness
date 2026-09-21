@@ -46,6 +46,7 @@ import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
+import { cmdMcp } from "./mcp.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -92,6 +93,9 @@ usage:
                   state dir — flags or env AGENTIC_CODING_HARNESS_SOURCE[_TOKEN|_MODE|
                   _POLL_MS|_MERGE]; --source-token falls back to --token;
                   --source-merge state unions the local registry under the feed)
+  ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
+              (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
+               framing tolerated; same tools and gateway flags as \`ach serve\`)
 
 env:
   AGENTIC_CODING_HARNESS_STATE_DIR   state root (default ~/.agentic-coding-harness)
@@ -912,6 +916,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdServe(rest);
     case "web":
       return cmdWeb(rest);
+    case "mcp":
+      return cmdMcp(rest);
     case "help":
     case "--help":
     case "-h":
