@@ -237,7 +237,7 @@ describe('ach mcp (stdio subcommand, real subprocess)', () => {
       child.kill('SIGTERM');
       const c = child;
       setTimeout(() => {
-        if (c.exitCode === null && !c.killed) c.kill('SIGKILL');
+        if (c.exitCode === null) c.kill('SIGKILL');
       }, 500);
       child = null;
     }
@@ -358,6 +358,25 @@ describe('ach mcp (stdio subcommand, real subprocess)', () => {
     assert.equal(parsed.error!.code, -32600);
     assert.equal(parsed.id, 7);
   });
+
+  it(
+    'half-close drain: a request followed immediately by stdin end still gets its response',
+    { timeout: 30_000 },
+    async () => {
+      // Regression: ach exits as soon as serve() resolves on stdin 'end';
+      // without in-flight tracking the fs-async tool response lost the race
+      // (0 bytes on stdout, exit 0). recv() rejects if the child exits first.
+      const id = send('tools/call', { name: 'harness_stats', arguments: {} });
+      child!.stdin.end();
+      const res = await recv(id);
+      assert.equal(res.error, undefined, `unexpected error: ${JSON.stringify(res.error)}`);
+      assert.ok(res.result, 'no result on half-close response');
+      const result = res.result as { content: Array<{ type: string; text: string }> };
+      assert.equal(result.content[0]!.type, 'text');
+      await exitPromise;
+      assert.equal(exitInfo!.code, 0, `expected exit code 0, got code=${exitInfo!.code} signal=${exitInfo!.signal}`);
+    },
+  );
 
   it(
     'stdin end -> process exits 0; every stdout line ever written parses as JSON (stdout purity)',
