@@ -197,12 +197,28 @@ export function createMcpServer(opts: { name: string; version: string }): McpSer
       const stdin = process.stdin;
       stdin.setEncoding('utf8');
       return new Promise<void>((resolve, reject) => {
+        // Resolve only after stdin ends AND every in-flight handler has
+        // written its response — a client half-close (request, then stdin
+        // end) must not race the reply (observed: ach's immediate
+        // process.exit after serve() dropped fs-async tool responses).
+        let pending = 0;
+        let ended = false;
+        const finish = (): void => {
+          if (ended && pending === 0) resolve();
+        };
         stdin.on('data', (chunk: string) => {
           for (const message of parser.push(chunk)) {
-            void handleMessage(message);
+            pending++;
+            void handleMessage(message).finally(() => {
+              pending--;
+              finish();
+            });
           }
         });
-        stdin.on('end', () => resolve());
+        stdin.on('end', () => {
+          ended = true;
+          finish();
+        });
         stdin.on('error', (err: Error) => reject(err));
       });
     },
