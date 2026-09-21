@@ -105,7 +105,10 @@ back to a `--json` dump (records plus a `live` flag) for tools and tests. The MC
 (`mcp/index.ts`, protocol 2025-06-18) works the driver seam instead: `harness_run` builds
 `createDriver` + `defaultAdapters()` per call (`mcp/tools-run.ts`), `harness_agents` lists the
 adapter registry, and `harness_report`/`harness_emit`/`harness_stats` expose the CLI's inspect
-path over the same `stateDir` (`mcp/tools-inspect.ts`); client config lives in `docs/MCP.md`.
+path over the same `stateDir` (`mcp/tools-inspect.ts`); `ach mcp` is the CLI
+entry point into this stdio lane (`mcp/index.ts` remains the library entry,
+wired into the dispatcher by `src/cli/mcp.ts`); client config lives in
+`docs/MCP.md`.
 
 ### Run sources (the `RunSource` seam)
 
