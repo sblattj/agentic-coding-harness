@@ -70,7 +70,7 @@ poll, page, or cancel it — see [docs/TOOLHIVE.md](TOOLHIVE.md).
 
 ### harness_run
 
-Run one task on one agent.
+Run one task on one agent. Each run is persisted to `<stateDir>/runs/<runId>.json` (same record as `ach run` and `harness_run_async`).
 
 | name | type | required | description |
 |---|---|---|---|
