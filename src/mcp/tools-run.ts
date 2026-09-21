@@ -200,6 +200,7 @@ export function registerRunTools(
       const driver = createDriver({
         adapters: await defaultAdapters(),
         stateDir: opts.stateDir,
+        registry: { stateDir: opts.stateDir },
         pricer: createPricer(),
       });
       const result = await driver.run(a.agent, spec);
