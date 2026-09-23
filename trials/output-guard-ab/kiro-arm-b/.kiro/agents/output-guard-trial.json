@@ -14,7 +14,7 @@
     "postToolUse": [
       {
         "matcher": "shell",
-        "command": "bash /Users/sblatt/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"
+        "command": "bash /path/to/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"
       }
     ]
   }

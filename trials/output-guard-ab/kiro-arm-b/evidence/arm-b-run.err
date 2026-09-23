@@ -9,7 +9,7 @@ Learn more at [38;5;141mhttps://kiro.dev/docs/cli/chat/security/#using-tools-tr
 
 
 
-[38;5;252m[0m[?25l[?25l[0m[0m⢀⠀ [38;5;12m0[39m of [38;5;12m1[39m hooks finished⡀⠀ [38;5;12m0[39m of [38;5;12m1[39m hooks finished[1G[2K[?25l[38;5;9m✗ [0mpostToolUse "bash /Users/sblatt/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"[38;5;9m failed with exit code: 2, stderr: TOOL OUTPUT OVERSIZE (133333 bytes) — full output saved to /Users/sblatt/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/state-arm-b/20260910T214320-61088.txt. Read it selectively (grep/sed ranges). Do NOT cat the whole file.)
+[38;5;252m[0m[?25l[?25l[0m[0m⢀⠀ [38;5;12m0[39m of [38;5;12m1[39m hooks finished⡀⠀ [38;5;12m0[39m of [38;5;12m1[39m hooks finished[1G[2K[?25l[38;5;9m✗ [0mpostToolUse "bash /path/to/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"[38;5;9m failed with exit code: 2, stderr: TOOL OUTPUT OVERSIZE (133333 bytes) — full output saved to /path/to/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/state-arm-b/20260910T214320-61088.txt. Read it selectively (grep/sed ranges). Do NOT cat the whole file.)
 [0m[38;5;12m[38;5;9m✗[39m [38;5;12m0[39m of [38;5;12m1[39m hooks finished in [38;5;11m0.08 s
 [0m[?25l[0m[0m[0m
 [38;5;8m

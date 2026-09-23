@@ -107,7 +107,9 @@ bun src/cli/harness.ts run --agent claude \
 block: matcher `"Bash"`, command `~/.dotai/adapters/claude/hooks/output-guard`, timeout 10.
 `$T/xdg-noguard/opencode` is a `cp -a` of `~/.config/opencode` with `plugins/output-guard.ts`
 removed — single-variable isolation (all other config, agents, commands, and the opencode-loop
-plugin intact).
+plugin intact). That copy is a snapshot of a personal local config, so it is not committed; to
+reproduce, `cp -a` your own `~/.config/opencode` to `$T/xdg-noguard/opencode` and delete
+`plugins/output-guard.ts` from the copy.
 
 ## Kiro (not re-trialed; cited evidence)
 
@@ -150,6 +152,7 @@ therefore skipped.
 
 - `*/result.json` — full harness `RunResult` (tokens, events, cost, duration) per run
 - `evidence/PROMPT.txt`, `evidence/delta-computation.txt`, `evidence/spill-baseline*.txt`
-- `claude-arm-b/settings.json`, `xdg-noguard/` (arm-isolation config), `claude-arm-*/config-dir.txt`
+- `claude-arm-b/settings.json`, `claude-arm-*/config-dir.txt`; the `xdg-noguard/` arm-isolation
+  config copy is not committed (see "Exact run commands")
 - Raw transcripts: harness `~/.agent-harness/state/claude-runs/<uuid-in-config-dir.txt>/projects/…`
   and opencode SQLite (`part` table by session id above)

@@ -1,1 +1,1 @@
-/Users/sblatt/.agent-harness/state/claude-runs/d14b5617-7935-424c-b274-470554502025/
+/path/to/.agent-harness/state/claude-runs/d14b5617-7935-424c-b274-470554502025/
