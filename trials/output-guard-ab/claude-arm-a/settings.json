@@ -9,7 +9,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/sblatt/projects/agent-harness/trials/output-guard-ab/claude-arm-a/hooks/output-guard",
+            "command": "/path/to/projects/agent-harness/trials/output-guard-ab/claude-arm-a/hooks/output-guard",
             "timeout": 10
           }
         ]

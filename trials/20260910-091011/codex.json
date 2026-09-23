@@ -54,7 +54,7 @@
       "type": "tool_result",
       "agent": "codex",
       "toolCallId": "item_2",
-      "content": "/Users/sblatt/projects/agent-harness\npackage.json\nREADME.md\n",
+      "content": "/path/to/projects/agent-harness\npackage.json\nREADME.md\n",
       "isError": false,
       "timestamp": 1789056648651
     },
@@ -94,7 +94,7 @@
       "type": "message",
       "agent": "codex",
       "source": "agent",
-      "content": "The current directory is `/Users/sblatt/projects/agent-harness`. Its top-level contents are below; `/` marks directories, and hidden entries are included.\n\n```text\n.git/\n.gitignore\n.opencode/\nREADME.md\nbun.lock\ndocs/\nexamples/\nnode_modules/\npackage-lock.json\npackage.json\nsrc/\ntests/\ntrials/\ntsconfig.json\n```\n\n- **Purpose:** `agent-harness` provides a common orchestration and monitoring layer for coding-agent CLIs, with adapters for Claude Code, Codex, OpenCode, Gemini, and Kiro.\n- **Capabilities:** Its CLI runs agent tasks, watches session activity, reports token usage and costs, and exports normalized events as ATIF trajectories or OpenTelemetry traces.\n- **Structure and status:** A private TypeScript project using Bun, marked as a work in progress in the [README](/Users/sblatt/projects/agent-harness/README.md). It includes architecture documentation, runnable examples, and tests covering adapters, token accounting, state detection, CLI behavior, and exports.",
+      "content": "The current directory is `/path/to/projects/agent-harness`. Its top-level contents are below; `/` marks directories, and hidden entries are included.\n\n```text\n.git/\n.gitignore\n.opencode/\nREADME.md\nbun.lock\ndocs/\nexamples/\nnode_modules/\npackage-lock.json\npackage.json\nsrc/\ntests/\ntrials/\ntsconfig.json\n```\n\n- **Purpose:** `agent-harness` provides a common orchestration and monitoring layer for coding-agent CLIs, with adapters for Claude Code, Codex, OpenCode, Gemini, and Kiro.\n- **Capabilities:** Its CLI runs agent tasks, watches session activity, reports token usage and costs, and exports normalized events as ATIF trajectories or OpenTelemetry traces.\n- **Structure and status:** A private TypeScript project using Bun, marked as a work in progress in the [README](/path/to/projects/agent-harness/README.md). It includes architecture documentation, runnable examples, and tests covering adapters, token accounting, state detection, CLI behavior, and exports.",
       "timestamp": 1789056665110
     },
     {

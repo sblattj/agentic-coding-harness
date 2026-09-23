@@ -10,6 +10,6 @@
 [09:10:53] tool    shell
 [09:10:53] result  item_3
 [09:10:53] result  item_4
-[09:11:05] text    The current directory is `/Users/sblatt/projects/agent-harn…
+[09:11:05] text    The current directory is `/path/to/projects/agent-harn…
 [09:11:05] usage
 [warn] pricing: unknown model "unknown" (alias "unknown"); cost not computed

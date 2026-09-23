@@ -8,7 +8,7 @@
       "matcher": "shell|execute_bash|run_command",
       "action": {
         "type": "command",
-        "command": "bash /Users/sblatt/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"
+        "command": "bash /path/to/projects/agent-harness/trials/output-guard-ab/kiro-arm-b/output-guard-post.sh"
       },
       "timeout": 30
     }

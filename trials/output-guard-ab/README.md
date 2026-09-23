@@ -17,7 +17,10 @@ Both raise `BASH_MAX_OUTPUT_LENGTH` so the guard, not the harness cap, is the in
 
 - `claude-arm-{a,b}/hooks/output-guard` — executable python3 hook (fail-open on any error)
 - `claude-arm-{a,b}/settings.json` — `--settings` merge files (hook + env)
-- `evidence/armA-result.json`, `evidence/armB-result.json` — full `--output-format json` message streams
+- `evidence/armA-result.json`, `evidence/armB-result.json` — full `--output-format json` message streams.
+  The `init` event is redacted: `skills` and `slash_commands` are placeholder lists, the MCP tool
+  names and `mcp_servers` are collapsed to one example entry, and home-directory paths read
+  `/path/to/`. Nothing the evidence below relies on was changed.
 
 ## Smoke-test commands
 
@@ -25,7 +28,7 @@ scratch cwd: `/var/folders/kb/swscs_t95mx777jtl7yqk7bw0000gn/T/opencode/og-smoke
 
 ```sh
 claude -p "Run this exact command with the Bash tool: seq 1 200000. Then report the last number it printed. Do not re-run the command; if output is large inspect it with Grep or Read." \
-  --settings /Users/sblatt/projects/agent-harness/trials/output-guard-ab/claude-arm-B/settings.json \
+  --settings /path/to/projects/agent-harness/trials/output-guard-ab/claude-arm-B/settings.json \
   --allowedTools "Bash" "Read" "Grep" --output-format json > evidence/armB-result.json
 # arm A identical with claude-arm-a/settings.json
 ```

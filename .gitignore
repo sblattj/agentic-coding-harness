@@ -1,3 +1,9 @@
 node_modules/
 dist/
 .opencode/
+
+# Raw trial dumps: copies of a local agent config dir (XDG_CONFIG_HOME or
+# OPENCODE_CONFIG_DIR isolation) snapshot personal config, symlinks and
+# memory stores. Keep them local; commit results and reports only.
+trials/**/xdg-*/
+trials/**/opencode-config-*/
