@@ -168,6 +168,8 @@ ach run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach watch [--dir <transcriptDir>]              # live per-session token deltas
 ach stats [--agent A] [--days N] [--json] [--state-only]
+ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--dir <stateDir>]
+            # re-derive RunRecord totals from raw transcripts; exit 1 on drift
 ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
@@ -183,6 +185,20 @@ ach web [trials-dir] [--port N=8399] [--host H] [--token T] [--dir D] [--no-open
           [--source URL] [--source-token T] [--source-mode poll|sse|ws]
           [--source-poll-ms N=3000] [--source-merge state|only]
 ```
+
+`ach audit` is the self-check on the numbers themselves. For every RunRecord under
+`<stateDir>/runs/` it replays the run's raw transcript (`<stateDir>/raw/<agent>-<session>.jsonl`),
+re-parses each usage event's raw payload (not the adapter's pre-normalized record; per-model
+breakdowns preferred), re-prices it with the current pricing tables, and prints
+`field: recorded vs recomputed (Δ)` for `inputTokens`, `outputTokens`, `cacheReadTokens`,
+`cacheWriteTokens`, and `costUsd`. It exits 0 when every delta is within `--tolerance-pct`
+(default 0: exact tokens, 1e-9 USD rounding slack) and 1 otherwise, so it works as a CI gate on the
+parsing and pricing pipeline. Runs with no totals or no transcript are reported `unverifiable`,
+and a model the pricer does not know is reported as an `unpriceable` cost; neither counts as drift.
+`--fix` rewrites the drifted totals (and the `usage.usd.value` mirror) and appends one
+`corrections: [{at, field, from, to, by}]` entry per field to the RunRecord, so a patch is never
+silent. `--json` emits `{rows, summary, total}`; each row carries `recorded`, `recomputed`, and
+`delta` objects keyed by the same field names as `ach stats --json`.
 
 The binary is `ach` (the npm/PyPI package name is `agentic-coding-harness`). Budget flags (`--budget-usd`, `--max-turns`,
 `--wall-ms`, `--idle-ms`) take per-run values; `AGENTIC_CODING_HARNESS_BUDGET_USD`, `AGENTIC_CODING_HARNESS_MAX_TURNS`,
