@@ -52,7 +52,25 @@ export interface RunRecord {
   producer?: string; // e.g. "acme-feed/bridge@1"
   endedAt?: number; // ms epoch — explicit wall-clock end for external runs
   metadata?: Record<string, unknown>; // free-form provenance (request_id, region, ...)
+  /** Additive audit trail: one entry per aggregate `ach audit --fix` rewrote. */
+  corrections?: RunCorrection[];
 }
+
+export interface RunCorrection {
+  at: number; // ms epoch
+  field: string; // e.g. "totals.cacheReadTokens" | "usage.usd.value"
+  from: number;
+  to: number;
+  by?: string; // e.g. "ach audit --fix"
+}
+
+const RunCorrectionSchema = z.object({
+  at: z.number(),
+  field: z.string().min(1),
+  from: z.number(),
+  to: z.number(),
+  by: z.string().optional(),
+});
 
 const TotalsSchema = z.object({
   inputTokens: z.number(),
@@ -92,6 +110,7 @@ export const RunRecordSchema = z.object({
   producer: z.string().min(1).optional(),
   endedAt: z.number().int().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  corrections: z.array(RunCorrectionSchema).optional(),
 });
 
 export function registryDir(stateDir: string): string {

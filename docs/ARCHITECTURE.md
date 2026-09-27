@@ -94,7 +94,9 @@ readers skip corrupt/partial files (never throw), and registry write failures dr
 warnings — a broken registry never breaks a run. Records carry additive provenance fields so an
 external run can be distinguished from a local one: `experiment`, `variant`, `workflow`,
 `source` (`"local"` by default, `"external"` for feed-sourced records), `producer`, `endedAt`,
-and free-form `metadata`.
+and free-form `metadata`, plus `corrections` — the additive log `ach audit --fix` writes
+(`{at, field, from, to, by}` per rewritten aggregate) when it re-derives totals from the raw
+transcript (`cli/audit.ts`).
 
 ### Dash and MCP consumers
 

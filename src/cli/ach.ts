@@ -47,6 +47,7 @@ import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
+import { cmdAudit } from "./audit.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -70,6 +71,10 @@ usage:
   ach stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
                  --state-only skips machine transcript dirs)
+  ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--dir <stateDir>]
+                (re-derive each RunRecord's token/cost totals from its raw transcript
+                 and report recorded vs recomputed deltas; exit 1 on drift;
+                 --fix rewrites drifted totals and logs RunRecord.corrections)
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -906,6 +911,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdWatch(rest);
     case "stats":
       return cmdStats(rest);
+    case "audit":
+      return cmdAudit(rest);
     case "emit":
       return cmdEmit(rest);
     case "report":
