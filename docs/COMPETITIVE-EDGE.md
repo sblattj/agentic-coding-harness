@@ -27,7 +27,7 @@ Every surveyed rival is exactly one of the things ach combines, and admits it:
 ## Structural advantages
 
 - **MIT license** vs claude-squad AGPL-3.0, phoenix Elastic-2.0.
-- **Local-first flat files** — no ingest step, no retention service; survives CLI log cleanup once issue 90 (archive mode) lands.
+- **Local-first flat files** — no ingest step, no retention service; survives CLI log cleanup once #79 (archive mode) lands.
 - **Air-gap friendly** — vendored assets, bundled LiteLLM extract, offline pricing.
 - **Plays well with rivals** — `hintCcusage` (`src/cli/ach.ts:733-741`) points users at ccusage for batch reports instead of fighting it.
 
