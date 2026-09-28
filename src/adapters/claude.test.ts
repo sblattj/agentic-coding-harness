@@ -9,6 +9,7 @@ import type { SpawnOptions } from 'node:child_process';
 import {
   ClaudeCodeAdapter,
   type ClaudeAdapterOptions,
+  canonicalJson,
   capabilities,
   type HarnessChildProcess,
   type SpawnFn,
@@ -516,6 +517,24 @@ describe('ClaudeCodeAdapter.launch (driver contract)', () => {
     assert.equal(usage.costUsd, 0.0771);
     assert.equal(usage.model, 'claude-sonnet-4-5-20250929');
     cleanup(stateDir);
+  });
+
+  it('a repeated identical result line yields ONE usage event (#14)', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+    const launchPromise = adapter.launch({ prompt: 'x' });
+    captured.child.feed([...FIXTURE_LINES, FIXTURE_LINES[2]!].join('\n') + '\n');
+    captured.child.end(0);
+    const handle = await launchPromise;
+    const types: string[] = [];
+    for await (const event of handle.attach()) types.push((event as { type: string }).type);
+    assert.deepEqual(types, ['step', 'message', 'usage']);
+    cleanup(stateDir);
+  });
+
+  it('canonicalJson is key-order independent and value sensitive', () => {
+    assert.equal(canonicalJson({ b: 1, a: { d: [1, 2], c: null } }), canonicalJson({ a: { c: null, d: [1, 2] }, b: 1 }));
+    assert.notEqual(canonicalJson({ a: [1, 2] }), canonicalJson({ a: [2, 1] }));
+    assert.notEqual(canonicalJson({ a: 1 }), canonicalJson({ a: '1' }));
   });
 
   it('surfaces tool_use/tool_result blocks as core tool_call/tool_result events', async () => {
