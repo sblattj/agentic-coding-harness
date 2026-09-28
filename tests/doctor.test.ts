@@ -430,3 +430,92 @@ describe("ach doctor (CLI)", () => {
     }
   });
 });
+
+// `ach doctor` also covers agents.d descriptors (#38), not just the five
+// built-in AGENTS. Every check below runs through the real CLI (`runCli`) so
+// the loader + doctor wiring in cmdDoctor is exercised end to end, with a
+// temp PATH holding a fake launch binary and no real agent CLI involved.
+describe("ach doctor — agents.d descriptors", () => {
+  async function writeDescriptor(w: World, file: string, json: unknown): Promise<void> {
+    const dir = path.join(w.state, "agents.d");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, file), JSON.stringify(json));
+  }
+
+  it("a valid launch descriptor: descriptor + binary + auth checks all resolve, marked source agents.d", async () => {
+    const w = await world();
+    await fakeBin(w, "fakeagent", 'echo "fake 1.0.0"');
+    await writeDescriptor(w, "valid.json", { name: "descvalid", launch: { template: "fakeagent {prompt}" } });
+    const r = runCli(["doctor", "--agent", "descvalid", "--json"], {
+      ...w.env,
+      AGENTIC_CODING_HARNESS_STATE_DIR: w.state,
+    }, w.cwd);
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    const report = JSON.parse(r.stdout) as DoctorReport;
+    const descriptor = check(report, "descvalid", "descriptor");
+    assert.equal(descriptor.status, "verified");
+    assert.equal(descriptor.source, "agents.d");
+    const binary = check(report, "descvalid", "binary");
+    assert.equal(binary.status, "verified");
+    assert.equal(binary.source, "agents.d");
+    assert.match(binary.detail, /fakeagent/);
+    const auth = check(report, "descvalid", "auth");
+    assert.equal(auth.status, "unproven");
+    assert.equal(auth.source, "agents.d");
+    // Built-in checks keep the existing shape: no `source` field at all.
+    assert.equal(check(report, "harness", "stateDir").source, undefined);
+  });
+
+  it("a launch binary missing from PATH fails with a hint, still marked source agents.d", async () => {
+    const w = await world();
+    await writeDescriptor(w, "missingbin.json", { name: "descmissing", launch: { template: "no-such-agent-binary {prompt}" } });
+    const r = runCli(["doctor", "--agent", "descmissing", "--json"], {
+      ...w.env,
+      AGENTIC_CODING_HARNESS_STATE_DIR: w.state,
+    }, w.cwd);
+    assert.notEqual(r.code, 0);
+    const report = JSON.parse(r.stdout) as DoctorReport;
+    const binary = check(report, "descmissing", "binary");
+    assert.equal(binary.status, "failed");
+    assert.equal(binary.source, "agents.d");
+    assert.ok(binary.hint && binary.hint.length > 0, "binary failure carries a fix hint");
+  });
+
+  it("an invalid descriptor becomes a failed harness/descriptor check (zod issue reported), never crashes doctor", async () => {
+    const w = await world();
+    await writeDescriptor(w, "invalid.json", { name: "descbad", launch: { template: "fakeagent {prompt}" }, notAField: true });
+    const r = runCli(["doctor", "--agent", "null", "--json"], { ...w.env, AGENTIC_CODING_HARNESS_STATE_DIR: w.state }, w.cwd);
+    assert.notEqual(r.code, 0, r.stdout + r.stderr);
+    const report = JSON.parse(r.stdout) as DoctorReport;
+    const bad = report.checks.find((c) => c.agent === "harness" && c.name === "descriptor" && c.status === "failed");
+    assert.ok(bad, `expected a failed harness/descriptor check; have ${report.checks.map((c) => `${c.agent}/${c.name}:${c.status}`).join(", ")}`);
+    assert.equal(bad!.source, "agents.d");
+    assert.match(bad!.detail, /notAField/);
+    assert.ok(bad!.hint && bad!.hint.length > 0);
+    // Doctor kept running past the invalid descriptor instead of aborting.
+    assert.equal(check(report, "null", "runtime").status, "verified");
+  });
+
+  it("a meter-only descriptor (launch: null) skips binary/auth and reports its transcript dir, marked source agents.d", async () => {
+    const w = await world();
+    const tapDir = path.join(w.state, "tap");
+    await fs.mkdir(tapDir, { recursive: true });
+    await writeDescriptor(w, "meter.json", {
+      name: "descmeter",
+      launch: null,
+      usageTap: { type: "transcript", path: tapDir, format: "jsonl", fields: { input: "usage.input_tokens", output: "usage.output_tokens" } },
+    });
+    const r = runCli(["doctor", "--agent", "descmeter", "--json"], { ...w.env, AGENTIC_CODING_HARNESS_STATE_DIR: w.state }, w.cwd);
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    const report = JSON.parse(r.stdout) as DoctorReport;
+    const descriptor = check(report, "descmeter", "descriptor");
+    assert.equal(descriptor.status, "verified");
+    assert.equal(descriptor.source, "agents.d");
+    const tap = check(report, "descmeter", "usageTap");
+    assert.equal(tap.status, "verified");
+    assert.equal(tap.source, "agents.d");
+    assert.match(tap.detail, new RegExp(tapDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.ok(!report.checks.some((c) => c.agent === "descmeter" && c.name === "binary"), "meter-only descriptors get no binary check");
+    assert.ok(!report.checks.some((c) => c.agent === "descmeter" && c.name === "auth"), "meter-only descriptors get no auth check");
+  });
+});
