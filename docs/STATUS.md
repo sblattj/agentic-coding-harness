@@ -8,7 +8,7 @@ Both commands read one **current usage snapshot** (`src/cli/status.ts`, `compute
 - `ach status --write-state <path>`: writes that same JSON object to a file atomically (the companion protocol).
 - `ach statusline`: a Claude Code `statusLine.command`.
 
-Every form exits 0 when there is no data, including when the state dir does not exist yet. Polling a status bar should never break it.
+Every form exits 0 when there is no data, including when the state dir does not exist yet. Polling a status bar should never break it. The exception is opt-in: `ach status --exit-codes ladder` exits **30** when the snapshot has zero runs and zero usage records (one-shot and `--write-state --once`; the snapshot is still printed or written), the same no-data rule as `ach stats`. See [EXIT-CODES.md](EXIT-CODES.md).
 
 ## What the numbers mean
 

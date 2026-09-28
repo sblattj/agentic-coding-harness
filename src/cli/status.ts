@@ -28,6 +28,7 @@ import { createPricer } from "../core/pricing.ts";
 import { scanAll } from "../monitors/transcripts.ts";
 import { aggregate, fmtUsd, type AggregatableRecord } from "./lib.ts";
 import { currentBlock } from "../core/usage-windows.ts";
+import { noDataExitCode, parseExitCodesMode } from "./exit-codes.ts";
 
 /** Bump only on a breaking change (rename/remove/retype). Additive fields do not bump. */
 export const STATUS_SCHEMA_VERSION = 1;
@@ -398,10 +399,15 @@ export async function cmdStatus(rest: string[]): Promise<number> {
       "interval-ms": { type: "string" },
       transcripts: { type: "boolean", default: false },
       "budget-usd": { type: "string" },
+      "exit-codes": { type: "string" },
     },
     allowPositionals: false,
   });
   const v = args.values;
+  const exitMode = parseExitCodesMode(v["exit-codes"]);
+  // #31 ladder: nothing to report (no run and no usage record in the window)
+  // exits 30, the same rule `ach stats` applies; binary mode stays 0.
+  const exitFor = (s: StatusSnapshot) => noDataExitCode(s.runs.total + s.today.records, exitMode);
   if (v.compact && v.json) throw new HarnessError("--compact and --json are mutually exclusive", "USAGE");
   const intervalMs = parseInterval(v["interval-ms"]);
   let budgetUsd = parseUsd(v["budget-usd"], "--budget-usd");
@@ -424,17 +430,19 @@ export async function cmdStatus(rest: string[]): Promise<number> {
 
   const target = v["write-state"];
   if (target === undefined) {
-    print(await computeStatusSnapshot(opts));
-    return 0;
+    const snap = await computeStatusSnapshot(opts);
+    print(snap);
+    return exitFor(snap);
   }
   // --write-state: silent on stdout unless --json/--compact asks for it too.
-  const tick = async () => {
+  const tick = async (): Promise<StatusSnapshot> => {
     const s = await computeStatusSnapshot(opts);
     writeStateFile(target, s);
     if (v.json || v.compact) print(s);
+    return s;
   };
-  await tick();
-  if (v.once) return 0;
+  const first = await tick();
+  if (v.once) return exitFor(first);
   // Long-running companion feed: refresh on the watch cadence until killed.
   let busy = false;
   setInterval(() => {

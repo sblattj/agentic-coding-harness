@@ -196,14 +196,14 @@ usage:
   ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
                 (snapshot transcripts + RunRecords into <stateDir>/warehouse,
                  sha256-deduped, never deletes; see docs/ARCHIVE.md)
-  --exit-codes ladder   (run / stats / watch) automation exit codes: 0 ok,
+  --exit-codes ladder   (run / stats / status / watch) automation exit codes: 0 ok,
                         10 near-limit, 11 limit hit, 20 unavailable, 30 no data,
                         1 errors — see docs/EXIT-CODES.md; default stays 0/1
   ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--dir <stateDir>]
                 (re-derive each RunRecord's token/cost totals from its raw transcript
                  and report recorded vs recomputed deltas; exit 1 on drift;
                  --fix rewrites drifted totals and logs RunRecord.corrections)
-  ach status [--compact|--json] [--transcripts] [--budget-usd N]
+  ach status [--compact|--json] [--transcripts] [--budget-usd N] [--exit-codes ladder]
              [--once] [--write-state <path>] [--interval-ms MS=5000]
                 (runs, active runs, trailing-24h spend = \`stats --days 1\`,
                  budget left; --write-state writes the snapshot atomically,
