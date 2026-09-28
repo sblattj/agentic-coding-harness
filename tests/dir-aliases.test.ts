@@ -50,6 +50,9 @@ describe("--dir aliases", () => {
     assert.equal(resolveDirFlag({ dir: "/a" }, "state-dir"), "/a");
     assert.equal(resolveDirFlag({ "state-dir": "/a" }, "state-dir"), "/a");
     assert.equal(resolveDirFlag({ dir: "/a", "transcript-dir": "/a" }, "transcript-dir"), "/a");
+    // Same directory spelled differently is not a conflict.
+    assert.equal(resolveDirFlag({ dir: "/a/", "state-dir": "/a" }, "state-dir"), "/a");
+    assert.equal(resolveDirFlag({ dir: "/a/b/../b", "state-dir": "/a/b" }, "state-dir"), "/a/b");
     assert.throws(
       () => resolveDirFlag({ dir: "/a", "state-dir": "/b" }, "state-dir"),
       (e: unknown) => e instanceof HarnessError && e.code === "USAGE" && /--state-dir/.test(e.message) && /--dir/.test(e.message),

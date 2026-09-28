@@ -6,7 +6,7 @@
 //   session_id, model.id, model.display_name, cost.total_cost_usd,
 //   workspace.current_dir (falling back to cwd)
 // and print ONE line:
-//   <model> · session $X · today $Y · block $Z|n/a[ · budget $B left[ [NEAR LIMIT]|[OVER BUDGET]]]
+//   <model> · session $X · today $Y[ (+N unpriced)] · block $Z|n/a[ · budget $B left[ [NEAR LIMIT]|[OVER BUDGET]]]
 //
 // - session cost is Claude Code's own client-side estimate from stdin;
 // - today / block / budget come from the shared status snapshot (status.ts),
@@ -175,7 +175,7 @@ export async function renderStatusline(o: StatuslineOptions): Promise<Statusline
   const parts = [
     input.modelName ?? input.modelId ?? "n/a",
     `session ${input.sessionCostUsd === undefined ? "n/a" : fmtUsd(input.sessionCostUsd)}`,
-    `today ${snap ? fmtUsd(snap.today.costUsd) : "n/a"}`,
+    `today ${snap ? fmtUsd(snap.today.costUsd) + ((snap.today.unpricedRecords ?? 0) > 0 ? ` (+${snap.today.unpricedRecords} unpriced)` : "") : "n/a"}`,
     `block ${snap && snap.block.costUsd !== null ? fmtUsd(snap.block.costUsd) : "n/a"}`,
   ];
   // Budget is re-derived from the CURRENT env against the (possibly cached)

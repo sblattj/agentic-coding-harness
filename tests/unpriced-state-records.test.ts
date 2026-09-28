@@ -129,6 +129,14 @@ describe("unpriced state-store records", () => {
     assert.match(c.stdout, / unpriced=1$/m);
   });
 
+  it("statusline marks today's spend as a lower bound when records are unpriced", () => {
+    const r = runCli(["statusline", "--no-cache"], env);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, / · today \$\d+\.\d{4} \(\+1 unpriced\) · block /);
+    const free = runCli(["statusline", "--no-cache"], freeEnv);
+    assert.doesNotMatch(free.stdout, /unpriced/);
+  });
+
   it("an explicit stored costUsd 0 on a priced model stays a reported $0, not unpriced", () => {
     const st = JSON.parse(runCli(["stats", "--json", "--state-only"], freeEnv).stdout) as { total: Bucket };
     assert.equal(st.total.costUsd, 0);

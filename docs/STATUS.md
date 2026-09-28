@@ -83,6 +83,8 @@ Output (one line):
 Opus · session $0.0123 · today $0.7500 · block n/a · budget $9.2500 left
 ```
 
+When some of today's records have no known price (unknown model, no reported cost), the today segment reads `today $0.7500 (+2 unpriced)`: the dollar figure is a lower bound.
+
 Budget markers: `[NEAR LIMIT]` from 80 % used, `[OVER BUDGET]` at 100 %. The budget segment appears only when a budget is set. To set one for the statusline, export `AGENTIC_CODING_HARNESS_BUDGET_USD` in the environment Claude Code runs in.
 
 ### Keep your existing statusline (`--chain`)
