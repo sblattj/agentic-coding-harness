@@ -44,6 +44,8 @@ import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type Aggrega
 import { kiroPreflight } from "../adapters/kiro-preflight.ts";
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
+import { statsExtras } from "./usage-render.ts";
+import { resolvePlan } from "../core/plans.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
@@ -70,6 +72,15 @@ usage:
   ach stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
                  --state-only skips machine transcript dirs)
+            [--blocks] [--budget-usd N]
+            [--plan pro|max5|max20|custom [--plan-window-tokens N --plan-window-usd N
+             [--plan-window-messages N]]]
+                (--blocks: Claude 5h billing windows; a block starts at its first
+                 event floored to the hour and spans 5h; active block shows
+                 burn = cost / (now - first event) and projected = cost + burn
+                 x time left. Always: pace over trailing 15m/1h windows, ETA to
+                 --budget-usd. --plan frames the active window as % of the
+                 plan allowance; built-in presets are community estimates)
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -78,8 +89,9 @@ usage:
                 LANGFUSE_SECRET_KEY)
   ach report <trials-dir> [--out path]
                  (single-file HTML comparison; a trials/ root scans subdirs)
-  ach dash [--json] [--all] [--dir <stateDir>]
-               (live run dashboard; --json dumps RunRecords and exits)
+  ach dash [--json] [--all] [--dir <stateDir>] [--budget-usd N]
+               (live run dashboard; --json dumps RunRecords and exits; live
+                runs get a pace row: $/h + tok/min over 15m/1h, budget ETA)
   ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
@@ -103,7 +115,9 @@ env:
   AGENTIC_CODING_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
   AGENTIC_CODING_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
-  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)`;
+  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_PLAN        default for stats --plan (CLI flags win over env;
+                                     also _PLAN_WINDOW_TOKENS/_USD/_MESSAGES)`;
 
 // ---------------------------------------------------------------- helpers
 
@@ -639,9 +653,21 @@ async function cmdStats(rest: string[]): Promise<number> {
       days: { type: "string" },
       json: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      blocks: { type: "boolean", default: false },
+      plan: { type: "string" },
+      "plan-window-tokens": { type: "string" },
+      "plan-window-usd": { type: "string" },
+      "plan-window-messages": { type: "string" },
+      "budget-usd": { type: "string" },
     },
     allowPositionals: true,
   });
+  const plan = resolvePlan(args.values.plan ?? process.env.AGENTIC_CODING_HARNESS_PLAN, {
+    windowTokens: optNumWithEnv(args.values["plan-window-tokens"], "--plan-window-tokens", "AGENTIC_CODING_HARNESS_PLAN_WINDOW_TOKENS"),
+    windowUsd: optNumWithEnv(args.values["plan-window-usd"], "--plan-window-usd", "AGENTIC_CODING_HARNESS_PLAN_WINDOW_USD"),
+    windowMessages: optNumWithEnv(args.values["plan-window-messages"], "--plan-window-messages", "AGENTIC_CODING_HARNESS_PLAN_WINDOW_MESSAGES"),
+  });
+  const statsBudgetUsd = optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD");
   const agent = args.values.agent;
   if (agent && !isKnownAgent(agent)) {
     throw new HarnessError(
@@ -710,6 +736,14 @@ async function cmdStats(rest: string[]): Promise<number> {
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
 
   const agg = aggregate(records);
+  const extras = statsExtras({
+    records,
+    now: Date.now(),
+    blocks: args.values.blocks,
+    ...(plan !== undefined ? { plan } : {}),
+    ...(statsBudgetUsd !== undefined ? { budgetUsd: statsBudgetUsd } : {}),
+    spentUsd: agg.totals.costUsd,
+  });
 
   if (args.values.json) {
     process.stdout.write(
@@ -718,6 +752,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           total: agg.totals,
           byAgent: agg.byAgent,
           byDay: agg.byDay,
+          ...extras.json,
         },
         null,
         2,
@@ -727,8 +762,13 @@ async function cmdStats(rest: string[]): Promise<number> {
     const line = (label: string, b: typeof agg.totals) =>
       `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${fmtUsd(b.costUsd)}`;
     process.stdout.write(line("totals", agg.totals) + "\n");
-    for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, b) + "\n");
+    for (const [a, b] of Object.entries(agg.byAgent).sort()) {
+      process.stdout.write(line(a, b) + "\n");
+      if (a === "claude" && extras.planLine) process.stdout.write(extras.planLine + "\n");
+    }
     for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(line(d, b) + "\n");
+    if (extras.planLine && !agg.byAgent.claude) process.stdout.write(extras.planLine + "\n");
+    for (const l of extras.text) process.stdout.write(l + "\n");
   }
   hintCcusage();
   return 0;
