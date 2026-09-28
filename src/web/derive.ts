@@ -1,4 +1,5 @@
 import type { AgentEvent, CanonicalTokenRecord, EventTimestamp } from "../core/types.ts";
+import { cacheHitRatio } from "../core/cache-ratio.ts";
 
 /**
  * Pure derivations of the dashboard's three observability views (spans,
@@ -399,6 +400,62 @@ export interface RunObservability {
   /** Cumulative metering credits, when the source bills credits (kiro). */
   totalCredits?: number;
   durationMs: number;
+  /** Run prompt-cache hit ratio (#69); null = no prompt tokens. Present only when usage exists. */
+  cacheHitRatio?: number | null;
+  /** Per-model token split with cache-hit ratio (#69). Present only when usage exists. */
+  byModel?: ModelCacheRow[];
+}
+
+export interface ModelCacheRow {
+  /** Model id, or "unattributed" when the usage names no single model. */
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  cacheHitRatio: number | null;
+}
+
+/**
+ * Per-model token rows over the same usage-bearing events deriveMetrics
+ * counts. A record carrying per-model slices (extra.raw.models) splits by
+ * slice; otherwise the record's (or the model_call_end's) model owns it, and
+ * a composite/absent label lands in "unattributed".
+ */
+export function deriveModelCache(events: AgentEvent[]): ModelCacheRow[] {
+  const rows = new Map<string, ModelCacheRow>();
+  const add = (model: string, i: number, o: number, cr: number, cw: number) => {
+    const row = rows.get(model) ?? {
+      model,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      cacheHitRatio: null,
+    };
+    row.inputTokens += i;
+    row.outputTokens += o;
+    row.cacheReadTokens += cr;
+    row.cacheWriteTokens += cw;
+    rows.set(model, row);
+  };
+  for (const ev of events) {
+    const u = ev.type === "usage" ? ev.usage : ev.type === "model_call_end" ? ev.usage : undefined;
+    if (u === undefined) continue;
+    const slices = (u.extra as { raw?: { models?: unknown } } | undefined)?.raw?.models;
+    if (Array.isArray(slices) && slices.length > 0 && slices.every((s) => typeof (s as { model?: unknown })?.model === "string")) {
+      for (const s of slices as Array<Record<string, unknown>>) {
+        add(s.model as string, num(s.input), num(s.output), num(s.cacheRead), num(s.cacheWrite));
+      }
+      continue;
+    }
+    const label = u.model ?? (ev.type === "model_call_end" ? ev.model : undefined);
+    const model = !label || label === "multi" || label === "unknown" || label.includes("+") ? "unattributed" : label;
+    add(model, num(u.inputTokens), num(u.outputTokens), num(u.cacheReadTokens), num(u.cacheWriteTokens));
+  }
+  return [...rows.values()]
+    .map((r) => ({ ...r, cacheHitRatio: cacheHitRatio(r) }))
+    .sort((a, b) => a.model.localeCompare(b.model));
 }
 
 export function deriveRunObservability(events: AgentEvent[]): RunObservability {
@@ -411,5 +468,13 @@ export function deriveRunObservability(events: AgentEvent[]): RunObservability {
   if (last?.costUsd !== undefined) out.totalCostUsd = last.costUsd;
   else if (metrics.length === 0) out.totalCostUsd = 0; // no usage at all → USD knowable as zero
   if (last?.credits !== undefined) out.totalCredits = last.credits;
+  if (last !== undefined) {
+    out.cacheHitRatio = cacheHitRatio({
+      inputTokens: last.input,
+      cacheReadTokens: last.cacheRead,
+      cacheWriteTokens: last.cacheWrite,
+    });
+    out.byModel = deriveModelCache(events);
+  }
   return out;
 }

@@ -285,7 +285,17 @@ describe('ach CLI exit codes (end to end, fake codex)', () => {
     assert.equal(plain.code, 0, plain.stderr);
     // No run records: no #60 runOutcomes rollup; #21's per-run context array is always present (empty).
     const j = JSON.parse(plain.stdout);
-    assert.deepEqual(Object.keys(j).sort(), ['byAgent', 'byDay', 'runs', 'timezone', 'total', 'window']);
+    assert.deepEqual(Object.keys(j).sort(), [
+      'byAgent',
+      'byDay',
+      'byModel',
+      'cacheHitRatio',
+      'runs',
+      'timezone',
+      'total',
+      'unpricedModels',
+      'window',
+    ]);
     assert.deepEqual(j.runs, []);
   });
 });

@@ -159,8 +159,19 @@ describe("harness cli", () => {
     assert.equal(r.code, 0);
     assert.doesNotMatch(r.stderr, /harness:/);
     const out = JSON.parse(r.stdout);
-    // `runs` (per-run context pressure, #21) and timezone/window (#26/#84) are additive.
-    assert.deepEqual(Object.keys(out).sort(), ["byAgent", "byDay", "runs", "timezone", "total", "window"]);
+    // Base contract keys, plus the additive #21 runs, #26/#84 timezone/window
+    // and #27/#69 keys (tests/stats-dims.test.ts).
+    assert.deepEqual(Object.keys(out).sort(), [
+      "byAgent",
+      "byDay",
+      "byModel",
+      "cacheHitRatio",
+      "runs",
+      "timezone",
+      "total",
+      "unpricedModels",
+      "window",
+    ]);
     assert.deepEqual(out.window, { since: null, until: null });
     // 3 stateDir records + 1 scanAll record, with the sess-aaa duplicate
     // counted once (dedupe).

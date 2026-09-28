@@ -40,9 +40,31 @@ import {
 } from "../monitors/transcripts.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
-import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
+import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary } from "./lib.ts";
+import {
+  aggregateDims,
+  baseCacheRatios,
+  cwdIndex,
+  loadProjectAliases,
+  parseByDims,
+  parseModelAliases,
+  projectMatches,
+  renderDimsText,
+  statsLine,
+  BY_DIMS,
+  type DimRecord,
+} from "./stats-dims.ts";
 import { kiroPreflight } from "../adapters/kiro-preflight.ts";
-import { inWindow, joinAgoTokens, parseBy, resolveTimeZone, resolveWindow, TZ_ENV, windowJson } from "./time-window.ts";
+import {
+  inWindow,
+  joinAgoTokens,
+  parseBy,
+  resolveTimeZone,
+  resolveWindow,
+  TIME_GRANULARITIES,
+  TZ_ENV,
+  windowJson,
+} from "./time-window.ts";
 import { cmdReport } from "./report.ts";
 import { runContextRows } from "./context-stats.ts";
 import { listRunRecords } from "../core/registry.ts";
@@ -89,6 +111,13 @@ usage:
                  boundaries and bare dates; --by week = ISO weeks (2026-W39),
                  month = 2026-09, comma lists allowed; run success rate
                  excludes 'unavailable' runs unless --include-unavailable)
+            [--by model|project]... [--merge-models] [--model-alias FROM=TO]...
+            [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
+                (--by takes time granularities and dimensions together, e.g.
+                 --by week,model; --by model: agent/model rows + model x day table;
+                 --by project: repo-root rollup, aliases also via
+                 AGENTIC_CODING_HARNESS_PROJECT_ALIASES; every row shows
+                 cacheHit = cacheRead/(input+cacheRead+cacheWrite))
   --exit-codes ladder   (run / stats / watch) automation exit codes: 0 ok,
                         10 near-limit, 11 limit hit, 20 unavailable, 30 no data,
                         1 errors — see docs/EXIT-CODES.md; default stays 0/1
@@ -707,10 +736,38 @@ async function cmdStats(rest: string[]): Promise<number> {
       "state-only": { type: "boolean", default: false },
       "include-unavailable": { type: "boolean", default: false },
       "exit-codes": { type: "string" },
+      // #27 / #43 extra dimensions (src/cli/stats-dims.ts); --by is shared with #44
+      "merge-models": { type: "boolean", default: false },
+      "model-alias": { type: "string", multiple: true },
+      project: { type: "string" },
+      "project-alias": { type: "string", multiple: true },
+      "project-aliases": { type: "string" },
     },
     allowPositionals: true,
   });
   const exitMode = parseExitCodesMode(args.values["exit-codes"]);
+  // --by carries both #44 calendar granularities (day|week|month) and #27/#43
+  // dimensions (model|project); split them before each parser sees its half.
+  const byTime: string[] = [];
+  const byDims: string[] = [];
+  for (const tok of (args.values.by ?? []).flatMap((x) => x.split(",")).map((s) => s.trim()).filter(Boolean)) {
+    if ((BY_DIMS as readonly string[]).includes(tok)) byDims.push(tok);
+    else if ((TIME_GRANULARITIES as readonly string[]).includes(tok.toLowerCase())) byTime.push(tok);
+    else {
+      throw new HarnessError(
+        `--by: unknown value '${tok}' (expected one of: ${[...TIME_GRANULARITIES, ...BY_DIMS].join(", ")})`,
+        "USAGE",
+      );
+    }
+  }
+  const dimsBy = parseByDims(byDims);
+  const modelAliases = parseModelAliases(args.values["model-alias"]);
+  const projectAliases = loadProjectAliases({
+    envJson: process.env.AGENTIC_CODING_HARNESS_PROJECT_ALIASES,
+    file: args.values["project-aliases"],
+    pairs: args.values["project-alias"],
+  });
+  const wantProject = args.values.project;
   const agent = args.values.agent;
   if (agent && !isKnownAgent(agent)) {
     throw new HarnessError(
@@ -721,7 +778,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   // One code path computes the window (#26) and the zone (#84); every output
   // surface below (table, --json, per-bucket maps) reads the same records.
   const timeZone = resolveTimeZone(args.values.tz, process.env[TZ_ENV]);
-  const by = parseBy(args.values.by);
+  const by = parseBy(byTime);
   const window = resolveWindow({
     days: optNum(args.values.days, "--days"),
     since: args.values.since,
@@ -734,7 +791,10 @@ async function cmdStats(rest: string[]): Promise<number> {
 
   // Harness state (driver-run NDJSON + watch-persisted opencode) ...
   const stateRecords = (await readAllRecords({ agent, sinceTs })).filter((r) => inWindow(Date.parse(r.ts), window));
-  const records: AggregatableRecord[] = stateRecords.map((r) => ({
+  const runCwd = cwdIndex(listRunRecords(stateDir()));
+  let records: DimRecord[] = stateRecords.map((r) => ({
+    extra: r.extra,
+    cwd: runCwd(r.agent, r.sessionId),
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,
@@ -784,12 +844,28 @@ async function cmdStats(rest: string[]): Promise<number> {
         });
         if (!Number.isNaN(cost)) costUsd = cost;
       }
-      records.push(costUsd === undefined ? { ...row } : { ...row, costUsd });
+      const cwd = rec.cwd ?? runCwd(rec.agent, rec.sessionId);
+      records.push({ ...row, ...(costUsd === undefined ? {} : { costUsd }), ...(cwd ? { cwd } : {}) });
     }
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
 
+  if (wantProject !== undefined) records = records.filter((r) => projectMatches(r.cwd, wantProject, projectAliases));
   const agg = aggregate(records, { timeZone, by });
+  const showProject = dimsBy.has("project") || wantProject !== undefined;
+  const dims = aggregateDims(records, {
+    pricer: createPricer(),
+    mergeModels: args.values["merge-models"],
+    modelAliases,
+    byModelDay: dimsBy.has("model"),
+    byProject: showProject,
+    projectAliases,
+  });
+  if (dims.unpricedModels.length > 0) {
+    process.stderr.write(
+      `[warn] unpriced models (tokens counted, cost n/a and excluded from totals): ${dims.unpricedModels.join(", ")}\n`,
+    );
+  }
   // Run records from the registry, honouring the full #26 [since, until) window.
   const windowedRunRecords = listRunRecords(stateDir()).filter((r) => inWindow(r.startedAt, window));
   // Run outcomes (#60) from the run registry: shown only when there are runs,
@@ -815,6 +891,12 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...timeMaps,
           timezone: timeZone,
           window: windowJson(window),
+          byModel: dims.byModel,
+          unpricedModels: dims.unpricedModels,
+          cacheHitRatio: baseCacheRatios(agg),
+          ...(dims.byModelDay ? { byModelDay: dims.byModelDay } : {}),
+          ...(args.values["merge-models"] ? { mergedModels: true, modelAliases } : {}),
+          ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
           // #21: per-run context-window pressure from the run registry.
           runs: runContextRows(windowedRunRecords, { agent }),
           // #60: run-outcome rollup. Named runOutcomes (not `runs`) because
@@ -826,12 +908,13 @@ async function cmdStats(rest: string[]): Promise<number> {
       ) + "\n",
     );
   } else {
-    const line = (label: string, b: typeof agg.totals) =>
-      `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${fmtUsd(b.costUsd)}`;
-    process.stdout.write(line("totals", agg.totals) + "\n");
-    for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, b) + "\n");
+    process.stdout.write(statsLine("totals", agg.totals) + "\n");
+    for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(statsLine(a, b) + "\n");
     for (const m of Object.values(timeMaps)) {
-      for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, b) + "\n");
+      for (const [d, b] of Object.entries(m).sort()) process.stdout.write(statsLine(d, b) + "\n");
+    }
+    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject })) {
+      process.stdout.write(l + "\n");
     }
     if (outcomes !== undefined) {
       for (const [a, b] of Object.entries(outcomes.byAgent)) process.stdout.write(formatOutcomeLine(a, b) + "\n");
