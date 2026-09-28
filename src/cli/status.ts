@@ -41,7 +41,7 @@ const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
 
 // ---------------------------------------------------------------- schema
 
-const RunStatusEnum = z.enum(["running", "interrupted", "success", "error", "aborted"]);
+const RunStatusEnum = z.enum(["running", "interrupted", "success", "error", "aborted", "unavailable"]);
 
 const BudgetSchema = z.discriminatedUnion("configured", [
   z.object({ configured: z.literal(false) }),
@@ -67,6 +67,7 @@ export const StatusSnapshotSchema = z.object({
     error: z.number().int(),
     aborted: z.number().int(),
     interrupted: z.number().int(),
+    unavailable: z.number().int(), // #60: vendor outage / no data, not a failure
   }),
   activeByAgent: z.record(z.string(), z.number().int()),
   newestRun: z
@@ -237,7 +238,7 @@ export async function computeStatusSnapshot(opts: SnapshotOptions = {}): Promise
   const includeTranscripts = opts.includeTranscripts === true;
 
   // Runs: started inside the window, plus anything still live regardless of age.
-  const runs = { total: 0, running: 0, success: 0, error: 0, aborted: 0, interrupted: 0 };
+  const runs = { total: 0, running: 0, success: 0, error: 0, aborted: 0, interrupted: 0, unavailable: 0 };
   const activeByAgent: Record<string, number> = {};
   let newest: { rec: RunRecord; status: z.infer<typeof RunStatusEnum> } | undefined;
   for (const rec of listRunRecords(dir)) {
@@ -330,7 +331,7 @@ export function formatHuman(s: StatusSnapshot): string {
     .join(" ");
   const nr = s.newestRun;
   const lines = [
-    `runs       ${r.total} (running=${r.running} success=${r.success} error=${r.error} aborted=${r.aborted} interrupted=${r.interrupted}) · trailing 24h`,
+    `runs       ${r.total} (running=${r.running} success=${r.success} error=${r.error} aborted=${r.aborted} interrupted=${r.interrupted} unavailable=${r.unavailable}) · trailing 24h`,
     `active     ${r.running}${active ? ` (${active})` : ""}`,
     `today      ${fmtUsd(s.today.costUsd)}${perAgent ? ` (${perAgent})` : ""}${s.sources.includes("transcripts") ? "" : " · state dir only"}`,
     `block      ${s.block.costUsd === null ? "n/a" : fmtUsd(s.block.costUsd)}`,

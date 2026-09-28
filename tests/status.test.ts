@@ -245,6 +245,26 @@ describe("status snapshot (#45 / #62)", () => {
   });
 });
 
+describe("status counts #60 'unavailable' runs (integration)", () => {
+  let dir: string;
+  before(() => {
+    dir = mkTmp("ach-status-unavail-");
+    writeRun(dir, { runId: "r-ok", agent: "codex", pid: 1, startedAt: NOW - 3_600_000, endedAt: NOW - 3_000_000, status: "success" });
+    writeRun(dir, { runId: "r-down", agent: "codex", pid: 1, startedAt: NOW - 1_800_000, endedAt: NOW - 1_700_000, status: "unavailable" });
+  });
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it("an unavailable run is its own counter, and the snapshot stays schema-valid", async () => {
+    const snap = await withState(dir, () => computeStatusSnapshot({ now: NOW }));
+    assert.equal(snap.runs.total, 2);
+    assert.equal(snap.runs.success, 1);
+    assert.equal(snap.runs.unavailable, 1);
+    const parsed = StatusSnapshotSchema.strict().safeParse(snap);
+    assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+    assert.match(formatHuman(snap), /unavailable=1/);
+  });
+});
+
 describe("status --once --write-state (#62)", () => {
   let state: string;
   let out: string;
