@@ -70,3 +70,18 @@ in the same fields.
 formats (ATIF, OTel, Langfuse) do not carry a provenance map in 0.11.0. The
 RunRecord written for the same run does. The `ach run` summary prints its
 `context` line as `ctx ~= …` so it reads as a derived value.
+
+### Unknown USD in web views
+
+A run with `usage.usd.available: false` or `metering: "none"` shows `n/a`
+for cost, even if its compatibility totals contain zero. Explicitly known
+zero remains `$0.00`. Main and grid aggregates show the known sum plus an
+unpriced-run count; with no priced runs, the sum is `n/a`. Compare means are
+`null` (`n/a`) whenever any member lacks a price, with `unpricedRuns` recording
+how many members are missing.
+
+The trio cumulative USD series sums canonical `costUsd` values. It does not
+substitute one model's rates for another. Once a usage record lacks a cost,
+the cumulative total is unknown. The run header can still show an explicitly
+available registry total when one exists. Empty event streams do not prove
+zero spend.

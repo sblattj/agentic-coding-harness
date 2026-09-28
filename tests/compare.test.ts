@@ -128,7 +128,8 @@ describe('computeCompareRows (pure math)', () => {
       agent: 'claude',
       runs: 1,
       avgTotalTokens: 0,
-      avgCostUsd: 0,
+      avgCostUsd: null,
+      unpricedRuns: 1,
       avgDurationMs: 0,
       successRate: 1,
     });

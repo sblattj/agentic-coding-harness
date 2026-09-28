@@ -695,6 +695,12 @@ function createTermPane(container, opts) {
     return st;
   }
 
+function runCost(r) {
+  if (!r || r.metering === "none" || (r.usage && r.usage.usd && r.usage.usd.available === false)) return null;
+  var n = r.totals && r.totals.costUsd;
+  return typeof n === "number" && isFinite(n) ? n : null;
+}
+
   function updateHeader(st) {
     var rec = st.rec;
     var live = st.live;
@@ -710,7 +716,7 @@ function createTermPane(container, opts) {
     st.dom.tok.appendChild(bTok);
     st.dom.cost.textContent = "";
     var bCost = document.createElement("b");
-    bCost.textContent = "$" + (rec.totals && rec.totals.costUsd ? rec.totals.costUsd.toFixed(2) : "0.00");
+    bCost.textContent = runCost(rec) == null ? "n/a" : "$" + runCost(rec).toFixed(2);
     st.dom.cost.appendChild(document.createTextNode("cost "));
     st.dom.cost.appendChild(bCost);
     st.dom.tile.setAttribute("aria-label", "run " + (rec.agent || "?") + " " + statusLabel(rec.status, live));
@@ -916,15 +922,17 @@ function createTermPane(container, opts) {
 
   function updateAggregates() {
     var now = Date.now();
-    var live = 0, tok = 0, cost = 0;
+    var live = 0, tok = 0, cost = 0, priced = 0, unpriced = 0;
     runs.forEach(function (st) {
       if (isLive(st.rec, now)) live++;
       tok += tokensOf(st.rec);
-      cost += (st.rec.totals && st.rec.totals.costUsd) || 0;
+      var value = runCost(st.rec);
+      if (value == null) unpriced++;
+      else { cost += value; priced++; }
     });
     elRuns.textContent = String(live);
     elTok.textContent = fmtTok(tok);
-    elCost.textContent = "$" + cost.toFixed(2);
+    elCost.textContent = (priced ? "$" + cost.toFixed(2) : "n/a") + (unpriced ? " + " + unpriced + " unpriced" : "");
   }
 
   function handleRecords(records) {

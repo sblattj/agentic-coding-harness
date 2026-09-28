@@ -405,7 +405,15 @@ function K(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
   return String(Math.round(n));
 }
-function USD(n) { return "$" + (Number(n) || 0).toFixed(3); }
+function costUnavailable() {
+  return rec && (rec.metering === "none" || (rec.usage && rec.usage.usd && rec.usage.usd.available === false));
+}
+function observedCost() {
+  if (costUnavailable()) return null;
+  if (rec && rec.usage && rec.usage.usd && rec.usage.usd.available === true && rec.totals) return rec.totals.costUsd;
+  return obs && obs.totalCostUsd;
+}
+function USD(n) { return n == null || !isFinite(n) ? "n/a" : "$" + Number(n).toFixed(3); }
 function S(ms) { return ((ms || 0) / 1000).toFixed(1) + "s"; }
 function fmtDurMs(ms) {
   ms = Number(ms) || 0;
@@ -466,7 +474,7 @@ function renderHeader() {
   } else {
     $("pulseTxt").textContent = status.toUpperCase();
   }
-  $("totalCost").textContent = obs ? USD(obs.totalCostUsd) : "\u2013";
+  $("totalCost").textContent = obs ? USD(observedCost()) : "\u2013";
 }
 
 /* ===== fatal states ===== */
@@ -543,7 +551,7 @@ function displayPoints() {
   // the step chart spans the full width even when usage stops early.
   var ms = obs && obs.metrics ? obs.metrics.slice() : [];
   if (!ms.length) return [];
-  var pts = [{ tMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }];
+  var pts = [{ tMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: ms[0].costUsd == null ? undefined : 0 }];
   ms.forEach(function (m) { pts.push(m); });
   var last = ms[ms.length - 1];
   var T = totalMs();
@@ -606,7 +614,7 @@ function drawChart() {
     inner += '<rect class="band" x="' + bx + '" y="0" width="' + bw + '" height="' + CH + '"/>';
   }
   inner += '<polyline class="l-t" points="' + stepPoints(pts, tokOf, maxTok) + '"/>';
-  inner += '<polyline class="l-u" points="' + stepPoints(pts, function (p) { return p.costUsd || 0; }, maxCost) + '"/>';
+  if (!costUnavailable() && obs && obs.totalCostUsd != null) inner += '<polyline class="l-u" points="' + stepPoints(pts, function (p) { return p.costUsd || 0; }, maxCost) + '"/>';
   inner += '<g class="xh"><line x1="0" x2="0" y1="0" y2="' + CH + '"/><circle class="ct" r="3.2"/><circle class="cu" r="3.2"/></g>';
   svg.innerHTML = inner;
 
@@ -625,7 +633,7 @@ function renderMetrics() {
     ["cache read", last ? K(last.cacheRead) : "\u2013", "c-cr"],
     ["cache write", last ? K(last.cacheWrite) : "\u2013", "c-cw"],
     ["cache hit", obs && obs.cacheHitRatio != null ? (obs.cacheHitRatio * 100).toFixed(1) + "%" : (last ? "n/a" : "\u2013"), "c-cr"],
-    ["cost", obs ? USD(obs.totalCostUsd) : "\u2013", "c-cost"],
+    ["cost", obs ? USD(observedCost()) : "\u2013", "c-cost"],
     ["duration", obs ? S(obs.durationMs) : "\u2013", "c-el"],
   ];
   var box = $("stats");
@@ -669,10 +677,11 @@ function chartMove(e) {
   ln.setAttribute("x1", xx); ln.setAttribute("x2", xx);
   var ct = xh.querySelector(".ct"), cu = xh.querySelector(".cu");
   ct.setAttribute("cx", xx); ct.setAttribute("cy", yt);
+  cu.style.display = costUnavailable() || p.costUsd == null ? "none" : "";
   cu.setAttribute("cx", xx); cu.setAttribute("cy", yu);
   var tip = $("tip");
   tip.style.display = "block";
-  tip.textContent = "+" + S(p.tMs) + " \u00b7 " + K(tokOf(p)) + " tok \u00b7 " + USD(p.costUsd || 0);
+  tip.textContent = "+" + S(p.tMs) + " \u00b7 " + K(tokOf(p)) + " tok \u00b7 " + USD(costUnavailable() ? null : p.costUsd);
   tip.style.left = Math.min(76, Math.max(2, fx * 100)) + "%";
 }
 function chartLeave() {
@@ -1069,7 +1078,10 @@ function fetchObs() {
         spans: (data && data.spans) || [],
         metrics: (data && data.metrics) || [],
         logs: (data && data.logs) || [],
-        totalCostUsd: (data && data.totalCostUsd) || 0,
+        totalCostUsd: data && data.totalCostUsd,
+        totalCredits: data && data.totalCredits,
+        cacheHitRatio: data && data.cacheHitRatio,
+        byModel: data && data.byModel,
         durationMs: (data && data.durationMs) || 0,
       };
     });

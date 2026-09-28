@@ -16,7 +16,9 @@ export interface CompareRow {
   [key: string]: string | number | null | RepeatStats | undefined;
   runs: number;
   avgTotalTokens: number;
-  avgCostUsd: number;
+  avgCostUsd: number | null;
+  /** Runs lacking a trustworthy USD value. */
+  unpricedRuns?: number;
   avgDurationMs: number;
   /** successes / runs with a verdict (unavailable runs excluded, #60);
    *  null when every run in the group was unavailable. */
@@ -71,6 +73,7 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
     const runs = group.records.length;
     let totalTokens = 0;
     let costUsd = 0;
+    let unpricedRuns = 0;
     let durationMs = 0;
     let successes = 0;
     // CLI/service outages (#60) carry no task verdict: counted, but kept
@@ -83,7 +86,9 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
     for (const rec of group.records) {
       if (rec.verify !== undefined) outcomes.push(rec.verify.status === "pass");
       totalTokens += (rec.totals?.inputTokens ?? 0) + (rec.totals?.outputTokens ?? 0);
-      costUsd += rec.totals?.costUsd ?? 0;
+      const value = rec.totals?.costUsd;
+      if (rec.metering === "none" || rec.usage?.usd.available === false || value === undefined || !Number.isFinite(value)) unpricedRuns++;
+      else costUsd += value;
       const end = rec.endedAt ?? rec.updatedAt ?? rec.startedAt;
       durationMs += Math.max(0, end - rec.startedAt);
       if (rec.exitStatus === "unavailable" || rec.status === "unavailable") unavailable++;
@@ -94,7 +99,8 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
       agent: group.records[0]!.agent, // display convenience: first record's agent
       runs,
       avgTotalTokens: totalTokens / runs,
-      avgCostUsd: costUsd / runs,
+      avgCostUsd: unpricedRuns ? null : costUsd / runs,
+      ...(unpricedRuns ? { unpricedRuns } : {}),
       avgDurationMs: durationMs / runs,
       // An all-unavailable group has no verdicts: null (rendered n/a), never
       // a fabricated 0%.

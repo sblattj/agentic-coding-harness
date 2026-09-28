@@ -204,7 +204,12 @@ function fmtTok(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
   return String(n);
 }
-function fmtCost(n) { return n == null ? "-" : "$" + Number(n).toFixed(4); }
+function runCost(r) {
+  if (!r || r.metering === "none" || (r.usage && r.usage.usd && r.usage.usd.available === false)) return null;
+  var n = r.totals && r.totals.costUsd;
+  return typeof n === "number" && isFinite(n) ? n : null;
+}
+function fmtCost(n) { return n == null ? "n/a" : "$" + Number(n).toFixed(4); }
 function fmtDur(ms) {
   var s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return s + "s";
@@ -274,7 +279,7 @@ function buildRow(r) {
   var dur = el("span", "dur", fmtDur(elapsed(r)));
   row.appendChild(dur);
   row._dur = dur;
-  row.appendChild(el("span", "cost", fmtCost(r.totals && r.totals.costUsd) + provMark(r, "costUsd")));
+  row.appendChild(el("span", "cost", fmtCost(runCost(r)) + (runCost(r) == null ? "" : provMark(r, "costUsd"))));
   row.addEventListener("click", function () { selectRun(r.runId); });
   return row;
 }
@@ -297,14 +302,16 @@ function renderRuns() {
   });
 }
 function renderAggregate() {
-  var live = 0, cost = 0, computed = false;
+  var live = 0, cost = 0, priced = 0, unpriced = 0, computed = false;
   runs.forEach(function (r) {
     if (isLive(r)) live++;
-    cost += (r.totals && r.totals.costUsd) || 0;
+    var value = runCost(r);
+    if (value == null) { unpriced++; return; }
+    cost += value; priced++;
     if (provMark(r, "costUsd") === PROV_MARK.computed) computed = true;
   });
   /* A sum with any computed part is itself computed. */
-  $("agg").textContent = runs.length + " runs \u00b7 " + live + " live \u00b7 " + fmtCost(cost) + (computed ? PROV_MARK.computed : "");
+  $("agg").textContent = runs.length + " runs \u00b7 " + live + " live \u00b7 " + fmtCost(priced ? cost : null) + (computed ? PROV_MARK.computed : "") + (unpriced ? " + " + unpriced + " unpriced" : "");
 }
 
 /* ===== metadata strip ===== */
@@ -353,7 +360,7 @@ function renderMeta() {
   (r.regrades || []).forEach(function (v, i) {
     box.appendChild(kv("regrade " + (i + 1), v.status + " · " + v.command + " · " + (v.at == null ? "n/a" : new Date(v.at).toISOString())));
   });
-  box.appendChild(kv("cost", fmtCost(t.costUsd) + provMark(r, "costUsd")));
+  box.appendChild(kv("cost", fmtCost(runCost(r)) + (runCost(r) == null ? "" : provMark(r, "costUsd"))));
   var ctxTxt = fmtCtx(r);
   if (ctxTxt) box.appendChild(kv("ctx", ctxTxt));
   if (t.credits != null) box.appendChild(kv("credits", String(t.credits)));

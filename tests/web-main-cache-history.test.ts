@@ -24,7 +24,7 @@ it("main web header renders canonical per-model cache ratios and score history",
     verify: { status: "fail", command: "old" },
     regrades: [{ status: "pass", command: "new", at: 1 }] };
   const ctx = { $: () => box, el, findRun: () => r, selectedId: "run", modelCache: { run: { stamp: 1, data } },
-    modelCachePending: {}, fmtTok: String, fmtCost: String, provMark: () => "", fmtCtx: () => "", fmtAgo: () => "", GLYPH: {} };
+    modelCachePending: {}, runCost: () => null, fmtTok: String, fmtCost: String, provMark: () => "", fmtCtx: () => "", fmtAgo: () => "", GLYPH: {} };
   runInNewContext(renderer + "\nrenderMeta();", ctx);
   const text = (e: Element): string => e.textContent + e.children.map(text).join(" ");
   assert.match(text(box), /cache hit \/ alpha 80\.0%/);

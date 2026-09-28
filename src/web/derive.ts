@@ -3,9 +3,8 @@ import { cacheHitRatio } from "../core/cache-ratio.ts";
 
 /**
  * Pure derivations of the dashboard's three observability views (spans,
- * metrics, logs) from a run's AgentEvent[]. No I/O: cost is a flat-rate
- * estimate because src/core/pricing.ts's createPricer reads bundled data
- * files at construction time.
+ * metrics, logs) from a run's AgentEvent[]. No I/O: USD comes from canonical
+ * recorded costs. Missing prices remain unknown; no substitute model rates.
  */
 
 export function toEventMs(t: EventTimestamp): number | null {
@@ -178,31 +177,6 @@ export interface MetricPoint {
   credits?: number;
 }
 
-export interface FlatPrices {
-  inputPerM: number;
-  outputPerM: number;
-  cacheReadPerM: number;
-  cacheWritePerM: number;
-}
-
-/** Flat per-1M-token USD estimate (claude-sonnet-4-class rates). */
-export const FALLBACK_PRICES: FlatPrices = {
-  inputPerM: 3,
-  outputPerM: 15,
-  cacheReadPerM: 0.3,
-  cacheWritePerM: 3.75,
-};
-
-function flatCost(u: CanonicalTokenRecord): number {
-  return (
-    (num(u.inputTokens) * FALLBACK_PRICES.inputPerM +
-      num(u.outputTokens) * FALLBACK_PRICES.outputPerM +
-      num(u.cacheReadTokens) * FALLBACK_PRICES.cacheReadPerM +
-      num(u.cacheWriteTokens) * FALLBACK_PRICES.cacheWritePerM) /
-    1_000_000
-  );
-}
-
 function finiteNum(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
@@ -212,22 +186,21 @@ export function deriveMetrics(events: AgentEvent[]): MetricPoint[] {
   const points: MetricPoint[] = [];
   const tot = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, credits: 0 };
   let sawUsd = false;
+  let unpriced = false;
   let sawCredits = false;
   for (const { ev, tMs } of rows) {
     const u = ev.type === "usage" ? ev.usage : ev.type === "model_call_end" ? ev.usage : undefined;
     if (u === undefined) continue;
     const extra = u.extra as Record<string, unknown> | undefined;
-    // Credits-only records (kiro) carry placeholder zero tokens; pricing them
-    // would emit a false $0. Price only token-bearing records; surface credits.
-    const tokensAvailable = extra?.tokensAvailable !== false;
+    // Sum explicit canonical USD values only. A partial sum is not a total;
+    // once any record is unpriced, leave the cumulative USD series absent.
     tot.input += num(u.inputTokens);
     tot.output += num(u.outputTokens);
     tot.cacheRead += num(u.cacheReadTokens);
     tot.cacheWrite += num(u.cacheWriteTokens);
-    if (tokensAvailable) {
-      tot.costUsd += flatCost(u);
-      sawUsd = true;
-    }
+    const cost = finiteNum(u.costUsd);
+    if (cost === null || extra?.usdAvailable === false) unpriced = true;
+    else { tot.costUsd += cost; sawUsd = true; }
     const cum = finiteNum(extra?.creditsCumulative);
     if (cum !== null) {
       tot.credits = Math.max(tot.credits, cum); // cumulative gauge, not a sum
@@ -246,7 +219,7 @@ export function deriveMetrics(events: AgentEvent[]): MetricPoint[] {
       cacheRead: tot.cacheRead,
       cacheWrite: tot.cacheWrite,
     };
-    if (sawUsd) point.costUsd = tot.costUsd;
+    if (sawUsd && !unpriced) point.costUsd = tot.costUsd;
     if (sawCredits) point.credits = tot.credits;
     points.push(point);
   }
@@ -466,7 +439,6 @@ export function deriveRunObservability(events: AgentEvent[]): RunObservability {
   const durationMs = spans.length > 0 ? spans[0]!.durationMs : 0;
   const out: RunObservability = { spans, metrics, logs, durationMs };
   if (last?.costUsd !== undefined) out.totalCostUsd = last.costUsd;
-  else if (metrics.length === 0) out.totalCostUsd = 0; // no usage at all → USD knowable as zero
   if (last?.credits !== undefined) out.totalCredits = last.credits;
   if (last !== undefined) {
     out.cacheHitRatio = cacheHitRatio({

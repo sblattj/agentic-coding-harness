@@ -41,8 +41,8 @@ function rec(over: Partial<RunRecord> = {}): RunRecord {
   };
 }
 
-const U1: CanonicalTokenRecord = { inputTokens: 1_000, outputTokens: 500, cacheReadTokens: 2_000, cacheWriteTokens: 100 };
-const U2: CanonicalTokenRecord = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 500, cacheWriteTokens: 0 };
+const U1: CanonicalTokenRecord = { inputTokens: 1_000, outputTokens: 500, cacheReadTokens: 2_000, cacheWriteTokens: 100, costUsd: 0.011475 };
+const U2: CanonicalTokenRecord = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 500, cacheWriteTokens: 0, costUsd: 0.0012 };
 
 /** Hand-made timeline: one model call wrapping two tool calls (2nd fails). */
 const EVENTS: AgentEvent[] = [
@@ -120,7 +120,7 @@ describe('derive trio views (in-process, pure)', () => {
       }
     }
     assert.ok(p2!.costUsd! > p1!.costUsd!, 'cost must grow');
-    // flat-rate sanity: U1 alone prices at (1000*3 + 500*15 + 2000*0.3 + 100*3.75)/1e6
+    // The canonical USD value is retained without model-specific repricing.
     assert.ok(Math.abs(p1!.costUsd! - 0.011_475) < 1e-9, `unexpected first cost ${p1!.costUsd}`);
   });
 
@@ -148,7 +148,7 @@ describe('derive trio views (in-process, pure)', () => {
     assert.equal(done!.tMs, 1_000);
   });
 
-  it('deriveRunObservability aggregates cost + duration; empty input → zeros', () => {
+  it('deriveRunObservability aggregates cost + duration; empty input → unknown cost', () => {
     const obs = deriveRunObservability(EVENTS);
     assert.equal(obs.durationMs, 1_000);
     assert.equal(obs.totalCostUsd, obs.metrics[obs.metrics.length - 1]!.costUsd);
@@ -158,7 +158,6 @@ describe('derive trio views (in-process, pure)', () => {
       spans: [],
       metrics: [],
       logs: [],
-      totalCostUsd: 0,
       durationMs: 0,
     });
   });
