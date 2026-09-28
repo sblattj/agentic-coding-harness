@@ -1,0 +1,26 @@
+{
+  "id": "T-malformed",
+  "usageLedger": "not-an-object",
+  "messages": [
+    "garbage",
+    {
+      "role": "assistant",
+      "usage": { "model": "claude-haiku-4-5-20251001", "totalTokens": 345, "timestamp": "2026-01-19T11:41:00.000Z" }
+    },
+    {
+      "role": "assistant",
+      "usage": {
+        "model": "claude-haiku-4-5-20251001",
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "timestamp": "2026-01-19T11:41:30.000Z"
+      }
+    },
+    {
+      "role": "assistant",
+      "usage": { "model": "claude-haiku-4-5-20251001", "inputTokens": 10, "outputTokens": 178, "timestamp": "2026-01-19T11:42:10.652Z" }
+    }
+  ]
+}
