@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, after, beforeEach, describe, it } from 'node:test';
@@ -102,6 +103,11 @@ const EXPECTED_TOOLS = [
 // bun runs .ts natively; node needs the tsx loader (same rule as cli.test.ts).
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
 
+// `--import tsx` resolves the specifier from the CHILD's cwd, and these spawns
+// run with a bare tmp cwd — so resolve tsx to an absolute path from THIS test
+// file's location instead (same fix as tests/mcp-stdio.test.ts).
+const TSX_IMPORT = createRequire(import.meta.url).resolve('tsx');
+
 let child: ChildProcessWithoutNullStreams | null = null;
 let stateTmp = '';
 let cwdTmp = '';
@@ -118,7 +124,7 @@ function startServer(): void {
   pending = [];
   lineBuf = '';
   stderrTail = '';
-  const args = isBun ? [ENTRY] : ['--import', 'tsx', ENTRY];
+  const args = isBun ? [ENTRY] : ['--import', TSX_IMPORT, ENTRY];
   child = spawn(isBun ? 'bun' : process.execPath, args, {
     cwd: cwdTmp,
     env: { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: stateTmp },
