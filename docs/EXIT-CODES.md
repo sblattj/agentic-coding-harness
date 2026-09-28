@@ -68,8 +68,9 @@ Downstream consumers should read `unavailable` as **no data**, not as a failure:
 ### Default (`--exit-codes binary`, or no flag)
 
 Unchanged from earlier releases: `ach run` exits **0** when `exitStatus` is `success` and
-**1** otherwise, including `unavailable`. Every other command exits 0 on success and 1 on any
-error.
+**1** otherwise, including `unavailable`. A failed `--verify` checker also exits 1. An
+`ach run --repeat N` group exits 0 only when every child succeeded and, with `--verify`, passed
+its checker; otherwise it exits 1. Every other command exits 0 on success and 1 on any error.
 
 ### The ladder (`--exit-codes ladder`)
 
@@ -84,6 +85,17 @@ future reporting command.
 | **20** | indeterminate | `run`: `exitStatus` is `unavailable` (see above), or the launch itself failed with `UNAVAILABLE`. |
 | **30** | no data | `stats`: zero usage records **and** zero run records after the `--agent` / `--days` / `--state-only` filters. `status`: zero runs **and** zero usage records in its trailing-24h snapshot (one-shot and `--write-state --once`; the snapshot is still printed or written). |
 | **1** | error | `run`: `exitStatus` is `error`, `timeout`, `aborted` or `cancelled`, or a `--verify` checker did not pass (in both modes). Every command: bad arguments, an unknown agent, an unknown `--exit-codes` value, any other harness error. |
+
+**`--verify` under the ladder.** A checker that does not pass is a task failure, so the run exits
+**1**, even when the agent run itself would have exited 10, 11 or 20. A checker that passes
+keeps the run's own ladder code (0, 10, 11 or 20).
+
+**Repeat groups (`--repeat N`).** Each child is scored with the single-run rule: a failed checker
+is 1, a launch that threw `UNAVAILABLE` is 20, any other thrown launch is 1, and otherwise the
+child gets its `exitStatus` / budget code. The group exits with the **most severe** child code,
+in this order: **1 > 20 > 11 > 10 > 0**. One failed child therefore makes the whole group exit 1,
+and a group exits 0 only when every child would have exited 0 (`repeatExitCode` in
+`src/cli/exit-codes.ts`).
 
 `watch` accepts the flag so scripts can pass it uniformly. It runs until SIGINT/SIGTERM and exits
 0; it never reaches a verdict, so the ladder has nothing to add there.
