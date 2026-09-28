@@ -43,6 +43,8 @@ import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
 import { kiroPreflight } from "../adapters/kiro-preflight.ts";
 import { cmdReport } from "./report.ts";
+import { runContextRows } from "./context-stats.ts";
+import { listRunRecords } from "../core/registry.ts";
 import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
@@ -718,6 +720,8 @@ async function cmdStats(rest: string[]): Promise<number> {
           total: agg.totals,
           byAgent: agg.byAgent,
           byDay: agg.byDay,
+          // #21: per-run context-window pressure from the run registry.
+          runs: runContextRows(listRunRecords(stateDir()), { agent, sinceTs }),
         },
         null,
         2,
