@@ -1,0 +1,41 @@
+{
+  "_fixture_source": "Claude Code statusLine stdin payload, copied from the 'Full JSON schema' example at https://code.claude.com/docs/en/statusline (fetched 2026-09-27; docs.claude.com/en/docs/claude-code/statusline 301s there). ach statusline relies ONLY on: session_id, model.id, model.display_name, cost.total_cost_usd, workspace.current_dir. Every other field is ignored and may be absent. This _fixture_source key is not part of the real payload.",
+  "cwd": "/current/working/directory",
+  "session_id": "abc123",
+  "session_name": "my-session",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "model": {
+    "id": "claude-opus-5-5",
+    "display_name": "Opus"
+  },
+  "workspace": {
+    "current_dir": "/current/working/directory",
+    "project_dir": "/original/project/directory",
+    "added_dirs": []
+  },
+  "version": "2.1.90",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 0.01234,
+    "total_duration_ms": 45000,
+    "total_api_duration_ms": 2300,
+    "total_lines_added": 156,
+    "total_lines_removed": 23
+  },
+  "context_window": {
+    "total_input_tokens": 15500,
+    "total_output_tokens": 1200,
+    "context_window_size": 200000,
+    "used_percentage": 8,
+    "remaining_percentage": 92
+  },
+  "exceeds_200k_tokens": false,
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 23.5,
+      "resets_at": 1738425600
+    }
+  }
+}
