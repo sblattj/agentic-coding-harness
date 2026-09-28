@@ -75,12 +75,17 @@ jobs:
       - name: Test (Bun not on PATH)
         run: npm test
 
+      # Both test passes run even when the first fails, so one CI run surfaces
+      # every failure (the Bun pass exercises the PTY suites). The job still
+      # fails if either pass fails.
       - name: Setup Bun
+        if: ${{ !cancelled() }}
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
       - name: Test (Bun on PATH)
+        if: ${{ !cancelled() }}
         run: npm test
 
       - name: Build

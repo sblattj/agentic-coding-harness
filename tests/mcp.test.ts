@@ -241,8 +241,10 @@ describe('mcp server (real subprocess over NDJSON stdio)', () => {
   });
 
   after(() => {
-    rmSync(stateTmp, { recursive: true, force: true });
-    rmSync(cwdTmp, { recursive: true, force: true });
+    // Windows refuses to remove a directory a just-killed child still has as
+    // its cwd (EBUSY) until the process is gone; retry instead of racing it.
+    rmSync(stateTmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    rmSync(cwdTmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
 
   it('initialize returns protocolVersion 2025-06-18 and a serverInfo name', { timeout: 30_000 }, async () => {

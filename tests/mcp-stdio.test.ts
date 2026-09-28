@@ -258,7 +258,8 @@ describe('ach mcp (stdio subcommand, real subprocess)', () => {
   });
 
   after(() => {
-    for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
+    // Windows: a just-killed child may still hold its cwd (EBUSY); retry.
+    for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
 
   it(
