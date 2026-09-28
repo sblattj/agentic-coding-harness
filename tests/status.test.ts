@@ -371,16 +371,16 @@ describe("statusline (#61)", () => {
   it("CLI: piping the captured payload prints one line with session/today/block/model", () => {
     const r = runCli(["statusline", "--no-cache"], { [STATE_ENV]: state, [BUDGET_ENV]: undefined }, payload);
     assert.equal(r.code, 0, r.stderr);
-    assert.equal(r.stdout, "Opus · session $0.0123 · today $0.7500 · block n/a\n");
+    assert.equal(r.stdout, "Opus · session $0.0123 · today $0.7500 · block $0.5000\n");
   });
 
   it("CLI: with a budget, shows budget left and flips to a near-limit marker past 80%", () => {
     const ok = runCli(["statusline", "--no-cache"], { [STATE_ENV]: state, [BUDGET_ENV]: "10" }, payload);
-    assert.equal(ok.stdout, "Opus · session $0.0123 · today $0.7500 · block n/a · budget $9.2500 left\n");
+    assert.equal(ok.stdout, "Opus · session $0.0123 · today $0.7500 · block $0.5000 · budget $9.2500 left\n");
     const near = runCli(["statusline", "--no-cache"], { [STATE_ENV]: state, [BUDGET_ENV]: "0.9" }, payload);
-    assert.equal(near.stdout, "Opus · session $0.0123 · today $0.7500 · block n/a · budget $0.1500 left [NEAR LIMIT]\n");
+    assert.equal(near.stdout, "Opus · session $0.0123 · today $0.7500 · block $0.5000 · budget $0.1500 left [NEAR LIMIT]\n");
     const over = runCli(["statusline", "--no-cache"], { [STATE_ENV]: state, [BUDGET_ENV]: "0.5" }, payload);
-    assert.equal(over.stdout, "Opus · session $0.0123 · today $0.7500 · block n/a · budget -$0.2500 left [OVER BUDGET]\n");
+    assert.equal(over.stdout, "Opus · session $0.0123 · today $0.7500 · block $0.5000 · budget -$0.2500 left [OVER BUDGET]\n");
   });
 
   it("CLI: --chain prepends the user's own statusline, which receives the same stdin", () => {
@@ -390,14 +390,14 @@ describe("statusline (#61)", () => {
       payload,
     );
     assert.equal(r.code, 0, r.stderr);
-    assert.equal(r.stdout, "\"display_name\": \"Opus\" | Opus · session $0.0123 · today $0.7500 · block n/a\n");
+    assert.equal(r.stdout, "\"display_name\": \"Opus\" | Opus · session $0.0123 · today $0.7500 · block $0.5000\n");
   });
 
   it("CLI: a failing or missing chained command degrades to ach's segment, exit 0", () => {
     for (const cmd of ["echo partial; exit 3", "definitely-not-a-real-command-ach-xyz"]) {
       const r = runCli(["statusline", "--no-cache", "--chain", cmd], { [STATE_ENV]: state, [BUDGET_ENV]: undefined }, payload);
       assert.equal(r.code, 0, r.stderr);
-      assert.equal(r.stdout, "Opus · session $0.0123 · today $0.7500 · block n/a\n");
+      assert.equal(r.stdout, "Opus · session $0.0123 · today $0.7500 · block $0.5000\n");
       assert.match(r.stderr, /chained statusline/);
     }
   });
