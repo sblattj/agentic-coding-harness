@@ -14,13 +14,15 @@
 ## Highlights
 
 - **One CLI, five agents** — `claude`, `opencode`, `kiro`, `codex`, `gemini` adapters normalize five different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
-- **Cost math you can defend** — cache-aware accounting verified against each CLI's own ground truth (Claude session JSONL, Kiro session files, provider-reported `costUSD`); LiteLLM pricing, and unpriced models warn and contribute 0 — never silently.
+- **Cost math you can defend** — cache-aware accounting verified against each CLI's own ground truth (Claude session JSONL, Kiro session files, provider-reported `costUSD`); LiteLLM pricing, and unpriced models are marked unavailable rather than silently assigned a price.
 - **Live agent runs dashboard** — `ach dash` redraws 2×/s in the terminal; `ach web` (port 8399) grids every run with a browser terminal you can type into — PTY per run, vendored xterm.js, zero CDN.
 - **Terminal replay** — every run renders to an asciinema-format `.cast`, so you can scrub what the agent did and when.
 - **Run registry** — every run persists to `<stateDir>/runs/<runId>.json` with atomic writes; survives kills, dumps as `--json` for tools.
 - **10 MCP tools** — launch runs and read usage from any MCP client over stdio, or streamable HTTP on port 8398 (`ach serve`).
 - **Artifacts out** — ATIF v1.7 trajectories, OpenTelemetry `gen_ai` spans, Langfuse via OTLP, and single-file HTML comparison reports.
-- **New in 0.9.0** — external run feeds (`--source`, poll/SSE/WS), public `RunRecordSchema`/`writeRunRecord` API, `/compare` experiment×variant rollups, `/health`, and 409 PTY refusal for external runs.
+- **Usage you can act on** — timezone-aware stats, model/project breakdowns, cache efficiency, rolling billing blocks, quota headroom, context pressure, and persisted threshold alerts.
+- **Verified trials** — `--verify`, fresh-session repeats, pass@k and Wilson intervals, and score history from `ach regrade`.
+- **More ways to run** — custom command templates, `agents.d` descriptors, an offline `null` adapter, and standalone macOS/Linux executables.
 
 ## How it compares
 
@@ -32,9 +34,31 @@
 
 ## Is this for you?
 
-- **For you if** you run coding agents locally and want per-run tokens, cost, and credits from one place — including budgets that abort a runaway run mid-flight.
+- **For you if** you run coding agents locally and want per-run tokens, cost, and credits from one place — including opt-in budget enforcement that aborts a runaway run mid-flight.
 - **For you if** you A/B compare coding agents: same task, five agents, one comparison table, one local registry.
 - **Not for you if** you need hosted team features (SSO, retention, org-wide dashboards). `ach` is local-first by design and exports to Langfuse and other OTLP backends when you outgrow it.
+
+## Install
+
+Homebrew installs the Node-based CLI; Bun is not required:
+
+```sh
+brew tap sblattj/agentic-coding-harness https://github.com/sblattj/agentic-coding-harness
+brew install sblattj/agentic-coding-harness/ach
+ach --version
+```
+
+| Install path | Command or download | Requirements |
+|---|---|---|
+| Homebrew | Commands above | Homebrew; Node is installed as a dependency |
+| npm | `npm install -g agentic-coding-harness` | Node.js 18.19+ |
+| Standalone | [GitHub release binaries and SHA256SUMS](https://github.com/sblattj/agentic-coding-harness/releases/latest) | macOS or Linux, arm64 or x64; no Node/Bun runtime |
+| Python wrapper | `uv tool install agentic-coding-harness` or `pipx install agentic-coding-harness` | Python 3.9+ and Node.js 18.19+ or Bun; PyPI currently provides the older 0.7.4 release |
+
+Standalone binaries embed the web dashboard. The interactive browser terminal requires
+`bun-pty` and is unavailable in standalone builds; CLI runs, stats, terminal dashboard,
+and the rest of the web dashboard remain available. See [packaging](docs/PACKAGING.md)
+for checksum verification and release automation.
 
 ## Quickstart
 
@@ -42,7 +66,7 @@
 # no install needed:
 npx -y --package=agentic-coding-harness ach run --agent claude "add a --dry-run flag to scripts/lint.sh"
 
-# or install globally (pip install agentic-coding-harness also works):
+# or install globally:
 npm install -g agentic-coding-harness
 ach run --agent claude "add a --dry-run flag to scripts/lint.sh"
 ```
@@ -107,7 +131,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 - **Unified events, cache-aware tokens** — one `AgentEvent` stream, one canonical token record;
   per-agent double-counting traps handled ([docs/TOKEN-COUNTING.md](docs/TOKEN-COUNTING.md)).
 - **LiteLLM multi-model pricing** — bundled LiteLLM extract, external cost-map override;
-  unpriced models warn and contribute 0, never silently.
+  unpriced models carry an explicit unavailable price, never a silent estimate.
 - **Kiro MITM credit tap** — auto-starts on `ach run --agent kiro` when `mitmdump` is on
   the PATH; captures metering credits (`extra.credits`) and the native `kiroSession` id for grep
   correlation; degrades to a warning when absent.
@@ -156,11 +180,38 @@ drawer: the span waterfall, cumulative token/cost charts, and the leveled event 
 **Terminal** — `ach dash` is a live TUI over the run registry (redraws 2×/s, ANSI status
 glyphs, totals footer); `--json` dumps RunRecords for tools.
 
+## New in 0.11.0
+
+```sh
+ach doctor --agent claude --json                 # configuration checks, no prompt
+ach run --agent null --verify 'true' --repeat 3 "offline smoke"
+ach stats --last 7d --tz America/Los_Angeles --by week,model,project
+ach stats --cost-mode calculate --blocks         # computed cost and Claude 5-hour blocks
+ach quota --json                                # vendor-reported headroom, n/a when absent
+ach status --compact
+ach statusline                                  # statusline-compatible usage summary
+ach archive                                     # preserve transcripts and run records
+ach regrade <run-id> --verify 'npm test'          # append a score without another agent run
+```
+
+`--cost-mode auto|calculate|display` selects reported or computed cost, with
+provenance labels on displayed values. Time filters, project/model dimensions,
+cache-hit ratios, and `--exit-codes ladder` compose with the existing stats commands.
+Custom agents can use `--agent custom --template 'mycli {prompt}'` or a JSON file in
+`.ach/agents.d/`; runs without a usage source remain explicitly unmetered.
+
+**Budget behavior changed:** spend thresholds warn by default. Use
+`--budget-usd 5 --on-budget abort` to enforce a hard spending cap. Wall-clock,
+idle, and turn limits continue to enforce their own limits. Context pressure and
+budget crossings share persisted alert state. Plan presets are labeled community
+estimates; quota output uses provider-reported values when available.
+
 ## CLI
 
 ```sh
-ach run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
-            [--budget-usd N] [--max-turns N] [--wall-ms N] [--idle-ms N] [--json] "prompt"
+ach run --agent <claude|opencode|kiro|codex|gemini|null|custom|descriptor> [--model M] [--resume SID]
+            [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
+            [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
             kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                        [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                        [--kiro-startup-ms N] [--kiro-require-model-ack] [--kiro-mcp-server '<json>']...
@@ -335,11 +386,12 @@ writeRunRecord(stateDir, rec);   // lands in <stateDir>/runs/<runId>.json
 
 ## Budgets and spend caps: stop runaway LLM spend mid-run
 
-Every limit aborts the run mid-flight and records why in `exitStatus`.
+Spend thresholds warn by default and continue the run. Add `--on-budget abort` for
+mid-run spend enforcement. Time and turn limits still stop the run and record why in `exitStatus`.
 
 | limit      | flag           | env default                 | enforcement                          | default                  |
 |------------|----------------|-----------------------------|--------------------------------------|--------------------------|
-| spend      | `--budget-usd` | `AGENTIC_CODING_HARNESS_BUDGET_USD`  | abort, `exitStatus: budget_exceeded` | unlimited                |
+| spend      | `--budget-usd` | `AGENTIC_CODING_HARNESS_BUDGET_USD`  | warn; `--on-budget abort` opts into `budget_exceeded` | unlimited                |
 | turns      | `--max-turns`  | `AGENTIC_CODING_HARNESS_MAX_TURNS`   | abort, `exitStatus: turn_limit`      | claude 250, others unset |
 | wall clock | `--wall-ms`    | `AGENTIC_CODING_HARNESS_WALL_MS`     | abort, `exitStatus: timeout`         | unlimited                |
 | idle gap   | `--idle-ms`    | `AGENTIC_CODING_HARNESS_IDLE_MS`     | abort, `exitStatus: timeout`         | unlimited                |
@@ -349,6 +401,10 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 
 ## Docs
 
+- [Cost modes and provenance](docs/PROVENANCE.md), [billing blocks and plan estimates](docs/USAGE-WINDOWS.md), [quota headroom](docs/QUOTA.md).
+- [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
+- [Verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
+- [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — adapter pattern (headless / ACP / tmux lanes),
   token taps, canonical token record, ATIF, OTel transport, state manifests, data-flow diagram.
 - [`docs/TOKEN-COUNTING.md`](docs/TOKEN-COUNTING.md) — per-agent usage field reference,
