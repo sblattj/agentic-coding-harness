@@ -42,6 +42,7 @@ import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
 import { kiroPreflight } from "../adapters/kiro-preflight.ts";
+import { inWindow, joinAgoTokens, parseBy, resolveTimeZone, resolveWindow, TZ_ENV, windowJson } from "./time-window.ts";
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
@@ -66,10 +67,18 @@ usage:
                     [--cwd DIR] [--json] [--kiro-startup-ms MS] [--kiro-mcp-server '<json>']...
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
-  ach watch [--dir <transcriptDir>]
-  ach stats [--agent A] [--days N] [--json] [--state-only]
+  ach watch [--dir <transcriptDir>] [--since DATE | --last D] [--tz Z]
+                (--since/--last: print history newer than the bound on startup)
+  ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
+            [--tz Z] [--by day|week|month] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
-                 --state-only skips machine transcript dirs)
+                 --state-only skips machine transcript dirs;
+                 window is [--since, --until): since inclusive, until exclusive;
+                 --until alone = everything before it; --last 7d = --since "7d ago";
+                 DATE: YYYY-MM-DD | RFC 3339 | '<N>m|h|d|w ago' | today | yesterday | now;
+                 --tz: IANA zone, utc or local (default local) for day/week/month
+                 boundaries and bare dates; --by week = ISO weeks (2026-W39),
+                 month = 2026-09, comma lists allowed)
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -103,7 +112,8 @@ env:
   AGENTIC_CODING_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
   AGENTIC_CODING_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
-  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)`;
+  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_TZ          default for stats/watch --tz (CLI flags win over env)`;
 
 // ---------------------------------------------------------------- helpers
 
@@ -407,10 +417,18 @@ const POLL_MS = 5_000;
 
 async function cmdWatch(rest: string[]): Promise<number> {
   const args = parseArgs({
-    args: rest,
-    options: { dir: { type: "string" } },
+    args: joinAgoTokens(rest),
+    options: { dir: { type: "string" }, since: { type: "string" }, last: { type: "string" }, tz: { type: "string" } },
     allowPositionals: true,
   });
+  // --since / --last (#26): initial lookback. On the first tick, history
+  // newer than the bound is printed as deltas instead of baselined silently.
+  const lookback = resolveWindow({
+    since: args.values.since,
+    last: args.values.last,
+    now: Date.now(),
+    timeZone: resolveTimeZone(args.values.tz, process.env[TZ_ENV]),
+  }).sinceMs;
   const claudeDir = args.values.dir || path.join(os.homedir(), ".claude", "projects");
   const codexDir = path.join(os.homedir(), ".codex", "sessions");
   const geminiDir = path.join(os.homedir(), ".gemini", "tmp");
@@ -483,7 +501,8 @@ async function cmdWatch(rest: string[]): Promise<number> {
         continue;
       }
       const prev = offsets.files[w.file];
-      if (prev === size) continue;
+      const replay = firstTick && lookback !== undefined;
+      if (prev === size && !replay) continue;
       // First sight or grew: parse the whole file; the parsers dedupe
       // internally (assistant replays, cumulative rollouts), and we diff
       // against records already emitted for this file.
@@ -506,7 +525,8 @@ async function cmdWatch(rest: string[]): Promise<number> {
               : 0;
           // First sight of a file baselines its existing records without
           // printing them as deltas; only post-watch growth prints lines.
-          if (!firstSight) {
+          // With --since, the first tick instead replays records at/after it.
+          if (replay ? inWindow(rec.timestamp ? Date.parse(rec.timestamp) : NaN, { sinceMs: lookback }) : !firstSight) {
             bump({
               agent: rec.agent,
               sessionId: rec.sessionId ?? "unknown",
@@ -543,7 +563,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
           costUsd: s.cost,
         };
         fresh.push(canonical);
-        if (!firstTick) bump(canonical);
+        if (!firstTick || (lookback !== undefined && s.time_created >= lookback)) bump(canonical);
       }
     } catch {
       /* no opencode db on this machine — claude/codex/gemini tailing still runs */
@@ -633,10 +653,15 @@ function dedupeKey(r: {
 
 async function cmdStats(rest: string[]): Promise<number> {
   const args = parseArgs({
-    args: rest,
+    args: joinAgoTokens(rest),
     options: {
       agent: { type: "string" },
       days: { type: "string" },
+      since: { type: "string" },
+      until: { type: "string" },
+      last: { type: "string" },
+      tz: { type: "string" },
+      by: { type: "string", multiple: true },
       json: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
     },
@@ -649,11 +674,22 @@ async function cmdStats(rest: string[]): Promise<number> {
       "UNKNOWN_AGENT",
     );
   }
-  const days = optNum(args.values.days, "--days");
-  const sinceTs = days !== undefined ? Date.now() - days * 86_400_000 : undefined;
+  // One code path computes the window (#26) and the zone (#84); every output
+  // surface below (table, --json, per-bucket maps) reads the same records.
+  const timeZone = resolveTimeZone(args.values.tz, process.env[TZ_ENV]);
+  const by = parseBy(args.values.by);
+  const window = resolveWindow({
+    days: optNum(args.values.days, "--days"),
+    since: args.values.since,
+    until: args.values.until,
+    last: args.values.last,
+    now: Date.now(),
+    timeZone,
+  });
+  const sinceTs = window.sinceMs;
 
   // Harness state (driver-run NDJSON + watch-persisted opencode) ...
-  const stateRecords = await readAllRecords({ agent, sinceTs });
+  const stateRecords = (await readAllRecords({ agent, sinceTs })).filter((r) => inWindow(Date.parse(r.ts), window));
   const records: AggregatableRecord[] = stateRecords.map((r) => ({
     ts: r.ts,
     agent: r.agent,
@@ -678,7 +714,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for await (const rec of scanAll()) {
       if (agent && rec.agent !== agent) continue;
       const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
-      if (sinceTs !== undefined && (!Number.isFinite(tsMs) || tsMs < sinceTs)) continue;
+      if (!inWindow(tsMs, window)) continue;
       const row = {
         ts: Number.isFinite(tsMs) ? new Date(tsMs).toISOString() : null,
         agent: rec.agent,
@@ -709,7 +745,13 @@ async function cmdStats(rest: string[]): Promise<number> {
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
 
-  const agg = aggregate(records);
+  const agg = aggregate(records, { timeZone, by });
+  // --by picks which calendar maps are emitted (default: byDay only).
+  const timeMaps = {
+    ...(by.includes("day") ? { byDay: agg.byDay } : {}),
+    ...(agg.byWeek ? { byWeek: agg.byWeek } : {}),
+    ...(agg.byMonth ? { byMonth: agg.byMonth } : {}),
+  };
 
   if (args.values.json) {
     process.stdout.write(
@@ -717,7 +759,9 @@ async function cmdStats(rest: string[]): Promise<number> {
         {
           total: agg.totals,
           byAgent: agg.byAgent,
-          byDay: agg.byDay,
+          ...timeMaps,
+          timezone: timeZone,
+          window: windowJson(window),
         },
         null,
         2,
@@ -728,7 +772,9 @@ async function cmdStats(rest: string[]): Promise<number> {
       `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${fmtUsd(b.costUsd)}`;
     process.stdout.write(line("totals", agg.totals) + "\n");
     for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, b) + "\n");
-    for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(line(d, b) + "\n");
+    for (const m of Object.values(timeMaps)) {
+      for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, b) + "\n");
+    }
   }
   hintCcusage();
   return 0;
