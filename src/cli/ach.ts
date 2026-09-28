@@ -15,7 +15,6 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
-  AGENTS,
   AcpMcpServerSchema,
   HarnessError,
   isKnownAgent,
@@ -47,6 +46,16 @@ import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
+import {
+  cmdAgents,
+  descriptorTapRows,
+  findDescriptor,
+  loadCatalog,
+  reportCatalogIssues,
+  resolveRunAgent,
+  unknownAgentError,
+  unmeteredRuns,
+} from "./custom-agents.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -62,6 +71,19 @@ usage:
                          [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                          [--kiro-startup-ms MS] [--kiro-require-model-ack]
                          [--kiro-mcp-server '<json>']...
+  ach run --agent custom --template '<cmd {prompt}>' [--prompt-stdin] [--template-shell] [--model M] "<prompt>"
+              any CLI via a template; placeholders {prompt} {model} {workspace} (= cwd).
+              The template is split argv-style and spawned WITHOUT a shell: the prompt
+              is always one literal argument (quotes, spaces, $() are never evaluated).
+              --prompt-stdin   write the prompt to the CLI's stdin ({prompt} not needed)
+              --template-shell run the template via /bin/sh -c. RISK: the template itself is shell
+                               code (pipes, globs, $vars expand); placeholder values are passed as
+                               "$ACH_PROMPT"/"$ACH_MODEL"/"$ACH_WORKSPACE", never pasted in — do
+                               not quote placeholders yourself
+              no usage source: the run is recorded metering=none (tokens/cost n/a)
+  ach run --agent <agents.d name> ...  drop-in descriptor (.ach/agents.d/ or <state>/agents.d/;
+              see docs/CUSTOM-AGENTS.md)
+  ach agents [--json]       list built-in agents, agents.d descriptors and descriptor errors
   ach preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
                     [--cwd DIR] [--json] [--kiro-startup-ms MS] [--kiro-mcp-server '<json>']...
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
@@ -69,7 +91,9 @@ usage:
   ach watch [--dir <transcriptDir>]
   ach stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
-                 --state-only skips machine transcript dirs)
+                 --state-only skips machine transcript dirs; agents.d usage taps
+                 count as machine transcripts; metering=none runs are a separate
+                 "unmetered" group, never zeros in the totals)
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -240,18 +264,20 @@ async function cmdRun(rest: string[]): Promise<number> {
       "kiro-require-model-ack": { type: "boolean", default: false },
       "claude-default-config": { type: "boolean", default: false },
       "kiro-mcp-server": { type: "string", multiple: true },
+      // Custom agents (#37): per-invocation command template.
+      template: { type: "string" },
+      "prompt-stdin": { type: "boolean", default: false },
+      "template-shell": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
   });
   const agent = args.values.agent;
   if (!agent) throw new HarnessError("run requires --agent <name>", "USAGE");
-  if (!isKnownAgent(agent)) {
-    throw new HarnessError(
-      `unknown agent '${agent}' (expected one of: ${AGENTS.join(", ")})`,
-      "UNKNOWN_AGENT",
-    );
-  }
+  // Built-ins, `custom` (template), or an agents.d descriptor (#38).
+  const catalog = isKnownAgent(agent) ? null : loadCatalog();
+  if (catalog) reportCatalogIssues(catalog);
+  const custom = resolveRunAgent(agent, args.values, catalog ?? { descriptors: [], errors: [], warnings: [] });
   const prompt = args.positionals.join(" ").trim();
   if (!prompt) throw new HarnessError("run requires a prompt argument", "USAGE");
 
@@ -260,10 +286,11 @@ async function cmdRun(rest: string[]): Promise<number> {
   if (args.values["claude-default-config"]) process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
 
   const onEvent = (e: AgentEvent) => process.stderr.write(formatEventLine(e) + "\n");
+  const basePricer = createPricer();
   const driver = createDriver({
-    adapters: await defaultAdapters(),
+    adapters: custom.adapter ? { ...(await defaultAdapters()), [agent]: custom.adapter } : await defaultAdapters(),
     stateDir: stateDir(),
-    pricer: createPricer(),
+    pricer: custom.wrapPricer ? custom.wrapPricer(basePricer) : basePricer,
     onEvent,
     registry: { stateDir: stateDir() },
   });
@@ -643,11 +670,11 @@ async function cmdStats(rest: string[]): Promise<number> {
     allowPositionals: true,
   });
   const agent = args.values.agent;
-  if (agent && !isKnownAgent(agent)) {
-    throw new HarnessError(
-      `unknown agent '${agent}' (expected one of: ${AGENTS.join(", ")})`,
-      "UNKNOWN_AGENT",
-    );
+  // agents.d descriptors (#38) are valid --agent filters; `custom` runs too.
+  const catalog = loadCatalog();
+  reportCatalogIssues(catalog);
+  if (agent && !isKnownAgent(agent) && agent !== "custom" && !findDescriptor(catalog, agent)) {
+    throw unknownAgentError(agent, catalog);
   }
   const days = optNum(args.values.days, "--days");
   const sinceTs = days !== undefined ? Date.now() - days * 86_400_000 : undefined;
@@ -706,10 +733,21 @@ async function cmdStats(rest: string[]): Promise<number> {
       }
       records.push(costUsd === undefined ? { ...row } : { ...row, costUsd });
     }
+    // agents.d usage taps (#38): descriptor-declared transcript sources.
+    const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs });
+    for (const row of tap.rows) {
+      const key = dedupeKey(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      records.push(row);
+    }
+    for (const w of new Set(tap.warnings)) process.stderr.write(`[warn] ${w}\n`);
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
 
   const agg = aggregate(records);
+  // metering=none runs (#37) carry no token records: counted as runs, apart.
+  const unmetered = unmeteredRuns(stateDir(), { agent, sinceTs });
 
   if (args.values.json) {
     process.stdout.write(
@@ -718,6 +756,9 @@ async function cmdStats(rest: string[]): Promise<number> {
           total: agg.totals,
           byAgent: agg.byAgent,
           byDay: agg.byDay,
+          // Present only when such runs exist: the {total, byAgent, byDay}
+          // shape is unchanged for every stats consumer that never ran one.
+          ...(unmetered.runs > 0 ? { unmetered } : {}),
         },
         null,
         2,
@@ -727,6 +768,12 @@ async function cmdStats(rest: string[]): Promise<number> {
     const line = (label: string, b: typeof agg.totals) =>
       `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${fmtUsd(b.costUsd)}`;
     process.stdout.write(line("totals", agg.totals) + "\n");
+    if (unmetered.runs > 0) {
+      process.stdout.write(`unmetered runs=${fmtInt(unmetered.runs)} tokens=n/a cost=n/a\n`);
+      for (const [a, g] of Object.entries(unmetered.byAgent).sort()) {
+        process.stdout.write(`  ${a.padEnd(9)} runs=${fmtInt(g.runs)} tokens=n/a cost=n/a (unmetered)\n`);
+      }
+    }
     for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, b) + "\n");
     for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(line(d, b) + "\n");
   }
@@ -918,6 +965,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdWeb(rest);
     case "mcp":
       return cmdMcp(rest);
+    case "agents":
+      return cmdAgents(rest);
     case "help":
     case "--help":
     case "-h":

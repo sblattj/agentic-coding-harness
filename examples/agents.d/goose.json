@@ -1,0 +1,9 @@
+{
+  "name": "goose",
+  "description": "Block's goose CLI, headless one-shot (`goose run --text`). Unmetered: goose's stdout carries no token counts, so runs are recorded metering=none (tokens/cost n/a). Copy to .ach/agents.d/ or <stateDir>/agents.d/.",
+  "launch": {
+    "template": "goose run --text {prompt}",
+    "output": { "format": "text" }
+  },
+  "usageTap": null
+}

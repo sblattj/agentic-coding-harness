@@ -52,6 +52,9 @@ export interface RunRecord {
   producer?: string; // e.g. "acme-feed/bridge@1"
   endedAt?: number; // ms epoch — explicit wall-clock end for external runs
   metadata?: Record<string, unknown>; // free-form provenance (request_id, region, ...)
+  // --- custom agents (#37/#38); absent on built-in adapter runs ---
+  metering?: "tap" | "none"; // "none": no usage source — tokens/cost are n/a, not 0
+  command?: string[]; // resolved argv, prompt redacted as <prompt:N chars>
 }
 
 const TotalsSchema = z.object({
@@ -91,6 +94,8 @@ export const RunRecordSchema = z.object({
   source: z.enum(["local", "external"]).default("local"),
   producer: z.string().min(1).optional(),
   endedAt: z.number().int().optional(),
+  metering: z.enum(["tap", "none"]).optional(),
+  command: z.array(z.string()).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 

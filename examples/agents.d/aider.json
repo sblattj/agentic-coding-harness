@@ -1,0 +1,9 @@
+{
+  "name": "aider",
+  "description": "aider in scripted one-shot mode (`--message`, auto-confirm, no auto-commits). Unmetered: aider prints its cost summary as prose, not a machine-readable record, so no usage path is declared and runs are recorded metering=none. Add {model} (e.g. \"--model {model}\") to pin a model; ach then requires --model.",
+  "launch": {
+    "template": "aider --yes-always --no-auto-commits --no-pretty --message {prompt}",
+    "output": { "format": "text" }
+  },
+  "usageTap": null
+}
