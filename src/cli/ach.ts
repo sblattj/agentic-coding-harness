@@ -47,6 +47,7 @@ import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
+import { cmdQuota } from "./quota.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -80,6 +81,12 @@ usage:
                  (single-file HTML comparison; a trials/ root scans subdirs)
   ach dash [--json] [--all] [--dir <stateDir>]
                (live run dashboard; --json dumps RunRecords and exits)
+  ach quota [--json] [--agent A]
+                (vendor-reported subscription headroom per agent: window, used,
+                 time remaining, % left; n/a where the vendor reports nothing)
+  ach quota ingest claude
+                (reads Claude Code statusline JSON on stdin and snapshots its
+                 rate_limits; call it from your statusLine script)
   ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
@@ -103,7 +110,9 @@ env:
   AGENTIC_CODING_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
   AGENTIC_CODING_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
-  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)`;
+  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR    quota: Codex rollouts dir (default ~/.codex/sessions)
+  AGENTIC_CODING_HARNESS_QUOTA_CLAUDE_FILE  quota: Claude snapshot (default <state>/quota/claude.json)`;
 
 // ---------------------------------------------------------------- helpers
 
@@ -918,6 +927,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdWeb(rest);
     case "mcp":
       return cmdMcp(rest);
+    case "quota":
+      return cmdQuota(rest);
     case "help":
     case "--help":
     case "-h":
