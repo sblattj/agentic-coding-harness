@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 /**
  * Scripted fake `kiro-cli acp` server.
  *
@@ -47,7 +48,7 @@ interface Step {
 }
 
 function loadFixture(): Map<string, Step> {
-  const text = readFileSync(join(import.meta.dirname, 'acp-prompt-2.21.2.jsonl'), 'utf8');
+  const text = readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), 'acp-prompt-2.21.2.jsonl'), 'utf8');
   const steps = new Map<string, Step>();
   let current: Step | null = null;
   for (const raw of text.split('\n')) {

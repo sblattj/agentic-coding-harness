@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -6,7 +7,7 @@ import { GeminiAdapter, GEMINI_CAPABILITIES, parseGeminiLine } from '../src/adap
 import type { CanonicalEvent } from '../src/adapters/types.ts';
 import { FakeChild, fakeSpawnFn, splitMidFirstLine, type FakeSpawnCall } from './helpers/fake-child.ts';
 
-const FIXTURE = readFileSync(join(import.meta.dirname, 'fixtures/gemini-session.ndjson'), 'utf8');
+const FIXTURE = readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures/gemini-session.ndjson'), 'utf8');
 
 async function collect(handle: { events: AsyncIterable<CanonicalEvent>; wait(): Promise<number> }) {
   const events: CanonicalEvent[] = [];
