@@ -2,6 +2,7 @@
 // usage aggregation. Parsing of machine transcripts lives in
 // src/monitors/transcripts.ts; pricing in src/core/pricing.ts.
 import type { AgentEvent, UsageAvailability } from "../core/types.ts";
+import { bucketKey, type TimeGranularity } from "./time-window.ts";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -146,6 +147,10 @@ export interface Aggregates {
   totals: UsageBucket;
   byAgent: Record<string, UsageBucket>;
   byDay: Record<string, UsageBucket>;
+  /** ISO-week (`2026-W39`) rollup; present only when requested. */
+  byWeek?: Record<string, UsageBucket>;
+  /** Calendar-month (`2026-09`) rollup; present only when requested. */
+  byMonth?: Record<string, UsageBucket>;
 }
 
 export interface AggregatableRecord {
@@ -161,16 +166,33 @@ export interface AggregatableRecord {
   costUsd?: number;
 }
 
-export function aggregate(records: AggregatableRecord[]): Aggregates {
+/** Optional calendar bucketing (#44 week/month rollups, #84 time zones). */
+export interface AggregateTimeOptions {
+  /** IANA zone for day/week/month keys. Omitted: legacy UTC slice of `ts`. */
+  timeZone?: string;
+  /** Extra calendar maps to build; "day" (byDay) is always built. */
+  by?: TimeGranularity[];
+}
+
+export function aggregate(records: AggregatableRecord[], timeOpts: AggregateTimeOptions = {}): Aggregates {
   const totals = emptyBucket();
   const byAgent: Record<string, UsageBucket> = {};
   const byDay: Record<string, UsageBucket> = {};
+  const tz = timeOpts.timeZone;
+  const byWeek: Record<string, UsageBucket> | undefined = timeOpts.by?.includes("week") ? {} : undefined;
+  const byMonth: Record<string, UsageBucket> | undefined = timeOpts.by?.includes("month") ? {} : undefined;
   for (const r of records) {
     add(totals, r);
     add((byAgent[r.agent] ??= emptyBucket()), r);
-    add((byDay[r.ts ? r.ts.slice(0, 10) : "unknown"] ??= emptyBucket()), r);
+    const dayK = tz === undefined ? (r.ts ? r.ts.slice(0, 10) : "unknown") : bucketKey(r.ts, "day", tz);
+    add((byDay[dayK] ??= emptyBucket()), r);
+    if (byWeek) add((byWeek[bucketKey(r.ts, "week", tz ?? "UTC")] ??= emptyBucket()), r);
+    if (byMonth) add((byMonth[bucketKey(r.ts, "month", tz ?? "UTC")] ??= emptyBucket()), r);
   }
-  return { totals: roundCost(totals), byAgent: mapRound(byAgent), byDay: mapRound(byDay) };
+  const out: Aggregates = { totals: roundCost(totals), byAgent: mapRound(byAgent), byDay: mapRound(byDay) };
+  if (byWeek) out.byWeek = mapRound(byWeek);
+  if (byMonth) out.byMonth = mapRound(byMonth);
+  return out;
 }
 
 function mapRound(m: Record<string, UsageBucket>): Record<string, UsageBucket> {
