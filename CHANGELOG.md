@@ -2,6 +2,27 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.11.1] - 2026-09-28
+
+### Fixed
+
+- `ach status` / `ach statusline` "today" spend now prices harness state records exactly as `ach stats` does (reported cost first, an explicit $0 kept, otherwise tokens × bundled price). Previously a state record with no stored cost counted as $0, so `cost_today` can rise for affected users.
+- Records with no obtainable price (unknown model, nothing reported) are counted instead of silently omitted: `unpricedRecords` on every `ach stats --json` bucket and on `ach status` `today` / `today.byAgent`, with `unpriced=N` / `(+N unpriced)` in text output and the statusline, so a total that excludes them reads as a lower bound.
+- Run records whose `usage` lacks `credits` are no longer silently dropped (`credits` reads as unknown, rendered n/a). Run-record files that still fail to parse are counted and reported: `skippedRunRecords` in `ach stats --json`, a `skipped` line in text stats and the live `ach dash`, and a `[warn] registry:` stderr line naming each file.
+- `ach run --repeat N --exit-codes ladder`: a child whose agent launch was unavailable now scores 20 like a single run (was 1); the group exits with the most severe child code (1 > 20 > 11 > 10 > 0). `docs/EXIT-CODES.md` documents `--verify` and `--repeat` in both modes.
+- `ach archive --agent` lists the read-only transcript sources (cursor, amp, goose, qwen) in its unknown-agent error. Scanning, `watch --dir`, `archive`, and `stats`/`archive --agent` validation now derive from one transcript-source registry, with a test pinning every entry against every consumer.
+- `ach doctor --json` marks checks produced from agents.d descriptors with `"source": "agents.d"`.
+- The PyPI package now tracks the npm release: the vendored bundle is rebuilt from source (`npm run build:python`) and a test pins its version, `pyproject.toml`, and `__version__` to `package.json`.
+
+### Added
+
+- Unambiguous directory flags: `--transcript-dir` for `stats`/`watch`, `--state-dir` for `archive`/`audit`/`dash`/`web`. `--dir` keeps working; help says which it means per command, and passing both with different directories is a usage error.
+- Regression tests that every `ach stats` section honors `--project`/`--until`/`--agent`, and that the adapter list in the driver test derives from `AGENTS`.
+
+### Docs
+
+- The `ach stats` window is `[--since, --until)`: `--until` is exclusive.
+
 ## [0.11.0] - 2026-09-27
 
 ### Added
