@@ -1,8 +1,8 @@
 {
   "name": "agentic-coding-harness",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "mcpName": "io.github.sblattj/agentic-coding-harness",
-  "description": "Run, watch, and meter coding agents \u2014 Claude Code, OpenCode, Kiro, Codex CLI, Gemini CLI \u2014 with normalized events, cost accounting, A/B experiment/variant comparison, external run sources, and replayable run artifacts.",
+  "description": "Run, watch, and meter coding agents — Claude Code, OpenCode, Kiro, Codex CLI, Gemini CLI — with normalized events, cost accounting, A/B experiment/variant comparison, external run sources, and replayable run artifacts.",
   "keywords": [
     "coding-agent",
     "claude-code",
