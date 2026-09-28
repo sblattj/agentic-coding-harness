@@ -5,17 +5,83 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (node ${{ matrix.node-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # 18.x resolves to the newest 18.x release, which satisfies the
+        # package.json engines floor of >=18.19.
+        node-version: ['18.x', '20.x', '22.x']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
-      - run: npm ci
-      - run: npm run typecheck
-      # Includes the null-adapter end-to-end test (issue #55): a real CLI
-      # invocation of `ach run --agent null` that needs no CLI binary, no
-      # credentials, and no network — the negative control for this pipeline.
-      - run: npm test
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Run once before Bun is on PATH, and once after, so both code paths in
+      # tests/*.test.ts get exercised every time:
+      #   - before: `isBun` is false, so the Node+tsx fallback runs (this is
+      #     what a contributor machine without Bun installed sees) and the
+      #     bun-pty-only PTY suites (tests/web-pty.test.ts,
+      #     tests/web-pty-health.test.ts, tests/web-trio.test.ts,
+      #     tests/web.test.ts) skip themselves cleanly with a "bun not on
+      #     PATH" reason instead of failing.
+      #   - after: `isBun` is true, so those same PTY suites actually run
+      #     bun-pty for real — this is the only place in the matrix that
+      #     verifies the PTY layer #39 calls out as unverified risk.
+      - name: Test (Bun not on PATH)
+        run: npm test
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Test (Bun on PATH)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  python:
+    name: python (3.11)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      # python/tests/test_cli.py imports `agentic_coding_harness` and drives
+      # its console-script entry point (_cli.main) via a fake runtime forced
+      # through AGENTIC_CODING_HARNESS_RUNTIME, so the package has to be
+      # installed (not just present on disk) before pytest can collect it.
+      # The vendored JS bundle the CLI wrapper execs
+      # (src/agentic_coding_harness/_vendor/ach.mjs) is committed to the repo,
+      # so no npm/bun build is needed to satisfy these tests.
+      - name: Install package + pytest
+        run: pip install -e . pytest
+
+      - name: Test
+        run: pytest -v
