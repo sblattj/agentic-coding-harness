@@ -1,6 +1,8 @@
 // CLI-local pure helpers: streaming-event formatting, run summary rendering,
 // usage aggregation. Parsing of machine transcripts lives in
 // src/monitors/transcripts.ts; pricing in src/core/pricing.ts.
+import path from "node:path";
+
 import { HarnessError, type AgentEvent, type UsageAvailability } from "../core/types.ts";
 import { bucketKey, type TimeGranularity } from "./time-window.ts";
 
@@ -16,7 +18,7 @@ export function resolveDirFlag(
 ): string | undefined {
   const dir = values.dir;
   const named = values[alias];
-  if (dir !== undefined && named !== undefined && dir !== named) {
+  if (dir !== undefined && named !== undefined && path.resolve(dir) !== path.resolve(named)) {
     throw new HarnessError(`--${alias} '${named}' and --dir '${dir}' disagree (--dir is an alias of --${alias}; pass one)`, "USAGE");
   }
   return named ?? dir;
