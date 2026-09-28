@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -169,6 +169,96 @@ describe('alert state file', () => {
     rmSync(file);
     const b = new ThresholdAlerter({ thresholds: [0.5, 0.8], cooldownMs: 24 * HOUR, state: loadAlertState(file).state, now: () => 1 });
     assert.deepEqual(b.observe('src', 0.9), [0.5, 0.8]);
+  });
+});
+
+describe('concurrent alert persistence', () => {
+  function options(stateDir: string, runId: string) {
+    return { stateDir, runId, usd: 1, alerts: [0.8], cooldownMs: HOUR, now: () => 1000, onWarning: (w: string) => assert.fail(w) };
+  }
+
+  it('preserves both pre-created instances and suppresses their recreated cooldowns', () => {
+    const dir = tmpDir();
+    const a = createRunAlerts(options(dir, 'a'))!;
+    const b = createRunAlerts(options(dir, 'b'))!;
+    const sameA = createRunAlerts(options(dir, 'a'))!;
+    assert.equal(a.observe('usd', 0.9).length, 1);
+    assert.equal(b.observe('usd', 0.9).length, 1);
+    assert.deepEqual(sameA.observe('usd', 0.9), [], 'a stale same-source instance must not repeat the alert');
+    assert.deepEqual(Object.keys(loadAlertState(alertStateFile(dir)).state.fired).sort(), ['run:a:usd|0.8', 'run:b:usd|0.8']);
+    for (const runId of ['a', 'b']) assert.deepEqual(createRunAlerts(options(dir, runId))!.observe('usd', 0.9), []);
+    rmSync(alertStateFile(dir));
+    assert.equal(createRunAlerts(options(dir, 'a'))!.observe('usd', 0.9).length, 1, 'deleting alerts.json still resets cooldown');
+  });
+
+  it('serializes simultaneous subprocess writers, including the same source', async () => {
+    const dir = tmpDir();
+    const worker = join(dir, 'writer.mts');
+    writeFileSync(worker, String.raw`
+      import { createRunAlerts } from ${JSON.stringify(new URL('../src/core/budget-alerts.ts', import.meta.url).href)};
+      const alert = createRunAlerts({ stateDir: process.argv[2], runId: process.argv[3], usd: 1, alerts: [0.8], onWarning: (w) => { throw new Error(w); } });
+      process.stdin.once('data', () => {
+        process.stdout.write(JSON.stringify(alert.observe('usd', 0.9)) + '\n');
+        process.stdin.destroy();
+      });
+      process.stdout.write('ready\n');
+    `);
+    const runIds = ['a', 'b', 'c', 'd', 'same', 'same'];
+    const children = runIds.map((runId) => {
+      const child = spawn(process.execPath, [...process.execArgv, worker, dir, runId], { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10_000 });
+      let stdout = '', stderr = '';
+      let markReady!: () => void;
+      const ready = new Promise<void>((resolve) => { markReady = resolve; });
+      child.stdout.on('data', (data) => { stdout += data; if (stdout.includes('ready\n')) markReady(); });
+      child.stderr.on('data', (data) => { stderr += data; });
+      const done = new Promise<number>((resolve, reject) => {
+        child.on('error', reject);
+        child.on('close', (code) => {
+          markReady();
+          if (code !== 0) reject(new Error(`worker exited ${code}: ${stderr}`));
+          else resolve(JSON.parse(stdout.split('\n')[1]!).length);
+        });
+      });
+      // Attach immediately so an early worker failure cannot become unhandled.
+      void done.catch(() => {});
+      return { child, ready, done };
+    });
+    try {
+      await Promise.all(children.map((c) => c.ready));
+      for (const c of children) c.child.stdin.end('go');
+      const counts = await Promise.all(children.map((c) => c.done));
+      assert.equal(counts.reduce((sum, n) => sum + n, 0), 5);
+      assert.deepEqual(Object.keys(loadAlertState(alertStateFile(dir)).state.fired).sort(), ['a', 'b', 'c', 'd', 'same'].map((id) => `run:${id}:usd|0.8`));
+      for (const runId of runIds) {
+        const opts = { ...options(dir, runId), now: Date.now };
+        assert.deepEqual(createRunAlerts(opts)!.observe('usd', 0.9), []);
+      }
+    } finally {
+      for (const c of children) c.child.kill();
+    }
+  });
+
+  it('failed state writes release the lock and remain nonfatal', () => {
+    const dir = tmpDir();
+    mkdirSync(alertStateFile(dir)); // cannot atomically replace a directory with JSON
+    const warnings: string[] = [];
+    const a = createRunAlerts({ ...options(dir, 'unwritable'), onWarning: (w) => warnings.push(w) })!;
+    assert.equal(a.observe('usd', 0.9).length, 1);
+    assert.ok(warnings.some((w) => /could not persist/.test(w)));
+    assert.equal(existsSync(alertStateFile(dir) + '.lock'), false);
+  });
+
+  it('a busy/orphaned lock gives a bounded warning while the run can continue', () => {
+    const dir = tmpDir();
+    writeFileSync(alertStateFile(dir) + '.lock', '');
+    const warnings: string[] = [];
+    const a = createRunAlerts({ ...options(dir, 'locked'), onWarning: (w) => warnings.push(w) })!;
+    const start = performance.now();
+    assert.equal(a.observe('usd', 0.9).length, 1, 'persistence failure does not silence the live alert');
+    assert.ok(performance.now() - start < 2000, 'lock wait must be bounded');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /could not persist .*lock busy/);
+    assert.ok(existsSync(alertStateFile(dir) + '.lock'), 'never steal another writer’s lock');
   });
 });
 

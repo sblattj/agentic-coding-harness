@@ -110,3 +110,11 @@ with metric `context`, threshold `0.85`, value in percentage points and limit
 last-call occupancy can trigger it; unknown windows and turn-total upper bounds
 do not. Context alerts appear in the same dash/web banners and event stream,
 and honor the same cooldown and reset behavior.
+
+Concurrent runs serialize the state read, cooldown check, and atomic write with
+`alerts.json.lock`, preserving other runs' cooldowns. The wait is bounded at
+250 ms. A busy lock or failed write produces a warning and still allows the live
+alert and run to continue; persistence is not guaranteed in that degraded case.
+If a writer crashed leaving the lock, remove `alerts.json.lock` only after that
+writer has stopped. The cooldown reset remains deleting `alerts.json` and
+restarting the observer.

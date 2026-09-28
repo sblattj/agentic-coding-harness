@@ -83,6 +83,34 @@ export function saveAlertState(file: string, state: AlertState): void {
   fs.renameSync(tmp, file);
 }
 
+/** Serialize read/check/write across processes; contention is bounded and nonfatal upstream.
+ * Never steal an old lock: its owner may merely be paused. An orphaned lock
+ * causes a warning after 250ms rather than an indefinite wait or an unsafe write.
+ */
+function withAlertLock<T>(file: string, action: () => T): T {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const lock = `${file}.lock`;
+  const deadline = performance.now() + 250;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  let fd: number;
+  for (;;) {
+    try {
+      fd = fs.openSync(lock, "wx", 0o600);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (performance.now() >= deadline) throw new Error(`alert state lock busy: ${lock}; remove it only if its writer has stopped`);
+      Atomics.wait(sleeper, 0, 0, 5);
+    }
+  }
+  try {
+    return action();
+  } finally {
+    fs.closeSync(fd);
+    fs.unlinkSync(lock);
+  }
+}
+
 /**
  * Validate threshold fractions: each must be a finite number in (0, 1].
  * Returns them sorted ascending and de-duplicated; throws a USAGE
@@ -239,17 +267,32 @@ export function createRunAlerts(opts: RunAlertsOptions): RunAlerts | null {
       if (limit === undefined || !(limit > 0)) return [];
       const family: AlertFamily = metric === "usd" ? "budget" : "near-limit";
       const engine = metric === "context" ? context : family === "budget" ? budget : near;
-      const fired = engine.observe(`run:${opts.runId}:${metric}`, value / limit);
+      const source = `run:${opts.runId}:${metric}`;
+      let fired = engine.observe(source, value / limit);
       if (fired.length === 0) return [];
+      const at = now();
       try {
-        saveAlertState(file, loaded.state);
+        fired = withAlertLock(file, () => {
+          // Reload under the lock, not at instance construction: another run
+          // may have fired meanwhile. Merge only this observation's candidates
+          // so stale snapshots cannot erase other runs or resurrect a reset.
+          const latest = loadAlertState(file);
+          if (latest.warning !== undefined && latest.warning !== loaded.warning) opts.onWarning(latest.warning);
+          const accepted = fired.filter((threshold) => {
+            const last = latest.state.fired[ThresholdAlerter.key(source, threshold)];
+            return last === undefined || at - last >= cooldownMs;
+          });
+          for (const threshold of accepted) latest.state.fired[ThresholdAlerter.key(source, threshold)] = at;
+          if (accepted.length > 0) saveAlertState(file, latest.state);
+          loaded.state.fired = latest.state.fired;
+          return accepted;
+        });
       } catch (err) {
         if (!saveWarned) {
           saveWarned = true;
           opts.onWarning(`alerts: could not persist ${file} (${err instanceof Error ? err.message : String(err)})`);
         }
       }
-      const at = now();
       return fired.map((threshold) => ({ at, family, metric, threshold, value, limit }));
     },
   };
