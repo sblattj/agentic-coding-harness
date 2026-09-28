@@ -13,6 +13,7 @@ import {
   type KiroEffective,
   type UsageAvailability,
 } from "./types.ts";
+import { VerifyResultSchema, type VerifyResult } from "./verify.ts";
 
 // Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
 // record (source:"external") validates without inventing a local pid, cwd, or
@@ -60,6 +61,19 @@ export interface RunRecord {
   // --- custom agents (#37/#38); absent on built-in adapter runs ---
   metering?: "tap" | "none"; // "none": no usage source — tokens/cost are n/a, not 0
   command?: string[]; // resolved argv, prompt redacted as <prompt:N chars>
+  // --- outcome scoring + repeat trials (0.11.0, #29/#57/#89) ---
+  /** Post-run checker verdict (`ach run --verify`); absent when no checker ran. */
+  verify?: VerifyResult;
+  /** `ach run --repeat N` membership: shared group id, 0-based index, group size. */
+  repeat?: RepeatMembership;
+  /** Later `ach regrade` verdicts, oldest first; `verify` is never rewritten. */
+  regrades?: VerifyResult[];
+}
+
+export interface RepeatMembership {
+  group: string;
+  index: number;
+  count: number;
 }
 
 /** One fired budget alert / near-limit warning (mirror of a budget.alert event). */
@@ -141,6 +155,11 @@ export const RunRecordSchema = z.object({
       }),
     )
     .optional(),
+  verify: VerifyResultSchema.optional(),
+  repeat: z
+    .object({ group: z.string().min(1), index: z.number().int().min(0), count: z.number().int().min(1) })
+    .optional(),
+  regrades: z.array(VerifyResultSchema).optional(),
 });
 
 export function registryDir(stateDir: string): string {
