@@ -38,6 +38,8 @@ import {
   parseGeminiChat,
   scanAll,
 } from "../monitors/transcripts.ts";
+import { TRANSCRIPT_SOURCES, isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
+import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
@@ -68,7 +70,8 @@ usage:
                      ACP handshake; sends NO prompt, so it spends no tokens)
   ach watch [--dir <transcriptDir>]
   ach stats [--agent A] [--days N] [--json] [--state-only]
-                (machine claude/codex/gemini transcripts + harness state;
+                (machine claude/codex/gemini transcripts, read-only
+                 amp/goose/qwen stores, + harness state;
                  --state-only skips machine transcript dirs)
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
@@ -246,6 +249,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   });
   const agent = args.values.agent;
   if (!agent) throw new HarnessError("run requires --agent <name>", "USAGE");
+  if (isTranscriptOnlyAgent(agent)) throw new HarnessError(readOnlySourceMessage(agent), "READ_ONLY_SOURCE");
   if (!isKnownAgent(agent)) {
     throw new HarnessError(
       `unknown agent '${agent}' (expected one of: ${AGENTS.join(", ")})`,
@@ -431,12 +435,13 @@ async function cmdWatch(rest: string[]): Promise<number> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
+  type WatchedAgent = "claude" | "codex" | "gemini" | (typeof TRANSCRIPT_SOURCES)[number]["agent"];
   interface Watched {
     file: string;
-    agent: "claude" | "codex" | "gemini";
+    agent: WatchedAgent;
     parse: (file: string) => Promise<
       Array<{
-        agent: "claude" | "codex" | "gemini";
+        agent: WatchedAgent;
         sessionId: string | null;
         timestamp: string | null;
         model: string | null;
@@ -452,6 +457,13 @@ async function cmdWatch(rest: string[]): Promise<number> {
   for (const f of await listByExt(claudeDir, ".jsonl")) watched.push({ file: f, agent: "claude", parse: parseClaudeTranscript });
   for (const f of await listByExt(codexDir, ".jsonl")) watched.push({ file: f, agent: "codex", parse: parseCodexRollout });
   for (const f of await listGeminiChats(geminiDir)) watched.push({ file: f, agent: "gemini", parse: parseGeminiChat });
+  // Read-only transcript sources (amp/goose/qwen). Files present at start
+  // are watched; like the three above, new files need a watch restart.
+  for (const src of TRANSCRIPT_SOURCES) {
+    for (const root of src.defaultRoots(os.homedir())) {
+      for (const f of await listByExt(root, "")) if (src.keep(f)) watched.push({ file: f, agent: src.agent, parse: src.parse });
+    }
+  }
 
   let firstTick = true;
   const tick = async (): Promise<void> => {
@@ -482,6 +494,8 @@ async function cmdWatch(rest: string[]): Promise<number> {
       } catch {
         continue;
       }
+      // A SQLite store (goose sessions.db) grows in its -wal sidecar first.
+      size += await fs.stat(`${w.file}-wal`).then((s) => s.size, () => 0);
       const prev = offsets.files[w.file];
       if (prev === size) continue;
       // First sight or grew: parse the whole file; the parsers dedupe
@@ -550,6 +564,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
     }
 
     if (fresh.length > 0) await appendRecords(fresh);
+    for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
     for (const d of deltas.values()) {
       process.stdout.write(
         `${d.agent.padEnd(8)} ${d.sessionId.slice(0, 12).padEnd(12)} +${fmtInt(d.input)} input +${fmtInt(d.output)} output +${fmtInt(d.cacheRead)} cacheR +${fmtInt(d.cacheWrite)} cacheW ${fmtUsd(d.cost)}\n`,
@@ -643,9 +658,9 @@ async function cmdStats(rest: string[]): Promise<number> {
     allowPositionals: true,
   });
   const agent = args.values.agent;
-  if (agent && !isKnownAgent(agent)) {
+  if (agent && !isKnownAgent(agent) && !isTranscriptOnlyAgent(agent)) {
     throw new HarnessError(
-      `unknown agent '${agent}' (expected one of: ${AGENTS.join(", ")})`,
+      `unknown agent '${agent}' (expected one of: ${[...AGENTS, ...TRANSCRIPT_SOURCES.map((s) => s.agent)].join(", ")})`,
       "UNKNOWN_AGENT",
     );
   }
@@ -708,6 +723,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     }
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
+  for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
 
   const agg = aggregate(records);
 
