@@ -24,6 +24,61 @@ export function resolveDirFlag(
   return named ?? dir;
 }
 
+// ---------- argv preprocessing (#101/#104) ----------
+
+/**
+ * True when argv asks for help: a standalone `-h`/`--help` token before any
+ * `--` end-of-options marker. After `--` everything is a positional (a
+ * literal "--help" prompt word), so the scan stops there.
+ */
+export function wantsHelp(argv: readonly string[]): boolean {
+  for (const tok of argv) {
+    if (tok === "--") return false;
+    if (tok === "-h" || tok === "--help") return true;
+  }
+  return false;
+}
+
+/**
+ * Rewrite the space-separated form of the given long flags (`["--flag",
+ * value]`) into the unambiguous `--flag=value` form BEFORE parseArgs sees
+ * them (#104), so a value that starts with `-` is taken as the flag's
+ * argument instead of being rejected as ambiguous. The `=` form passes
+ * through untouched; everything after a `--` separator is positional and is
+ * left alone. A trailing flag with no following token is left as-is for
+ * parseArgs to reject as a one-line usage error.
+ */
+export function joinOptionValues(argv: readonly string[], flags: readonly string[]): string[] {
+  const exact = new Set(flags.map((f) => `--${f}`));
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i]!;
+    if (tok === "--") {
+      out.push(...argv.slice(i));
+      return out;
+    }
+    if (exact.has(tok) && i + 1 < argv.length) {
+      out.push(`${tok}=${argv[i + 1]!}`);
+      i += 1;
+      continue;
+    }
+    out.push(tok);
+  }
+  return out;
+}
+
+/**
+ * `--extra-args` values across occurrences (#104): the flag is repeatable
+ * (`multiple: true`), each occurrence still splits on spaces for backwards
+ * compatibility, and the tokens accumulate in order — so an argument with
+ * spaces can be passed one argv token per occurrence. undefined when the
+ * flag never appeared (RunSpec keeps extraArgs optional).
+ */
+export function extraArgsFromValues(values: readonly string[] | undefined): string[] | undefined {
+  if (values === undefined) return undefined;
+  return values.flatMap((v) => v.split(" ")).filter(Boolean);
+}
+
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 function clock(ts: number): string {
