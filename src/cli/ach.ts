@@ -1565,5 +1565,14 @@ if (invokedAsCli()) {
       process.stderr.write(`harness: unexpected error — ${msg}\n`);
       return 1;
     })
-    .then((code) => process.exit(code));
+    .then(async (code) => {
+      // stdout/stderr pipes are asynchronous on some supported platforms.
+      // A forced exit may otherwise discard the tail of help or stats JSON.
+      // Empty writes enqueue callbacks behind every command's prior output;
+      // preserve forced shutdown only after both streams have flushed.
+      await Promise.all([process.stdout, process.stderr].map((stream) =>
+        new Promise<void>((resolve) => stream.write("", () => resolve())),
+      ));
+      process.exit(code);
+    });
 }
