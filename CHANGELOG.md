@@ -2,6 +2,19 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [Unreleased]
+
+### Fixed
+
+- `ach <subcommand> --help` / `-h` prints that subcommand's usage block and exits 0 for every subcommand, instead of crashing with `ERR_PARSE_ARGS_UNKNOWN_OPTION`. After `--`, a `--help` token stays a literal positional. Unknown options still error, but as a one-line usage error instead of a stack trace (#101).
+- `--extra-args "--flag value"` (space-separated) now works, not just `--extra-args="..."`; the flag may be repeated, accumulating one argv token per occurrence, and a valueless trailing `--extra-args` is a one-line usage error (#104).
+- The claude adapter forwards `--model <m>` to the Claude Code CLI; previously `ach run --agent claude --model <m>` silently ran on the account default model (#102).
+- `claude-opus-5-5` and `claude-sonnet-5-5` are priced (mirrored from the `-5` family, provenance `estimated`), and a missing exact entry now falls back to the nearest family entry as an estimate instead of `cost n/a`; models with no family match still warn and stay unpriced (#103).
+
+### Added
+
+- `AGENTIC_CODING_HARNESS_PRICING_OVERRIDE` env var: path to a JSON pricing-override file that extends/overrides bundled prices at lookup time, so new models can be priced without waiting for a release. Missing file is a no-op; a malformed file warns once and never crashes (#103).
+
 ## [0.11.1] - 2026-09-28
 
 ### Fixed
