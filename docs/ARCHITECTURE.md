@@ -78,7 +78,11 @@ loop. All four `budget` fields of `RunSpec`: `budget.usd` aborts with `exitStatu
 aborts with `"turn_limit"` on the crossing step, only when the adapter doesn't enforce it itself
 (`adapter.enforcesBudget`); `budget.wallMs` and `budget.idleMs` abort with `"timeout"` when total
 run time — or the gap since the last event — exceeds the ceiling. Driver enforcement verdicts
-override the adapter's own exit verdict.
+override the adapter's own exit verdict. An adapter `error` that carries an outage signature
+(spawn `ENOENT`/`EACCES`, or an exit before the first agent-activity event) is reclassified
+`"unavailable"` by `core/availability.ts` — no verdict about the task, excluded from success
+rates. The full `exitStatus` table and the opt-in CLI exit-code ladder are in
+[EXIT-CODES.md](EXIT-CODES.md).
 
 ### Run registry
 
