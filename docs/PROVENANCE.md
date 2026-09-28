@@ -58,6 +58,7 @@ in the same fields.
 | `ach stats` | `cost` | per `--cost-mode` | `auto`: reported where the line carried a cost, else computed. `calculate`: computed. `display`: reported, or `n/a`. A mixed bucket is `computed` (the split is in `costBySource`). |
 | `ach stats --json` | `costBySource.reported` / `.computed` | as named | |
 | `ach stats --json` | `records`, `costDisagreements` | untagged | Counts of rows ach read, not measurements. |
+| `ach stats --json` | `skippedRunRecords` | untagged | Registry files under `<stateDir>/runs` that failed to parse. Present only when > 0; each is named on stderr. |
 | `ach report` HTML | input / output / cache / reasoning | reported | `n/a` when unavailable. |
 | `ach report` HTML | cost USD | reported, or computed | `reported` when the RunResult's token records carry provider `costUsd`. `computed` (`*`) when it falls back to `totalCost` (pricer). |
 | `ach report` HTML | context | estimated | `ctx ≈ N tok`. |

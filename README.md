@@ -218,7 +218,10 @@ ach run --agent <claude|opencode|kiro|codex|gemini|null|custom|descriptor> [--mo
             claude only: [--claude-default-config]   # default CLAUDE_CONFIG_DIR (keychain OAuth)
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach watch [--transcript-dir <root>]           # live per-session token deltas
-ach stats [--agent A] [--days N] [--json] [--state-only] [--transcript-dir <root>]
+ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--json] [--state-only]
+            [--transcript-dir <root>]
+            # window is [--since, --until): since inclusive, until EXCLUSIVE (a record
+            # stamped exactly at --until is not counted); --until alone = everything before it
 ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--state-dir <stateDir>]
             # re-derive RunRecord totals from raw transcripts; exit 1 on drift
 ach emit --input events.json --format atif|otel|langfuse [--out path]
