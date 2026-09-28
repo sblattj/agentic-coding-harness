@@ -37,7 +37,7 @@ const SERVER = join(FIXTURE_DIR, 'fake-acp-server.ts');
 // CLI wrapper re-spawns node, so a SIGKILL would land on the wrapper and the
 // real server would outlive it — which is exactly what the SIGKILL test proves.
 const REPO_ROOT = join(import.meta.dirname, '..');
-const SERVER_ARGV = ['--import', 'tsx', SERVER];
+const SERVER_ARGV = (process.versions as { bun?: string }).bun ? [SERVER] : ['--import', 'tsx', SERVER];
 
 const TMP = mkdtempSync(join(tmpdir(), 'kiro-acp-test-'));
 const clients: KiroAcpClient[] = [];
@@ -65,13 +65,16 @@ function makeClient(
 }
 
 /** Drain notifications in the background so the queue never back-pressures. */
-function collectNotifications(client: KiroAcpClient): {
+function collectNotifications(client: KiroAcpClient, beforeRecord?: (n: AcpNotification) => Promise<void>): {
   seen: AcpNotification[];
   closed: Promise<void>;
 } {
   const seen: AcpNotification[] = [];
   const closed = (async () => {
-    for await (const n of client.notifications) seen.push(n);
+    for await (const n of client.notifications) {
+      if (beforeRecord) await beforeRecord(n);
+      seen.push(n);
+    }
   })();
   return { seen, closed };
 }
@@ -211,25 +214,50 @@ describe('KiroAcpClient handshake (fixture replay)', () => {
     assert.deepEqual(methods, ['initialize', 'session/new', 'session/set_model', 'session/prompt']);
   });
 
-  it('surfaces the recorded session/update notifications', async () => {
-    const client = makeClient('ok');
-    const { seen } = collectNotifications(client);
-    const receipt = await client.handshake({ cwd: TMP });
-    await client.prompt(receipt.sessionId, 'ping');
-    // The prompt result and the notifications that precede it arrive in the
-    // same stdout chunk, and the collector drains the queue one microtask per
-    // item — so `await prompt()` does NOT imply the collector has caught up.
-    // Poll to a bounded deadline instead of racing it (observed failing ~1 run
-    // in 3 under full-suite load).
-    for (let i = 0; i < 100 && !seen.some((n) => n.method === '_kiro.dev/metadata'); i++) {
-      await sleep(10);
-    }
-    const methods = seen.map((n) => n.method);
-    assert.ok(methods.includes('session/update'));
-    assert.ok(methods.includes('_kiro.dev/session/update'));
-    assert.ok(methods.includes('_kiro.dev/metadata'));
-    await client.close();
-  });
+  for (const delayedConsumer of [false, true]) {
+    it(`surfaces the recorded session/update notifications${delayedConsumer ? ' with a paused collector' : ''}`, { timeout: 10_000 }, async () => {
+      const client = makeClient('ok');
+      let release!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const paused = new Promise<void>((resolve) => { reached = resolve; });
+      const { seen, closed } = collectNotifications(client, delayedConsumer ? async (n) => {
+        if (n.method === 'session/update') {
+          reached();
+          await gate;
+        }
+      } : undefined);
+      try {
+        const receipt = await client.handshake({ cwd: TMP });
+        await client.prompt(receipt.sessionId, 'ping');
+        if (delayedConsumer) {
+          await paused;
+          // Control: the old metadata predicate succeeds while the required
+          // session/update is still waiting in the asynchronous collector.
+          assert.ok(seen.some((n) => n.method === '_kiro.dev/metadata'));
+          assert.ok(!seen.some((n) => n.method === 'session/update'));
+        }
+        // The response follows every replayed notification on the wire, but
+        // prompt() does not await the consumer. close() closes the queue and
+        // `closed` resolves only after its buffered notifications are drained.
+        await client.close();
+      } finally {
+        release();
+        await client.close();
+        await closed;
+      }
+      const methods = seen.map((n) => n.method);
+      assert.ok(methods.includes('session/update'));
+      assert.ok(methods.includes('_kiro.dev/session/update'));
+      assert.ok(methods.includes('_kiro.dev/metadata'));
+      // Check the complete payload sequence too: an early sentinel cannot
+      // hide a missing final accounting notification or a dropped update.
+      const promptStart = PROMPT_FIXTURE.findIndex((n) => n.method === '_kiro.dev/session/update');
+      const expected = PROMPT_FIXTURE.slice(promptStart).filter((n) => typeof n.method === 'string');
+      const actualStart = seen.findIndex((n) => n.method === '_kiro.dev/session/update');
+      assert.deepEqual(seen.slice(actualStart), expected.map((n) => ({ method: n.method, params: n.params })));
+    });
+  }
 
   it('surfaces the governance notice for the mcp-fail scenario', async () => {
     const client = makeClient('mcp-fail');
