@@ -98,7 +98,7 @@ import {
 } from "./time-window.ts";
 import { cmdReport } from "./report.ts";
 import { runContextRows } from "./context-stats.ts";
-import { listRunRecords } from "../core/registry.ts";
+import { scanRunRecords, skippedRunRecordsWarning } from "../core/registry.ts";
 import { cmdDash } from "./dash.ts";
 import { statsExtras } from "./usage-render.ts";
 import { resolvePlan } from "../core/plans.ts";
@@ -1107,7 +1107,10 @@ async function cmdStats(rest: string[]): Promise<number> {
     ...(await readAllRecords({ agent, sinceTs })),
     ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs }) : []),
   ].filter((r) => inWindow(Date.parse(r.ts), window));
-  const runCwd = cwdIndex(listRunRecords(stateDir()));
+  // One registry scan feeds both the cwd index and the run rollups; records
+  // that fail to parse are counted (skippedRunRecords), never dropped silently.
+  const registryScan = scanRunRecords(stateDir());
+  const runCwd = cwdIndex(registryScan.records);
   let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript" })[] = stateRecords.map((r) => ({
     source: "state",
     extra: r.extra,
@@ -1168,6 +1171,9 @@ async function cmdStats(rest: string[]): Promise<number> {
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
   for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
+  const skippedRunRecords = registryScan.skipped.length;
+  const skippedWarning = skippedRunRecordsWarning(stateDir(), registryScan.skipped);
+  if (skippedWarning) process.stderr.write(skippedWarning + "\n");
 
   if (wantProject !== undefined) records = records.filter((r) => projectMatches(r.cwd, wantProject, projectAliases));
   disagreements.push(...records.flatMap((r) => r.costDisagreement ? [r.costDisagreement] : []));
@@ -1188,7 +1194,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     );
   }
   // Run records from the registry, honouring the full #26 [since, until) window.
-  const windowedRunRecords = listRunRecords(stateDir()).filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)));
+  const windowedRunRecords = registryScan.records.filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)));
   // Run outcomes (#60) from the run registry: shown only when there are runs,
   // so the historical {total, byAgent, byDay} shape is untouched otherwise.
   const runRecords = windowedRunRecords.filter((r) => !agent || r.agent === agent);
@@ -1265,6 +1271,8 @@ async function cmdStats(rest: string[]): Promise<number> {
           // #37: present only when metering=none runs exist.
           ...(unmetered.runs > 0 ? { unmetered } : {}),
           ...(repeatGroups.length > 0 ? { byRepeatGroup: repeatGroups } : {}),
+          // Registry files that failed to parse (not windowed: their time is unknown).
+          ...(skippedRunRecords > 0 ? { skippedRunRecords } : {}),
         },
         null,
         2,
@@ -1279,6 +1287,7 @@ async function cmdStats(rest: string[]): Promise<number> {
         process.stdout.write(line(`source: ${source}`, bucket, bucket.provenance) + "\n");
       }
     }
+    if (skippedRunRecords > 0) process.stdout.write(`skipped   ${fmtInt(skippedRunRecords)} unreadable run record(s) (details on stderr)\n`);
     if (disagreements.length > 0) process.stdout.write(`disagree  ${disagreements.length} record(s) where reported and computed cost differ by >${COST_DISAGREEMENT_PCT}% (details on stderr)\n`);
     if (unmetered.runs > 0) {
       process.stdout.write(`unmetered runs=${fmtInt(unmetered.runs)} tokens=n/a cost=n/a\n`);

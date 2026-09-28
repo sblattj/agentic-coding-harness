@@ -10,7 +10,8 @@ import { PACE_WINDOWS, paceFromSamples, type Pace, type PaceSample } from "../co
 import {
   effectiveStatus,
   isLive,
-  listRunRecords,
+  scanRunRecords,
+  skippedRunRecordsWarning,
   type RunRecord,
 } from "../core/registry.ts";
 import { collectQuota, dashQuotaCell, type QuotaRow } from "../core/quota.ts";
@@ -275,6 +276,8 @@ export interface FrameOptions {
   tracker?: PaceTracker;
   /** Rows from collectQuota (#17): adds the QUOTA column; omitted = legacy frame. */
   quota?: QuotaRow[];
+  /** Registry files that failed to parse; > 0 adds a warning line above the footer. */
+  skippedRunRecords?: number;
 }
 
 /** One rendered dashboard frame. Exported for tests (pure: no TTY, no I/O). */
@@ -326,6 +329,10 @@ export function frame(
     lines.push(paceRow(r, (opts.tracker ?? new PaceTracker()).pace(r, now, opts.budgetUsd)));
   }
   lines.push("");
+  if (opts.skippedRunRecords !== undefined && opts.skippedRunRecords > 0) {
+    const text = `skipped ${opts.skippedRunRecords} unreadable run record(s) — run \`ach dash --json\` for details on stderr`;
+    lines.push(ansi ? `\x1b[33m${text}\x1b[0m` : text);
+  }
   lines.push(footer(visible));
   return lines.join("\n");
 }
@@ -394,8 +401,11 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
     drawing = true;
     refreshQuota();
     let recs: RunRecord[];
+    let skippedRunRecords = 0;
     try {
-      recs = listRunRecords(dir);
+      const scan = scanRunRecords(dir);
+      recs = scan.records;
+      skippedRunRecords = scan.skipped.length;
       if (!stateOnly) {
         if (Date.now() - transcriptAt > 30_000) {
           transcriptRows = await transcriptView(dir, recs);
@@ -408,7 +418,7 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
     }
     drawing = false;
     process.stdout.write(
-      "\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi, { ...frameOpts, quota: quota ?? [] }) + "\n",
+      "\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi, { ...frameOpts, quota: quota ?? [], skippedRunRecords }) + "\n",
     );
   };
 
@@ -456,7 +466,10 @@ export async function cmdDash(rest: string[]): Promise<number> {
     if (!args.values.json) {
       process.stderr.write("dash: stdout is not a TTY — dumping JSON (pass --json to silence this hint)\n");
     }
-    const records = listRunRecords(dir);
+    const scan = scanRunRecords(dir);
+    const records = scan.records;
+    const skippedWarning = skippedRunRecordsWarning(dir, scan.skipped);
+    if (skippedWarning) process.stderr.write(skippedWarning + "\n");
     if (!args.values["state-only"]) records.push(...await transcriptView(dir, records));
     const recs = records.map((r) => ({
       ...r,

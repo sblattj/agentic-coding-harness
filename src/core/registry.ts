@@ -187,15 +187,25 @@ function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
   return typeof e === "object" && e !== null && "code" in e;
 }
 
-function parseRunRecord(text: string): RunRecord | null {
+type ParsedRunRecord = { ok: true; record: RunRecord } | { ok: false; reason: string };
+
+function parseRunRecordDetailed(text: string): ParsedRunRecord {
   let json: unknown;
   try {
     json = JSON.parse(text);
-  } catch {
-    return null;
+  } catch (e) {
+    return { ok: false, reason: `invalid JSON: ${e instanceof Error ? e.message : String(e)}` };
   }
   const parsed = RunRecordSchema.safeParse(json);
-  return parsed.success ? (parsed.data as RunRecord) : null;
+  if (parsed.success) return { ok: true, record: parsed.data as RunRecord };
+  const issue = parsed.error.issues[0];
+  const where = issue && issue.path.length > 0 ? issue.path.join(".") : "(root)";
+  return { ok: false, reason: `schema: ${where}: ${issue?.message ?? "invalid"}` };
+}
+
+function parseRunRecord(text: string): RunRecord | null {
+  const r = parseRunRecordDetailed(text);
+  return r.ok ? r.record : null;
 }
 
 export function readRunRecord(stateDir: string, runId: string): RunRecord | null {
@@ -231,14 +241,28 @@ export function resolveRawTranscript(stateDir: string, rec: RunRecord): string {
   return findArchivedRaw(stateDir, path.basename(stored)) ?? stored;
 }
 
-export function listRunRecords(stateDir: string): RunRecord[] {
+/** A `<stateDir>/runs/*.json` file that could not be parsed as a RunRecord. */
+export interface SkippedRunRecord {
+  file: string;
+  reason: string;
+}
+
+/**
+ * Every parseable run record (newest first) plus the files that were not.
+ * A file that is not JSON or fails the schema is COUNTED in `skipped` so
+ * callers can surface it — never dropped silently. A file that disappears
+ * between readdir and read (the atomic-rename / prune race) is not a
+ * malformed record and is ignored, as before.
+ */
+export function scanRunRecords(stateDir: string): { records: RunRecord[]; skipped: SkippedRunRecord[] } {
   let names: string[];
   try {
     names = fs.readdirSync(registryDir(stateDir));
   } catch {
-    return [];
+    return { records: [], skipped: [] };
   }
-  const out: RunRecord[] = [];
+  const records: RunRecord[] = [];
+  const skipped: SkippedRunRecord[] = [];
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     let text: string;
@@ -247,10 +271,25 @@ export function listRunRecords(stateDir: string): RunRecord[] {
     } catch {
       continue;
     }
-    const rec = parseRunRecord(text);
-    if (rec) out.push(rec);
+    const r = parseRunRecordDetailed(text);
+    if (r.ok) records.push(r.record);
+    else skipped.push({ file: name, reason: r.reason });
   }
-  return out.sort((a, b) => b.startedAt - a.startedAt);
+  records.sort((a, b) => b.startedAt - a.startedAt);
+  return { records, skipped };
+}
+
+/** One stderr-ready warning line for skipped records, or null when none were skipped. */
+export function skippedRunRecordsWarning(stateDir: string, skipped: readonly SkippedRunRecord[]): string | null {
+  if (skipped.length === 0) return null;
+  const MAX = 3;
+  const shown = skipped.slice(0, MAX).map((s) => `${s.file} (${s.reason})`).join("; ");
+  const more = skipped.length > MAX ? `; +${skipped.length - MAX} more` : "";
+  return `[warn] registry: skipped ${skipped.length} unreadable run record(s) in ${registryDir(stateDir)}: ${shown}${more}`;
+}
+
+export function listRunRecords(stateDir: string): RunRecord[] {
+  return scanRunRecords(stateDir).records;
 }
 
 /** Spec public-API helper: just the runIds of listRunRecords, newest first. */
