@@ -236,7 +236,7 @@ td.num.succ { color: var(--cyan); }
     if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
     return String(Math.round(n));
   }
-  function fmtCost(n) { return "$" + (Number(n) || 0).toFixed(4); }
+  function fmtCost(n) { return n == null || !isFinite(n) ? "n/a" : "$" + Number(n).toFixed(4); }
   function fmtDur(ms) {
     ms = Number(ms) || 0;
     return ms >= 1000 ? (ms / 1000).toFixed(2) + "s" : Math.round(ms) + "ms";
@@ -358,6 +358,7 @@ td.num.succ { color: var(--cyan); }
         var nd = document.createElement("td");
         nd.className = "num" + (cells[m][1] ? " " + cells[m][1] : "");
         nd.textContent = cells[m][2](row[cells[m][0]]);
+        if (cells[m][0] === "avgCostUsd" && row.unpricedRuns) nd.textContent += " (" + row.unpricedRuns + " unpriced)";
         tr.appendChild(nd);
       }
       if (showOutcome) {
