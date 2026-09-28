@@ -245,6 +245,22 @@ describe("custom adapter through the driver (fake CLI)", () => {
     assert.equal(existsSync(marker), false);
   });
 
+  it("--template-shell refuses extraArgs instead of silently turning them into $0/$1", async () => {
+    const stateDir = await fs.mkdtemp(path.join(tmp, "state-"));
+    const adapter = createCustomAdapter({ name: CUSTOM_AGENT, template: `'${NODE}' '${fake}' {prompt}`, shell: true });
+    const driver = createDriver({ adapters: { custom: adapter }, stateDir });
+    await assert.rejects(driver.run("custom", { prompt: "p", cwd: workspace, extraArgs: ["--foo"] }), /extraArgs are not supported/);
+  });
+
+  it("argv mode appends extraArgs after the template (and records them)", async () => {
+    const stateDir = await fs.mkdtemp(path.join(tmp, "state-"));
+    const adapter = createCustomAdapter({ name: CUSTOM_AGENT, template: `'${NODE}' '${fake}' {prompt}` });
+    const driver = createDriver({ adapters: { custom: adapter }, stateDir, registry: { stateDir } });
+    const res = await driver.run("custom", { prompt: "p", cwd: workspace, extraArgs: ["--foo"] });
+    assert.deepEqual(echoed(res.events as Array<Record<string, unknown>>).argv, ["p", "--foo"]);
+    assert.deepEqual(listRunRecords(stateDir)[0]?.command, [NODE, fake, "<prompt:1 chars>", "--foo"]);
+  });
+
   it("stdin mode delivers the prompt with no argv placeholder", async () => {
     const stateDir = await fs.mkdtemp(path.join(tmp, "state-"));
     const adapter = createCustomAdapter({ name: CUSTOM_AGENT, template: `'${NODE}' '${fake}' --quiet`, promptVia: "stdin" });

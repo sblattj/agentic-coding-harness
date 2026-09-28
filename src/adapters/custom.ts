@@ -302,6 +302,11 @@ export function createCustomAdapter(config: CustomAgentConfig): CustomDriverAdap
     const workspace = typeof spec.cwd === 'string' && spec.cwd !== '' ? spec.cwd : process.cwd();
     const resolved = resolveCommand(config, { prompt: spec.prompt, model: spec.model, workspace });
     const extra = spec.extraArgs ?? [];
+    // Under `sh -c '<script>' a b`, a/b become $0/$1 and never reach the
+    // command — refuse rather than drop them silently.
+    if (config.shell === true && extra.length > 0) {
+      throw new HarnessError('extraArgs are not supported with --template-shell; put them in the template', 'USAGE');
+    }
     let metered = false;
     const handle = runJsonlCli({
       spec: {
