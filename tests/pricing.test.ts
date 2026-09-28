@@ -281,3 +281,129 @@ describe('external LiteLLM-style cost map', () => {
     assert.ok(p.drainWarnings().some((w) => /failed to load cost map/.test(w)));
   });
 });
+
+describe('issue #103: claude-opus-5-5 / claude-sonnet-5-5', () => {
+  it('prices both -5-5 flagships exactly (mirrored -5 family rates), no warnings', () => {
+    const p = createPricer();
+    // Mirrored per 1M: sonnet-5-5 2/10/0.2/2.5; opus-5-5 5/25/0.5/6.25.
+    assert.equal(p.price(rec('claude-sonnet-5-5', 1_000_000, 1_000_000, 1_000_000, 1_000_000)), 2 + 10 + 0.2 + 2.5);
+    assert.equal(p.price(rec('claude-opus-5-5', 1_000_000, 1_000_000, 1_000_000, 1_000_000)), 5 + 25 + 0.5 + 6.25);
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+
+  it('dated -5-5 variants resolve through resolveAlias to the exact entry (no estimate)', () => {
+    const p = createPricer();
+    assert.equal(resolveAlias('claude-sonnet-5-5-20261001'), 'claude-sonnet-5-5');
+    assert.equal(p.price(rec('anthropic/claude-opus-5-5-20261001', 1_000_000, 0)), 5);
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+
+  it('family fallback prices an unknown dated variant at its family rate, marked estimated once per model', () => {
+    const p = createPricer();
+    // claude-sonnet-5-6-20261101 has no exact entry anywhere; the longest
+    // family key that is a segment-prefix of the alias is claude-sonnet-5,
+    // so the record prices at sonnet-5 rates (2/10 per 1M) as an estimate.
+    assert.equal(p.price(rec('claude-sonnet-5-6-20261101', 1_000_000, 1_000_000)), 2 + 10);
+    const warnings = p.drainWarnings();
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /family fallback "claude-sonnet-5" \(provenance: estimated\)/);
+    // Warned once per model, not per record.
+    assert.equal(p.price(rec('claude-sonnet-5-6-20261101', 1_000_000, 0)), 2);
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+
+  it('models with no family match still warn and price NaN — never silently priced', () => {
+    const p = createPricer();
+    // Dated variant of an unrelated model: no exact entry, no >=2-segment
+    // family prefix in the table (unpriced-state-records behavior intact).
+    assert.ok(Number.isNaN(p.price(rec('mystery-model-v9-20261101', 1_000, 1_000))));
+    const warnings = p.drainWarnings();
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /unknown model "mystery-model-v9-20261101"/);
+  });
+
+  it('a family-fallback slice in a multi-model record prices instead of voiding the record', () => {
+    const p = createPricer();
+    const multiRec: CanonicalTokenRecord = {
+      ...rec('claude-haiku-4-5', 0, 0, 0, 0),
+      extra: {
+        raw: {
+          models: [
+            { model: 'claude-sonnet-5-6-20261101', input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+            { model: 'claude-opus-5-5', input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+          ],
+        },
+      },
+    };
+    // sonnet-5-6 estimated at sonnet-5 rates ($2) + opus-5-5 exact ($5).
+    assert.equal(p.price(multiRec), 2 + 5);
+    assert.ok(p.drainWarnings().some((w) => /family fallback "claude-sonnet-5" \(provenance: estimated\)/.test(w)));
+  });
+});
+
+describe('pricing override file (AGENTIC_CODING_HARNESS_PRICING_OVERRIDE)', () => {
+  const withEnv = (value: string | undefined, fn: () => void): void => {
+    const prev = process.env.AGENTIC_CODING_HARNESS_PRICING_OVERRIDE;
+    if (value === undefined) delete process.env.AGENTIC_CODING_HARNESS_PRICING_OVERRIDE;
+    else process.env.AGENTIC_CODING_HARNESS_PRICING_OVERRIDE = value;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env.AGENTIC_CODING_HARNESS_PRICING_OVERRIDE;
+      else process.env.AGENTIC_CODING_HARNESS_PRICING_OVERRIDE = prev;
+    }
+  };
+  const tmpMap = (name: string, content: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'harness-pricing-'));
+    const path = join(dir, name);
+    writeFileSync(path, content);
+    return path;
+  };
+
+  it('extends the bundled table: a brand-new model prices from the override', () => {
+    const path = tmpMap('prices.json', JSON.stringify({ 'brand-new-model': { input: 3, output: 4, cache_read: 0, cache_creation: 0 } }));
+    withEnv(path, () => {
+      const p = createPricer();
+      assert.equal(p.price(rec('brand-new-model', 1_000_000, 0)), 3);
+      assert.deepEqual(p.drainWarnings(), []);
+    });
+  });
+
+  it('wins over bundled prices: claude-opus-5-5 repriced from the override', () => {
+    const path = tmpMap('prices.json', JSON.stringify({ 'claude-opus-5-5': { input: 1, output: 2, cache_read: 0.1, cache_creation: 0 } }));
+    withEnv(path, () => {
+      const p = createPricer();
+      assert.equal(p.price(rec('claude-opus-5-5', 1_000_000, 1_000_000, 1_000_000)), 1 + 2 + 0.1);
+      assert.deepEqual(p.drainWarnings(), []);
+    });
+  });
+
+  it('a missing override file is a no-op: bundled prices, zero warnings', () => {
+    withEnv(join(tmpdir(), 'harness-pricing-does-not-exist.json'), () => {
+      const p = createPricer();
+      assert.equal(p.price(rec('claude-sonnet-5-5', 1_000_000, 0)), 2);
+      assert.deepEqual(p.drainWarnings(), []);
+    });
+  });
+
+  it('a malformed override file warns once and does not crash (bundled prices stay)', () => {
+    const path = tmpMap('broken.json', '{not json');
+    withEnv(path, () => {
+      const p = createPricer();
+      assert.equal(p.price(rec('claude-sonnet-5-5', 1_000_000, 0)), 2);
+      const warnings = p.drainWarnings();
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0]!, /failed to load cost map/);
+    });
+  });
+
+  it('an explicit costMapPath still wins over the env override', () => {
+    const envPath = tmpMap('env.json', '{broken');
+    const explicitPath = tmpMap('explicit.json', JSON.stringify({ 'claude-sonnet-5-5': { input: 9, output: 0, cache_read: 0, cache_creation: 0 } }));
+    withEnv(envPath, () => {
+      const p = createPricer(explicitPath);
+      assert.equal(p.price(rec('claude-sonnet-5-5', 1_000_000, 0)), 9);
+      assert.deepEqual(p.drainWarnings(), []);
+    });
+  });
+});

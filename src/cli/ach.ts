@@ -61,7 +61,7 @@ import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer } from "../core/pricing.ts";
-import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, resolveDirFlag } from "./lib.ts";
+import { aggregate, extraArgsFromValues, fmtInt, fmtUsd, formatEventLine, formatSummary, joinOptionValues, resolveDirFlag, wantsHelp } from "./lib.ts";
 import {
   aggregateDims,
   baseCacheRatios,
@@ -419,7 +419,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       "budget-alerts": { type: "string" },
       "warn-at": { type: "string" },
       "on-budget": { type: "string" },
-      "extra-args": { type: "string" },
+      "extra-args": { type: "string", multiple: true },
       // Kiro-only typed config (src/core/types.ts KiroConfig). Ignored for
       // other agents; the driver's RunSpecSchema validates the shape.
       "kiro-transport": { type: "string" },
@@ -483,12 +483,15 @@ async function cmdRun(rest: string[]): Promise<number> {
   };
   // Threshold alerts (#20): parsed with the other budget flags, before launch.
   const alertBudget = alertFlagsToBudget(args.values, budget);
+  // #104: `--extra-args` is repeatable; each occurrence splits on spaces
+  // (backwards compatibility) and the tokens accumulate in order.
+  const extraArgs = extraArgsFromValues(args.values["extra-args"]);
   const spec: RunSpec = {
     prompt,
     model: args.values.model,
     resume: args.values.resume,
     budget: { ...budget, ...alertBudget },
-    extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
+    ...(extraArgs !== undefined ? { extraArgs } : {}),
     ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
     ...(trialFlags.labels.variant !== undefined ? { variant: trialFlags.labels.variant } : {}),
   };
@@ -691,7 +694,7 @@ async function cmdPreflight(rest: string[]): Promise<number> {
       "kiro-transport": { type: "string" },
       "kiro-startup-ms": { type: "string" },
       "kiro-mcp-server": { type: "string", multiple: true },
-      "extra-args": { type: "string" },
+      "extra-args": { type: "string", multiple: true },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -716,7 +719,8 @@ async function cmdPreflight(rest: string[]): Promise<number> {
   // run-time (session/prompt) gate and has no preflight equivalent.
   const startupMs = optPositiveInt(args.values["kiro-startup-ms"], "--kiro-startup-ms");
   const mcpServers = optAcpMcpServers(args.values["kiro-mcp-server"], "--kiro-mcp-server");
-  const extraArgs = args.values["extra-args"]?.split(" ").filter(Boolean);
+  // #104: repeatable, space-split per occurrence — same rule as `run`.
+  const extraArgs = extraArgsFromValues(args.values["extra-args"]);
   const receipt = await kiroPreflight({
     cwd: args.values.cwd ?? process.cwd(),
     ...(args.values.model !== undefined ? { model: args.values.model } : {}),
@@ -1492,8 +1496,53 @@ async function cmdEmit(rest: string[]): Promise<number> {
 
 // ---------------------------------------------------------------- dispatch
 
+/** Every subcommand `main` dispatches to (keep in sync with the switch below).
+ *  Each accepts -h/--help (#101), answered from the shared USAGE text. */
+const SUBCOMMANDS = new Set([
+  "run", "preflight", "doctor", "watch", "stats", "audit", "status", "statusline",
+  "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents",
+]);
+
+/**
+ * The lines of the top-level USAGE block that describe one subcommand: from
+ * the first `ach <cmd>` line up to the next command entry, the shared
+ * `--flag` sections, or the `env:` footer. Empty when USAGE has no entry for
+ * the command (callers fall back to the full USAGE).
+ */
+function subcommandUsageLines(cmd: string): string[] {
+  const head = /^  ach (\S+)/;
+  const lines = USAGE.split("\n");
+  const first = lines.findIndex((l) => head.exec(l)?.[1] === cmd);
+  if (first === -1) return [];
+  const out: string[] = [];
+  for (let i = first; i < lines.length; i++) {
+    const line = lines[i]!;
+    const m = head.exec(line);
+    if (i > first && m !== null && m[1] !== undefined && m[1] !== cmd) break;
+    if (i > first && (line === "env:" || /^  --/.test(line))) break;
+    out.push(line);
+  }
+  return out;
+}
+
+/** `ach <cmd> --help` output (#101): the subcommand's own USAGE lines. */
+function subcommandHelp(cmd: string): string {
+  const lines = subcommandUsageLines(cmd);
+  return lines.length > 0 ? ["usage:", ...lines].join("\n") : USAGE;
+}
+
 async function main(argv: string[]): Promise<number> {
-  const [cmd, ...rest] = argv;
+  const [cmd, ...raw] = argv;
+  // #104: the space-separated `--extra-args <value>` form is joined into the
+  // unambiguous `--extra-args=<value>` form before parseArgs (and before the
+  // #101 help scan, so `--extra-args --help` passes --help through as the
+  // flag's VALUE — the next token is always the value).
+  const rest = cmd === "run" || cmd === "preflight" ? joinOptionValues(raw, ["extra-args"]) : raw;
+  // #101: every subcommand accepts -h/--help (usage + exit 0).
+  if (cmd !== undefined && SUBCOMMANDS.has(cmd) && wantsHelp(rest)) {
+    process.stdout.write(subcommandHelp(cmd) + "\n");
+    return 0;
+  }
   switch (cmd) {
     case "run":
       return cmdRun(rest);
@@ -1582,6 +1631,17 @@ if (invokedAsCli()) {
       if (err instanceof HarnessError) {
         process.stderr.write(`harness: ${err.message}\n`);
         return err.exitCode;
+      }
+      // parseArgs usage errors (unknown option, missing/ambiguous value) are
+      // TypeErrors with an ERR_PARSE_ARGS_* code (#101): render the message's
+      // first line as a clean usage error — never a stack trace — and exit
+      // nonzero, without silently swallowing the typo.
+      if (err instanceof TypeError) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (typeof code === "string" && code.startsWith("ERR_PARSE_ARGS_")) {
+          process.stderr.write(`harness: ${err.message.split("\n")[0]}\n`);
+          return EXIT_CODES.error;
+        }
       }
       const msg = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ""}` : String(err);
       process.stderr.write(`harness: unexpected error — ${msg}\n`);
