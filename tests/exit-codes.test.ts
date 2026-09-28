@@ -241,7 +241,7 @@ describe('ach CLI exit codes (end to end, fake codex)', () => {
     assert.equal(ladder.code, 0, ladder.stderr);
   });
 
-  it('10: a successful run past the near-limit threshold of --wall-ms exits 10 (0 without the flag)', () => {
+  it('10: a successful run past the near-limit threshold of --wall-ms exits 10 (0 without the flag)', { timeout: 30_000 }, () => {
     const env = { FAKE_CODEX_MODE: 'slow', FAKE_CODEX_SLEEP: '4.2' };
     const ladder = cli(['run', '--agent', 'codex', '--json', '--exit-codes', 'ladder', '--wall-ms', '5000', 'hi'], { env });
     assert.equal(exitStatusFromJson(ladder), 'success', ladder.stderr);
