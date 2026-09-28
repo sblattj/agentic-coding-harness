@@ -18,6 +18,7 @@ import { OpenCodeAdapter } from '../adapters/opencode.js';
 import { KiroAdapter } from '../adapters/kiro.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { GeminiAdapter } from '../adapters/gemini.js';
+import { NullAdapter } from '../adapters/null.js';
 import { takeOnOutput } from '../adapters/shared.js';
 
 /** Normalize EventTimestamp (ISO string | epoch ms | Date | undefined) to epoch ms. */
@@ -154,7 +155,7 @@ export interface Driver {
   installSignalAbort(runId: string, signals?: readonly NodeJS.Signals[]): () => void;
 }
 
-const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini'] as const;
+const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'null'] as const;
 
 /** Default signals wired by installSignalAbort (#11). */
 const ABORT_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
@@ -183,6 +184,7 @@ export async function defaultAdapters(): Promise<Record<string, AgentAdapter>> {
     kiro: () => new KiroAdapter(),
     codex: () => new CodexAdapter(),
     gemini: () => new GeminiAdapter(),
+    null: () => new NullAdapter(),
   };
   for (const name of ADAPTER_MODULE_NAMES) {
     const make = makers[name];

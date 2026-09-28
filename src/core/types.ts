@@ -21,7 +21,10 @@ import type { AttachmentManifest } from "./attachments.js";
 
 // ---------------------------------------------------------------- agents
 
-export const AGENTS = ["claude", "opencode", "kiro", "codex", "gemini"] as const;
+// "null" (src/adapters/null.ts, issue #55) is the negative-control adapter:
+// no CLI binary, no credentials, deterministic zero-cost usage — exercises
+// the whole run pipeline for free.
+export const AGENTS = ["claude", "opencode", "kiro", "codex", "gemini", "null"] as const;
 export type AgentName = (typeof AGENTS)[number];
 
 export function isKnownAgent(a: string): a is AgentName {

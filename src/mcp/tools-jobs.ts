@@ -118,7 +118,7 @@ export function registerJobTools(
     inputSchema: {
       type: "object",
       properties: {
-        agent: { type: "string", enum: ["claude", "opencode", "kiro", "codex", "gemini"], description: "Agent to run" },
+        agent: { type: "string", enum: ["claude", "opencode", "kiro", "codex", "gemini", "null"], description: "Agent to run" },
         prompt: { type: "string", description: "Prompt sent to the agent" },
         model: { type: "string", description: "Model override" },
         cwd: { type: "string", description: "Working directory for the agent subprocess" },

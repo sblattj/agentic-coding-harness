@@ -38,6 +38,11 @@ const FALLBACK_PRICES: Record<string, ModelPrice> = {
   'gemini-2.5-pro': { input: 1.25, output: 10, cache_read: 0.125, cache_creation: 0 },
   'gemini-3-pro': { input: 2, output: 12, cache_read: 0.2, cache_creation: 0 },
   'gemini-3-flash': { input: 0.5, output: 3, cache_read: 0.05, cache_creation: 0 },
+  // Negative-control null adapter (issue #55, src/adapters/null.ts): no real
+  // model backs a null run, so every rate is 0 — deterministic $0 cost with
+  // no "unknown model" pricer warning, and no reuse of kiro's credits-only
+  // carve-out below.
+  'null': { input: 0, output: 0, cache_read: 0, cache_creation: 0 },
 };
 
 /**

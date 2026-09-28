@@ -23,6 +23,7 @@ const AGENT_DEFAULT_MODELS: Record<(typeof AGENTS)[number], string> = {
   kiro: 'claude-sonnet-4-5',
   codex: 'gpt-5.6',
   gemini: 'gemini-3-flash',
+  null: 'null',
 };
 
 describe('embedded fallback map', () => {
