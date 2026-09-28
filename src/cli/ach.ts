@@ -8,10 +8,9 @@
 // this file is the process entry point (bin execution).
 export * from "../index.ts";
 import fs from "node:fs/promises";
-import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveCommand } from "../core/platform.ts";
+import { isSameEntryPath, resolveCommand } from "../core/platform.ts";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
@@ -1562,17 +1561,15 @@ async function main(argv: string[]): Promise<number> {
  *   real on-disk filename or how the binary is invoked). realpathSync
  *   throws ENOENT on that virtual path since it has no real inode — fall
  *   back to a raw string comparison so the compiled binary still runs
- *   instead of silently exiting 0 with no output.
+ *   instead of silently exiting 0 with no output. On Windows the two sides
+ *   arrive with different separators (`B:/~BUN/root/ach.exe` vs
+ *   `B:\~BUN\root\ach.exe`), so isSameEntryPath compares win32 paths
+ *   separator- and case-insensitively (#39).
  */
 function invokedAsCli(): boolean {
   const argv1 = process.argv[1];
   if (!argv1) return false;
-  const entryPath = fileURLToPath(import.meta.url);
-  try {
-    return realpathSync(argv1) === realpathSync(entryPath);
-  } catch {
-    return argv1 === entryPath;
-  }
+  return isSameEntryPath(argv1, fileURLToPath(import.meta.url));
 }
 
 if (invokedAsCli()) {

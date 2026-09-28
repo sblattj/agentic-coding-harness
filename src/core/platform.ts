@@ -268,3 +268,32 @@ export function spawnTarget(command: string, args: readonly string[], opts: Plat
   const comspec = comspecFor(opts.env, platform);
   return { command: comspec, args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
 }
+
+/**
+ * Whether `argv1` (process.argv[1]) names the same module file as `entryPath`
+ * (fileURLToPath(import.meta.url)). Both sides go through realpath first
+ * (symlinked npm bins, Windows 8.3 short names); a side realpath cannot
+ * resolve (bun's virtual filesystem in a compiled binary) keeps its raw form.
+ * On win32 the comparison is separator- and case-insensitive, since bun hands
+ * the two values over with different separators.
+ */
+export function isSameEntryPath(
+  argv1: string,
+  entryPath: string,
+  opts: { platform?: NodeJS.Platform; realpath?: (p: string) => string } = {},
+): boolean {
+  const platform = opts.platform ?? process.platform;
+  const realpath = opts.realpath ?? ((p: string) => fs.realpathSync.native(p));
+  const resolve = (p: string): string => {
+    try {
+      return realpath(p);
+    } catch {
+      return p;
+    }
+  };
+  const a = resolve(argv1);
+  const b = resolve(entryPath);
+  if (platform !== "win32") return a === b;
+  const norm = (p: string) => path.win32.normalize(p).toLowerCase();
+  return norm(a) === norm(b);
+}
