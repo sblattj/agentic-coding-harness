@@ -624,6 +624,7 @@ function renderMetrics() {
     ["output", last ? K(last.output) : "\u2013", "c-out"],
     ["cache read", last ? K(last.cacheRead) : "\u2013", "c-cr"],
     ["cache write", last ? K(last.cacheWrite) : "\u2013", "c-cw"],
+    ["cache hit", obs && obs.cacheHitRatio != null ? (obs.cacheHitRatio * 100).toFixed(1) + "%" : (last ? "n/a" : "\u2013"), "c-cr"],
     ["cost", obs ? USD(obs.totalCostUsd) : "\u2013", "c-cost"],
     ["duration", obs ? S(obs.durationMs) : "\u2013", "c-el"],
   ];
@@ -633,6 +634,14 @@ function renderMetrics() {
     var d = el("div", "stat");
     d.appendChild(el("div", "k", c[0]));
     d.appendChild(el("div", "v " + c[2], c[1]));
+    box.appendChild(d);
+  });
+  // per-model cache-hit (#69): one compact card per model from obs.byModel
+  (obs && obs.byModel ? obs.byModel : []).forEach(function (m) {
+    var d = el("div", "stat");
+    d.title = m.model + " · in " + K(m.inputTokens) + " · cacheRead " + K(m.cacheReadTokens) + " · cacheWrite " + K(m.cacheWriteTokens);
+    d.appendChild(el("div", "k", "hit " + m.model));
+    d.appendChild(el("div", "v c-cr", m.cacheHitRatio != null ? (m.cacheHitRatio * 100).toFixed(1) + "%" : "n/a"));
     box.appendChild(d);
   });
   var nPts = obs && obs.metrics ? obs.metrics.length : 0;

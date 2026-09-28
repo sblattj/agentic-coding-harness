@@ -159,7 +159,8 @@ describe("harness cli", () => {
     assert.equal(r.code, 0);
     assert.doesNotMatch(r.stderr, /harness:/);
     const out = JSON.parse(r.stdout);
-    assert.deepEqual(Object.keys(out).sort(), ["byAgent", "byDay", "total"]);
+    // Base contract keys, plus the additive #27/#69 keys (tests/stats-dims.test.ts).
+    assert.deepEqual(Object.keys(out).sort(), ["byAgent", "byDay", "byModel", "cacheHitRatio", "total", "unpricedModels"]);
     // 3 stateDir records + 1 scanAll record, with the sess-aaa duplicate
     // counted once (dedupe).
     assert.deepEqual(out.total, {

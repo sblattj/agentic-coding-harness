@@ -288,6 +288,10 @@ function renderMeta() {
   box.appendChild(kv("in", fmtTok(t.inputTokens)));
   box.appendChild(kv("out", fmtTok(t.outputTokens)));
   box.appendChild(kv("cache", fmtTok(t.cacheReadTokens) + "r " + fmtTok(t.cacheWriteTokens) + "w"));
+  // cache-hit = cacheRead / (input + cacheRead + cacheWrite) — same definition
+  // as src/core/cache-ratio.ts; n/a when the run has no prompt tokens.
+  var hitDen = (t.inputTokens || 0) + (t.cacheReadTokens || 0) + (t.cacheWriteTokens || 0);
+  box.appendChild(kv("cache hit", hitDen > 0 ? ((t.cacheReadTokens || 0) / hitDen * 100).toFixed(1) + "%" : "n/a"));
   box.appendChild(kv("cost", fmtCost(t.costUsd)));
   if (t.credits != null) box.appendChild(kv("credits", String(t.credits)));
   var lastTxt = r.lastEvent != null ? String(r.lastEvent) : "";
