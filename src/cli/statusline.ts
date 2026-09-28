@@ -27,6 +27,7 @@ import {
   StatusSnapshotSchema,
   budgetFromEnv,
   computeStatusSnapshot,
+  currentBlockCost,
   deriveBudget,
   writeStateFile,
   type BlockCostProvider,
@@ -242,6 +243,8 @@ export async function cmdStatusline(rest: string[]): Promise<number> {
     ...(maxAgeMs !== undefined ? { maxAgeMs } : {}),
     noCache: v["no-cache"],
     includeTranscripts: v.transcripts,
+    // #18 seam: the open Claude 5h block over the snapshot records.
+    blockCost: currentBlockCost,
   });
   for (const w of res.warnings) process.stderr.write(`ach statusline: ${w}\n`);
   process.stdout.write(res.line + "\n");

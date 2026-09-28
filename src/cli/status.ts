@@ -13,8 +13,9 @@
 // driver writes the same usage into raw/ too and that would double count.
 //
 // Honesty: a number this tool cannot know is null / "n/a", never 0. Block
-// (5-hour window) cost has no source here yet — it stays null until a
-// BlockCostProvider is passed (the seam for #18's block accounting).
+// (5-hour window) cost comes from a BlockCostProvider; the CLI passes
+// currentBlockCost (#18's currentBlock over the snapshot's own records), and
+// a library caller that passes none gets null.
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -26,6 +27,7 @@ import { writeJsonAtomic } from "../core/run-artifacts.ts";
 import { createPricer } from "../core/pricing.ts";
 import { scanAll } from "../monitors/transcripts.ts";
 import { aggregate, fmtUsd, type AggregatableRecord } from "./lib.ts";
+import { currentBlock } from "../core/usage-windows.ts";
 
 /** Bump only on a breaking change (rename/remove/retype). Additive fields do not bump. */
 export const STATUS_SCHEMA_VERSION = 1;
@@ -110,8 +112,29 @@ export const STATUS_JSON_KEYS = [
 /**
  * Seam for 5-hour block accounting (#18): return the current block's cost in
  * USD, or null when unknown. Absent => block.costUsd is null ("n/a").
+ * `records` are the trailing-24h records the snapshot already collected (same
+ * sources as `today`), so a provider need not scan again.
  */
-export type BlockCostProvider = (ctx: { now: number; stateDir: string }) => number | null | Promise<number | null>;
+export type BlockCostProvider = (ctx: {
+  now: number;
+  stateDir: string;
+  records?: readonly AggregatableRecord[];
+}) => number | null | Promise<number | null>;
+
+/**
+ * The default provider `ach status` / `ach statusline` use: the open Claude
+ * 5h block (currentBlock, src/core/usage-windows.ts) over the snapshot's
+ * records. null when no block is open or none of its records is priced.
+ * Limitation: blocks are chained from the trailing-24h records only, so a
+ * block chain of continuous activity older than 24h may start differently
+ * than `ach stats --blocks` over a longer window would place it.
+ */
+export const currentBlockCost: BlockCostProvider = ({ now, records }) => {
+  if (!records) return null;
+  const block = currentBlock(records, now);
+  if (!block || block.records - block.unpricedRecords === 0) return null;
+  return block.costUsd;
+};
 
 export interface SnapshotOptions {
   now?: number;
@@ -250,7 +273,8 @@ export async function computeStatusSnapshot(opts: SnapshotOptions = {}): Promise
     if (!newest || rec.startedAt > newest.rec.startedAt) newest = { rec, status };
   }
 
-  const agg = aggregate(await collectTodayRecords(since, includeTranscripts));
+  const todayRecords = await collectTodayRecords(since, includeTranscripts);
+  const agg = aggregate(todayRecords);
   const byAgent: Record<string, { costUsd: number; records: number }> = {};
   for (const [agent, b] of Object.entries(agg.byAgent).sort(([a], [b]) => a.localeCompare(b))) {
     byAgent[agent] = { costUsd: b.costUsd, records: b.records };
@@ -258,7 +282,7 @@ export async function computeStatusSnapshot(opts: SnapshotOptions = {}): Promise
 
   let blockCostUsd: number | null = null;
   if (opts.blockCost) {
-    const v = await opts.blockCost({ now, stateDir: dir });
+    const v = await opts.blockCost({ now, stateDir: dir, records: todayRecords });
     blockCostUsd = typeof v === "number" && Number.isFinite(v) ? round6(v) : null;
   }
 
@@ -386,7 +410,11 @@ export async function cmdStatus(rest: string[]): Promise<number> {
     if (env.warning) process.stderr.write(`[warn] ${env.warning}\n`);
     budgetUsd = env.usd;
   }
-  const opts: SnapshotOptions = { includeTranscripts: v.transcripts, ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
+  const opts: SnapshotOptions = {
+    includeTranscripts: v.transcripts,
+    blockCost: currentBlockCost,
+    ...(budgetUsd !== undefined ? { budgetUsd } : {}),
+  };
 
   const print = (s: StatusSnapshot) => {
     if (v.json) process.stdout.write(JSON.stringify(s, null, 2) + "\n");
