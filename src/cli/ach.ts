@@ -47,6 +47,8 @@ import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
+import { cmdStatus } from "./status.ts";
+import { cmdStatusline } from "./statusline.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -70,6 +72,16 @@ usage:
   ach stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
                  --state-only skips machine transcript dirs)
+  ach status [--compact|--json] [--transcripts] [--budget-usd N]
+             [--once] [--write-state <path>] [--interval-ms MS=5000]
+                (runs, active runs, trailing-24h spend = \`stats --days 1\`,
+                 budget left; --write-state writes the snapshot atomically,
+                 once with --once, else every --interval-ms; see docs/STATUS.md)
+  ach statusline [--chain "<cmd>"] [--separator " | "] [--chain-timeout-ms MS]
+                 [--cache <path>] [--max-age-ms MS] [--no-cache] [--transcripts]
+                (Claude Code statusLine.command: reads its JSON on stdin, prints
+                 model · session · today · block · budget; --chain keeps your
+                 existing statusline in front)
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -906,6 +918,10 @@ async function main(argv: string[]): Promise<number> {
       return cmdWatch(rest);
     case "stats":
       return cmdStats(rest);
+    case "status":
+      return cmdStatus(rest);
+    case "statusline":
+      return cmdStatusline(rest);
     case "emit":
       return cmdEmit(rest);
     case "report":
