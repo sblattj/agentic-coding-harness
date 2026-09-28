@@ -2,6 +2,35 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.11.0] - 2026-09-27
+
+### Added
+
+- `ach audit` replays raw transcripts to check recorded tokens and costs, with JSON output and an explicit correction history for `--fix` (#34).
+- Cost modes (`auto`, `calculate`, `display`) and reported/computed/unavailable provenance labels (#28, #33).
+- Time windows (`--since`, `--until`, `--last`), timezone-aware day/week/month buckets, model/project breakdowns, and cache-hit ratios (#26, #84, #44, #27, #43, #69).
+- `ach status`, compact output, atomic status snapshots, and `ach statusline` with current-block cost (#45, #62, #61).
+- Provider-reported quota, Claude five-hour blocks, burn rates, budget projections, and explicitly estimated plan presets (#17–#19, #36).
+- Persisted threshold alerts with cooldown, context-window pressure across adapters, and explicit opt-in budget aborts (#20, #21).
+- `ach archive` snapshots transcripts and run records into a reusable warehouse (#79).
+- Custom command templates and `agents.d` descriptors, including meter-only sources and explicit unmetered runs (#37, #38).
+- `ach doctor` checks agent/runtime configuration without sending a prompt; `null` provides an offline negative-control adapter (#35, #55).
+- Verifier commands, fresh-session repeat groups, pass@k/Wilson statistics, and regrading with preserved score history (#29, #57, #30, #89).
+- Read-only Cursor, Amp, Goose, and Qwen transcript adapters. Cursor consumes explicit stored token counts where available; token counts are never estimated from text length (#22).
+- Optional exit-code ladder and a separate unavailable status (#31, #60).
+- Linux/macOS CI, standalone binaries for arm64/x64, and a Homebrew tap with release-driven formula updates (#39, #81, #82).
+
+### Fixed
+
+- Identical repeated Claude final result records count once; final accounting is distinguished from mid-run budget enforcement (#14).
+- Integrated stats filters, cost selection, report history, transcript dashboards, and archive coverage across the new features.
+
+### Changed
+
+- Spending thresholds now warn and continue by default. Add `--on-budget abort` to enforce a hard spending cap. Wall-clock, idle, and turn limits retain enforcement.
+- `--exit-codes ladder` is opt-in; binary exit codes remain the default.
+- npm, Homebrew, and GitHub binaries carry this release. The separately published PyPI wrapper remains at 0.7.4.
+
 ## [0.10.1] - 2026-09-21
 
 ### Fixed
