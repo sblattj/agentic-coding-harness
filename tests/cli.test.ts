@@ -18,8 +18,12 @@ interface RunOut {
 function runCli(args: string[], env: Record<string, string>): RunOut {
   // bun runs .ts natively; node needs the tsx loader.
   const isBun = (process.versions as { bun?: string }).bun !== undefined;
+  // A developer's own AGENTIC_CODING_HARNESS_COST_MODE must not change the
+  // stats snapshots below.
+  const base = { ...process.env };
+  delete base.AGENTIC_CODING_HARNESS_COST_MODE;
   const p = spawnSync(process.execPath, isBun ? [CLI, ...args] : ["--import", "tsx", CLI, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...base, ...env },
     encoding: "utf8",
   });
   return {
@@ -27,6 +31,12 @@ function runCli(args: string[], env: Record<string, string>): RunOut {
     stdout: p.stdout ?? "",
     stderr: p.stderr ?? "",
   };
+}
+
+/** Drop the #28/#33 provenance fields so a bucket compares against pre-mode output. */
+function withoutProvenance(b: Record<string, unknown>): Record<string, unknown> {
+  const { costSource: _s, costBySource: _b, costDisagreements: _d, provenance: _p, ...rest } = b;
+  return rest;
 }
 
 describe("harness cli", () => {
@@ -176,7 +186,7 @@ describe("harness cli", () => {
     assert.deepEqual(out.window, { since: null, until: null });
     // 3 stateDir records + 1 scanAll record, with the sess-aaa duplicate
     // counted once (dedupe).
-    assert.deepEqual(out.total, {
+    assert.deepEqual(withoutProvenance(out.total), {
       records: 4,
       inputTokens: 315,
       outputTokens: 81,
@@ -189,6 +199,34 @@ describe("harness cli", () => {
     assert.equal(out.byAgent.claude.inputTokens, 310);
     assert.equal(out.byAgent.codex.records, 1);
     assert.equal(Object.keys(out.byDay).length, 2); // recent day + old day
+  });
+
+  test("stats default (auto) cost mode matches pre-#28 output except the added provenance fields", () => {
+    // Snapshot captured from the pre-change CLI (e7bb4cd) over this exact
+    // fixture; only the day keys are date-relative, so they are derived.
+    const day = (offsetDays: number) => new Date(Date.now() - offsetDays * 86_400_000).toISOString().slice(0, 10);
+    const claude = { records: 3, inputTokens: 310, outputTokens: 80, cacheReadTokens: 12, cacheWriteTokens: 6, reasoningTokens: 4, costUsd: 0.030109 };
+    const codex = { records: 1, inputTokens: 5, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: 0 };
+    const preChange = {
+      total: { records: 4, inputTokens: 315, outputTokens: 81, cacheReadTokens: 12, cacheWriteTokens: 6, reasoningTokens: 4, costUsd: 0.030109 },
+      byAgent: { claude, codex },
+      byDay: { [day(2)]: claude, [day(40)]: codex },
+    };
+    for (const extra of [[], ["--cost-mode", "auto"]]) {
+      const r = runCli(["stats", "--json", ...extra], env());
+      assert.equal(r.code, 0, r.stderr);
+      const out = JSON.parse(r.stdout) as Record<string, Record<string, Record<string, unknown>>>;
+      const strip = (m: Record<string, Record<string, unknown>>) =>
+        Object.fromEntries(Object.entries(m).map(([k, v]) => [k, withoutProvenance(v)]));
+      assert.deepEqual(
+        { total: withoutProvenance(out.total as Record<string, unknown>), byAgent: strip(out.byAgent!), byDay: strip(out.byDay!) },
+        preChange,
+      );
+      // The only additions: costSource/costBySource/provenance on every bucket, costDisagreements on total.
+      assert.equal(out.total!.costSource, "reported");
+      assert.equal(out.byAgent!.codex!.costSource, "reported");
+      assert.equal(typeof out.total!.costDisagreements, "number");
+    }
   });
 
   test("stats --days filters by window", () => {
@@ -205,7 +243,7 @@ describe("harness cli", () => {
     assert.equal(r.code, 0);
     const out = JSON.parse(r.stdout);
     assert.deepEqual(Object.keys(out.byAgent), ["codex"]);
-    assert.deepEqual(out.total, {
+    assert.deepEqual(withoutProvenance(out.total), {
       records: 1,
       inputTokens: 5,
       outputTokens: 1,
@@ -224,7 +262,7 @@ describe("harness cli", () => {
     // The 4 seeded stateDir records (sess-a ×2, old codex sess-b, dup
     // sess-aaa); the fake-HOME claude transcript that the full scan would
     // add is NOT present, so no dedupe against it either.
-    assert.deepEqual(out.total, {
+    assert.deepEqual(withoutProvenance(out.total), {
       records: 4,
       inputTokens: 315,
       outputTokens: 81,

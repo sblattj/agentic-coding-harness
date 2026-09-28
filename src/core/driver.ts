@@ -3,12 +3,13 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeAuto } from './normalize.js';
-import { createPricer, type Pricer } from './pricing.js';
+import { createPricer, pricedSources, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { computeUsageAvailability } from './usage-availability.js';
 import { createContextMeter } from './context-meter.js';
 import { classifyLaunchError, classifyUnavailable } from './availability.ts';
+import { runTotalsProvenance } from './provenance.ts';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
 import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
@@ -440,6 +441,11 @@ export function createDriver(options: DriverOptions): Driver {
         let pricerPriced = false;
         // Context-window pressure for non-kiro agents (#21); null for kiro.
         const contextMeter = createContextMeter({ agent: agentName, requestedModel: parsed.model });
+        // Which cost paths fed cumulativeCost (issue #28): pricer.price is token
+        // math for single-model records but sums CLI-reported slice costs for
+        // multi-model ones. totals.costSource is set only when ONE path fed it.
+        let costFromReported = false;
+        let costFromComputed = false;
 
         // --- wall-clock / idle budget timers ---
         // Armed right after launch (wallMs measures from launch) and the idle
@@ -495,6 +501,9 @@ export function createDriver(options: DriverOptions): Driver {
           lastRegistryWrite = now;
           rec.updatedAt = now;
           totals.costUsd = cumulativeCost;
+          if (costFromReported !== costFromComputed) totals.costSource = costFromReported ? 'reported' : 'computed';
+          else delete totals.costSource;
+          totals.provenance = runTotalsProvenance(totals, rec.usage);
           try {
             writeRunRecord(registryStateDir, rec);
           } catch (err) {
@@ -656,6 +665,9 @@ export function createDriver(options: DriverOptions): Driver {
                   } else {
                     cumulativeCost += cost;
                     pricerPriced = true;
+                    const src = pricedSources(normalized);
+                    if (src.reported) costFromReported = true;
+                    if (src.computed) costFromComputed = true;
                   }
                 }
               }

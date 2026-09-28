@@ -114,7 +114,18 @@ export interface UsageBucket {
   cacheWriteTokens: number;
   reasoningTokens: number;
   costUsd: number;
+  /**
+   * Where costUsd came from (issue #28): "reported" or "computed" when every
+   * cost-bearing record in the bucket shares that source; null when no record
+   * carried a cost OR when both sources contributed (costBySource splits it).
+   */
+  costSource: CostSource | null;
+  /** Per-source split of costUsd; a source no record used is null. */
+  costBySource: { reported: number | null; computed: number | null };
 }
+
+/** Cost provenance label (issue #28). Exactly these two values; #33 builds on them. */
+export type CostSource = "reported" | "computed";
 
 export function emptyBucket(): UsageBucket {
   return {
@@ -125,10 +136,12 @@ export function emptyBucket(): UsageBucket {
     cacheWriteTokens: 0,
     reasoningTokens: 0,
     costUsd: 0,
+    costSource: null,
+    costBySource: { reported: null, computed: null },
   };
 }
 
-function add(a: UsageBucket, r: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number; costUsd?: number }): void {
+function add(a: UsageBucket, r: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; reasoningTokens: number; costUsd?: number; costSource?: CostSource }): void {
   a.records += 1;
   a.inputTokens += r.inputTokens;
   a.outputTokens += r.outputTokens;
@@ -136,10 +149,22 @@ function add(a: UsageBucket, r: { inputTokens: number; outputTokens: number; cac
   a.cacheWriteTokens += r.cacheWriteTokens;
   a.reasoningTokens += r.reasoningTokens;
   a.costUsd += r.costUsd ?? 0;
+  if (r.costSource !== undefined && r.costUsd !== undefined) {
+    a.costBySource[r.costSource] = (a.costBySource[r.costSource] ?? 0) + r.costUsd;
+  }
 }
 
+const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
+
 function roundCost(a: UsageBucket): UsageBucket {
-  a.costUsd = Math.round(a.costUsd * 1e6) / 1e6;
+  a.costUsd = round6(a.costUsd);
+  const { reported, computed } = a.costBySource;
+  a.costBySource = {
+    reported: reported === null ? null : round6(reported),
+    computed: computed === null ? null : round6(computed),
+  };
+  a.costSource =
+    reported !== null && computed === null ? "reported" : computed !== null && reported === null ? "computed" : null;
   return a;
 }
 
@@ -164,6 +189,8 @@ export interface AggregatableRecord {
   reasoningTokens: number;
   /** Summed only when defined (records without a price contribute nothing). */
   costUsd?: number;
+  /** Provenance of costUsd (issue #28); undefined = untagged, not tallied by source. */
+  costSource?: CostSource;
 }
 
 /** Optional calendar bucketing (#44 week/month rollups, #84 time zones). */

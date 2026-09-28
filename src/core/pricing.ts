@@ -11,9 +11,25 @@ export interface ModelPrice {
   cache_creation: number;
 }
 
+/** Options for {@link Pricer.price}. */
+export interface PriceOptions {
+  /**
+   * Pure token × price math: ignore every CLI-reported per-model slice cost
+   * (extra.raw.models[].costUsd) and price each slice from its own tokens.
+   * `ach stats --cost-mode calculate` and the disagreement check use this.
+   */
+  computedOnly?: boolean;
+}
+
 export interface Pricer {
-  /** Price one canonical record in USD. Unknown model -> NaN (warning recorded, never silent 0). */
-  price(record: CanonicalTokenRecord): number;
+  /**
+   * Price one canonical record in USD. Unknown model -> NaN (warning recorded,
+   * never silent 0). By default a multi-model record sums its slices' CLI-
+   * reported costUsd where present (see {@link pricedSources}); pass
+   * `{ computedOnly: true }` for pure token math. The second parameter is
+   * optional, so a custom Pricer that ignores it still type-checks.
+   */
+  price(record: CanonicalTokenRecord, opts?: PriceOptions): number;
   /** Strip provider prefixes and date/-latest suffixes: "anthropic/claude-sonnet-4-20250514" -> "claude-sonnet-4". */
   resolveAlias(model: string): string;
   /** Warnings accumulated so far (and drained): unpriced models, malformed map entries. */
@@ -148,6 +164,21 @@ function modelSlices(rec: CanonicalTokenRecord): ModelUsageSlice[] | null {
   return slices;
 }
 
+/**
+ * Which cost paths the default `Pricer.price` takes for this record:
+ * `reported` when at least one multi-model slice carries a CLI-reported
+ * costUsd (summed verbatim), `computed` when any part is token × price math.
+ * A single-model record is always `computed` (price never reads the record's
+ * own top-level costUsd). The driver uses this to label RunRecord totals.
+ */
+export function pricedSources(rec: CanonicalTokenRecord): { reported: boolean; computed: boolean } {
+  const slices = modelSlices(rec);
+  if (!slices) return { reported: false, computed: true };
+  const reported = slices.some((s) => s.costUsd !== undefined);
+  const computed = slices.some((s) => s.costUsd === undefined);
+  return { reported, computed };
+}
+
 export function createPricer(costMapPath?: string): Pricer {
   // Base map: embedded fallback, layered with the bundled LiteLLM extract
   // (src/core/pricing-data.json) when it is present — a missing file (e.g.
@@ -169,7 +200,8 @@ export function createPricer(costMapPath?: string): Pricer {
   };
 
   return {
-    price(rec: CanonicalTokenRecord): number {
+    price(rec: CanonicalTokenRecord, opts?: PriceOptions): number {
+    const computedOnly = opts?.computedOnly === true;
     // Multi-model record (claude runs route sub-agent/probe turns through a
     // second model): the aggregate token counts mix models, so pricing them
     // at any single model's rates is wrong — observed a haiku-labeled
@@ -182,7 +214,7 @@ export function createPricer(costMapPath?: string): Pricer {
     if (slices) {
       let total = 0;
       for (const s of slices) {
-        if (s.costUsd !== undefined) {
+        if (s.costUsd !== undefined && !computedOnly) {
           total += s.costUsd;
           continue;
         }
