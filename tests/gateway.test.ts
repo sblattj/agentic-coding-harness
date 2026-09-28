@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -227,12 +228,19 @@ describe('harness serve --gateway (subprocess integration)', () => {
   }
 
   afterEach(async () => {
-    if (child) {
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        if (child && child.exitCode === null) child.kill('SIGKILL');
-      }, 1_000);
-      child = null;
+    const server = child;
+    child = null;
+    if (server && server.exitCode === null && server.signalCode === null) {
+      // Capture this process: a timer closing over `child` can kill the next
+      // test's server when its Node+tsx startup takes longer than one second.
+      const exited = once(server, 'exit');
+      const force = setTimeout(() => server.kill('SIGKILL'), 1_000);
+      server.kill('SIGTERM');
+      try {
+        await exited;
+      } finally {
+        clearTimeout(force);
+      }
     }
     if (stateTmp) rmSync(stateTmp, { recursive: true, force: true });
     if (rootTmp) rmSync(rootTmp, { recursive: true, force: true });
