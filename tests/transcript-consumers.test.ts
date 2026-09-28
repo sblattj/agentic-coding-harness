@@ -153,3 +153,33 @@ test('Cursor missing sqlite3 is a warning rather than a crash', async () => {
     assert.match(warnings.join('\n'), /cursor: skipped unreadable store.*ENOENT/);
   } finally { process.env.PATH = previous; }
 });
+test('public watch discovers post-start sessions while retaining the initial baseline and growth control', async () => {
+  const f = fixture();
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), cli, 'watch', '--dir', f.home], { cwd: f.home, env: f.env });
+    let text = ''; let errors = '';
+    child.stdout!.on('data', (b) => {
+      text += b;
+      if (text.includes('+10 input') && text.includes('+77 input')) child!.kill('SIGTERM');
+    });
+    child.stderr!.on('data', (b) => { errors += b; });
+    // offsets.json is written after the initial poll, giving this no-lookback
+    // test an observable baseline barrier instead of a timing assumption.
+    const start = Date.now();
+    while (!existsSync(join(f.state, 'offsets.json')) && Date.now() - start < 8000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.ok(existsSync(join(f.state, 'offsets.json')), errors);
+    assert.equal(text, '', 'pre-existing usage must baseline silently');
+    const thread = (id: string, input: number, output: number) => JSON.stringify({ id, messages: [{ role: 'assistant', timestamp: '2026-09-27T01:00:00Z', usage: { inputTokens: input, outputTokens: output } }] });
+    writeFileSync(join(f.root, 'thread.json'), thread('external-session', 22, 34));
+    const nested = join(f.root, 'created-after-start'); mkdirSync(nested);
+    writeFileSync(join(nested, 'new-session.json'), thread('new-session', 77, 3));
+    const timer = setTimeout(() => child!.kill('SIGKILL'), 12000);
+    await new Promise((resolve) => child!.on('close', resolve)); clearTimeout(timer);
+    assert.match(text, /external-ses\s+\+10 input \+0 output/, errors);
+    assert.match(text, /new-session\s+\+77 input \+3 output/, errors);
+    assert.doesNotMatch(text, /\+22 input|\+12 input|\+34 output/);
+  } finally { child?.kill('SIGKILL'); rmSync(f.home, { recursive: true, force: true }); }
+});
