@@ -85,9 +85,9 @@ export interface RepeatMembership {
 export interface RunAlert {
   at: number; // ms epoch
   family: "budget" | "near-limit";
-  metric: "usd" | "turns" | "wall";
+  metric: "usd" | "turns" | "wall" | "context";
   threshold: number; // fraction in (0, 1]
-  value: number; // observed value (usd | turns | ms)
+  value: number; // observed value (usd | turns | ms | context percentage points)
   limit: number; // the cap it is a fraction of
 }
 
@@ -155,7 +155,7 @@ export const RunRecordSchema = z.object({
       z.object({
         at: z.number(),
         family: z.enum(["budget", "near-limit"]),
-        metric: z.enum(["usd", "turns", "wall"]),
+        metric: z.enum(["usd", "turns", "wall", "context"]),
         threshold: z.number(),
         value: z.number(),
         limit: z.number(),

@@ -412,21 +412,22 @@ export function createDriver(options: DriverOptions): Driver {
         // outputDir, onEvent) plus a RunRecord.alerts row. Opt-in via
         // budget.alerts / budget.warnAt; the usd cap's abort is separate
         // (budget.onExceed). Kiro prices nothing, so usd alerts cannot fire there.
-        const onExceed = parsed.budget?.onExceed ?? 'abort';
+        // Context-window pressure for non-kiro agents (#21); null for kiro.
+        const contextMeter = createContextMeter({ agent: agentName, requestedModel: parsed.model });
+        const onExceed = parsed.budget?.onExceed ?? 'warn';
         let exceedWarned = false;
         const runAlerts = createRunAlerts({
           runId,
           stateDir,
+          context: contextMeter !== null,
           usd: budgetUsd,
           maxTurns,
           wallMs,
           alerts: parsed.budget?.alerts,
           warnAt: parsed.budget?.warnAt,
-          cooldownMs:
-            parsed.budget?.alertCooldownMs ??
-            ((parsed.budget?.alerts?.length ?? 0) + (parsed.budget?.warnAt?.length ?? 0) > 0
-              ? envCooldownMs((w) => warnings.push(w))
-              : undefined),
+          cooldownMs: parsed.budget?.alertCooldownMs ??
+            (contextMeter !== null || (parsed.budget?.alerts?.length ?? 0) + (parsed.budget?.warnAt?.length ?? 0) > 0
+              ? envCooldownMs((w) => warnings.push(w)) : undefined),
           onWarning: (w) => warnings.push(w),
         });
         // Filled in once the transcript/registry exist (below); alerts only
@@ -441,8 +442,6 @@ export function createDriver(options: DriverOptions): Driver {
         let streamCreditsCumulative: number | null = null;
         // True once the pricer returned a real (non-NaN) price for some record.
         let pricerPriced = false;
-        // Context-window pressure for non-kiro agents (#21); null for kiro.
-        const contextMeter = createContextMeter({ agent: agentName, requestedModel: parsed.model });
         // Which cost paths fed cumulativeCost (issue #28): pricer.price is token
         // math for single-model records but sums CLI-reported slice costs for
         // multi-model ones. totals.costSource is set only when ONE path fed it.
@@ -624,8 +623,11 @@ export function createDriver(options: DriverOptions): Driver {
             transcript.write(`${JSON.stringify(event)}\n`);
             artifacts?.event(event);
             onEvent?.(event);
-            const contextWarning = contextMeter?.observe(event);
-            if (contextWarning !== undefined) warnings.push(contextWarning);
+            contextMeter?.observe(event);
+            const context = contextMeter?.snapshot();
+            if (context?.available && context.basis === 'last-call' && context.percentage !== undefined) {
+              checkAlert('context', context.percentage);
+            }
 
             if (rec) {
               rec.lastEvent = eventPreview(event);
@@ -677,7 +679,7 @@ export function createDriver(options: DriverOptions): Driver {
               // the cap below aborts the run.
               if (budgetUsd !== undefined) checkAlert('usd', cumulativeCost);
               if (budgetUsd !== undefined && cumulativeCost > budgetUsd) {
-                if (onExceed === 'abort') {
+                if (onExceed === 'abort' && !(event.type === 'usage' && event.finalAccounting === true)) {
                   enforcedStatus = 'budget_exceeded';
                   await handle.abort();
                   break;
@@ -685,7 +687,9 @@ export function createDriver(options: DriverOptions): Driver {
                 if (!exceedWarned) {
                   exceedWarned = true;
                   warnings.push(
-                    `budget: usd cap $${budgetUsd.toFixed(4)} exceeded ($${cumulativeCost.toFixed(4)}); continuing (onExceed: warn)`,
+                    event.type === 'usage' && event.finalAccounting === true
+                      ? `budget: usd cap $${budgetUsd.toFixed(4)} exceeded ($${cumulativeCost.toFixed(4)}) by final accounting; awaiting process completion (no mid-run enforcement)`
+                      : `budget: usd cap $${budgetUsd.toFixed(4)} exceeded ($${cumulativeCost.toFixed(4)}); continuing (onExceed: warn)`,
                   );
                 }
               }

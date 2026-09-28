@@ -328,11 +328,10 @@ step/message event → the RunSpec `model`.
   meter never guesses a window. Codex's stream names no model, so a codex run
   without `--model` is `n/a`; the same holds for gemini (its `init` model is
   not bridged today).
-- **Overflow warning:** one `context: <agent> run crossed 85% of the context
-  window (...)` line in `RunResult.warnings`, edge-triggered on the first
-  crossing and never re-armed within the run. It fires only on a
-  `last-call` basis — an upper bound crossing 85% is not evidence of
-  pressure. Cross-run cooldown/persisted alert state is #20's scope.
+- **Overflow warning:** a `budget.alert` event at 85% with metric `context`,
+  persisted in `RunRecord.alerts` for dash/web. It uses the shared cooldown
+  state in `alerts.json` (see [Budget alerts](BUDGET-ALERTS.md)). It fires only
+  on a known `last-call` basis; an upper bound is not evidence of pressure.
 - **`ach stats --json`** gains an additive `runs` array, one row per registry
   run (`<stateDir>/runs`), filtered by `--agent` / `--days`:
 

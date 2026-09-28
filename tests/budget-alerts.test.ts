@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   ThresholdAlerter,
+  createRunAlerts,
   alertStateFile,
   cooldownMsFromEnv,
   freshAlertState,
@@ -221,8 +222,26 @@ function alertsOf(events: AgentEvent[]): AgentEvent[] {
   return events.filter((e) => e.type === 'budget.alert');
 }
 
+describe('context persisted cooldown', () => {
+  it('persists the 85% crossing, suppresses refresh/restart, and rearms after cooldown', () => {
+    let now = 1000;
+    const opts = { runId: 'context-run', stateDir: tmpDir(), context: true, cooldownMs: HOUR, now: () => now, onWarning: () => {} };
+    const a = createRunAlerts(opts)!;
+    assert.deepEqual(a.observe('context', 84), []);
+    assert.equal(a.observe('context', 85).length, 1);
+    for (let i = 0; i < 100; i++) assert.deepEqual(a.observe('context', 90), []);
+    const restarted = createRunAlerts(opts)!;
+    assert.deepEqual(restarted.observe('context', 90), []);
+    assert.deepEqual(restarted.observe('context', 80), []);
+    assert.deepEqual(restarted.observe('context', 90), []);
+    now += HOUR;
+    restarted.observe('context', 80);
+    assert.equal(restarted.observe('context', 90).length, 1);
+  });
+});
+
 describe('driver budget alerts', () => {
-  it('a run crossing 50/80/100% of budget.usd emits three budget.alert events and completes (onExceed: warn)', async () => {
+  it('a run crossing 50/80/100% of budget.usd emits three budget.alert events and completes by default', async () => {
     const stateDir = tmpDir();
     const tapped: AgentEvent[] = [];
     const adapter = new ScriptAdapter();
@@ -230,7 +249,7 @@ describe('driver budget alerts', () => {
     // cumulative: 0.30 (30%), 0.60 (60%: 50 fires), 0.90 (90%: 80 fires), 1.20 (120%: 100 fires) of $1.00
     const result = await driver.run('mock', {
       prompt: 'hi',
-      budget: { usd: 1, alerts: [0.5, 0.8, 1], onExceed: 'warn' },
+      budget: { usd: 1, alerts: [0.5, 0.8, 1] },
       script: [usd030(), usd030(), usd030(), usd030(), { type: 'step' }],
     } as RunSpec);
 
@@ -262,13 +281,13 @@ describe('driver budget alerts', () => {
     assert.equal(Object.keys(state.fired).length, 3);
   });
 
-  it('abort stays the default: the cap aborts (budget_exceeded) but the 100% alert still lands first', async () => {
+  it('explicit abort opt-in: the cap aborts (budget_exceeded) but the 100% alert still lands first', async () => {
     const stateDir = tmpDir();
     const adapter = new ScriptAdapter();
     const driver = createDriver({ adapters: { mock: adapter }, stateDir });
     const result = await driver.run('mock', {
       prompt: 'hi',
-      budget: { usd: 0.5, alerts: [0.5, 0.8, 1] },
+      budget: { usd: 0.5, alerts: [0.5, 0.8, 1], onExceed: 'abort' },
       script: [usd030(), usd030(), { type: 'step' }],
     } as RunSpec);
     assert.equal(result.exitStatus, 'budget_exceeded');

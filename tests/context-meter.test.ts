@@ -77,7 +77,7 @@ async function runWith(
 ): Promise<RunResult> {
   const driver = createDriver({
     adapters: { [adapter.name]: adapter },
-    stateDir: tmp(),
+    stateDir: registryDir ?? tmp(),
     ...(registryDir !== undefined ? { registry: { stateDir: registryDir } } : {}),
   });
   return driver.run(adapter.name, { prompt: 'context meter fixture', ...spec });
@@ -284,9 +284,22 @@ describe('driver: usage.context for claude and codex fixtures', () => {
       assistant(180_000) +
       assistant(190_000) +
       ndjson({ type: 'result', subtype: 'success', session_id: 's-ctx', usage: { input_tokens: 40, cache_read_input_tokens: 645_000, cache_creation_input_tokens: 0, output_tokens: 20 } });
-    const result = await runWith(new ClaudeCodeAdapter({ stateDir: tmp(), spawnFn: replaySpawn(lines) }));
-    const ctxWarnings = result.warnings.filter((w) => w.startsWith('context: '));
-    assert.equal(ctxWarnings.length, 1, result.warnings.join('\n'));
+    const registry = tmp();
+    const result = await runWith(new ClaudeCodeAdapter({ stateDir: tmp(), spawnFn: replaySpawn(lines) }), {}, registry);
+    const alerts = result.events.filter((e) => e.type === 'budget.alert' && e.metric === 'context');
+    assert.equal(alerts.length, 1);
+    assert.equal(alerts[0]!.threshold, 0.85);
+    assert.equal(alerts[0]!.value, 87.505);
+    const records = listRunRecords(registry);
+    assert.equal(records[0]!.alerts?.[0]?.metric, 'context');
+    assert.match(frame(records, registry, false, 200, false), /ALERT .*context 85%/);
+    const state = JSON.parse(readFileSync(join(registry, 'alerts.json'), 'utf8'));
+    assert.ok(state.fired[`run:${result.runId}:context|0.85`]);
+    // The same stream with an unknown model or only an aggregate bill must stay quiet.
+    for (const control of [lines.replaceAll('claude-sonnet-4-5-20250929', 'unknown-test-model'), lines.trim().split('\n').slice(-1).join('\n') + '\n']) {
+      const quiet = await runWith(new ClaudeCodeAdapter({ stateDir: tmp(), spawnFn: replaySpawn(control) }));
+      assert.equal(quiet.events.filter((e) => e.type === 'budget.alert' && e.metric === 'context').length, 0);
+    }
     assert.equal(result.usage?.context?.tokens, 190_010);
   });
 

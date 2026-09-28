@@ -159,7 +159,7 @@ describe('ladder 11 through the driver', () => {
       adapters: { mock: scripted([usage, usage]) },
       stateDir: mkdtempSync(join(tmpdir(), 'ach31-usd-')),
     });
-    const budget = { usd: 0.5 };
+    const budget = { usd: 0.5, onExceed: 'abort' as const };
     const r = await driver.run('mock', { prompt: 'hi', budget });
     assert.equal(r.exitStatus, 'budget_exceeded');
     assert.equal(runExitCode(r, { mode: 'ladder', agent: 'mock', budget }), 11);
