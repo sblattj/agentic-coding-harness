@@ -309,6 +309,10 @@ export function frame(
     lines.push(PROVENANCE_LEGEND);
     for (const r of visible) lines.push(tableRow(r, now, ansi, lastW, quota));
   }
+  for (const r of visible) {
+    const latest = r.regrades?.at(-1);
+    if (latest) lines.push(`scores ${r.runId.slice(0, 8)} original=${r.verify?.status ?? "n/a"} latest=${latest.status} regrades=${r.regrades!.length} (full history: ach report / web)`);
+  }
   // Pace rows: live runs only, so a finished run's row disappears instead of
   // freezing at its last rate.
   const live = visible.filter((r) => isLive(r, now));

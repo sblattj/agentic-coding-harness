@@ -635,6 +635,19 @@ export interface RenderOptions {
 }
 
 /** Render the complete self-contained HTML document for a loaded trial set. */
+function renderScoreHistory(runs: LoadedRun[]): string {
+  const scored = runs.filter((r) => r.verify || r.regrades?.length);
+  if (!scored.length) return "";
+  const rows = scored.flatMap((r) => [
+    ...(r.verify ? [{ label: "original", verdict: r.verify }] : []),
+    ...(r.regrades ?? []).map((verdict, i) => ({ label: `regrade ${i + 1}`, verdict })),
+  ].map(({ label, verdict: v }) => {
+    const at = v.at === undefined ? "n/a" : new Date(v.at).toISOString();
+    return `<tr><td>${esc(r.agent)} / ${esc(r.result.runId ?? r.trialLabel)}</td><td>${label}</td><td>${statusBadge(v.status)}</td><td>${esc(v.command)}</td><td>${esc(at)}</td><td>${v.exitCode ?? "n/a"}</td></tr>`;
+  })).join("\n");
+  return `<section><h3>score history</h3><p class="muted">Original verification and all saved regrades. Repeat statistics use original verdicts only.</p><table><thead><tr><th>run</th><th>score</th><th>verdict</th><th>verifier</th><th>time</th><th>exit</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+}
+
 export function renderReport(trialSet: TrialSet, opts: RenderOptions): string {
   const { runs, labels } = trialSet;
   const multiTrial = labels.length > 1;
@@ -667,7 +680,7 @@ ${renderComparisonTable(runs, multiTrial)}
     <h3>availability</h3>
 ${renderAvailability(runs)}
   </section>
-${renderRepeatStats(runs)}${renderCharts(runs)}
+${renderScoreHistory(runs)}${renderRepeatStats(runs)}${renderCharts(runs)}
   <section>
     <h3>per-agent detail</h3>
 ${runs.map(renderAgentSection).join("\n")}

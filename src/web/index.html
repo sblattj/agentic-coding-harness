@@ -173,6 +173,8 @@ var TOKEN = new URLSearchParams(location.search).get("token") || "";
 
 var runs = [];
 var selectedId = null;
+var modelCache = {};
+var modelCachePending = {};
 var feed = null, feedConn = null, runsSocket = null;
 var runsRetry = 0;
 
@@ -327,7 +329,30 @@ function renderMeta() {
   // cache-hit = cacheRead / (input + cacheRead + cacheWrite) — same definition
   // as src/core/cache-ratio.ts; n/a when the run has no prompt tokens.
   var hitDen = (t.inputTokens || 0) + (t.cacheReadTokens || 0) + (t.cacheWriteTokens || 0);
-  box.appendChild(kv("cache hit", hitDen > 0 ? ((t.cacheReadTokens || 0) / hitDen * 100).toFixed(1) + "%" : "n/a"));
+  box.appendChild(kv("cache hit", r.usage && r.usage.tokens && r.usage.tokens.available === false ? "n/a" : hitDen > 0 ? ((t.cacheReadTokens || 0) / hitDen * 100).toFixed(1) + "%" : "n/a"));
+  var obs = modelCache[r.runId];
+  var models = obs && obs.data && obs.data.byModel;
+  if (models && models.length) models.forEach(function (m) {
+    box.appendChild(kv("cache hit / " + m.model, m.cacheHitRatio == null ? "n/a" : (m.cacheHitRatio * 100).toFixed(1) + "%"));
+  });
+  else box.appendChild(kv("cache hit / model", "n/a"));
+  var stamp = r.updatedAt || r.startedAt;
+  if ((!obs || obs.stamp !== stamp) && !modelCachePending[r.runId]) {
+    modelCachePending[r.runId] = true;
+    fetch("/api/runs/" + encodeURIComponent(r.runId) + "/observability").then(function (res) {
+      if (!res.ok) throw new Error("observability unavailable");
+      return res.json();
+    }).then(function (data) {
+      modelCache[r.runId] = { stamp: stamp, data: data };
+      if (selectedId === r.runId) renderMeta();
+    }).catch(function () {
+      modelCache[r.runId] = { stamp: stamp, data: null };
+    }).finally(function () { delete modelCachePending[r.runId]; });
+  }
+  if (r.verify) box.appendChild(kv("original verify", r.verify.status + " · " + r.verify.command));
+  (r.regrades || []).forEach(function (v, i) {
+    box.appendChild(kv("regrade " + (i + 1), v.status + " · " + v.command + " · " + (v.at == null ? "n/a" : new Date(v.at).toISOString())));
+  });
   box.appendChild(kv("cost", fmtCost(t.costUsd) + provMark(r, "costUsd")));
   var ctxTxt = fmtCtx(r);
   if (ctxTxt) box.appendChild(kv("ctx", ctxTxt));
