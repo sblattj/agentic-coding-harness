@@ -126,6 +126,11 @@ export interface JsonlRunSpec {
    * overlays process.env.
    */
   scrubEnv?: boolean | string[];
+  /**
+   * Text written to the child's stdin before it is closed (custom-agent
+   * `--prompt-stdin`, #37). Absent: stdin is closed immediately, as before.
+   */
+  stdin?: string;
 }
 
 export interface JsonlRunConfig {
@@ -350,7 +355,14 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
       for (const line of stderrAsm.flush()) emitStderr(line);
     });
 
-    proc.stdin?.end();
+    if (spec.stdin !== undefined && proc.stdin) {
+      // A child that exits without reading stdin raises EPIPE on the stream;
+      // that is the child's choice, never a harness crash.
+      proc.stdin.on('error', () => {});
+      proc.stdin.end(spec.stdin);
+    } else {
+      proc.stdin?.end();
+    }
 
     proc.once('close', (code, signal) => {
       settleExit(code, signal);

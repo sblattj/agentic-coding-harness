@@ -501,6 +501,18 @@ export function createDriver(options: DriverOptions): Driver {
             registryWarn(err);
           }
         };
+        // Custom-agent provenance (#37): resolved command + metering label,
+        // read at creation and again after wait() (metering is only final then).
+        const applyRunRecordExtras = (): void => {
+          if (!rec || typeof handle.runRecordExtras !== 'function') return;
+          try {
+            const x = handle.runRecordExtras();
+            if (x.metering !== undefined) rec.metering = x.metering;
+            if (x.command !== undefined) rec.command = x.command;
+          } catch (err) {
+            registryWarn(err);
+          }
+        };
         if (registryStateDir) {
           rec = {
             runId,
@@ -515,6 +527,7 @@ export function createDriver(options: DriverOptions): Driver {
             totals,
             rawTranscript: transcriptPath,
           };
+          applyRunRecordExtras();
           writeRunRecordThrottled(true);
         }
         // Same summing rule as cmdRun (src/cli/ach.ts): canonical token
@@ -720,6 +733,7 @@ export function createDriver(options: DriverOptions): Driver {
         } catch {
           adapterExit = 'error';
         }
+        applyRunRecordExtras();
 
         // --- kiro effective config + truthful usage (PLAN § Usage availability,
         // amendment 2026-09-12). Both are read AFTER wait() so the child has
