@@ -15,11 +15,11 @@
 import fs from "node:fs";
 import { bucketKey } from "./time-window.ts";
 import { selectCost, type CostMode } from "./cost-mode.ts";
-import os from "node:os";
 import path from "node:path";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import type { Pricer } from "../core/pricing.ts";
 import type { RunRecord } from "../core/registry.ts";
+import { expandHome, homeDir } from "../core/platform.ts";
 import { HarnessError } from "../core/types.ts";
 import { emptyBucket, fmtInt, fmtUsd, type AggregatableRecord, type UsageBucket } from "./lib.ts";
 
@@ -193,12 +193,6 @@ export function modelKey(agent: string, model: string, opts: Pick<DimOptions, "m
 
 // ---------------------------------------------------------------- projects
 
-function expandHome(p: string): string {
-  if (p === "~") return os.homedir();
-  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
-
 const rootCache = new Map<string, string>();
 
 /**
@@ -212,7 +206,7 @@ export function projectRoot(cwd: string): string {
   const start = path.resolve(expandHome(cwd));
   const hit = rootCache.get(start);
   if (hit !== undefined) return hit;
-  const home = path.resolve(os.homedir());
+  const home = path.resolve(homeDir());
   let found: string | undefined;
   let dir = start;
   for (;;) {

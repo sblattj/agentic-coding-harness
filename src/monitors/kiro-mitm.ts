@@ -28,7 +28,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import type { CanonicalTokenRecord } from '../core/types.js';
-import { resolveCommand, spawnTarget, withTreeKill } from '../core/platform.ts';
+import { homeDir, resolveCommand, spawnTarget, withTreeKill } from '../core/platform.ts';
 
 export const DEFAULT_MITM_PORT = 8888;
 
@@ -530,7 +530,7 @@ export function mitmdumpAvailable(bin: string = process.env.MITMDUMP_BIN ?? 'mit
 // Env to launch kiro-cli through the tap (see module comment).
 export function tapEnv(
   port: number = DEFAULT_MITM_PORT,
-  caPath: string = path.join(os.homedir(), '.mitmproxy', 'mitmproxy-ca-cert.pem'),
+  caPath: string = path.join(homeDir(), '.mitmproxy', 'mitmproxy-ca-cert.pem'),
 ): NodeJS.ProcessEnv {
   return { HTTPS_PROXY: `http://127.0.0.1:${port}`, SSL_CERT_FILE: caPath };
 }

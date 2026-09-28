@@ -18,9 +18,9 @@
 import type { CanonicalTokenRecord as CentralTokenRecord } from "../core/types.ts";
 import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
+import { homeDir as homedir } from "../core/platform.ts";
 import { TRANSCRIPT_SOURCES, type TranscriptOnlyAgent } from "./transcript-sources.ts";
 
 // ---------------------------------------------------------------------------

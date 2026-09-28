@@ -10,7 +10,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { z } from "zod";
-import { shellCommand } from "./platform.ts";
+import { shellCommand, system32Exe } from "./platform.ts";
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 120_000;
 export const DEFAULT_VERIFY_TAIL_BYTES = 4_000;
@@ -124,7 +124,7 @@ export function runVerifier(opts: RunVerifierOptions): Promise<VerifyResult> {
       timedOut = true;
       try {
         if (child.pid === undefined) throw new Error("no pid");
-        if (win) spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+        if (win) spawnSync(system32Exe("taskkill.exe"), ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
         else process.kill(-child.pid, "SIGKILL");
       } catch {
         child.kill("SIGKILL");

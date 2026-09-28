@@ -75,6 +75,20 @@ child=$!
 trap 'kill "$child" 2>/dev/null; exit 0' TERM INT
 wait "$child"`;
 
+/**
+ * The long-running fake. Windows installs it the way npm installs an agent
+ * CLI — a `.cmd` shim forwarding to node — so cancel exercises the real
+ * Windows abort path: cmd.exe wrapper → taskkill /T /F over the shim's tree.
+ */
+function longRunningCli(): string {
+  if (process.platform !== 'win32') return fakeCli('long', LONG_RUNNING);
+  const script = join(binTmp, 'long.mjs');
+  writeFileSync(script, `process.stdout.write(JSON.stringify({ type: 'session_start', sessionId: 'sess-jobs-long' }) + '\\n');\nsetTimeout(() => {}, 30_000);\n`);
+  const shim = join(binTmp, 'long.cmd');
+  writeFileSync(shim, `@"${process.execPath}" "${script}" %*\r\n`);
+  return shim;
+}
+
 /** Register the job tools on a stub server; return the defs by name. */
 function jobTools(dir: string): Map<string, McpToolDef> {
   const defs: McpToolDef[] = [];
@@ -280,7 +294,7 @@ describe('harness_run_events', () => {
 describe('harness_run_cancel', () => {
   it('cancels a long-running fake (status → aborted); a second cancel reports cancelled:false', { timeout: 30_000 }, async () => {
     const dir = mkState();
-    process.env.KIRO_CLI_BIN = fakeCli('long', LONG_RUNNING);
+    process.env.KIRO_CLI_BIN = longRunningCli();
     const tools = jobTools(dir);
     const started = await call<RunAsyncResult>(tools, 'harness_run_async', { agent: 'kiro', prompt: 'hang' });
 

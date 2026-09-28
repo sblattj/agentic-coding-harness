@@ -395,7 +395,8 @@ describe("statusline (#61)", () => {
   });
 
   it("CLI: a failing or missing chained command degrades to ach's segment, exit 0", () => {
-    for (const cmd of ["echo partial; exit 3", "definitely-not-a-real-command-ach-xyz"]) {
+    const failing = process.platform === "win32" ? "echo partial & exit 3" : "echo partial; exit 3";
+    for (const cmd of [failing, "definitely-not-a-real-command-ach-xyz"]) {
       const r = runCli(["statusline", "--no-cache", "--chain", cmd], { [STATE_ENV]: state, [BUDGET_ENV]: undefined }, payload);
       assert.equal(r.code, 0, r.stderr);
       assert.equal(r.stdout, "Opus · session $0.0123 · today $0.7500 · block $0.5000\n");

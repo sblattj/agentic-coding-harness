@@ -9,10 +9,13 @@ import os from "node:os";
 import path from "node:path";
 import {
   escapeCmdArgument,
+  expandHome,
   getEnvVar,
+  homeDir,
   resolveCommand,
   shellCommand,
   spawnTarget,
+  system32Exe,
 } from "../src/core/platform.ts";
 
 const winFiles = (files: string[]) => {
@@ -124,5 +127,38 @@ describe("platform: POSIX behavior unchanged", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("home directory and system binaries (#39)", () => {
+  it("win32: HOME (any case) wins over os.homedir(); unset/empty falls back", () => {
+    assert.equal(homeDir({ HOME: "C:\\fake\\home" }, "win32"), "C:\\fake\\home");
+    assert.equal(homeDir({ Home: "D:\\h" }, "win32"), "D:\\h");
+    assert.equal(homeDir({ HOME: "" }, "win32"), os.homedir());
+    assert.equal(homeDir({}, "win32"), os.homedir());
+  });
+
+  it("POSIX: homeDir is os.homedir() (which already honours $HOME)", () => {
+    assert.equal(homeDir({ HOME: "/ignored-by-this-helper" }, "linux"), os.homedir());
+  });
+
+  it("expandHome handles ~ and ~/ everywhere, ~\\ only on win32", () => {
+    const env = { HOME: "C:\\u" };
+    assert.equal(expandHome("~", env, "win32"), "C:\\u");
+    assert.equal(expandHome("~/a/b", env, "win32"), "C:\\u\\a\\b");
+    assert.equal(expandHome("~\\a", env, "win32"), "C:\\u\\a");
+    assert.equal(expandHome("~\\a", {}, "linux"), "~\\a");
+    assert.equal(expandHome("/abs", env, "win32"), "/abs");
+  });
+
+  it("system32Exe uses SystemRoot, then windir", () => {
+    assert.equal(system32Exe("taskkill.exe", { SystemRoot: "E:\\WIN" }, "win32"), "E:\\WIN\\System32\\taskkill.exe");
+    assert.equal(system32Exe("cmd.exe", { windir: "F:\\W" }, "win32"), "F:\\W\\System32\\cmd.exe");
+  });
+
+  it("a minimal child env with no ComSpec still gets an absolute cmd.exe", () => {
+    const t = shellCommand("echo hi", { platform: "win32", env: { PATH: "C:\\bin", SystemRoot: "C:\\Windows" } });
+    const expected = process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe";
+    assert.equal(t.command, expected);
   });
 });

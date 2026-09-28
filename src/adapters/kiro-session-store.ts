@@ -19,8 +19,8 @@
 // invents a number — a field it cannot read comes back `undefined`/`null`, not
 // `0`. Only `locateKiroSessionStore`/`readKiroSessionStore` touch the disk.
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
+import { homeDir } from '../core/platform.ts';
 
 /** One `session_state.conversation_metadata.user_turn_metadatas[]` entry. */
 export interface KiroStoreTurn {
@@ -166,7 +166,7 @@ export function parseKiroSessionStore(json: unknown): ParsedKiroSessionStore | n
 
 /** Directory kiro-cli writes its CLI session stores to. */
 export function kiroSessionsDir(opts: { dir?: string } = {}): string {
-  return opts.dir ?? process.env.KIRO_SESSIONS_DIR ?? path.join(os.homedir(), '.kiro', 'sessions', 'cli');
+  return opts.dir ?? process.env.KIRO_SESSIONS_DIR ?? path.join(homeDir(), '.kiro', 'sessions', 'cli');
 }
 
 /**
