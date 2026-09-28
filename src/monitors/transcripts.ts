@@ -43,6 +43,8 @@ export interface CanonicalTokenRecord {
   cacheWrite: number;
   /** Thinking/reasoning tokens (subset of output). */
   reasoning: number;
+  /** Working directory the session ran in, when the source records it (claude line `cwd`, codex session_meta). */
+  cwd?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +97,7 @@ const ClaudeLineSchema = z.object({
   timestamp: z.string().nullish(),
   sessionId: z.string().nullish(),
   requestId: z.string().nullish(),
+  cwd: z.string().nullish(),
   message: ClaudeMessageSchema.nullish(),
 });
 
@@ -128,6 +131,7 @@ export async function parseClaudeTranscript(
       cacheRead: usage.cache_read_input_tokens ?? 0,
       cacheWrite: usage.cache_creation_input_tokens ?? 0,
       reasoning: usage.output_tokens_details?.thinking_tokens ?? 0,
+      ...(rec.cwd ? { cwd: rec.cwd } : {}),
     });
   }
   return [...byKey.values()];
@@ -172,6 +176,7 @@ const CodexLineSchema = z.object({
 
 const CodexSessionMetaPayloadSchema = z.object({
   id: z.string().nullish(),
+  cwd: z.string().nullish(),
 });
 
 const CodexTokenUsagePayloadSchema = z.object({
@@ -212,6 +217,7 @@ export async function parseCodexRollout(
 ): Promise<CanonicalTokenRecord[]> {
   const lastByThread = new Map<string, Cumulative>();
   let sessionId: string | null = null;
+  let cwd: string | undefined;
   const records: CanonicalTokenRecord[] = [];
 
   for await (const raw of readJsonlLines(path)) {
@@ -222,6 +228,7 @@ export async function parseCodexRollout(
     if (type === "session_meta") {
       const meta = CodexSessionMetaPayloadSchema.safeParse(payload);
       if (meta.success && meta.data.id) sessionId = meta.data.id;
+      if (meta.success && meta.data.cwd) cwd = meta.data.cwd;
       continue;
     }
     if (type !== "token_usage_record") continue;
@@ -260,6 +267,7 @@ export async function parseCodexRollout(
       cacheRead: delta.cacheRead,
       cacheWrite: delta.cacheWrite,
       reasoning: delta.reasoning,
+      ...(cwd ? { cwd } : {}),
     });
   }
   return records;

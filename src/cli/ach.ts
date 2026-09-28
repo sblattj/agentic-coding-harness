@@ -40,7 +40,20 @@ import {
 } from "../monitors/transcripts.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
-import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
+import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary } from "./lib.ts";
+import {
+  aggregateDims,
+  baseCacheRatios,
+  cwdIndex,
+  loadProjectAliases,
+  parseByDims,
+  parseModelAliases,
+  projectMatches,
+  renderDimsText,
+  statsLine,
+  type DimRecord,
+} from "./stats-dims.ts";
+import { listRunRecords } from "../core/registry.ts";
 import { kiroPreflight } from "../adapters/kiro-preflight.ts";
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
@@ -70,6 +83,11 @@ usage:
   ach stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
                  --state-only skips machine transcript dirs)
+            [--by model|project]... [--merge-models] [--model-alias FROM=TO]...
+            [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
+                (--by model: agent/model rows + model x day table; --by project:
+                 repo-root rollup, aliases also via AGENTIC_CODING_HARNESS_PROJECT_ALIASES;
+                 every row shows cacheHit = cacheRead/(input+cacheRead+cacheWrite))
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -639,9 +657,24 @@ async function cmdStats(rest: string[]): Promise<number> {
       days: { type: "string" },
       json: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      // #27 / #43 extra dimensions (src/cli/stats-dims.ts)
+      by: { type: "string", multiple: true },
+      "merge-models": { type: "boolean", default: false },
+      "model-alias": { type: "string", multiple: true },
+      project: { type: "string" },
+      "project-alias": { type: "string", multiple: true },
+      "project-aliases": { type: "string" },
     },
     allowPositionals: true,
   });
+  const dimsBy = parseByDims(args.values.by);
+  const modelAliases = parseModelAliases(args.values["model-alias"]);
+  const projectAliases = loadProjectAliases({
+    envJson: process.env.AGENTIC_CODING_HARNESS_PROJECT_ALIASES,
+    file: args.values["project-aliases"],
+    pairs: args.values["project-alias"],
+  });
+  const wantProject = args.values.project;
   const agent = args.values.agent;
   if (agent && !isKnownAgent(agent)) {
     throw new HarnessError(
@@ -654,7 +687,10 @@ async function cmdStats(rest: string[]): Promise<number> {
 
   // Harness state (driver-run NDJSON + watch-persisted opencode) ...
   const stateRecords = await readAllRecords({ agent, sinceTs });
-  const records: AggregatableRecord[] = stateRecords.map((r) => ({
+  const runCwd = cwdIndex(listRunRecords(stateDir()));
+  let records: DimRecord[] = stateRecords.map((r) => ({
+    extra: r.extra,
+    cwd: runCwd(r.agent, r.sessionId),
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,
@@ -704,12 +740,28 @@ async function cmdStats(rest: string[]): Promise<number> {
         });
         if (!Number.isNaN(cost)) costUsd = cost;
       }
-      records.push(costUsd === undefined ? { ...row } : { ...row, costUsd });
+      const cwd = rec.cwd ?? runCwd(rec.agent, rec.sessionId);
+      records.push({ ...row, ...(costUsd === undefined ? {} : { costUsd }), ...(cwd ? { cwd } : {}) });
     }
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
 
+  if (wantProject !== undefined) records = records.filter((r) => projectMatches(r.cwd, wantProject, projectAliases));
   const agg = aggregate(records);
+  const showProject = dimsBy.has("project") || wantProject !== undefined;
+  const dims = aggregateDims(records, {
+    pricer: createPricer(),
+    mergeModels: args.values["merge-models"],
+    modelAliases,
+    byModelDay: dimsBy.has("model"),
+    byProject: showProject,
+    projectAliases,
+  });
+  if (dims.unpricedModels.length > 0) {
+    process.stderr.write(
+      `[warn] unpriced models (tokens counted, cost n/a and excluded from totals): ${dims.unpricedModels.join(", ")}\n`,
+    );
+  }
 
   if (args.values.json) {
     process.stdout.write(
@@ -718,17 +770,24 @@ async function cmdStats(rest: string[]): Promise<number> {
           total: agg.totals,
           byAgent: agg.byAgent,
           byDay: agg.byDay,
+          byModel: dims.byModel,
+          unpricedModels: dims.unpricedModels,
+          cacheHitRatio: baseCacheRatios(agg),
+          ...(dims.byModelDay ? { byModelDay: dims.byModelDay } : {}),
+          ...(args.values["merge-models"] ? { mergedModels: true, modelAliases } : {}),
+          ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
         },
         null,
         2,
       ) + "\n",
     );
   } else {
-    const line = (label: string, b: typeof agg.totals) =>
-      `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${fmtUsd(b.costUsd)}`;
-    process.stdout.write(line("totals", agg.totals) + "\n");
-    for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, b) + "\n");
-    for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(line(d, b) + "\n");
+    process.stdout.write(statsLine("totals", agg.totals) + "\n");
+    for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(statsLine(a, b) + "\n");
+    for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(statsLine(d, b) + "\n");
+    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject })) {
+      process.stdout.write(l + "\n");
+    }
   }
   hintCcusage();
   return 0;
