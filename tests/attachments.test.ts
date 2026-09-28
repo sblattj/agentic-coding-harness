@@ -83,7 +83,7 @@ describe('composePrompt', () => {
         assert.ok(err instanceof Error);
         assert.equal((err as { code?: string }).code, 'PROMPT_ATTACHMENT_CAP');
         assert.match(err.message, /15 bytes exceeds the 10-byte cap/);
-        assert.match(err.message, new RegExp(b.replaceAll('/', '\\/')));
+        assert.ok(err.message.includes(b), err.message);
         return true;
       },
     );

@@ -1,6 +1,7 @@
 // Drop-in agent definitions (#38): <cwd>/.ach/agents.d/*.json and
 // <stateDir>/agents.d/*.json. Every CLI here is a FAKE node script in a temp
 // dir; transcripts are fixtures written by the test.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
@@ -19,8 +20,8 @@ import { withPricingHints } from "../src/core/pricing-hints.ts";
 import { createPricer } from "../src/core/pricing.ts";
 import type { CanonicalTokenRecord } from "../src/core/types.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
-const EXAMPLES = new URL("../examples/agents.d/", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
+const EXAMPLES = fileURLToPath(new URL("../examples/agents.d/", import.meta.url));
 const NODE = process.execPath;
 
 const FAKE_JSONL_CLI = `
@@ -82,7 +83,7 @@ function fakeDescriptor(name: string, extra: Record<string, unknown> = {}) {
 
 describe("descriptor schema + loader", () => {
   it("descriptorDirs: project .ach/agents.d first, then <stateDir>/agents.d", () => {
-    assert.deepEqual(descriptorDirs({ cwd: "/p", stateDir: "/s" }), ["/p/.ach/agents.d", "/s/agents.d"]);
+    assert.deepEqual(descriptorDirs({ cwd: "/p", stateDir: "/s" }), [path.join("/p", ".ach", "agents.d"), path.join("/s", "agents.d")]);
   });
 
   it("loads a valid descriptor", async () => {

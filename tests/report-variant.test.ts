@@ -3,6 +3,7 @@
 // /compare view's default experiment×variant rollup); legacy trials keep the
 // by-agent grouping. Also covers the source side: RunSpec.variant is echoed
 // onto RunResult by the driver, so trial JSONs can carry it at all.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, test } from "node:test";
@@ -16,7 +17,7 @@ import type { AgentEvent, AgentHandle, RunSpec } from "../src/core/types.ts";
 import { loadTrials } from "../src/report/model.ts";
 import { renderReport } from "../src/report/html.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function runCli(args: string[]): { code: number; stdout: string; stderr: string } {
   // bun runs .ts natively; node needs the tsx loader.

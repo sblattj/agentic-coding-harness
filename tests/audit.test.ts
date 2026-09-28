@@ -4,6 +4,7 @@
 // so "untouched state dir" means exactly what `ach run` would have written;
 // drift is injected either through the adapter (a misparse the driver records
 // faithfully) or by editing the recorded totals afterwards.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -17,7 +18,7 @@ import { createPricer } from "../src/core/pricing.ts";
 import { listRunRecords, readRunRecord, writeRunRecord, type RunRecord } from "../src/core/registry.ts";
 import type { AgentAdapter, AgentEvent, AgentHandle } from "../src/core/types.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function runCli(args: string[], env: Record<string, string> = {}): { code: number; stdout: string; stderr: string } {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;

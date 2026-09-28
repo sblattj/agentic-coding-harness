@@ -11,7 +11,7 @@ import fs from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { resolveCommand } from "../core/platform.ts";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
@@ -1332,8 +1332,7 @@ async function cmdStats(rest: string[]): Promise<number> {
 }
 
 function hintCcusage(): void {
-  const probe = spawnSync("/bin/sh", ["-c", "command -v ccusage >/dev/null 2>&1"], { stdio: "ignore" });
-  if (probe.status === 0) {
+  if (resolveCommand("ccusage") !== undefined) {
     process.stderr.write(
       "hint: 'ccusage' is installed — run `ccusage` for richer batch usage reports (daily/monthly/session breakdowns).\n",
     );

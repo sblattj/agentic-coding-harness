@@ -2,6 +2,7 @@
 // per-repeat-group `ach stats` rollup, and `ach regrade` (#89), end to end
 // through the real CLI entry point. The agent is a fake kiro-cli shell script
 // (KIRO_CLI_BIN) with the MITM tap forced off — no network, no real agent.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
@@ -12,8 +13,9 @@ import { after, before, describe, it } from "node:test";
 
 import { frame } from "../src/cli/dash.ts";
 import type { RunRecord } from "../src/core/registry.ts";
+import { writeShStub } from "./helpers/stub-bin.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 interface RunOut {
   code: number;
@@ -70,8 +72,7 @@ async function fakeKiro(name: string, opts: { sleep?: number; failOn?: number } 
     "exit 0",
     "",
   ];
-  await fs.writeFile(bin, lines.join("\n"));
-  await fs.chmod(bin, 0o755);
+  writeShStub(bin, lines.join("\n"));
   return { bin, probe };
 }
 

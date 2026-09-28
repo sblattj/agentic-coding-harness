@@ -1,3 +1,4 @@
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -22,7 +23,7 @@ import { after, afterEach, beforeEach, describe, it } from 'node:test';
 // exit semantics (stdin end -> exit 0).
 // ---------------------------------------------------------------------------
 
-const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 
 const EXPECTED_TOOLS = [
   'harness_run',
@@ -50,7 +51,8 @@ const isBun = (process.versions as { bun?: string }).bun !== undefined;
 // `--import tsx` resolves the specifier from the CHILD's cwd, and these spawns
 // run with a bare tmp cwd — so resolve tsx to an absolute path from THIS test
 // file (repo-rooted) instead. No-op under bun.
-const TSX_IMPORT = createRequire(import.meta.url).resolve('tsx');
+// --import takes a URL; a bare win32 absolute path (D:\...) is rejected.
+const TSX_IMPORT = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
 
 let child: ChildProcessWithoutNullStreams | null = null;
 let stateTmp = '';

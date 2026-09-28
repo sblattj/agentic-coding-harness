@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -474,7 +475,7 @@ describe('dash banner', () => {
 // ---------------------------------------------------------------- CLI flags
 
 describe('ach run threshold flags', () => {
-  const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+  const CLI = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
   function runCli(args: string[], env: Record<string, string> = {}) {
     const isBun = (process.versions as { bun?: string }).bun !== undefined;
     const p = spawnSync(process.execPath, isBun ? [CLI, ...args] : ['--import', 'tsx', CLI, ...args], {

@@ -7,6 +7,7 @@
 // be produced by the codex fake (its usage carries no priced model and it
 // emits no step events), so 11 is covered through the real driver with a
 // scripted in-process adapter and the same exit-code function the CLI uses.
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -24,8 +25,9 @@ import {
 } from '../src/cli/exit-codes.ts';
 import { createDriver } from '../src/core/driver.ts';
 import { HarnessError, type AdapterExit, type AgentAdapter, type AgentEvent, type AgentHandle, type RunResult } from '../src/core/types.ts';
+import { SH_STUB_SKIP, writeShStub } from './helpers/stub-bin.ts';
 
-const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 
 function result(over: Partial<RunResult>): RunResult {
   return {
@@ -189,7 +191,7 @@ interface CliOut {
   stderr: string;
 }
 
-describe('ach CLI exit codes (end to end, fake codex)', () => {
+describe('ach CLI exit codes (end to end, fake codex)', { skip: SH_STUB_SKIP }, () => {
   let root: string;
   let fakeBin: string;
   let emptyBin: string;
@@ -200,8 +202,7 @@ describe('ach CLI exit codes (end to end, fake codex)', () => {
     emptyBin = join(root, 'empty-bin');
     mkdirSync(fakeBin);
     mkdirSync(emptyBin);
-    writeFileSync(join(fakeBin, 'codex'), FAKE_CODEX);
-    chmodSync(join(fakeBin, 'codex'), 0o755);
+    writeShStub(join(fakeBin, 'codex'), FAKE_CODEX);
   });
   after(() => rmSync(root, { recursive: true, force: true }));
 

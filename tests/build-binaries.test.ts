@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -21,7 +22,7 @@ import { after, describe, it } from "node:test";
 // process.platform/arch), which bun already has locally. Cross-compiling to
 // a foreign target downloads that target's bun runtime on first use, so
 // that path is exercised by scripts/build-binaries.sh itself, not here.
-const REPO_ROOT = new URL("..", import.meta.url).pathname;
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SCRIPT = join(REPO_ROOT, "scripts", "build-binaries.sh");
 const DIST_BIN = mkdtempSync(join(tmpdir(), "ach-binaries-test-"));
 
@@ -42,8 +43,11 @@ after(() => rmSync(DIST_BIN, { recursive: true, force: true }));
 describe("scripts/build-binaries.sh", () => {
   it("exists and is executable", () => {
     assert.ok(existsSync(SCRIPT), `expected ${SCRIPT} to exist`);
-    const mode = statSync(SCRIPT).mode;
-    assert.ok((mode & 0o111) !== 0, "expected build-binaries.sh to be executable");
+    // NTFS has no exec bit (git keeps it in the index, not on disk).
+    if (process.platform !== "win32") {
+      const mode = statSync(SCRIPT).mode;
+      assert.ok((mode & 0o111) !== 0, "expected build-binaries.sh to be executable");
+    }
   });
 
   it("rejects an unknown target with a non-zero exit and no compile attempt", (t) => {

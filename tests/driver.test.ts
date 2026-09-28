@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -538,7 +539,7 @@ class KiroMockAdapter implements AgentAdapter {
 }
 
 const kiroFixture = readFileSync(
-  join(dirname(new URL(import.meta.url).pathname), 'fixtures', 'kiro', 'session-store-haiku.json'),
+  join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'kiro', 'session-store-haiku.json'),
   'utf8',
 );
 /** Credits the haiku fixture really charges, summed from the raw JSON. */

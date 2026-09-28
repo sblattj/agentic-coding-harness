@@ -1,6 +1,7 @@
 // Generic custom-agent adapter (#37): run any CLI through a command template
 // with {prompt}/{model}/{workspace} placeholders. Every test drives a FAKE CLI
 // (a node script written into a temp dir) — no real agent CLI, no network.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -20,8 +21,10 @@ import {
 import { createDriver } from "../src/core/driver.ts";
 import { listRunRecords } from "../src/core/registry.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 const NODE = process.execPath;
+// --template-shell is POSIX-only (cmd.exe cannot expand the values safely): #39.
+const SHELL_SKIP = process.platform === "win32" && "--template-shell is POSIX-only";
 
 /** Fake CLI: echoes its argv/stdin/cwd as one JSON line; FAKE_MODE=fail exits 3 with stderr. */
 const FAKE_CLI = `
@@ -131,7 +134,7 @@ describe("resolveCommand", () => {
     );
   });
 
-  it("shell mode passes values as env vars, never pasted into the shell text", () => {
+  it("shell mode passes values as env vars, never pasted into the shell text", { skip: SHELL_SKIP }, () => {
     const r = resolveCommand(
       { name: "custom", template: "mycli {prompt} | tee out.txt", shell: true },
       { prompt: "$(rm -rf /)", workspace: "/w" },
@@ -140,6 +143,13 @@ describe("resolveCommand", () => {
     assert.deepEqual(r.args, ["-c", `mycli "$ACH_PROMPT" | tee out.txt`]);
     assert.equal(r.env.ACH_PROMPT, "$(rm -rf /)");
     assert.ok(!r.redacted.join(" ").includes("rm -rf"));
+  });
+
+  it("shell mode is a USAGE error on Windows, naming the argv-mode alternative", { skip: process.platform !== "win32" && "Windows-only behavior" }, () => {
+    assert.throws(
+      () => resolveCommand({ name: "custom", template: "mycli {prompt}", shell: true }, { prompt: "p", workspace: "/w" }),
+      /--template-shell needs a POSIX \/bin\/sh and is not supported on Windows/,
+    );
   });
 });
 
@@ -233,7 +243,7 @@ describe("custom adapter through the driver (fake CLI)", () => {
     assert.equal(existsSync(marker), false, "the prompt must never be shell-evaluated");
   });
 
-  it("--template-shell mode still never evaluates the prompt (env-var substitution)", async () => {
+  it("--template-shell mode still never evaluates the prompt (env-var substitution)", { skip: SHELL_SKIP }, async () => {
     const stateDir = await fs.mkdtemp(path.join(tmp, "state-"));
     const marker = path.join(tmp, "pwned-shell");
     const prompt = `$(touch ${marker}) "q" 'q'`;
@@ -245,7 +255,7 @@ describe("custom adapter through the driver (fake CLI)", () => {
     assert.equal(existsSync(marker), false);
   });
 
-  it("--template-shell refuses extraArgs instead of silently turning them into $0/$1", async () => {
+  it("--template-shell refuses extraArgs instead of silently turning them into $0/$1", { skip: SHELL_SKIP }, async () => {
     const stateDir = await fs.mkdtemp(path.join(tmp, "state-"));
     const adapter = createCustomAdapter({ name: CUSTOM_AGENT, template: `'${NODE}' '${fake}' {prompt}`, shell: true });
     const driver = createDriver({ adapters: { custom: adapter }, stateDir });

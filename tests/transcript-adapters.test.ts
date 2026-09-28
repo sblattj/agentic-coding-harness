@@ -271,12 +271,14 @@ describe("transcript source registry", () => {
   it("default roots are per-OS paths under the given home", () => {
     const home = "/home/u";
     const byAgent = Object.fromEntries(TRANSCRIPT_SOURCES.map((s) => [s.agent, s.defaultRoots(home)]));
-    assert.deepStrictEqual(byAgent.amp, ["/home/u/.local/share/amp/threads"]);
-    assert.deepStrictEqual(byAgent.qwen, ["/home/u/.qwen/projects"]);
+    // path.join: the roots use the host separator (backslashes on Windows).
+    const p = (rel: string) => path.join(home, ...rel.split("/"));
+    assert.deepStrictEqual(byAgent.amp, [p(".local/share/amp/threads")]);
+    assert.deepStrictEqual(byAgent.qwen, [p(".qwen/projects")]);
     assert.deepStrictEqual(byAgent.goose, [
-      "/home/u/.local/share/goose/sessions",
-      "/home/u/Library/Application Support/goose/sessions",
-      "/home/u/.local/share/Block/goose/sessions",
+      p(".local/share/goose/sessions"),
+      p("Library/Application Support/goose/sessions"),
+      p(".local/share/Block/goose/sessions"),
     ]);
   });
 
@@ -305,7 +307,7 @@ describe("transcript source registry", () => {
 
 // ---------------------------------------------------------------- CLI
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function runCli(args: string[], env: Record<string, string>) {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -13,8 +14,8 @@ import type { PtySessionInfo } from '../src/web/pty-manager.ts';
 // through the same bun-subprocess web-server runner as tests/web.test.ts.
 // ---------------------------------------------------------------------------
 
-const RUNNER = new URL('./helpers/web-server-runner.ts', import.meta.url).pathname;
-const PROBE = new URL('./helpers/pty-manager-probe.ts', import.meta.url).pathname;
+const RUNNER = fileURLToPath(new URL('./helpers/web-server-runner.ts', import.meta.url));
+const PROBE = fileURLToPath(new URL('./helpers/pty-manager-probe.ts', import.meta.url));
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
 
 interface ProbeResult {

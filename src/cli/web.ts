@@ -234,6 +234,10 @@ export async function cmdWeb(rest: string[]): Promise<number> {
         spawnSync("open", [url], { stdio: "ignore" });
       } else if (process.platform === "linux") {
         spawnSync("xdg-open", [url], { stdio: "ignore" });
+      } else if (process.platform === "win32") {
+        // `start` is a cmd.exe builtin; the empty "" is its window title.
+        // The token query string has no cmd metacharacters to escape.
+        spawnSync("cmd.exe", ["/d", "/s", "/c", `start "" "${url}"`], { stdio: "ignore", windowsVerbatimArguments: true, windowsHide: true });
       }
     } catch {
       // best-effort convenience; a failed browser launch never kills the server

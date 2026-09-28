@@ -1,7 +1,7 @@
 // harness MCP run tools: harness_run (drive one agent to completion) and
 // harness_agents (list known agents with CLI availability and capabilities).
 // Contracts: src/mcp/contract.ts, src/core/driver.ts, src/core/types.ts.
-import { spawnSync } from "node:child_process";
+import { resolveCommand } from "../core/platform.ts";
 import { z } from "zod";
 import type { McpServer } from "./contract.ts";
 import {
@@ -156,7 +156,7 @@ export function toRunSpec(
 }
 
 function isOnPath(command: string): boolean {
-  return spawnSync("which", [command], { stdio: "ignore" }).status === 0;
+  return resolveCommand(command) !== undefined;
 }
 
 export function registerRunTools(

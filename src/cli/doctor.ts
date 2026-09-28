@@ -19,7 +19,6 @@
  * printed: credential checks name the variable or file, never its value.
  */
 
-import { constants as fsConstants, accessSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +29,7 @@ import { createPricer, resolveAlias } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { descriptorDirs, loadAgentDescriptors } from "../core/agent-descriptors.ts";
 import { splitTemplate } from "../adapters/custom.ts";
+import { getEnvVar, resolveCommand, shellCommand } from "../core/platform.ts";
 import { AGENTS, HarnessError, isKnownAgent, type AgentName, type CanonicalTokenRecord } from "../core/types.ts";
 
 export type DoctorStatus = "verified" | "failed" | "unproven";
@@ -107,25 +107,13 @@ function homeOf(env: NodeJS.ProcessEnv): string {
   return env.HOME && env.HOME !== "" ? env.HOME : os.homedir();
 }
 
-function isExecutableFile(p: string): boolean {
-  try {
-    if (!statSync(p).isFile()) return false;
-    accessSync(p, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** `which`: the absolute path `cmd` resolves to on `pathVar`, or undefined. */
+/**
+ * `which`: the absolute path `cmd` resolves to on `pathVar`, or undefined.
+ * PATHEXT-aware on Windows (src/core/platform.ts resolveCommand).
+ */
 export function resolveOnPath(cmd: string, pathVar: string | undefined): string | undefined {
-  if (cmd.includes("/")) return isExecutableFile(cmd) ? path.resolve(cmd) : undefined;
-  for (const dir of (pathVar ?? "").split(path.delimiter)) {
-    if (dir === "") continue;
-    const p = path.join(dir, cmd);
-    if (isExecutableFile(p)) return p;
-  }
-  return undefined;
+  const pathext = getEnvVar("PATHEXT");
+  return resolveCommand(cmd, { env: { PATH: pathVar, ...(pathext !== undefined ? { PATHEXT: pathext } : {}) } });
 }
 
 function envSpawnFn(env: NodeJS.ProcessEnv): SpawnFn {
@@ -269,7 +257,7 @@ async function checkBinary(
   timeoutMs: number,
 ): Promise<{ checks: DoctorCheck[]; resolved?: string }> {
   const t0 = Date.now();
-  const resolved = resolveOnPath(command, env.PATH);
+  const resolved = resolveOnPath(command, getEnvVar("PATH", env));
   if (!resolved) {
     return {
       checks: [
@@ -557,7 +545,7 @@ async function scanMcp(agent: AgentName, env: NodeJS.ProcessEnv, cwd: string): P
       scan.problems.push(`server '${s.name}' in ${s.file} has no command or url`);
       continue;
     }
-    if (!resolveOnPath(s.command, env.PATH)) {
+    if (!resolveOnPath(s.command, getEnvVar("PATH", env))) {
       scan.problems.push(`server '${s.name}' in ${s.file}: command '${s.command}' not found on PATH`);
     }
   }
@@ -607,7 +595,7 @@ async function checkKiro(opts: Required<Pick<DoctorOptions, "env" | "cwd" | "ver
   const env = opts.env;
   const command = env.KIRO_CLI_BIN && env.KIRO_CLI_BIN !== "" ? env.KIRO_CLI_BIN : "kiro-cli";
   const t0 = Date.now();
-  const resolved = resolveOnPath(command, env.PATH);
+  const resolved = resolveOnPath(command, getEnvVar("PATH", env));
   if (!resolved) {
     const out: DoctorCheck[] = [
       { agent: "kiro", name: "binary", status: "failed", depth: "shallow", detail: `'${command}' not found on PATH`, hint: INSTALL_HINT.kiro, ms: Date.now() - t0 },
@@ -844,8 +832,8 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
     report.checks.push({ agent: d.name, name: "descriptor", status: "verified", depth: "shallow", detail: `${file}: validated descriptor`, ms: 0, source: "agents.d" });
     if (d.launch) {
       let command: string | undefined;
-      try { command = d.launch.shell ? "/bin/sh" : splitTemplate(d.launch.template)[0]; } catch { /* reported below */ }
-      const resolved = command ? resolveOnPath(command, env.PATH) : undefined;
+      try { command = d.launch.shell ? shellCommand("", { env }).command : splitTemplate(d.launch.template)[0]; } catch { /* reported below */ }
+      const resolved = command ? resolveOnPath(command, getEnvVar("PATH", env)) : undefined;
       report.checks.push({ agent: d.name, name: "binary", status: resolved ? "verified" : "failed", depth: "shallow", detail: resolved ? `${resolved}: executable present; not launched` : `template command '${command ?? "unknown"}' is not executable`, ...(resolved ? {} : { hint: "install the descriptor command or correct launch.template" }), ms: 0, source: "agents.d" });
       report.checks.push({ agent: d.name, name: "auth", status: "unproven", depth: "shallow", detail: "descriptor supplies no offline authentication probe", ms: 0, source: "agents.d" });
     }

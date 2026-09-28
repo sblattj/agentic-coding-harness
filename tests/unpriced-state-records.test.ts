@@ -4,6 +4,7 @@
 // (`unpricedRecords`) exactly the way a transcript record is, and `ach status`
 // prices state records the same way `ach stats` does (parity), while a state
 // record that stored an explicit costUsd 0 stays a genuine, reported $0.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
@@ -15,7 +16,7 @@ import type { StatusSnapshot } from "../src/cli/status.ts";
 import { StatusSnapshotSchema } from "../src/cli/status.ts";
 import { aggregate } from "../src/cli/lib.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 const STATE_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
 
 function runCli(args: string[], env: Record<string, string>): { code: number; stdout: string; stderr: string } {

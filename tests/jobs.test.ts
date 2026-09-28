@@ -7,6 +7,7 @@ import { after, afterEach, before, describe, it } from 'node:test';
 import type { McpServer, McpToolDef } from '../src/mcp/contract.js';
 import { registerJobTools } from '../src/mcp/tools-jobs.js';
 import { writeRunRecord, type RunRecord } from '../src/core/registry.js';
+import { writeShStub } from './helpers/stub-bin.ts';
 
 // ---------------------------------------------------------------------------
 // Async job tools (src/serve/PLAN.md §B), exercised IN PROCESS: the four
@@ -59,9 +60,7 @@ function mkState(): string {
 
 function fakeCli(name: string, body: string): string {
   const p = join(binTmp, `${name}.sh`);
-  writeFileSync(p, `#!/bin/sh\n${body}\n`);
-  chmodSync(p, 0o755);
-  return p;
+  return writeShStub(p, `#!/bin/sh\n${body}\n`);
 }
 
 const QUICK_SUCCESS = `echo '{"type":"session_start","sessionId":"sess-jobs-quick"}'

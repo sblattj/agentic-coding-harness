@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,7 +16,7 @@ import { deriveLogs, deriveMetrics, deriveRunObservability, deriveSpans } from '
 // runner as tests/web.test.ts.
 // ---------------------------------------------------------------------------
 
-const RUNNER = new URL('./helpers/web-server-runner.ts', import.meta.url).pathname;
+const RUNNER = fileURLToPath(new URL('./helpers/web-server-runner.ts', import.meta.url));
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
 
 const T0 = 1_700_000_000_000;

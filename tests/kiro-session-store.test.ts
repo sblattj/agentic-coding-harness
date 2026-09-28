@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +14,7 @@ import {
 // Real (sanitized) kiro session stores, one per probe run on kiro-cli 2.21.2.
 // Every expected number below is COMPUTED from the fixture, never typed by
 // hand — the point of the suite is that the parser reports what the file says.
-const FIXTURES = join(dirname(new URL(import.meta.url).pathname), 'fixtures', 'kiro');
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'kiro');
 const AUTO = join(FIXTURES, 'session-store-auto.json');
 const HAIKU = join(FIXTURES, 'session-store-haiku.json');
 

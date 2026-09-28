@@ -2,6 +2,7 @@
 // CLI binary and no auth, so `ach run --agent null "<prompt>"` exercises the
 // whole pipeline (driver, registry RunRecord, artifacts, stats) for free.
 // Prior art cited in the issue: openbench's obench/adapters/__init__.py.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
@@ -117,7 +118,7 @@ describe("NullAdapter (unit, via driver)", () => {
 // are required.
 // ---------------------------------------------------------------------------
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 interface RunOut {
   code: number;

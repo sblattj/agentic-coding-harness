@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -11,7 +12,7 @@ import { aggregate } from '../src/cli/lib.ts';
 import { createPricer } from '../src/core/pricing.ts';
 import { readAllRecords } from '../src/core/store.ts';
 
-const cli = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const cli = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 function invoke(state: string, args: string[]) {
   const bun = Boolean((process.versions as { bun?: string }).bun);
   return spawnSync(process.execPath, bun ? [cli, ...args] : ['--import', 'tsx', cli, ...args], {

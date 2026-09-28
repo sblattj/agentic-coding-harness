@@ -11,6 +11,7 @@ import { after, describe, it } from 'node:test';
 import { readRunRecord } from '../src/core/registry.ts';
 import { createMcpServer } from '../src/mcp/server.ts';
 import { registerRunTools } from '../src/mcp/tools-run.ts';
+import { SH_STUB_SKIP, prependPath, writeShStub } from './helpers/stub-bin.ts';
 
 const STATE_DIR = mkdtempSync(join(tmpdir(), 'mcp-run-record-state-'));
 const SHIM_DIR = mkdtempSync(join(tmpdir(), 'mcp-run-record-shim-'));
@@ -27,11 +28,10 @@ after(() => {
 });
 
 describe('harness_run persists its RunRecord to the run registry (#16)', () => {
-  it('writes runs/<runId>.json on the sync MCP path', { timeout: 30_000 }, async () => {
+  it('writes runs/<runId>.json on the sync MCP path', { timeout: 30_000, skip: SH_STUB_SKIP }, async () => {
     const shim = join(SHIM_DIR, 'claude');
-    writeFileSync(shim, `#!/bin/sh\ncat <<'HARNESS_NDJSON_EOF'\n${NDJSON_LINES}\nHARNESS_NDJSON_EOF\n`);
-    chmodSync(shim, 0o755);
-    process.env.PATH = `${SHIM_DIR}:${ORIG_PATH}`;
+    writeShStub(shim, `#!/bin/sh\ncat <<'HARNESS_NDJSON_EOF'\n${NDJSON_LINES}\nHARNESS_NDJSON_EOF\n`);
+    process.env.PATH = prependPath(SHIM_DIR, ORIG_PATH);
 
     const server = createMcpServer({ name: 'test', version: '0' });
     registerRunTools(server, { stateDir: STATE_DIR });

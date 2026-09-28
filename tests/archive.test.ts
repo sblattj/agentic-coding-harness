@@ -3,6 +3,7 @@
 //
 // Every fixture lives in a temp dir: a fake HOME (machine transcript dirs) and
 // a fake state dir. Nothing touches the real ~/.claude or ~/.agentic-coding-harness.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -18,7 +19,7 @@ import { findArchivedRaw, readManifest, warehouseDir } from "../src/core/warehou
 import { scanAll, scanOptionsForRoot } from "../src/monitors/transcripts.ts";
 import { RunEventHub } from "../src/web/hub.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function runCli(args: string[], env: Record<string, string> = {}): { code: number; stdout: string; stderr: string } {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;

@@ -8,12 +8,13 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 import { runDoctor, formatDoctorTable, type DoctorCheck, type DoctorReport } from "../src/cli/doctor.ts";
+import { writeShStub } from "./helpers/stub-bin.ts";
 
 // `ach doctor` (issue #35). Every test builds its own world: a temp PATH
 // holding fake agent binaries (shell scripts), a temp HOME, a temp state dir.
 // No real agent CLI and no network is ever touched.
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 const REPO_ROOT = path.join(fileURLToPath(new URL('.', import.meta.url)), "..");
 const ACP_SERVER = path.join(fileURLToPath(new URL('.', import.meta.url)), "fixtures/kiro/fake-acp-server.ts");
 const IS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
@@ -42,9 +43,7 @@ async function world(): Promise<World> {
 
 async function fakeBin(w: World, name: string, script: string): Promise<string> {
   const p = path.join(w.bin, name);
-  await fs.writeFile(p, `#!/bin/sh\n${script}\n`);
-  await fs.chmod(p, 0o755);
-  return p;
+  return writeShStub(p, `#!/bin/sh\n${script}\n`);
 }
 
 async function fakeAllVersions(w: World): Promise<void> {
@@ -321,7 +320,7 @@ describe("runDoctor — per-agent checks", () => {
 });
 
 describe("runDoctor — harness config", () => {
-  it("fails clearly when the state dir is read-only", { skip: IS_ROOT ? "root ignores file modes" : false }, async () => {
+  it("fails clearly when the state dir is read-only", { skip: IS_ROOT ? "root ignores file modes" : process.platform === "win32" ? "NTFS ignores POSIX dir modes" : false }, async () => {
     const w = await world();
     const ro = path.join(w.state, "ro");
     await fs.mkdir(ro);
@@ -411,7 +410,7 @@ describe("ach doctor (CLI)", () => {
     assert.match(r.stderr, /unknown agent 'nope'/);
   });
 
-  it("read-only state dir fails the CLI", { skip: IS_ROOT ? "root ignores file modes" : false }, async () => {
+  it("read-only state dir fails the CLI", { skip: IS_ROOT ? "root ignores file modes" : process.platform === "win32" ? "NTFS ignores POSIX dir modes" : false }, async () => {
     const w = await world();
     const ro = path.join(w.state, "ro");
     await fs.mkdir(ro);

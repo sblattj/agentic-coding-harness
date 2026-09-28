@@ -1,3 +1,4 @@
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -17,7 +18,7 @@ import { after, afterEach, before, describe, it } from 'node:test';
 // src/mcp/http.ts). Every failure message carries the child's stderr tail.
 // ---------------------------------------------------------------------------
 
-const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 const TOKEN = 'testtok';
 
 const EXPECTED_TOOLS = [
@@ -39,7 +40,8 @@ const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0
 // `--import tsx` resolves the specifier from the CHILD's cwd, and these spawns
 // run with a bare tmp cwd — so resolve tsx to an absolute path from THIS test
 // file's location instead (same fix as tests/mcp-stdio.test.ts).
-const TSX_IMPORT = createRequire(import.meta.url).resolve('tsx');
+// --import takes a URL; a bare win32 absolute path (D:\...) is rejected.
+const TSX_IMPORT = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
 
 let stateTmp = '';
 let cwdTmp = '';

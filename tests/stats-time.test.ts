@@ -1,5 +1,6 @@
 // Time windows (#26), timezone-aware day boundaries (#84) and week/month
 // rollups (#44) for `ach stats` / `ach watch`.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
@@ -21,7 +22,7 @@ import {
   zonedMidnight,
 } from "../src/cli/time-window.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function runCli(args: string[], env: Record<string, string>, timeoutMs?: number) {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;

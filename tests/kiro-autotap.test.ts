@@ -11,6 +11,7 @@ import { KiroAdapter } from '../src/adapters/kiro.js';
 import { findKiroMitmPort, mitmdumpAvailable } from '../src/monitors/kiro-mitm.js';
 import { FakeChild, runCall, versionProbeSpawnFn, type FakeSpawnCall } from './helpers/fake-child.ts';
 import type { AgentEvent } from '../src/core/types.js';
+import { writeShStub } from './helpers/stub-bin.ts';
 
 // What the fake mitmdump prints: one meteringEvent record carrying 0.05 credits.
 const METERING_LINE = JSON.stringify({
@@ -70,10 +71,7 @@ let mitmdump: string;
 let kiroCli: string;
 
 function writeExecutable(name: string, body: string): string {
-  const file = join(dir, name);
-  writeFileSync(file, body, { mode: 0o755 });
-  chmodSync(file, 0o755);
-  return file;
+  return writeShStub(join(dir, name), body);
 }
 
 async function collect(handle: { attach(): AsyncIterable<AgentEvent> }): Promise<AgentEvent[]> {

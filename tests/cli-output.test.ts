@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -5,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-const cli = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const cli = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 const isBun = Boolean((process.versions as { bun?: string }).bun);
 function run(args: string[], env: NodeJS.ProcessEnv = process.env) {
   return spawnSync(process.execPath, isBun ? [cli, ...args] : ['--import', 'tsx', cli, ...args], {

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -9,7 +10,7 @@ import {
 } from '../src/core/usage-availability.ts';
 import { UsageAvailabilitySchema, type CanonicalTokenRecord } from '../src/core/types.ts';
 
-const FIXTURES = join(dirname(new URL(import.meta.url).pathname), 'fixtures', 'kiro');
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'kiro');
 
 function store(name: string): ParsedKiroSessionStore {
   const parsed = parseKiroSessionStore(JSON.parse(readFileSync(join(FIXTURES, name), 'utf8')));
