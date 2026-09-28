@@ -81,6 +81,7 @@ body {
 .glyph.interrupted, .status.interrupted { color: var(--yellow); }
 .list-empty { padding: 16px 12px; color: var(--dim); }
 #agg { padding: 8px 12px; color: var(--dim); border-top: 1px solid var(--line); }
+#provlegend { padding: 0 12px 8px; color: var(--dim); font-size: 11px; white-space: pre-wrap; }
 
 /* ===== main pane ===== */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -136,6 +137,7 @@ body {
   </nav>
   <div id="runlist"></div>
   <footer id="agg"></footer>
+  <footer id="provlegend" title="provenance markers (docs/PROVENANCE.md)">* computed by ach (tokens x bundled price)  ≈ estimated (heuristic)  unmarked = reported by the agent CLI  n/a = not reported</footer>
 </aside>
 
 <main id="main">
@@ -224,6 +226,38 @@ function wsUrl(params) {
     (parts.length ? "?" + parts.join("&") : "");
 }
 
+/* ===== provenance markers (issue #33; mirrors src/core/provenance.ts) ===== */
+/* provenance:begin */
+var PROV_MARK = { reported: "", computed: "*", estimated: "\u2248" };
+/* Stored totals.provenance wins; a local record written before it existed is
+   derived (the driver always priced costUsd itself); an external record
+   without a map is never guessed at. */
+function provOf(r) {
+  var t = (r && r.totals) || null;
+  if (!t) return {};
+  if (t.provenance) return t.provenance;
+  if (r.source === "external") return {};
+  var out = {};
+  var usdKnown = !(r.usage && r.usage.usd && r.usage.usd.available === false);
+  if (usdKnown) {
+    if (t.costSource) out.costUsd = t.costSource;
+    else if (t.costUsd > 0) out.costUsd = "computed";
+  }
+  if (t.contextTokens != null) out.contextTokens = "estimated";
+  return out;
+}
+function provMark(r, field) {
+  var p = provOf(r)[field];
+  return p ? PROV_MARK[p] || "" : "";
+}
+/* Context occupancy is DERIVED: always rendered with the estimated marker. */
+function fmtCtx(r) {
+  var t = r && r.totals;
+  if (!t || t.contextTokens == null) return "";
+  return PROV_MARK.estimated + Number(t.contextTokens).toLocaleString("en-US") + " tok";
+}
+/* provenance:end */
+
 /* ===== sidebar ===== */
 function buildRow(r) {
   var row = el("div", "row");
@@ -238,7 +272,7 @@ function buildRow(r) {
   var dur = el("span", "dur", fmtDur(elapsed(r)));
   row.appendChild(dur);
   row._dur = dur;
-  row.appendChild(el("span", "cost", fmtCost(r.totals && r.totals.costUsd)));
+  row.appendChild(el("span", "cost", fmtCost(r.totals && r.totals.costUsd) + provMark(r, "costUsd")));
   row.addEventListener("click", function () { selectRun(r.runId); });
   return row;
 }
@@ -261,12 +295,14 @@ function renderRuns() {
   });
 }
 function renderAggregate() {
-  var live = 0, cost = 0;
+  var live = 0, cost = 0, computed = false;
   runs.forEach(function (r) {
     if (isLive(r)) live++;
     cost += (r.totals && r.totals.costUsd) || 0;
+    if (provMark(r, "costUsd") === PROV_MARK.computed) computed = true;
   });
-  $("agg").textContent = runs.length + " runs \u00b7 " + live + " live \u00b7 " + fmtCost(cost);
+  /* A sum with any computed part is itself computed. */
+  $("agg").textContent = runs.length + " runs \u00b7 " + live + " live \u00b7 " + fmtCost(cost) + (computed ? PROV_MARK.computed : "");
 }
 
 /* ===== metadata strip ===== */
@@ -288,7 +324,9 @@ function renderMeta() {
   box.appendChild(kv("in", fmtTok(t.inputTokens)));
   box.appendChild(kv("out", fmtTok(t.outputTokens)));
   box.appendChild(kv("cache", fmtTok(t.cacheReadTokens) + "r " + fmtTok(t.cacheWriteTokens) + "w"));
-  box.appendChild(kv("cost", fmtCost(t.costUsd)));
+  box.appendChild(kv("cost", fmtCost(t.costUsd) + provMark(r, "costUsd")));
+  var ctxTxt = fmtCtx(r);
+  if (ctxTxt) box.appendChild(kv("ctx", ctxTxt));
   if (t.credits != null) box.appendChild(kv("credits", String(t.credits)));
   var lastTxt = r.lastEvent != null ? String(r.lastEvent) : "";
   var shown = lastTxt.length > 64 ? lastTxt.slice(0, 63) + "\u2026" : lastTxt;

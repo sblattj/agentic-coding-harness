@@ -12,6 +12,7 @@ import {
   type KiroEffective,
   type UsageAvailability,
 } from "./types.ts";
+import { PROVENANCE_CLASSES, type ProvenanceMap } from "./provenance.ts";
 
 // Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
 // record (source:"external") validates without inventing a local pid, cwd, or
@@ -34,9 +35,13 @@ export interface RunRecord {
     cacheReadTokens: number;
     cacheWriteTokens: number;
     costUsd: number;
+    /** Which cost path fed costUsd (issue #28); absent when both or neither did. */
+    costSource?: "reported" | "computed";
     credits?: number;
     /** Latest DERIVED context-window occupancy (not billed tokens). */
     contextTokens?: number;
+    /** Per-field provenance (issue #33): reported | computed | estimated; a lane with no entry is n/a. */
+    provenance?: ProvenanceMap;
   };
   lastEvent?: string; // one-line preview of the latest event
   rawTranscript?: string; // absolute path to <stateDir>/raw/<agent>-<session>.jsonl (LOCAL-PROCESS-ONLY)
@@ -60,8 +65,10 @@ const TotalsSchema = z.object({
   cacheReadTokens: z.number(),
   cacheWriteTokens: z.number(),
   costUsd: z.number(),
+  costSource: z.enum(["reported", "computed"]).optional(),
   credits: z.number().optional(),
   contextTokens: z.number().optional(),
+  provenance: z.record(z.string(), z.enum(PROVENANCE_CLASSES)).optional(),
 });
 
 export const RunRecordSchema = z.object({

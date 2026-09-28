@@ -6,6 +6,7 @@
 import fs from "node:fs/promises";
 import type { LoadedRun, TrialSet } from "./model.ts";
 import { VERSION } from "../version.ts";
+import { markerFor, PROVENANCE_LEGEND } from "../core/provenance.ts";
 
 const MESSAGE_CAP = 2000;
 const TIMELINE_CAP = 500;
@@ -351,7 +352,7 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
       const costCell =
         r.usdUnavailable || r.costUsd === undefined
           ? NA_CELL
-          : `<td data-v="${r.costUsd}" class="num">${esc(fmtCost(r.costUsd))}</td>`;
+          : `<td data-v="${r.costUsd}" class="num">${esc(fmtCost(r.costUsd) + markerFor(r.costProvenance))}</td>`;
       const tokenCell = (v: number): string =>
         r.tokensUnavailable ? NA_CELL : `<td data-v="${v}" class="num">${fmtInt(v)}</td>`;
       const cells = [
@@ -561,6 +562,7 @@ export function renderReport(trialSet: TrialSet, opts: RenderOptions): string {
   <section>
     <h3>comparison</h3>
 ${renderComparisonTable(runs, multiTrial)}
+    <p class="muted legend">${esc(PROVENANCE_LEGEND)}</p>
   </section>
 ${renderCharts(runs)}
   <section>

@@ -13,6 +13,7 @@ import {
   type RunResult,
   type UsageAvailability,
 } from "../core/types.ts";
+import type { Provenance } from "../core/provenance.ts";
 
 /** Tolerant RunResult view: `harness run --json` writes the full envelope, but
  * hand-trimmed fixtures may omit numeric/cost fields. Everything except
@@ -39,6 +40,10 @@ export interface LoadedRun {
   /** Sum of per-token-record costUsd when any record defines one; else
    * result.totalCost when defined; else undefined (rendered 'n/a'). */
   costUsd: number | undefined;
+  /** Provenance of costUsd (issue #33): per-record provider costs are
+   * `reported`; the driver's totalCost fallback is pricer math, `computed`.
+   * Undefined exactly when costUsd is. */
+  costProvenance?: Provenance;
   /** Sum of tokens[].extra.credits (kiro metering) when any record has one. */
   credits: number | null;
   /** The run's prompt/task text when recoverable from the event stream. */
@@ -144,6 +149,7 @@ export function toLoadedRun(
   const tokensUnavailable = usage?.tokens.available === false;
   const usdUnavailable = usage?.usd.available === false;
   const costUsd = usdUnavailable ? undefined : hasCost ? (costSum as number) : totalCost;
+  const costProvenance: Provenance | undefined = costUsd === undefined ? undefined : hasCost ? "reported" : "computed";
   const events = Array.isArray(result.events) ? result.events : [];
   return {
     agent: typeof result.agent === "string" && result.agent ? result.agent : agent,
@@ -159,6 +165,7 @@ export function toLoadedRun(
     cacheWriteTokens: cacheWrite,
     reasoningTokens: reasoning,
     costUsd,
+    ...(costProvenance !== undefined ? { costProvenance } : {}),
     credits,
     task: extractTask(events),
     ...(typeof result.variant === "string" && result.variant !== "" ? { variant: result.variant } : {}),
