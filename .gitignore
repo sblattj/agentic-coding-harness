@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-bin/
 .opencode/
 
 # Raw trial dumps: copies of a local agent config dir (XDG_CONFIG_HOME or
