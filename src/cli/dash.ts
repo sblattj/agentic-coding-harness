@@ -79,12 +79,22 @@ const GLYPHS: Record<Status, string> = {
   interrupted: "!",
 };
 
+// Second STATUS character: the post-run checker verdict (`ach run --verify`,
+// #29) — ✓ green pass / ✗ red fail / ? yellow error when the terminal allows
+// color, ASCII p / f / e otherwise; blank when the run was never verified.
+const VERIFY_PLAIN = { pass: "p", fail: "f", error: "e" } as const;
+const VERIFY_ANSI = { pass: "\x1b[32m✓\x1b[0m", fail: "\x1b[31m✗\x1b[0m", error: "\x1b[33m?\x1b[0m" } as const;
+
 function statusCell(rec: RunRecord, ansi: boolean, w: number): string {
   const status = effectiveStatus(rec);
-  const plain = padR(GLYPHS[status], w);
-  if (!ansi || status === "success") return plain;
+  const v = rec.verify?.status;
+  const plain = padR(GLYPHS[status] + (v !== undefined ? VERIFY_PLAIN[v] : ""), w);
+  if (!ansi) return plain;
+  const mark = v !== undefined ? VERIFY_ANSI[v] : "";
+  const rest = plain.slice(v !== undefined ? 2 : 1);
+  if (status === "success") return GLYPHS[status] + mark + rest;
   const glyph = status === "running" ? "●" : status === "error" ? "✗" : "!";
-  return `\x1b[${status === "running" ? 32 : status === "error" ? 31 : 33}m${glyph}\x1b[0m` + plain.slice(1);
+  return `\x1b[${status === "running" ? 32 : status === "error" ? 31 : 33}m${glyph}\x1b[0m` + mark + rest;
 }
 
 // ---------------------------------------------------------------- table

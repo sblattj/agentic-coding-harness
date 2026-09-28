@@ -12,6 +12,7 @@ import {
   type KiroEffective,
   type UsageAvailability,
 } from "./types.ts";
+import { VerifyResultSchema, type VerifyResult } from "./verify.ts";
 
 // Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
 // record (source:"external") validates without inventing a local pid, cwd, or
@@ -52,6 +53,19 @@ export interface RunRecord {
   producer?: string; // e.g. "acme-feed/bridge@1"
   endedAt?: number; // ms epoch — explicit wall-clock end for external runs
   metadata?: Record<string, unknown>; // free-form provenance (request_id, region, ...)
+  // --- outcome scoring + repeat trials (0.11.0, #29/#57/#89) ---
+  /** Post-run checker verdict (`ach run --verify`); absent when no checker ran. */
+  verify?: VerifyResult;
+  /** `ach run --repeat N` membership: shared group id, 0-based index, group size. */
+  repeat?: RepeatMembership;
+  /** Later `ach regrade` verdicts, oldest first; `verify` is never rewritten. */
+  regrades?: VerifyResult[];
+}
+
+export interface RepeatMembership {
+  group: string;
+  index: number;
+  count: number;
 }
 
 const TotalsSchema = z.object({
@@ -92,6 +106,11 @@ export const RunRecordSchema = z.object({
   producer: z.string().min(1).optional(),
   endedAt: z.number().int().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  verify: VerifyResultSchema.optional(),
+  repeat: z
+    .object({ group: z.string().min(1), index: z.number().int().min(0), count: z.number().int().min(1) })
+    .optional(),
+  regrades: z.array(VerifyResultSchema).optional(),
 });
 
 export function registryDir(stateDir: string): string {

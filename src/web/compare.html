@@ -245,16 +245,41 @@ td.num.succ { color: var(--cyan); }
 
   /* ===== table machinery ===== */
   var METRIC_COLS = ["runs", "avgTotalTokens", "avgCostUsd", "avgDurationMs", "successRate"];
+  // Outcome columns (#29/#30): shown only when some group carries a verify
+  // verdict (row.passRate); a group without one renders n/a, never 0%.
+  var OUTCOME_COLS = ["passRate", "passCi", "passHatK", "anyPassAtK"];
   var LABELS = {
     experiment: "experiment", variant: "variant", workflow: "workflow", agent: "agent",
     runs: "runs", avgTotalTokens: "avg tokens", avgCostUsd: "avg cost",
     avgDurationMs: "avg duration", successRate: "success",
+    passRate: "pass", passCi: "pass@1 · 95% CI", passHatK: "pass^k", anyPassAtK: "any-pass@k",
   };
 
   // per-table state: rows in group order + current sort (null | key+dir)
   var stores = {};
 
-  function isMetric(key) { return METRIC_COLS.indexOf(key) !== -1; }
+  function isMetric(key) { return METRIC_COLS.indexOf(key) !== -1 || OUTCOME_COLS.indexOf(key) !== -1; }
+  function hasOutcomes(rows) {
+    for (var i = 0; i < rows.length; i++) if (rows[i].passRate !== undefined && rows[i].passRate !== null) return true;
+    return false;
+  }
+  function metricValue(row, key) {
+    var rep = row.repeats || null;
+    if (key === "passCi") return rep ? rep.wilsonLo : undefined;
+    if (key === "passHatK" || key === "anyPassAtK") return rep ? rep[key] : undefined;
+    return row[key];
+  }
+  function fmtOutcome(row, key) {
+    var rep = row.repeats || null;
+    if (!rep) return "n/a";
+    if (key === "passRate") return fmtPct(row.passRate);
+    if (key === "passCi") {
+      if (rep.wilsonLo === undefined || rep.wilsonLo === null) return "k=" + rep.k + " · no CI";
+      return fmtPct(rep.passAt1) + " [" + fmtPct(rep.wilsonLo) + "–" + fmtPct(rep.wilsonHi) + "] k=" + rep.k;
+    }
+    var v = rep[key];
+    return v === undefined || v === null ? "n/a" : fmtPct(v);
+  }
 
   function sortedRows(store) {
     var s = store.sort;
@@ -263,7 +288,7 @@ td.num.succ { color: var(--cyan); }
     var key = s.key;
     rows.sort(function (a, b) {
       var r;
-      if (isMetric(key)) r = (Number(a[key]) || 0) - (Number(b[key]) || 0);
+      if (isMetric(key)) r = (Number(metricValue(a, key)) || 0) - (Number(metricValue(b, key)) || 0);
       else r = String(a[key] ?? "").localeCompare(String(b[key] ?? ""));
       return s.dir * r;
     });
@@ -272,7 +297,8 @@ td.num.succ { color: var(--cyan); }
 
   function renderTable(store) {
     var headRow = document.createElement("tr");
-    var cols = store.groupBy.concat(METRIC_COLS);
+    var showOutcome = hasOutcomes(store.rows);
+    var cols = store.groupBy.concat(METRIC_COLS, showOutcome ? OUTCOME_COLS : []);
     for (var c = 0; c < cols.length; c++) {
       (function (key) {
         var th = document.createElement("th");
@@ -333,6 +359,14 @@ td.num.succ { color: var(--cyan); }
         nd.className = "num" + (cells[m][1] ? " " + cells[m][1] : "");
         nd.textContent = cells[m][2](row[cells[m][0]]);
         tr.appendChild(nd);
+      }
+      if (showOutcome) {
+        for (var o = 0; o < OUTCOME_COLS.length; o++) {
+          var od = document.createElement("td");
+          od.className = "num";
+          od.textContent = fmtOutcome(row, OUTCOME_COLS[o]);
+          tr.appendChild(od);
+        }
       }
       store.body.appendChild(tr);
     }
