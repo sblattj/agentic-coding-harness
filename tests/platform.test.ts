@@ -12,6 +12,7 @@ import {
   expandHome,
   getEnvVar,
   homeDir,
+  isSameEntryPath,
   resolveCommand,
   shellCommand,
   spawnTarget,
@@ -160,5 +161,33 @@ describe("home directory and system binaries (#39)", () => {
     const t = shellCommand("echo hi", { platform: "win32", env: { PATH: "C:\\bin", SystemRoot: "C:\\Windows" } });
     const expected = process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe";
     assert.equal(t.command, expected);
+  });
+});
+
+// invokedAsCli() in src/cli/ach.ts decides whether the module runs main().
+// A false negative makes the CLI print nothing and exit 0, which is what the
+// Windows standalone binary did: bun hands argv[1] and import.meta.url for its
+// virtual filesystem with different separators, and realpath cannot resolve
+// either (no real inode), so the raw strings were compared.
+describe("isSameEntryPath", () => {
+  const noRealpath = (_p: string): string => {
+    throw new Error("ENOENT");
+  };
+  it("win32: separator and drive-letter case differences are the same entry", () => {
+    const o = { platform: "win32" as const, realpath: noRealpath };
+    assert.equal(isSameEntryPath("B:/~BUN/root/ach.exe", "B:\\~BUN\\root\\ach.exe", o), true);
+    assert.equal(isSameEntryPath("c:\\Tools\\ach\\cli.mjs", "C:\\tools\\ach\\cli.mjs", o), true);
+    assert.equal(isSameEntryPath("C:\\tools\\ach\\other.mjs", "C:\\tools\\ach\\cli.mjs", o), false);
+  });
+  it("win32: an 8.3 short path matches once realpath expands it", () => {
+    const real = (p: string) => p.replace("RUNNER~1", "runneradmin");
+    const o = { platform: "win32" as const, realpath: real };
+    assert.equal(isSameEntryPath("C:\\Users\\RUNNER~1\\AppData\\cli.mjs", "C:\\Users\\runneradmin\\AppData\\cli.mjs", o), true);
+  });
+  it("posix: stays exact (case-sensitive), realpath first, raw fallback", () => {
+    assert.equal(isSameEntryPath("/$bunfs/root/ach", "/$bunfs/root/ach", { platform: "linux", realpath: noRealpath }), true);
+    assert.equal(isSameEntryPath("/opt/Ach/cli.mjs", "/opt/ach/cli.mjs", { platform: "darwin", realpath: noRealpath }), false);
+    const link = (p: string) => (p === "/usr/local/bin/ach" ? "/opt/ach/cli.mjs" : p);
+    assert.equal(isSameEntryPath("/usr/local/bin/ach", "/opt/ach/cli.mjs", { platform: "darwin", realpath: link }), true);
   });
 });
