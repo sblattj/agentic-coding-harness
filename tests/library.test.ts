@@ -48,7 +48,7 @@ function importInChild(moduleUrl: string): { code: number; stdout: string; stder
       (err) => { process.stderr.write(String(err)); process.exitCode = 1; },
     );
   `;
-  const p = spawnSync(process.execPath, ['--import', 'tsx', '--eval', script], {
+  const p = spawnSync(process.execPath, (process.versions as { bun?: string }).bun ? ['--eval', script] : ['--import', 'tsx', '--eval', script], {
     encoding: 'utf8',
     timeout: 30_000,
   });

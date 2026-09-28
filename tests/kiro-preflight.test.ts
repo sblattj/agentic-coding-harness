@@ -41,7 +41,7 @@ function fakeKiro(opts: {
     let argv: string[];
     if (args[0] === '--version') argv = script(opts.version ?? 'kiro-cli 2.21.2\n', opts.versionCode ?? 0);
     else if (args[0] === 'whoami') argv = script(opts.whoami ?? 'user@example.com\n', opts.whoamiCode ?? 0);
-    else argv = ['--import', 'tsx', SERVER];
+    else argv = (process.versions as { bun?: string }).bun ? [SERVER] : ['--import', 'tsx', SERVER];
     const child = spawn(process.execPath, argv, {
       ...spawnOpts,
       cwd: REPO_ROOT,
