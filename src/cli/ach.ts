@@ -1106,7 +1106,8 @@ async function cmdStats(rest: string[]): Promise<number> {
     ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs }) : []),
   ].filter((r) => inWindow(Date.parse(r.ts), window));
   const runCwd = cwdIndex(listRunRecords(stateDir()));
-  let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string })[] = stateRecords.map((r) => ({
+  let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript" })[] = stateRecords.map((r) => ({
+    source: "state",
     extra: r.extra,
     cwd: runCwd(r.agent, r.sessionId),
     ts: r.ts,
@@ -1149,7 +1150,7 @@ async function cmdStats(rest: string[]): Promise<number> {
       if (seen.has(key)) continue;
       seen.add(key);
       const cwd = rec.cwd ?? runCwd(rec.agent, rec.sessionId);
-      records.push({ ...row, ...costFor(row, undefined), ...(cwd ? { cwd } : {}) });
+      records.push({ ...row, ...costFor(row, undefined), ...(cwd ? { cwd } : {}), source: "transcript" });
     }
     // agents.d usage taps (#38): descriptor-declared transcript sources.
     const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs, costMode });
@@ -1159,7 +1160,7 @@ async function cmdStats(rest: string[]): Promise<number> {
       const key = dedupeKey(row);
       if (seen.has(key)) continue;
       seen.add(key);
-      records.push(row);
+      records.push({ ...row, source: "transcript" });
     }
     for (const w of new Set(tap.warnings)) process.stderr.write(`[warn] ${w}\n`);
   }
@@ -1224,6 +1225,13 @@ async function cmdStats(rest: string[]): Promise<number> {
   }
 
   const view = (b: typeof agg.totals) => applyCostMode(b, costMode);
+  // Preserve origin through aggregation so readers can distinguish harness
+  // state from read-only transcripts even when both contain the same agent.
+  const sources = Object.fromEntries((["state", "transcript"] as const).map((source) => {
+    const rows = records.filter((r) => r.source === source);
+    return [source, { ...view(aggregate(rows, { timeZone, by }).totals), provenance: statsProvenance(rows, { timeZone, by }).total }];
+  }));
+  const hasTranscripts = records.some((r) => r.source === "transcript");
   // Issue #33: a sibling `provenance` map on every bucket (numbers unchanged).
   const prov = statsProvenance(records, { timeZone, by });
   const mapView = (m: Record<string, typeof agg.totals>, pm: Record<string, ProvenanceMap>) =>
@@ -1235,6 +1243,7 @@ async function cmdStats(rest: string[]): Promise<number> {
         {
           total: { ...view(agg.totals), costDisagreements: disagreements.length, provenance: prov.total },
           byAgent: mapView(agg.byAgent, prov.byAgent),
+          ...(hasTranscripts ? { sources } : {}),
           ...Object.fromEntries(Object.entries(timeMaps).map(([k, v]) => [k, mapView(v, k === "byDay" ? prov.byDay : k === "byWeek" ? prov.byWeek ?? {} : prov.byMonth ?? {})])),
           timezone: timeZone,
           window: windowJson(window),
@@ -1263,6 +1272,11 @@ async function cmdStats(rest: string[]): Promise<number> {
     const line = (label: string, b: CostModeBucket, p: ProvenanceMap | undefined) =>
       `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${b.costUsd === null ? "n/a" : fmtUsd(b.costUsd) + markerFor(p?.costUsd)} cacheHit=${fmtCacheHit(cacheHitRatio(b))}`;
     process.stdout.write(line("totals", view(agg.totals), prov.total) + ` costMode=${costMode}` + "\n");
+    if (hasTranscripts) {
+      for (const [source, bucket] of Object.entries(sources)) {
+        process.stdout.write(line(`source: ${source}`, bucket, bucket.provenance) + "\n");
+      }
+    }
     if (disagreements.length > 0) process.stdout.write(`disagree  ${disagreements.length} record(s) where reported and computed cost differ by >${COST_DISAGREEMENT_PCT}% (details on stderr)\n`);
     if (unmetered.runs > 0) {
       process.stdout.write(`unmetered runs=${fmtInt(unmetered.runs)} tokens=n/a cost=n/a\n`);

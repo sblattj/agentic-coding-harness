@@ -91,3 +91,7 @@ and restore maps each back to its corresponding home-shaped root.
 
 - The read-only sources do not yet honour env-var relocations
   (`QWEN_RUNTIME_DIR`, `COPILOT_HOME`, ...).
+
+Stats includes `sources.state` and `sources.transcript` buckets when transcript data is present.
+The text view labels both sources; time, agent, and project filters apply before these buckets
+are computed. `--state-only` excludes transcript sources and omits this extra JSON field.
