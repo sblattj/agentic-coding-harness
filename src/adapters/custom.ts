@@ -179,6 +179,15 @@ export function resolveCommand(
   const stdin = viaStdin ? { stdin: values.prompt } : {};
 
   if (config.shell === true) {
+    // POSIX-only: the values ride "$VAR" references, which cmd.exe cannot
+    // expand safely (a %VAR% expansion is re-parsed, so a prompt containing
+    // " or & would break out). Documented limitation (#39).
+    if (process.platform === 'win32') {
+      throw new HarnessError(
+        '--template-shell needs a POSIX /bin/sh and is not supported on Windows: drop --template-shell (argv mode needs no shell)',
+        'USAGE',
+      );
+    }
     // The template is shell code by the author's explicit choice; the VALUES
     // are not: each placeholder becomes a quoted env-var reference.
     const script = config.template.replace(PLACEHOLDER, (_m, name: string) =>

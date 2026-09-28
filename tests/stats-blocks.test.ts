@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -11,7 +12,7 @@ import { after, before, describe, it } from 'node:test';
 // real machine transcripts.
 // ---------------------------------------------------------------------------
 
-const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 const H = 3_600_000;
 const M = 60_000;
 

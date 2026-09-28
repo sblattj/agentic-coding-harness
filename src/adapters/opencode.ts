@@ -1,4 +1,6 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import type { AdapterCapabilities, CanonicalEvent, CanonicalTokenRecord, RunOptions } from './types.ts';
@@ -541,8 +543,12 @@ export interface OpencodeSessionStat {
   time_created: number;
 }
 
-export function defaultOpencodeDbPath(home: string = process.env.HOME ?? ''): string {
-  return `${home}/.local/share/opencode/opencode.db`;
+/**
+ * opencode keeps its data under the XDG data dir, which it resolves to
+ * `<home>/.local/share` on every OS, Windows included (xdg-basedir).
+ */
+export function defaultOpencodeDbPath(home: string = os.homedir()): string {
+  return path.join(home, '.local', 'share', 'opencode', 'opencode.db');
 }
 
 const STATS_SQL = `
@@ -572,10 +578,13 @@ export async function statsViaBun(dbPath: string, limit: number): Promise<Openco
   }
 }
 
-/** Node path: readonly `sqlite3` CLI via execSync (better-sqlite3 not bundled by design). */
+/**
+ * Node path: readonly `sqlite3` CLI via execFileSync (better-sqlite3 not
+ * bundled by design). No shell, so no POSIX quoting to break under cmd.exe (#39).
+ */
 export function statsViaCli(dbPath: string, limit: number): OpencodeSessionStat[] {
   const sql = STATS_SQL.replace('LIMIT ?', `LIMIT ${Number(limit)}`);
-  const out = execSync(['sqlite3', '-readonly', '-json', shellQuote(dbPath), shellQuote(sql)].join(' '), {
+  const out = execFileSync('sqlite3', ['-readonly', '-json', dbPath, sql], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
   }).trim();
@@ -599,8 +608,4 @@ function normalizeStats(rows: unknown[]): OpencodeSessionStat[] {
     )
     .parse(rows);
   return list;
-}
-
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
 }

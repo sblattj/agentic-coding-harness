@@ -4,7 +4,7 @@ import { Readable, Writable } from 'node:stream';
 import { execFileSync, execSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import path, { join } from 'node:path';
 import {
   OPENCODE_CAPABILITIES,
   OpenCodeAdapter,
@@ -483,8 +483,8 @@ describe('opencode adapter', () => {
     });
 
     test('default db path points at the real store', () => {
-      assert.equal(defaultOpencodeDbPath('/home/x'), '/home/x/.local/share/opencode/opencode.db');
-      assert.match(defaultOpencodeDbPath(), /\.local\/share\/opencode\/opencode\.db$/);
+      assert.equal(defaultOpencodeDbPath('/home/x'), path.join('/home/x', '.local', 'share', 'opencode', 'opencode.db'));
+      assert.match(defaultOpencodeDbPath(), /\.local[\\/]share[\\/]opencode[\\/]opencode\.db$/);
     });
   });
 });

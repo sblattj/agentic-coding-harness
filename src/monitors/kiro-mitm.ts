@@ -19,7 +19,7 @@
 // credits, contextUsagePercentage, event, url, raw line) ride in `extra` —
 // canonical semantics keep no stored total (derive at render time).
 
-import { spawn as nodeSpawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
+import { spawn as nodeSpawn, type ChildProcessByStdio } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
@@ -28,6 +28,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import type { CanonicalTokenRecord } from '../core/types.js';
+import { resolveCommand, spawnTarget, withTreeKill } from '../core/platform.ts';
 
 export const DEFAULT_MITM_PORT = 8888;
 
@@ -515,14 +516,13 @@ let mitmdumpProbe: { bin: string; available: boolean } | null = null;
 
 /**
  * Cached existence probe for the mitmdump binary: paths containing '/' are
- * checked with existsSync, bare names via `command -v` through /bin/sh.
+ * checked with existsSync, bare names on PATH (PATHEXT-aware on Windows).
  * Probed at most once per binary per process.
  */
 export function mitmdumpAvailable(bin: string = process.env.MITMDUMP_BIN ?? 'mitmdump'): boolean {
   if (mitmdumpProbe?.bin === bin) return mitmdumpProbe.available;
-  const available = bin.includes('/')
-    ? existsSync(bin)
-    : spawnSync('/bin/sh', ['-c', `command -v ${bin}`], { stdio: 'ignore' }).status === 0;
+  const isPath = process.platform === 'win32' ? /[\\/]/.test(bin) : bin.includes('/');
+  const available = isPath ? existsSync(bin) : resolveCommand(bin) !== undefined;
   mitmdumpProbe = { bin, available };
   return available;
 }
@@ -553,10 +553,15 @@ export interface KiroMitmOptions {
 export function startKiroMitm(port: number = DEFAULT_MITM_PORT, opts: KiroMitmOptions = {}): KiroMitmHandle {
   const scriptPath = opts.scriptPath ?? writeAddonScript();
   const bin = opts.mitmdumpBin ?? process.env.MITMDUMP_BIN ?? 'mitmdump';
-  const child = nodeSpawn(bin, ['-p', String(port), '-s', scriptPath], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...(opts.env ?? {}) },
-  });
+  const env = { ...process.env, ...(opts.env ?? {}) };
+  const target = spawnTarget(bin, ['-p', String(port), '-s', scriptPath], { env });
+  const child = withTreeKill(
+    nodeSpawn(target.command, target.args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+      ...(target.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    }),
+  );
   const handle = new EventEmitter() as KiroMitmHandle;
   handle.port = port;
   handle.child = child;

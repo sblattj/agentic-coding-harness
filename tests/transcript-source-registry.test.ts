@@ -3,6 +3,7 @@
 // scanAll, `ach watch --dir`, `ach archive`, and the `--agent` validation of
 // `ach stats` / `ach archive` — must cover every entry, so a future source
 // cannot be missed by one of them. Each assertion iterates the registry.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -13,7 +14,7 @@ import { archiveTranscripts } from "../src/core/warehouse.ts";
 import { TRANSCRIPT_SOURCES } from "../src/monitors/transcript-sources.ts";
 import { scanOptionsForRoot, transcriptAgentNames, transcriptSources } from "../src/monitors/transcripts.ts";
 
-const cli = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const cli = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 const loaderArgs = process.versions.bun ? [] : ["--import", import.meta.resolve("tsx")];
 
 // A path (relative to the source's root dir) that the source's keep() accepts.

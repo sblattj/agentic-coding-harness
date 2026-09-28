@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -31,7 +32,7 @@ import {
 // command (src/cli/serve.ts + src/mcp/http.ts).
 // ---------------------------------------------------------------------------
 
-const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 const TOKEN = 'testtok';
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
 

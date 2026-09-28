@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { spawnTarget, withTreeKill } from '../core/platform.ts';
 import { Readable, Writable } from 'node:stream';
 import type { CanonicalEvent, RunHandle, RunOptions } from './types.ts';
 import type {
@@ -16,7 +17,9 @@ import type {
 /**
  * Injectable child-process factory. Tests supply a fake that replays recorded
  * NDJSON fixtures through the exact same stdout/stderr plumbing production
- * uses; the default is node's spawn with shell:false.
+ * uses; the default is node's spawn with shell:false (on Windows the target
+ * is first resolved through PATH/PATHEXT so .cmd shims launch; see
+ * src/core/platform.ts spawnTarget).
  */
 export type SpawnFn = (
   command: string,
@@ -33,8 +36,16 @@ export interface ChildProcessLike {
   once(event: 'error', listener: (err: Error) => void): this;
 }
 
-export const defaultSpawnFn: SpawnFn = (command, args, opts) =>
-  nodeSpawn(command, args, { ...opts, shell: false });
+export const defaultSpawnFn: SpawnFn = (command, args, opts) => {
+  const t = spawnTarget(command, args, { env: opts.env ?? process.env });
+  return withTreeKill(
+    nodeSpawn(t.command, t.args, {
+      ...opts,
+      shell: false,
+      ...(t.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    }),
+  );
+};
 
 /** Accumulates stdout chunks and yields complete newline-terminated lines. */
 export class LineAssembler {

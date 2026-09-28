@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, test } from "node:test";
@@ -8,8 +9,8 @@ import { esc, renderReport } from "../src/report/html.ts";
 import { loadTrials, toLoadedRun } from "../src/report/model.ts";
 import type { LoadedRun } from "../src/report/model.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
-const FIXTURES = path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures", "trials");
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
+const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "trials");
 
 function runCli(args: string[]): { code: number; stdout: string; stderr: string } {
   // bun runs .ts natively; node needs the tsx loader.

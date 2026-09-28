@@ -230,7 +230,9 @@ export async function archiveTranscripts(opts: ArchiveOptions): Promise<ArchiveR
       snapshotDir = fs.mkdtempSync(path.join(tmpdir(), "ach-archive-sqlite-"));
       copySource = path.join(snapshotDir, "snapshot.db");
       try {
-        execFileSync("sqlite3", ["-readonly", c.sourcePath, `.backup "${copySource}"`], { stdio: "pipe" });
+        // sqlite3 parses backslash escapes inside a double-quoted dot-command
+        // argument, so hand it forward slashes (Windows accepts both).
+        execFileSync("sqlite3", ["-readonly", c.sourcePath, `.backup "${copySource.split(path.sep).join("/")}"`], { stdio: "pipe" });
       } catch (error) {
         fs.rmSync(snapshotDir, { recursive: true, force: true });
         warnTranscript(`archive: skipped SQLite store ${c.sourcePath}: ${(error as Error).message}`);

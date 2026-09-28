@@ -5,6 +5,7 @@
 // tests/normalized-usage.test.ts). Expected numbers are derived from the
 // fixture lines and the bundled LiteLLM window table (max_input_tokens in
 // src/core/pricing-data.json), not from the implementation.
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -413,7 +414,7 @@ describe('stats JSON per-run context (#21)', () => {
     const home = tmp('harness-ctx-home-');
     mkdirSync(join(state, 'runs'), { recursive: true });
     writeFileSync(join(state, 'runs', 'r-ctx.json'), JSON.stringify(withCtx));
-    const cli = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+    const cli = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
     const isBun = (process.versions as { bun?: string }).bun !== undefined;
     const p = spawnSync(process.execPath, isBun ? [cli, 'stats', '--json', '--state-only'] : ['--import', 'tsx', cli, 'stats', '--json', '--state-only'], {
       env: { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: state, HOME: home },

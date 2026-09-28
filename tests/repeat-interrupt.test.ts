@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
@@ -6,7 +7,8 @@ import { join } from 'node:path';
 import { it } from 'node:test';
 import { startWebServer } from '../src/web/server.ts';
 
-it('SIGINT preserves completed repeat children for stats and comparison', { timeout: 20000 }, async () => {
+// Windows has no process groups or SIGINT delivery to a child: skipped there (#39).
+it('SIGINT preserves completed repeat children for stats and comparison', { timeout: 20000, skip: process.platform === 'win32' && 'POSIX process-group SIGINT' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'ach-repeat-interrupt-'));
   const state = join(root, 'state');
   await mkdir(state);
@@ -22,7 +24,7 @@ fi
 echo '{"type":"session_start","sessionId":"session-'$$'"}'
 echo '{"type":"assistant","text":"done"}'
 `, { mode: 0o755 });
-  const cli = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+  const cli = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
   const launcher = (process.versions as { bun?: string }).bun ? [] : ['--import', import.meta.resolve('tsx')];
   const env = { ...process.env, HOME: root, AGENTIC_CODING_HARNESS_STATE_DIR: state,
     KIRO_CLI_BIN: bin, MITMDUMP_BIN: '/nonexistent/mitmdump' };

@@ -2,6 +2,7 @@
 // `ach statusline` (#61 Claude Code statusLine command). One snapshot module
 // (src/cli/status.ts) feeds every surface; these tests pin its formats,
 // its parity with `ach stats --days 1`, and the atomic write discipline.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
@@ -21,8 +22,8 @@ import {
 } from "../src/cli/status.ts";
 import { parseClaudeStatusInput, renderStatusline } from "../src/cli/statusline.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
-const STDIN_FIXTURE = new URL("./fixtures/claude-statusline/status-input.json", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
+const STDIN_FIXTURE = fileURLToPath(new URL("./fixtures/claude-statusline/status-input.json", import.meta.url));
 const BUDGET_ENV = "AGENTIC_CODING_HARNESS_BUDGET_USD";
 const STATE_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
 

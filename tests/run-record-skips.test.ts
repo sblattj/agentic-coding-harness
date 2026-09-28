@@ -2,6 +2,7 @@
 // A record whose `usage` lacks `credits` is listed with credits unknown
 // (available: false, never a fabricated 0), and a record that still fails to
 // parse is COUNTED and surfaced by `ach stats` / `ach dash`, not dropped.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -12,7 +13,7 @@ import { after, before, describe, it } from "node:test";
 import { frame } from "../src/cli/dash.ts";
 import { listRunRecords, registryDir, scanRunRecords } from "../src/core/registry.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function runCli(args: string[], env: Record<string, string>): { code: number; stdout: string; stderr: string } {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;

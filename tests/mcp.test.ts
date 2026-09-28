@@ -1,3 +1,4 @@
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -90,7 +91,7 @@ describe('mcp framing (__testables__.FramingParser)', () => {
 
 // Real entrypoint (src/mcp/index.ts, wired by another seat). The env
 // override lets the plumbing be smoke-tested against a fake before it lands.
-const ENTRY = process.env.HARNESS_MCP_ENTRY ?? new URL('../src/mcp/index.ts', import.meta.url).pathname;
+const ENTRY = process.env.HARNESS_MCP_ENTRY ?? fileURLToPath(new URL('../src/mcp/index.ts', import.meta.url));
 
 const EXPECTED_TOOLS = [
   'harness_run',
@@ -106,7 +107,8 @@ const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0
 // `--import tsx` resolves the specifier from the CHILD's cwd, and these spawns
 // run with a bare tmp cwd — so resolve tsx to an absolute path from THIS test
 // file's location instead (same fix as tests/mcp-stdio.test.ts).
-const TSX_IMPORT = createRequire(import.meta.url).resolve('tsx');
+// --import takes a URL; a bare win32 absolute path (D:\...) is rejected.
+const TSX_IMPORT = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
 
 let child: ChildProcessWithoutNullStreams | null = null;
 let stateTmp = '';

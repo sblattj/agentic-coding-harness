@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,7 +19,7 @@ import type { RunRecord } from '../src/core/registry.ts';
 // until the dash subcommand lands.
 // ---------------------------------------------------------------------------
 
-const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 
 // bun runs .ts natively; node needs the tsx loader (same rule as mcp.test.ts).
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;

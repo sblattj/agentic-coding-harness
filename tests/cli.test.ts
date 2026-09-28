@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, test } from "node:test";
@@ -6,8 +7,9 @@ import os from "node:os";
 import path from "node:path";
 
 import { formatSummary } from "../src/cli/lib.ts";
+import { writeShStub } from "./helpers/stub-bin.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 interface RunOut {
   code: number;
@@ -303,17 +305,15 @@ describe("harness cli", () => {
     // tests/kiro-autotap.test.ts): the run must not finish before the "proxy"
     // has printed its record, which is what real traffic guarantees.
     const fakeMitmdump = path.join(tmpExtra, "fake-mitmdump.sh");
-    await fs.writeFile(
+    writeShStub(
       fakeMitmdump,
       `#!/bin/sh\nport="$2"\necho '${meteringLine}'\ntouch "${tmpExtra}/ready.$port"\nsleep 30 &\nchild=$!\ntrap 'rm -f "${tmpExtra}/ready.$port"; kill "$child" 2>/dev/null; exit 0' TERM INT\nwait $!\n`,
     );
-    await fs.chmod(fakeMitmdump, 0o755);
     const fakeKiroCli = path.join(tmpExtra, "fake-kiro-cli.sh");
-    await fs.writeFile(
+    writeShStub(
       fakeKiroCli,
       `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'kiro-cli 2.21.2'; exit 0; fi\nport="\${HTTPS_PROXY##*:}"\ni=0\nwhile [ ! -f "${tmpExtra}/ready.$port" ] && [ "$i" -lt 300 ]; do sleep 0.01; i=$((i+1)); done\necho '{"type":"session_start","sessionId":"sess-cli-tap"}'\necho '{"type":"assistant","text":"done"}'\nexit 0\n`,
     );
-    await fs.chmod(fakeKiroCli, 0o755);
 
     const r = runCli(["run", "--agent", "kiro", "hello tap"], {
       ...env(),
@@ -344,11 +344,10 @@ describe("harness cli", () => {
     // run proceeds (fake kiro CLI, tap off) and completes instead of
     // erroring on AGENTIC_CODING_HARNESS_MAX_TURNS=abc.
     const fakeKiroCli = path.join(tmpExtra, "fake-kiro-env-flag.sh");
-    await fs.writeFile(
+    writeShStub(
       fakeKiroCli,
       `#!/bin/sh\necho '{"type":"session_start","sessionId":"sess-env-flag"}'\necho '{"type":"assistant","text":"done"}'\nexit 0\n`,
     );
-    await fs.chmod(fakeKiroCli, 0o755);
     r = runCli(["run", "--agent", "kiro", "--max-turns", "5", "--wall-ms", "60000", "hi"], {
       ...env(),
       KIRO_CLI_BIN: fakeKiroCli,
@@ -361,11 +360,10 @@ describe("harness cli", () => {
 
   test("run --agent kiro forwards --kiro-startup-ms/--kiro-require-model-ack/--kiro-mcp-server into result.kiro.requested", async () => {
     const fakeKiroCli = path.join(tmpExtra, "fake-kiro-flags.sh");
-    await fs.writeFile(
+    writeShStub(
       fakeKiroCli,
       `#!/bin/sh\necho '{"type":"session_start","sessionId":"sess-flags"}'\necho '{"type":"assistant","text":"done"}'\nexit 0\n`,
     );
-    await fs.chmod(fakeKiroCli, 0o755);
     const r = runCli(
       [
         "run",

@@ -19,6 +19,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { shellCommand } from "../core/platform.ts";
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
@@ -149,7 +150,13 @@ async function snapshotFor(o: StatuslineOptions, warnings: string[]): Promise<St
 }
 
 function runChain(cmd: string, input: string, timeoutMs: number, warnings: string[]): string | undefined {
-  const r = spawnSync("/bin/sh", ["-c", cmd], { input, encoding: "utf8", timeout: timeoutMs });
+  const sh = shellCommand(cmd);
+  const r = spawnSync(sh.command, sh.args, {
+    input,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    ...(sh.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  });
   if (r.error || r.status !== 0) {
     const why = r.error ? r.error.message : r.signal ? `killed by ${r.signal}` : `exit ${r.status}`;
     const err = (r.stderr ?? "").trim().split("\n").pop() ?? "";

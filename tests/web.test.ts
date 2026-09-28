@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -17,7 +18,7 @@ import type { AgentEvent } from '../src/core/types.ts';
 // under tsx). Convention follows tests/http.test.ts.
 // ---------------------------------------------------------------------------
 
-const RUNNER = new URL('./helpers/web-server-runner.ts', import.meta.url).pathname;
+const RUNNER = fileURLToPath(new URL('./helpers/web-server-runner.ts', import.meta.url));
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
 
 const T0 = 1_700_000_000_000;

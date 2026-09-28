@@ -1,6 +1,7 @@
 // Integration seam (0.11.0): s11's current 5h block accounting
 // (src/core/usage-windows.ts currentBlock) feeds s08's BlockCostProvider, so
 // `ach status` and `ach statusline` show a real block cost instead of n/a.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
@@ -10,7 +11,7 @@ import path from "node:path";
 
 import { computeStatusSnapshot, currentBlockCost, type StatusSnapshot } from "../src/cli/status.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 const STATE_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
 const BUDGET_ENV = "AGENTIC_CODING_HARNESS_BUDGET_USD";
 const HOUR = 3_600_000;

@@ -1,5 +1,6 @@
 // Issue #28: `ach stats --cost-mode auto|calculate|display`, costSource
 // provenance on every cost bucket, and reported-vs-computed disagreements.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, test } from "node:test";
@@ -16,7 +17,7 @@ import {
 import { createPricer, pricedSources } from "../src/core/pricing.ts";
 import type { CanonicalTokenRecord } from "../src/core/types.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function runCli(args: string[], env: Record<string, string>) {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;

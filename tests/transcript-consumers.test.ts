@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
@@ -6,7 +7,10 @@ import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { archiveTranscripts, restoreBatch, scanWarehouse } from '../src/core/warehouse.ts';
 import { scanAll, scanOptionsForRoot } from '../src/monitors/transcripts.ts';
-const cli = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+
+// Cursor/Goose read SQLite through the sqlite3 CLI; skip (with the reason) where it is absent.
+const SQLITE_SKIP = spawnSync('sqlite3', ['-version'], { stdio: 'ignore' }).status === 0 ? false : 'sqlite3 CLI not on PATH';
+const cli = fileURLToPath(new URL('../src/cli/ach.ts', import.meta.url));
 const loaderArgs = process.versions.bun ? [] : ['--import', import.meta.resolve('tsx')];
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'ach-transcript-consumers-'));
@@ -78,7 +82,7 @@ test('public watch --dir discovers extra sources only under the supplied home-sh
     assert.equal(existsSync(join(f.state, 'runs')), false);
   } finally { rmSync(f.home, { recursive: true, force: true }); }
 });
-test('Cursor reads explicit reported bubble counts and skips malformed or unavailable counts', async () => {
+test('Cursor reads explicit reported bubble counts and skips malformed or unavailable counts', { skip: SQLITE_SKIP }, async () => {
   const { parseCursorDb } = await import('../src/monitors/cursor.ts');
   const { readFileSync } = await import('node:fs');
   const f = fixture();
@@ -109,7 +113,7 @@ test('web source includes transcript rows and suppresses sessions already owned 
     assert.equal(source.snapshot().length, 1); assert.equal(source.snapshot()[0]!.runId, 'owned');
   } finally { await source.stop(); rmSync(f.home, { recursive: true, force: true }); }
 });
-test('archive keeps same-named Goose databases from distinct roots separate', async () => {
+test('archive keeps same-named Goose databases from distinct roots separate', { skip: SQLITE_SKIP }, async () => {
   const { readFileSync } = await import('node:fs'); const f = fixture();
   try {
     const scan = scanOptionsForRoot(f.home);

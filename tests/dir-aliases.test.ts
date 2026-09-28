@@ -3,6 +3,7 @@
 // accepts the unambiguous spelling (`--transcript-dir` / `--state-dir`);
 // `--dir` keeps working unchanged, and giving both with different values is a
 // usage error rather than a silent pick.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, describe, it } from "node:test";
@@ -13,7 +14,7 @@ import path from "node:path";
 import { resolveDirFlag } from "../src/cli/lib.ts";
 import { HarnessError } from "../src/core/types.ts";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function runCli(args: string[], env: Record<string, string>): { code: number; stdout: string; stderr: string } {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;

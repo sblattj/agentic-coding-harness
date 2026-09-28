@@ -3,6 +3,7 @@
 // The fixture spans two projects x two days; only project /alpha on day 1
 // survives `--project /alpha --until 2026-09-21`. The test enumerates the JSON
 // top-level keys, so a future section added without a check here fails it.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -10,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const cli = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const cli = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 function invoke(state: string, args: string[]) {
   const bun = Boolean((process.versions as { bun?: string }).bun);

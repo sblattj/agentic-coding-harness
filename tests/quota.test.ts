@@ -7,6 +7,7 @@
 //    after /usage on 2026-09-28 UTC, with zero model tokens or API cost.
 //    The separate documented example covers the optional spend_limit field.
 // Agents without vendor reporting render `n/a`. No live network, no real CLIs.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
@@ -29,10 +30,10 @@ import {
 import { frame } from "../src/cli/dash.ts";
 import type { RunRecord } from "../src/core/registry.ts";
 
-const FIX = new URL("./fixtures/quota/", import.meta.url).pathname;
+const FIX = fileURLToPath(new URL("./fixtures/quota/", import.meta.url));
 const CODEX_DIR = path.join(FIX, "codex-sessions");
 const CLAUDE_STATUSLINE = path.join(FIX, "claude-statusline.json");
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 
 // 2026-09-03T23:31:00Z — just after the newest codex fixture line, before
 // either of its windows resets (5h at 1788496153, 7d at 1788962884).

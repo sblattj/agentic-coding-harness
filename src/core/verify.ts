@@ -1,14 +1,16 @@
 // Post-run outcome verifier (#29).
 //
 // `ach run --verify '<cmd>'` records whether a run WORKED, not just whether
-// it finished: after the agent exits, the checker runs through /bin/sh in the
+// it finished: after the agent exits, the checker runs through /bin/sh (cmd.exe
+// on Windows) in the
 // run's cwd with the run's env, and its verdict lands on the RunRecord as an
 // additive optional `verify` object. The agent's own exitStatus is never
 // touched; a verifier that cannot run or exceeds its timeout records
 // status "error" (never "pass", never a thrown run).
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { z } from "zod";
+import { shellCommand } from "./platform.ts";
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 120_000;
 export const DEFAULT_VERIFY_TAIL_BYTES = 4_000;
@@ -16,7 +18,7 @@ export const DEFAULT_VERIFY_TAIL_BYTES = 4_000;
 export type VerifyStatus = "pass" | "fail" | "error";
 
 export interface VerifyResult {
-  /** The checker command line, verbatim (run via /bin/sh -c). */
+  /** The checker command line, verbatim (run via /bin/sh -c; cmd.exe /d /s /c on Windows). */
   command: string;
   /** Process exit code; null when it never exited normally (timeout, signal, spawn failure). */
   exitCode: number | null;
@@ -103,11 +105,17 @@ export function runVerifier(opts: RunVerifierOptions): Promise<VerifyResult> {
 
     // detached: the checker leads its own process group so a timeout can
     // kill the whole tree (npm test → node → workers), not just the shell.
-    const child = spawn("/bin/sh", ["-c", opts.command], {
+    // Windows has no process groups (detached there means "new console"), so
+    // the tree is killed with taskkill /T instead.
+    const win = process.platform === "win32";
+    const sh = shellCommand(opts.command, { env: opts.env ?? process.env });
+    const child = spawn(sh.command, sh.args, {
       cwd: opts.cwd,
       env: opts.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
+      detached: !win,
+      ...(sh.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      ...(win ? { windowsHide: true } : {}),
     });
     child.stdout.on("data", keep);
     child.stderr.on("data", keep);
@@ -115,7 +123,9 @@ export function runVerifier(opts: RunVerifierOptions): Promise<VerifyResult> {
     const timer = setTimeout(() => {
       timedOut = true;
       try {
-        if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+        if (child.pid === undefined) throw new Error("no pid");
+        if (win) spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+        else process.kill(-child.pid, "SIGKILL");
       } catch {
         child.kill("SIGKILL");
       }

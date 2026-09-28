@@ -1,6 +1,7 @@
 // Integration seam (0.11.0): s07's automation exit-code ladder (#31) reaches
 // `ach status` (#45): nothing to report => 30 under `--exit-codes ladder`,
 // exactly like `ach stats`; the default stays 0.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
@@ -8,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 const STATE_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
 const BUDGET_ENV = "AGENTIC_CODING_HARNESS_BUDGET_USD";
 

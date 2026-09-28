@@ -49,6 +49,12 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
+      # The goose/cursor readers and their tests shell out to the sqlite3 CLI,
+      # which ubuntu/macos runners ship and windows-latest does not.
+      - name: Install sqlite3 CLI
+        if: runner.os == 'Windows'
+        run: choco install sqlite --no-progress -y
+
       - name: Install dependencies
         run: npm ci
 

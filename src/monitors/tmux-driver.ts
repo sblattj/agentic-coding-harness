@@ -12,6 +12,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
+import { resolveCommand } from '../core/platform.ts';
 
 export type AgentState = 'running' | 'waiting' | 'idle';
 
@@ -66,10 +67,9 @@ export class TmuxDriver {
   }
 
   private checkTmux(): void {
-    const res = spawnSync('which', [this.tmuxBin], { encoding: 'utf8' });
-    if (res.status !== 0) {
+    if (resolveCommand(this.tmuxBin) === undefined) {
       throw new Error(
-        `tmux not found on PATH ('which ${this.tmuxBin}' failed). Install tmux to use the TUI fallback lane.`,
+        `tmux not found on PATH ('${this.tmuxBin}' did not resolve). Install tmux to use the TUI fallback lane.`,
       );
     }
   }

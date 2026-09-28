@@ -36,6 +36,7 @@ import {
   validateCliSessionProfile,
   type HouseTokens,
 } from './shared.ts';
+import { spawnTarget, withTreeKill } from '../core/platform.ts';
 
 // ---------------------------------------------------------------------------
 // Local adapter-lane types (kept exported for existing tests; the core
@@ -147,6 +148,17 @@ export type SpawnFn = (
   args: readonly string[],
   options: SpawnOptions,
 ) => HarnessChildProcess;
+
+/** node's spawn, with the command resolved per platform (#39: .cmd shims on Windows). */
+const defaultClaudeSpawn: SpawnFn = (command, args, options) => {
+  const t = spawnTarget(command, args, { env: options.env ?? process.env });
+  return withTreeKill(
+    nodeSpawn(t.command, t.args, {
+      ...options,
+      ...(t.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    }),
+  ) as never;
+};
 
 // ---------------------------------------------------------------------------
 // Claude stream-json schemas (stdlib + zod only)
@@ -674,7 +686,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       args.push(...task.extraArgs);
     }
 
-    const spawnFn: SpawnFn = this.opts.spawnFn ?? ((cmd, a, o) => nodeSpawn(cmd, a, o) as never);
+    const spawnFn: SpawnFn = this.opts.spawnFn ?? defaultClaudeSpawn;
     const child = spawnFn(this.opts.command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: task.cwd,

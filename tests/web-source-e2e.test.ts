@@ -101,7 +101,7 @@ function startStubFeed(): Promise<StubFeed> {
 }
 
 // ---------------------------------------------------------------------------
-// Real CLI child process: `npx tsx src/cli/ach.ts web ...` in its own
+// Real CLI child process: `node --import tsx src/cli/ach.ts web ...` in its own
 // process group so a group SIGTERM/SIGKILL can never orphan the tsx server.
 // ---------------------------------------------------------------------------
 
@@ -148,11 +148,18 @@ function killGroup(child: ChildProcess): Promise<void> {
 }
 
 function spawnCliWeb(extraArgs: string[]): CliHandle {
-  const child = spawn('npx', ['tsx', 'src/cli/ach.ts', 'web', ...extraArgs], {
+  // The runtime running this suite launches the CLI directly (no npx: it is
+  // npx.cmd on Windows, which spawn cannot start without a shell). Under
+  // Node the tsx loader is passed as a file URL, which Windows requires.
+  const isBun = (process.versions as { bun?: string }).bun !== undefined;
+  const loader = isBun ? [] : ['--import', import.meta.resolve('tsx')];
+  const child = spawn(process.execPath, [...loader, 'src/cli/ach.ts', 'web', ...extraArgs], {
     cwd: WORKTREE_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: cliEnv(),
-    detached: true, // own process group: npx + tsx die together
+    // own process group so a group signal reaches every descendant; Windows
+    // has no groups (detached there only opens a new console).
+    detached: process.platform !== 'win32',
   });
   children.push(child);
   let stderr = '';
