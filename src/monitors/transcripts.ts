@@ -401,27 +401,57 @@ export interface TranscriptSource {
 }
 
 /**
+ * The native (launchable) transcript sources: one entry per CLI, with the
+ * ScanOptions key that overrides its root and its root under a home-shaped
+ * dir. Together with TRANSCRIPT_SOURCES (read-only sources) this is the ONE
+ * registry scanAll, `ach watch`, `ach archive` and the `--agent` validation
+ * of `ach stats` / `ach archive` derive from (tests/transcript-source-registry.test.ts).
+ */
+const NATIVE_TRANSCRIPT_SOURCES = [
+  { agent: "claude", option: "claudeDir", root: (home: string) => join(home, ".claude", "projects"), keep: isJsonl, parse: parseClaudeTranscript },
+  { agent: "codex", option: "codexDir", root: (home: string) => join(home, ".codex", "sessions"), keep: isJsonl, parse: parseCodexRollout },
+  { agent: "gemini", option: "geminiDir", root: (home: string) => join(home, ".gemini", "tmp"), keep: isGeminiChatFile, parse: parseGeminiChat },
+] as const satisfies ReadonlyArray<{
+  agent: CanonicalTokenRecord["agent"];
+  option: "claudeDir" | "codexDir" | "geminiDir";
+  root: (home: string) => string;
+  keep: (filePath: string) => boolean;
+  parse: (filePath: string) => Promise<CanonicalTokenRecord[]>;
+}>;
+
+/** Every agent with machine transcripts ach reads, native first, then read-only. */
+export function transcriptAgentNames(): string[] {
+  return [...NATIVE_TRANSCRIPT_SOURCES.map((s) => s.agent), ...TRANSCRIPT_SOURCES.map((s) => s.agent)];
+}
+
+/**
  * The machine transcript sources scanAll walks, with ScanOptions overrides
- * applied (defaults: ~/.claude/projects, ~/.codex/sessions, ~/.gemini/tmp).
- * Shared with the warehouse (src/core/warehouse.ts) so `ach archive` snapshots
- * exactly the files `ach stats` reads.
+ * applied (defaults: ~/.claude/projects, ~/.codex/sessions, ~/.gemini/tmp,
+ * then each read-only source's defaultRoots). Shared with the warehouse
+ * (src/core/warehouse.ts) so `ach archive` snapshots exactly the files
+ * `ach stats` reads, and with `ach watch`.
  */
 export function transcriptSources(opts: ScanOptions = {}): TranscriptSource[] {
   return [
-    { agent: "claude", dir: opts.claudeDir ?? join(homedir(), ".claude", "projects"), keep: isJsonl, parse: parseClaudeTranscript },
-    { agent: "codex", dir: opts.codexDir ?? join(homedir(), ".codex", "sessions"), keep: isJsonl, parse: parseCodexRollout },
-    { agent: "gemini", dir: opts.geminiDir ?? join(homedir(), ".gemini", "tmp"), keep: isGeminiChatFile, parse: parseGeminiChat },
+    ...NATIVE_TRANSCRIPT_SOURCES.map((src) => ({
+      agent: src.agent,
+      dir: opts[src.option] ?? src.root(homedir()),
+      keep: src.keep,
+      parse: src.parse,
+    })),
     ...TRANSCRIPT_SOURCES.flatMap((src) =>
       (opts.sourceRoots?.[src.agent as TranscriptOnlyAgent] ?? src.defaultRoots(homedir())).map((dir) => ({ ...src, dir }))),
   ];
 }
 
-/** ScanOptions for a home-shaped root (<root>/.claude/projects, ...). */
+/** ScanOptions for a home-shaped root (<root>/.claude/projects, ...): every registry source re-rooted. */
 export function scanOptionsForRoot(root: string): Required<ScanOptions> {
+  const native = Object.fromEntries(NATIVE_TRANSCRIPT_SOURCES.map((src) => [src.option, src.root(root)])) as Pick<
+    Required<ScanOptions>,
+    "claudeDir" | "codexDir" | "geminiDir"
+  >;
   return {
-    claudeDir: join(root, ".claude", "projects"),
-    codexDir: join(root, ".codex", "sessions"),
-    geminiDir: join(root, ".gemini", "tmp"),
+    ...native,
     // #22 read-only sources resolve under the same home-shaped root.
     sourceRoots: Object.fromEntries(TRANSCRIPT_SOURCES.map((src) => [src.agent, src.defaultRoots(root)])) as Partial<
       Record<TranscriptOnlyAgent, string[]>
