@@ -106,7 +106,7 @@ import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
 import { cmdAudit } from "./audit.ts";
-import { EXIT_CODES, noDataExitCode, parseExitCodesMode, runExitCode } from "./exit-codes.ts";
+import { EXIT_CODES, noDataExitCode, parseExitCodesMode, repeatExitCode, runExitCode } from "./exit-codes.ts";
 import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
 import { alertFlagsToBudget } from "./alerts.ts";
 import { cmdStatus } from "./status.ts";
@@ -138,7 +138,7 @@ usage:
                  'off' disables; state in <stateDir>/alerts.json, see docs/BUDGET-ALERTS.md)
               [--verify '<cmd>' [--verify-timeout-ms MS=120000]]  (checker run in cwd after
                            the agent exits; verdict on the RunRecord, failed checker exits 1; passing checker keeps the run exit code)
-              [--repeat N [--parallel K]]  (N fresh sessions, one repeat group)
+              [--repeat N [--parallel K]]  (N fresh sessions, one repeat group; exits with the most severe child code)
               [--experiment E] [--variant V]  (compare-view labels on the RunRecord)
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
@@ -528,8 +528,9 @@ async function cmdRun(rest: string[]): Promise<number> {
 }
 
 /** `--repeat N [--parallel K]`: N fresh sessions, one summary block per child
- *  as it settles, then the group line. Exit 0 only when every child passed
- *  the gate (agent success and, with --verify, checker pass). */
+ *  as it settles, then the group line. Default mode: exit 0 only when every
+ *  child passed the gate (agent success and, with --verify, checker pass).
+ *  Ladder: the most severe child code (`repeatExitCode`). */
 async function runRepeatCli(
   opts: Omit<Parameters<typeof runRepeatGroup>[0], "count" | "parallel" | "onSettled">,
   count: number,
@@ -578,9 +579,8 @@ async function runRepeatCli(
     process.stdout.write(`--- group ${group}\n${line}\n`);
     if (stats !== undefined) process.stdout.write(`stats      ${formatStatsInline(stats)}\n`);
   }
-  const codes = outcomes.map((o) => !o.result || (o.verify && o.verify.status !== "pass") ? 1 : runExitCode(o.result, { mode: exitMode, budget: opts.spec.budget, agent: opts.agent }));
-  // Errors dominate; otherwise unavailable, limit hit, near limit, then success.
-  return [1, 20, 11, 10].find((code) => codes.includes(code)) ?? 0;
+  // Most severe child code wins: 1 > 20 > 11 > 10 > 0 (docs/EXIT-CODES.md).
+  return repeatExitCode(outcomes, { mode: exitMode, budget: opts.spec.budget, agent: opts.agent });
 }
 
 /** Validate the #29/#57 flags up front (before any agent launches). */
