@@ -268,7 +268,7 @@ describe('registry', () => {
     } finally {
       console.warn = original;
     }
-    assert.deepEqual(Object.keys(adapters).sort(), ['claude', 'codex', 'gemini', 'kiro', 'opencode']);
+    assert.deepEqual(Object.keys(adapters).sort(), ['claude', 'codex', 'gemini', 'kiro', 'null', 'opencode']);
     assert.equal(warnings.length, 0);
     for (const [name, adapter] of Object.entries(adapters)) {
       assert.equal(adapter.name, name, `adapter "${name}" carries its name`);

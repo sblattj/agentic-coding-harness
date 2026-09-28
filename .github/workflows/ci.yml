@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run typecheck
+      # Includes the null-adapter end-to-end test (issue #55): a real CLI
+      # invocation of `ach run --agent null` that needs no CLI binary, no
+      # credentials, and no network — the negative control for this pipeline.
+      - run: npm test

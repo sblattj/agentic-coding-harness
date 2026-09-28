@@ -60,6 +60,7 @@ export { KiroAdapter } from './adapters/kiro.ts';
 export { CodexAdapter } from './adapters/codex.ts';
 export { GeminiAdapter } from './adapters/gemini.ts';
 export { OpenCodeAdapter } from './adapters/opencode.ts';
+export { NullAdapter, NULL_EXIT_ENV, NULL_TURNS_ENV, NULL_CAPABILITIES } from './adapters/null.ts';
 export { VERSION } from './version.ts';
 
 // --- public run-record contract (0.9.0 spec §3): registry + external feed ---
