@@ -41,7 +41,7 @@ This is the zod schema `StatusSnapshotSchema` in `src/cli/status.ts`. Top-level 
 | `generatedAt` | ISO-8601 string | When the snapshot was computed. |
 | `window` | `{ kind: "trailing-24h", since: ISO, until: ISO }` | The spend and run window. |
 | `sources` | `("state" \| "transcripts")[]` | `["state"]`, or `["state","transcripts"]` with `--transcripts`. |
-| `runs` | `{ total, running, success, error, aborted, interrupted }` (ints) | Registry counts, as described above. |
+| `runs` | `{ total, running, success, error, aborted, interrupted, unavailable }` (ints) | Registry counts, as described above. `unavailable` (#60) counts runs the vendor could not serve (see docs/EXIT-CODES.md). |
 | `activeByAgent` | `Record<agent, int>` | Live runs per agent. Agents with no live run are omitted. |
 | `newestRun` | `{ runId, agent, status, startedAt: ISO, durationMs: number \| null } \| null` | The newest counted run and its wall-clock duration (to now while running). `null` when the end time is unknown. |
 | `today` | `{ costUsd: number, records: int, byAgent: Record<agent, { costUsd, records }> }` | Per-adapter spend in the window, rounded to 1e-6 USD. |
