@@ -91,6 +91,7 @@ import {
   unknownAgentError,
   unmeteredRuns,
 } from "./custom-agents.ts";
+import { cmdDoctor } from "./doctor.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -126,6 +127,10 @@ usage:
                     [--cwd DIR] [--json] [--kiro-startup-ms MS] [--kiro-mcp-server '<json>']...
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
+  ach doctor [--agent A] [--model M] [--cwd DIR] [--claude-default-config] [--json]
+                 (all five agents by default: binary+version, auth material, model,
+                  MCP config, plus state dir / pricing table / env sanity; kiro runs
+                  the preflight handshake. Sends NO prompt; exit 1 if any check failed)
   ach watch [--dir <transcriptDir>] [--since DATE | --last D] [--tz Z]
                 (--since/--last: print history newer than the bound on startup)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
@@ -1221,6 +1226,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdRun(rest);
     case "preflight":
       return cmdPreflight(rest);
+    case "doctor":
+      return cmdDoctor(rest);
     case "watch":
       return cmdWatch(rest);
     case "stats":
