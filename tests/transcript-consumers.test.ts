@@ -7,13 +7,14 @@ import { test } from 'node:test';
 import { archiveTranscripts, restoreBatch, scanWarehouse } from '../src/core/warehouse.ts';
 import { scanAll, scanOptionsForRoot } from '../src/monitors/transcripts.ts';
 const cli = new URL('../src/cli/ach.ts', import.meta.url).pathname;
+const loaderArgs = process.versions.bun ? [] : ['--import', import.meta.resolve('tsx')];
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'ach-transcript-consumers-'));
   const state = join(home, 'state'); mkdirSync(state);
   const root = join(home, '.local/share/amp/threads'); mkdirSync(root, { recursive: true });
   writeFileSync(join(root, 'thread.json'), JSON.stringify({ id: 'external-session', messages: [{ role: 'assistant', timestamp: '2026-09-27T01:00:00Z', usage: { inputTokens: 12, outputTokens: 34 } }] }));
   const env = { ...process.env, HOME: home, AGENTIC_CODING_HARNESS_STATE_DIR: state };
-  const run = (...args: string[]) => spawnSync(process.execPath, ['--import', import.meta.resolve('tsx'), cli, ...args], { cwd: home, env, encoding: 'utf8', timeout: 15000 });
+  const run = (...args: string[]) => spawnSync(process.execPath, [...loaderArgs, cli, ...args], { cwd: home, env, encoding: 'utf8', timeout: 15000 });
   return { home, state, root, env, run };
 }
 test('public dash projects meter-only taps and transcripts, state-only excludes both, no registry writes', () => {
@@ -67,7 +68,7 @@ test('archive restores extra source and warehouse avoids counting live copy twic
 test('public watch --dir discovers extra sources only under the supplied home-shaped root', async () => {
   const f = fixture();
   try {
-    const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), cli, 'watch', '--dir', f.home, '--since', '2026-01-01'], { cwd: f.home, env: f.env });
+    const child = spawn(process.execPath, [...loaderArgs, cli, 'watch', '--dir', f.home, '--since', '2026-01-01'], { cwd: f.home, env: f.env });
     let text = ''; let errors = '';
     child.stdout.on('data', (b) => { text += b; if (text.includes('source: transcript')) child.kill('SIGTERM'); });
     child.stderr.on('data', (b) => { errors += b; });
@@ -125,10 +126,10 @@ test('archive keeps same-named Goose databases from distinct roots separate', as
     assert.ok(existsSync(join(roots[0]!, 'sessions.db'))); assert.ok(existsSync(join(roots[1]!, 'sessions.db')));
   } finally { rmSync(f.home, { recursive: true, force: true }); }
 });
-test('public watch emits only growth when a cumulative source rewrites its counts', async () => {
+test('public watch emits only growth when a cumulative source rewrites its counts', { timeout: 15000 }, async () => {
   const f = fixture();
   try {
-    const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), cli, 'watch', '--dir', f.home, '--since', '2026-01-01'], { cwd: f.home, env: f.env });
+    const child = spawn(process.execPath, [...loaderArgs, cli, 'watch', '--dir', f.home, '--since', '2026-01-01'], { cwd: f.home, env: f.env });
     let text = ''; let changed = false;
     child.stdout.on('data', (b) => {
       text += b;
@@ -143,21 +144,27 @@ test('public watch emits only growth when a cumulative source rewrites its count
     assert.match(text, /\+0 input \+6 output/); assert.doesNotMatch(text, /\+40 output/);
   } finally { rmSync(f.home, { recursive: true, force: true }); }
 });
-test('Cursor missing sqlite3 is a warning rather than a crash', async () => {
-  const { parseCursorDb } = await import('../src/monitors/cursor.ts');
-  const previous = process.env.PATH;
-  const warnings: string[] = [];
-  try {
-    process.env.PATH = '';
-    assert.deepEqual(await parseCursorDb('/missing/state.vscdb', (s) => warnings.push(s)), []);
-    assert.match(warnings.join('\n'), /cursor: skipped unreadable store.*ENOENT/);
-  } finally { process.env.PATH = previous; }
+test('Cursor missing sqlite3 is a warning rather than a crash', () => {
+  // A fresh runtime avoids Bun's cached executable lookup after earlier
+  // SQLite fixtures. A nonempty path to a non-directory prevents Bun from
+  // substituting its default search path for an empty PATH.
+  const moduleUrl = new URL('../src/monitors/cursor.ts', import.meta.url).href;
+  const code = `import(${JSON.stringify(moduleUrl)}).then(async ({ parseCursorDb }) => {
+    const warnings = [];
+    const rows = await parseCursorDb('/missing/state.vscdb', (s) => warnings.push(s));
+    console.log(JSON.stringify({ rows, warnings }));
+  });`;
+  const result = spawnSync(process.execPath, [...loaderArgs, '-e', code], { env: { ...process.env, PATH: '/dev/null' }, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const { rows, warnings } = JSON.parse(result.stdout);
+  assert.deepEqual(rows, []);
+  assert.match(warnings.join('\n'), /cursor: skipped unreadable store.*(?:ENOENT|ENOTDIR|Executable not found in \$PATH)/);
 });
-test('public watch discovers post-start sessions while retaining the initial baseline and growth control', async () => {
+test('public watch discovers post-start sessions while retaining the initial baseline and growth control', { timeout: 20000 }, async () => {
   const f = fixture();
   let child: ReturnType<typeof spawn> | undefined;
   try {
-    child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), cli, 'watch', '--dir', f.home], { cwd: f.home, env: f.env });
+    child = spawn(process.execPath, [...loaderArgs, cli, 'watch', '--dir', f.home], { cwd: f.home, env: f.env });
     let text = ''; let errors = '';
     child.stdout!.on('data', (b) => {
       text += b;
