@@ -57,6 +57,9 @@ export interface RunRecord {
   corrections?: RunCorrection[];
   /** Threshold crossings fired during the run (#20), oldest first; dash banner + web. */
   alerts?: RunAlert[];
+  // --- custom agents (#37/#38); absent on built-in adapter runs ---
+  metering?: "tap" | "none"; // "none": no usage source — tokens/cost are n/a, not 0
+  command?: string[]; // resolved argv, prompt redacted as <prompt:N chars>
 }
 
 /** One fired budget alert / near-limit warning (mirror of a budget.alert event). */
@@ -122,6 +125,8 @@ export const RunRecordSchema = z.object({
   source: z.enum(["local", "external"]).default("local"),
   producer: z.string().min(1).optional(),
   endedAt: z.number().int().optional(),
+  metering: z.enum(["tap", "none"]).optional(),
+  command: z.array(z.string()).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   corrections: z.array(RunCorrectionSchema).optional(),
   alerts: z

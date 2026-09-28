@@ -60,6 +60,24 @@ export { KiroAdapter } from './adapters/kiro.ts';
 export { CodexAdapter } from './adapters/codex.ts';
 export { GeminiAdapter } from './adapters/gemini.ts';
 export { OpenCodeAdapter } from './adapters/opencode.ts';
+// --- custom agents (#37 command templates, #38 agents.d descriptors) ---
+export {
+  CUSTOM_AGENT,
+  createCustomAdapter,
+  splitTemplate,
+  type CustomAgentConfig,
+  type CustomOutputSpec,
+  type UsageFieldPaths,
+} from './adapters/custom.ts';
+export {
+  AgentDescriptorSchema,
+  descriptorDirs,
+  loadAgentDescriptors,
+  type AgentDescriptor,
+  type DescriptorIssue,
+  type LoadedDescriptor,
+} from './core/agent-descriptors.ts';
+export { withPricingHints, type PricingHint } from './core/pricing-hints.ts';
 export { VERSION } from './version.ts';
 
 // --- public run-record contract (0.9.0 spec §3): registry + external feed ---
