@@ -46,9 +46,12 @@ function usdUnavailable(rec: RunRecord): boolean {
 /** `ctx 10.0k (5.0%)` — DERIVED occupancy, visually distinct from billed tokens. */
 function fmtContext(rec: RunRecord): string {
   const ctx = rec.usage?.context;
-  if (ctx?.available !== true || ctx.tokens === undefined) return "";
+  if (ctx === undefined) return ""; // pre-#21 record: unchanged
+  // #21: a run whose occupancy is unknowable (e.g. unknown model window) is n/a, never guessed.
+  if (ctx.available !== true || ctx.tokens === undefined) return "n/a";
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
-  return `${compact(ctx.tokens)}${pct}`;
+  // An upper-bound (turn-total) estimate is marked "≤".
+  return `${ctx.basis === "turn-total" ? "≤" : ""}${compact(ctx.tokens)}${pct}`;
 }
 
 function fmtElapsed(ms: number): string {

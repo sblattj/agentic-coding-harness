@@ -7,6 +7,7 @@ import { createPricer, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { computeUsageAvailability } from './usage-availability.js';
+import { createContextMeter } from './context-meter.js';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
 import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
@@ -394,6 +395,8 @@ export function createDriver(options: DriverOptions): Driver {
         let streamCreditsCumulative: number | null = null;
         // True once the pricer returned a real (non-NaN) price for some record.
         let pricerPriced = false;
+        // Context-window pressure for non-kiro agents (#21); null for kiro.
+        const contextMeter = createContextMeter({ agent: agentName, requestedModel: parsed.model });
 
         // --- wall-clock / idle budget timers ---
         // Armed right after launch (wallMs measures from launch) and the idle
@@ -528,6 +531,8 @@ export function createDriver(options: DriverOptions): Driver {
             transcript.write(`${JSON.stringify(event)}\n`);
             artifacts?.event(event);
             onEvent?.(event);
+            const contextWarning = contextMeter?.observe(event);
+            if (contextWarning !== undefined) warnings.push(contextWarning);
 
             if (rec) {
               rec.lastEvent = eventPreview(event);
@@ -711,6 +716,8 @@ export function createDriver(options: DriverOptions): Driver {
           pricerPriced,
         });
         warnings.push(...usageWarnings);
+        const meteredContext = contextMeter?.snapshot();
+        if (meteredContext !== undefined && usage.context?.available !== true) usage.context = meteredContext;
         if (rec) {
           rec.usage = usage;
           if (usage.context?.available === true && usage.context.tokens !== undefined) {

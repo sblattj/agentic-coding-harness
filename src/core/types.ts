@@ -706,6 +706,19 @@ export interface UsageAvailability {
     windowSource?: "session-store" | "assumed";
     tokens?: number;
     model?: string;
+    /**
+     * Issue #21 (non-kiro agents, src/core/context-meter.ts): what `tokens`
+     * measures. 'last-call' = the prompt of the latest model call (occupancy);
+     * 'turn-total' = a usage record summed over a turn's calls — an UPPER
+     * BOUND on occupancy, exact only when the turn made one call.
+     */
+    basis?: "last-call" | "turn-total";
+    /** True when computed by the context meter from usage + the bundled window table. */
+    estimated?: boolean;
+    /** Estimated tokens of tool output seen in the stream (chars/4). Absent when no tool events. */
+    toolOutputTokens?: number;
+    /** toolOutputTokens / tokens, capped at 1. Absent (never 0) when no tool events. */
+    toolOutputShare?: number;
   };
   /**
    * Normalized provider-reported usage/cost (issue #7): the one shape
@@ -753,6 +766,10 @@ export const UsageAvailabilitySchema = z.object({
       windowSource: z.enum(["session-store", "assumed"]).optional(),
       tokens: z.number().optional(),
       model: z.string().optional(),
+      basis: z.enum(["last-call", "turn-total"]).optional(),
+      estimated: z.boolean().optional(),
+      toolOutputTokens: z.number().optional(),
+      toolOutputShare: z.number().optional(),
     })
     .optional(),
   cost: ReportedUsageCostSchema.optional(),

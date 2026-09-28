@@ -256,3 +256,53 @@ result.usage.cost = {
   kiro the session store's per-turn counts win when it carries real ones.
 - Provider comparison/scoring is out of scope by design: the field surfaces
   the numbers, it never ranks them.
+
+---
+
+## 5. Context-window pressure for every agent (#21)
+
+Kiro's occupancy comes from its session store (§1). For **claude, codex,
+gemini and opencode** the driver runs a context meter
+(`createContextMeter`, `src/core/context-meter.ts`) over the event stream and
+fills `usage.context` when the kiro path left it unavailable.
+
+**Occupancy** = `inputTokens + cacheReadTokens + cacheWriteTokens` of the
+latest usage record (canonical `inputTokens` is uncached-only, so this is the
+full prompt the model saw). **Window** = `max_input_tokens` for the model in
+the bundled LiteLLM extract (`src/core/pricing-data.json`, extract of
+2026-09-10; alias-resolved with the pricer's `resolveAlias`). An explicit
+window tag on the model id (`claude-sonnet-4-5[1m]`) wins over the table.
+Model resolution order: the usage record's model → a model named by a
+step/message event → the RunSpec `model`.
+
+| Field | Meaning |
+|---|---|
+| `estimated: true` | Computed by the meter (usage ÷ bundled table), not reported by the provider. |
+| `windowSource: 'assumed'` | Window from the bundled table. |
+| `basis: 'last-call'` | Latest single model call: claude assistant-message usage, opencode step-finish. A real occupancy reading. |
+| `basis: 'turn-total'` | A usage record summed over a turn's model calls: codex `turn.completed`, gemini `result.stats`, a claude `result` with no per-message usage. An **upper bound** (exact only for a one-call turn); rendered `≤` / `<=`. |
+| `toolOutputTokens` / `toolOutputShare` | Estimated (chars ÷ 4) size of every tool result seen in the stream, and its share of `tokens` (capped at 1). **Omitted, not 0**, when the run had no tool events. |
+
+- **Unknown model → `available: false`** (dash/report render `n/a`); the
+  meter never guesses a window. Codex's stream names no model, so a codex run
+  without `--model` is `n/a`; the same holds for gemini (its `init` model is
+  not bridged today).
+- **Overflow warning:** one `context: <agent> run crossed 85% of the context
+  window (...)` line in `RunResult.warnings`, edge-triggered on the first
+  crossing and never re-armed within the run. It fires only on a
+  `last-call` basis — an upper bound crossing 85% is not evidence of
+  pressure. Cross-run cooldown/persisted alert state is #20's scope.
+- **`ach stats --json`** gains an additive `runs` array, one row per registry
+  run (`<stateDir>/runs`), filtered by `--agent` / `--days`:
+
+  ```ts
+  {
+    runId, agent, startedAt, status: string | null, model: string | null,
+    contextPercentage: number | null,   // null = unknowable, never 0
+    contextTokens: number | null, windowTokens: number | null,
+    windowSource: 'session-store' | 'assumed' | null,
+    basis: 'last-call' | 'turn-total' | null,
+    estimated: boolean,
+    toolOutputShare?: number            // omitted when no tool events
+  }
+  ```
