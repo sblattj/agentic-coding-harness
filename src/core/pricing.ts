@@ -32,7 +32,7 @@ export interface Pricer {
   price(record: CanonicalTokenRecord, opts?: PriceOptions): number;
   /** Strip provider prefixes and date/-latest suffixes: "anthropic/claude-sonnet-4-20250514" -> "claude-sonnet-4". */
   resolveAlias(model: string): string;
-  /** Warnings accumulated so far (and drained): unpriced models, malformed map entries. */
+  /** Warnings accumulated so far (and drained): unpriced models, malformed map entries, family-fallback estimates. */
   drainWarnings(): string[];
 }
 
@@ -44,10 +44,15 @@ const FALLBACK_PRICES: Record<string, ModelPrice> = {
   'claude-sonnet-4': { input: 3, output: 15, cache_read: 0.3, cache_creation: 3.75 },
   'claude-sonnet-4-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5 },
   'claude-sonnet-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5 },
+  // claude-sonnet-5-5 / claude-opus-5-5 (issue #103): mirror the -5 family
+  // rates — the LiteLLM extract predates them; pricing-data.json marks its
+  // copies with the estimated provenance.
+  'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5 },
   'claude-haiku-4-5': { input: 1, output: 5, cache_read: 0.1, cache_creation: 1.25 },
   'claude-opus-4': { input: 15, output: 75, cache_read: 1.5, cache_creation: 18.75 },
   'claude-opus-4-8': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
   'claude-opus-5': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
+  'claude-opus-5-5': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
   'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_creation: 12.5 },
   'gpt-5': { input: 1.25, output: 10, cache_read: 0.125, cache_creation: 0 },
   'gpt-5.6': { input: 4, output: 20, cache_read: 0.4, cache_creation: 5 },
@@ -92,6 +97,15 @@ export function resolveAlias(model: string): string {
   m = m.replace(/\[[^\]]*\]$/, '');
   return m;
 }
+
+/**
+ * Env var naming a local pricing-override JSON file (a LiteLLM-style cost
+ * map, per-1M or per-token fields) layered over the bundled data at pricer
+ * creation. A missing file is a no-op (unset-equivalent); a present but
+ * malformed file warns once and never crashes. An explicit costMapPath
+ * argument to {@link createPricer} wins over this env var.
+ */
+export const PRICING_OVERRIDE_ENV = 'AGENTIC_CODING_HARNESS_PRICING_OVERRIDE';
 
 function loadExternalMap(path: string): Record<string, ModelPrice> {
   return parsePriceMap(JSON.parse(readFileSync(path, 'utf8')));
@@ -182,17 +196,54 @@ export function createPricer(costMapPath?: string): Pricer {
   let prices = { ...FALLBACK_PRICES, ...BUNDLED_PRICES };
   const warnings: string[] = [];
 
-  if (costMapPath !== undefined) {
+  // An explicit costMapPath wins; otherwise AGENTIC_CODING_HARNESS_PRICING_OVERRIDE
+  // names a local override file. A missing override file is a no-op
+  // (unset-equivalent); only a present-but-broken file warns.
+  const fromEnv = costMapPath === undefined;
+  let overridePath = costMapPath;
+  if (fromEnv) {
+    const envPath = process.env[PRICING_OVERRIDE_ENV];
+    if (envPath !== undefined && envPath.trim() !== '') overridePath = envPath.trim();
+  }
+  if (overridePath !== undefined) {
     try {
-      prices = { ...prices, ...loadExternalMap(costMapPath) };
+      prices = { ...prices, ...loadExternalMap(overridePath) };
     } catch (err) {
-      warnings.push(`pricing: failed to load cost map at ${costMapPath} (${err instanceof Error ? err.message : String(err)}); using embedded fallback`);
+      const absent = err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT';
+      if (!(fromEnv && absent)) {
+        warnings.push(`pricing: failed to load cost map at ${overridePath} (${err instanceof Error ? err.message : String(err)}); using embedded fallback`);
+      }
     }
   }
 
+  // Family fallback (issue #103): with no exact entry, price at the longest
+  // table key that is a segment-prefix of the resolved alias
+  // (claude-opus-5-5-20261001 -> claude-opus-5-5 -> claude-opus-5), so dated
+  // or preview variants of a known family cost an estimate instead of n/a.
+  // The estimate is never silent: one warning per model records the family
+  // used and the `estimated` provenance. Prefixes shorter than 2 segments
+  // never match, so an unrelated model still falls through to the
+  // unknown-model NaN below — arbitrary models are never silently priced.
+  const estimatedFamilies = new Set<string>();
   const lookup = (model: string): ModelPrice | undefined => {
     const alias = resolveAlias(model);
-    return prices[model.toLowerCase()] ?? prices[alias];
+    const exact = prices[model.toLowerCase()] ?? prices[alias];
+    if (exact !== undefined) return exact;
+    const segments = alias.split('-');
+    for (let n = segments.length - 1; n >= 2; n--) {
+      const family = segments.slice(0, n).join('-');
+      const p = prices[family];
+      if (p !== undefined) {
+        if (!estimatedFamilies.has(model)) {
+          estimatedFamilies.add(model);
+          warnings.push(
+            `pricing: no exact price for "${model}"; priced via family fallback "${family}" (provenance: estimated)`,
+          );
+        }
+        return p;
+      }
+    }
+    return undefined;
   };
 
   return {
