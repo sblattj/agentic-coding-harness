@@ -34,6 +34,7 @@ import fs from "node:fs";
 import { parseArgs } from "node:util";
 import { AGENTS, HarnessError, isKnownAgent, type CanonicalTokenRecord } from "../core/types.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
+import { resolveDirFlag } from "./lib.ts";
 import { normalizeAuto } from "../core/normalize.ts";
 import { createPricer, type Pricer } from "../core/pricing.ts";
 import {
@@ -557,7 +558,8 @@ function applyFix(
 
 // ---------------------------------------------------------------- CLI
 
-export const AUDIT_USAGE = `ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--dir <stateDir>]
+export const AUDIT_USAGE = `ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--state-dir <stateDir>]
+  (--dir is an alias of --state-dir.)
   Re-derives each RunRecord's totals (input/output/cacheRead/cacheWrite tokens
   and costUsd, <stateDir>/runs/*.json) from the run's raw transcript
   (<stateDir>/raw/<agent>-<session>.jsonl): tokens re-parsed from each usage
@@ -639,6 +641,7 @@ export async function cmdAudit(rest: string[]): Promise<number> {
       "tolerance-pct": { type: "string" },
       fix: { type: "boolean", default: false },
       dir: { type: "string" },
+      "state-dir": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
     allowPositionals: false,
@@ -647,6 +650,7 @@ export async function cmdAudit(rest: string[]): Promise<number> {
     process.stdout.write(AUDIT_USAGE + "\n");
     return 0;
   }
+  const stateDirFlag = resolveDirFlag(args.values, "state-dir");
   const agent = args.values.agent;
   if (agent && !isKnownAgent(agent)) {
     throw new HarnessError(`unknown agent '${agent}' (expected one of: ${AGENTS.join(", ")})`, "UNKNOWN_AGENT");
@@ -655,7 +659,7 @@ export async function cmdAudit(rest: string[]): Promise<number> {
   const tolerancePct = optNum(args.values["tolerance-pct"], "--tolerance-pct") ?? 0;
   const pricer = createPricer();
   const res = auditRuns({
-    stateDir: args.values.dir ?? defaultStateDir(),
+    stateDir: stateDirFlag ?? defaultStateDir(),
     ...(agent ? { agent } : {}),
     ...(days !== undefined ? { sinceTs: Date.now() - days * 86_400_000 } : {}),
     tolerancePct,

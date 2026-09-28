@@ -81,7 +81,7 @@ that CLI ships a storage change, because these files move between versions.
 
 ## Discovery and archive behavior
 
-`watch --dir ROOT` and `stats --dir ROOT` resolve every native source under a
+`watch --transcript-dir ROOT` and `stats --transcript-dir ROOT` (alias `--dir`) resolve every native source under a
 home-shaped root. `archive` includes all registered native sources; SQLite
 stores use `sqlite3 -readonly` backups rather than copying an incomplete WAL
 base file. Multiple platform roots for one agent use distinct archive paths,

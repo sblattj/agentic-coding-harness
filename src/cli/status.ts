@@ -85,7 +85,14 @@ export const StatusSnapshotSchema = z.object({
   today: z.object({
     costUsd: z.number(),
     records: z.number().int(),
-    byAgent: z.record(z.string(), z.object({ costUsd: z.number(), records: z.number().int() })),
+    byAgent: z.record(
+      z.string(),
+      z.object({ costUsd: z.number(), records: z.number().int(), unpricedRecords: z.number().int().optional() }),
+    ),
+    /** Records with no cost (unknown model, nothing reported): excluded from
+     *  costUsd, which is then a lower bound. Optional only so snapshots written
+     *  before 0.11.1 still parse; every current snapshot carries it. */
+    unpricedRecords: z.number().int().optional(),
   }),
   block: z.object({ costUsd: z.number().nullable(), source: z.enum(["unavailable", "provider"]) }),
   budget: BudgetSchema,
@@ -202,19 +209,44 @@ function dedupeKey(r: {
  */
 async function collectTodayRecords(sinceTs: number, includeTranscripts: boolean): Promise<AggregatableRecord[]> {
   const stateRecords = await readAllRecords({ sinceTs });
-  const records: AggregatableRecord[] = stateRecords.map((r) => ({
-    ts: r.ts,
-    agent: r.agent,
-    inputTokens: r.inputTokens,
-    outputTokens: r.outputTokens,
-    cacheReadTokens: r.cacheReadTokens,
-    cacheWriteTokens: r.cacheWriteTokens,
-    reasoningTokens: r.reasoningTokens ?? 0,
-    costUsd: r.costUsd,
-  }));
-  if (!includeTranscripts) return records;
-  const seen = new Set(stateRecords.map(dedupeKey));
+  // Same per-record cost as `ach stats` (auto mode, src/cli/ach.ts costFor):
+  // the CLI-reported cost when the line stored one (an explicit 0 included),
+  // else token x bundled price; an unpriceable record keeps costUsd undefined
+  // and is counted as unpriced by aggregate(), never summed as $0. Pricing
+  // warnings are dropped: statusline output must stay quiet on stderr.
   const pricer = createPricer();
+  const records: AggregatableRecord[] = stateRecords.map((r) => {
+    const row: AggregatableRecord = {
+      ts: r.ts,
+      agent: r.agent,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      cacheReadTokens: r.cacheReadTokens,
+      cacheWriteTokens: r.cacheWriteTokens,
+      reasoningTokens: r.reasoningTokens ?? 0,
+    };
+    let costUsd = r.reportedCostUsd;
+    if (costUsd === undefined && r.model && r.model !== "unknown" && r.extra?.tokensAvailable !== false) {
+      const c = pricer.price(
+        {
+          model: r.model,
+          inputTokens: r.inputTokens,
+          outputTokens: r.outputTokens,
+          cacheReadTokens: r.cacheReadTokens,
+          cacheWriteTokens: r.cacheWriteTokens,
+          ...(r.extra !== undefined ? { extra: r.extra } : {}),
+        },
+        { computedOnly: true },
+      );
+      if (!Number.isNaN(c)) costUsd = c;
+    }
+    return costUsd === undefined ? row : { ...row, costUsd };
+  });
+  if (!includeTranscripts) {
+    pricer.drainWarnings();
+    return records;
+  }
+  const seen = new Set(stateRecords.map(dedupeKey));
   for await (const rec of scanAll()) {
     const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
     if (!Number.isFinite(tsMs) || tsMs < sinceTs) continue;
@@ -276,9 +308,9 @@ export async function computeStatusSnapshot(opts: SnapshotOptions = {}): Promise
 
   const todayRecords = await collectTodayRecords(since, includeTranscripts);
   const agg = aggregate(todayRecords);
-  const byAgent: Record<string, { costUsd: number; records: number }> = {};
+  const byAgent: Record<string, { costUsd: number; records: number; unpricedRecords: number }> = {};
   for (const [agent, b] of Object.entries(agg.byAgent).sort(([a], [b]) => a.localeCompare(b))) {
-    byAgent[agent] = { costUsd: b.costUsd, records: b.records };
+    byAgent[agent] = { costUsd: b.costUsd, records: b.records, unpricedRecords: b.unpricedRecords };
   }
 
   let blockCostUsd: number | null = null;
@@ -306,7 +338,7 @@ export async function computeStatusSnapshot(opts: SnapshotOptions = {}): Promise
           durationMs: end === undefined ? null : Math.max(0, end - newest.rec.startedAt),
         }
       : null,
-    today: { costUsd: agg.totals.costUsd, records: agg.totals.records, byAgent },
+    today: { costUsd: agg.totals.costUsd, records: agg.totals.records, byAgent, unpricedRecords: agg.totals.unpricedRecords },
     block: { costUsd: blockCostUsd, source: blockCostUsd === null ? "unavailable" : "provider" },
     budget: deriveBudget(agg.totals.costUsd, budgetUsd),
   };
@@ -316,8 +348,9 @@ export async function computeStatusSnapshot(opts: SnapshotOptions = {}): Promise
 // ---------------------------------------------------------------- render
 
 /**
- * `runs=N running=N success=N error=N cost_today=$X.XXXX[ budget_left=$X.XXXX]`
- * Fixed key order; budget_left only when a budget is configured.
+ * `runs=N running=N success=N error=N cost_today=$X.XXXX[ budget_left=$X.XXXX][ unpriced=N]`
+ * Fixed key order; budget_left only when a budget is configured; unpriced
+ * only when some record in the window carried no cost (cost_today excludes it).
  */
 export function formatCompact(s: StatusSnapshot): string {
   const parts = [
@@ -328,6 +361,9 @@ export function formatCompact(s: StatusSnapshot): string {
     `cost_today=${fmtUsd(s.today.costUsd)}`,
   ];
   if (s.budget.configured) parts.push(`budget_left=${fmtUsd(s.budget.remainingUsd)}`);
+  // Additive trailing key, only when some record in the window has no cost.
+  const unpriced = s.today.unpricedRecords ?? 0;
+  if (unpriced > 0) parts.push(`unpriced=${unpriced}`);
   return parts.join(" ");
 }
 
@@ -358,7 +394,7 @@ export function formatHuman(s: StatusSnapshot): string {
   const lines = [
     `runs       ${r.total} (running=${r.running} success=${r.success} error=${r.error} aborted=${r.aborted} interrupted=${r.interrupted} unavailable=${r.unavailable}) · trailing 24h`,
     `active     ${r.running}${active ? ` (${active})` : ""}`,
-    `today      ${fmtUsd(s.today.costUsd)}${perAgent ? ` (${perAgent})` : ""}${s.sources.includes("transcripts") ? "" : " · state dir only"}`,
+    `today      ${fmtUsd(s.today.costUsd)}${perAgent ? ` (${perAgent})` : ""}${(s.today.unpricedRecords ?? 0) > 0 ? ` (+${s.today.unpricedRecords} unpriced)` : ""}${s.sources.includes("transcripts") ? "" : " · state dir only"}`,
     `block      ${s.block.costUsd === null ? "n/a" : fmtUsd(s.block.costUsd)}`,
     `budget     ${formatBudgetCell(s.budget)}`,
     `newest     ${nr ? `${nr.agent} ${nr.status} ${nr.runId} · ${nr.durationMs === null ? "n/a" : fmtDuration(nr.durationMs)} wall-clock` : "-"}`,

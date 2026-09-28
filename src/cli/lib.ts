@@ -1,8 +1,26 @@
 // CLI-local pure helpers: streaming-event formatting, run summary rendering,
 // usage aggregation. Parsing of machine transcripts lives in
 // src/monitors/transcripts.ts; pricing in src/core/pricing.ts.
-import type { AgentEvent, UsageAvailability } from "../core/types.ts";
+import { HarnessError, type AgentEvent, type UsageAvailability } from "../core/types.ts";
 import { bucketKey, type TimeGranularity } from "./time-window.ts";
+
+/**
+ * `--dir` is a transcript root for `stats`/`watch` but a state dir for
+ * `archive`/`audit`/`dash`/`web`. Each command also takes the unambiguous
+ * spelling (`--transcript-dir` / `--state-dir`); this resolves the pair to one
+ * value. Both given with different values is a usage error, never a silent pick.
+ */
+export function resolveDirFlag(
+  values: { dir?: string | undefined; "state-dir"?: string | undefined; "transcript-dir"?: string | undefined },
+  alias: "state-dir" | "transcript-dir",
+): string | undefined {
+  const dir = values.dir;
+  const named = values[alias];
+  if (dir !== undefined && named !== undefined && dir !== named) {
+    throw new HarnessError(`--${alias} '${named}' and --dir '${dir}' disagree (--dir is an alias of --${alias}; pass one)`, "USAGE");
+  }
+  return named ?? dir;
+}
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -122,6 +140,14 @@ export interface UsageBucket {
   costSource: CostSource | null;
   /** Per-source split of costUsd; a source no record used is null. */
   costBySource: { reported: number | null; computed: number | null };
+  /**
+   * Records for which the active cost mode produced no cost (in `auto`: no
+   * CLI-reported cost and a model the pricer cannot price; in `display`: no
+   * reported cost; in `calculate`: an unpriceable model). They count in
+   * `records` and the token sums but are excluded from costUsd, so a nonzero
+   * count means costUsd is a lower bound.
+   */
+  unpricedRecords: number;
 }
 
 /** Cost provenance label (issue #28). Exactly these two values; #33 builds on them. */
@@ -138,6 +164,7 @@ export function emptyBucket(): UsageBucket {
     costUsd: 0,
     costSource: null,
     costBySource: { reported: null, computed: null },
+    unpricedRecords: 0,
   };
 }
 
@@ -149,6 +176,7 @@ function add(a: UsageBucket, r: { inputTokens: number; outputTokens: number; cac
   a.cacheWriteTokens += r.cacheWriteTokens;
   a.reasoningTokens += r.reasoningTokens;
   a.costUsd += r.costUsd ?? 0;
+  if (r.costUsd === undefined) a.unpricedRecords += 1;
   if (r.costSource !== undefined && r.costUsd !== undefined) {
     a.costBySource[r.costSource] = (a.costBySource[r.costSource] ?? 0) + r.costUsd;
   }

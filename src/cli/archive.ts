@@ -11,9 +11,9 @@ import { warehouseDir } from "../core/warehouse-index.ts";
 import { scanAll, scanOptionsForRoot, transcriptAgentNames, type CanonicalTokenRecord, type ScanOptions } from "../monitors/transcripts.ts";
 import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { isTranscriptOnlyAgent } from "../monitors/transcript-sources.ts";
-import { fmtInt } from "./lib.ts";
+import { fmtInt, resolveDirFlag } from "./lib.ts";
 
-export const ARCHIVE_USAGE = `usage: ach archive [--agent A] [--days N] [--out DIR] [--dir <stateDir>] [--json]
+export const ARCHIVE_USAGE = `usage: ach archive [--agent A] [--days N] [--out DIR] [--state-dir <stateDir>] [--json]
        ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
 
   Copies machine transcripts (~/.claude/projects, ~/.codex/sessions,
@@ -23,7 +23,9 @@ export const ARCHIVE_USAGE = `usage: ach archive [--agent A] [--days N] [--out D
   with a manifest.jsonl (sourcePath, sha256, runId). Unchanged files are never
   re-copied and nothing is ever deleted. --days N keeps files modified in the
   last N days. --restore rebuilds a home-shaped tree under --to (default
-  ./ach-restore-<batch>) that 'ach stats --dir' reads. See docs/ARCHIVE.md.`;
+  ./ach-restore-<batch>) that 'ach stats --transcript-dir' reads. Here --dir is
+  an alias of --state-dir (for 'ach stats' it is the transcript root). See
+  docs/ARCHIVE.md.`;
 
 function optNum(v: string | undefined, flag: string): number | undefined {
   if (v === undefined) return undefined;
@@ -51,6 +53,7 @@ export async function cmdArchive(rest: string[]): Promise<number> {
       days: { type: "string" },
       out: { type: "string" },
       dir: { type: "string" },
+      "state-dir": { type: "string" },
       restore: { type: "string" },
       to: { type: "string" },
       json: { type: "boolean", default: false },
@@ -62,7 +65,7 @@ export async function cmdArchive(rest: string[]): Promise<number> {
     process.stdout.write(ARCHIVE_USAGE + "\n");
     return 0;
   }
-  const state = args.values.dir ?? defaultStateDir();
+  const state = resolveDirFlag(args.values, "state-dir") ?? defaultStateDir();
   const wh = args.values.out ?? warehouseDir(state);
 
   if (args.values.restore !== undefined) {
@@ -78,7 +81,7 @@ export async function cmdArchive(rest: string[]): Promise<number> {
       args.values.json
         ? JSON.stringify(res, null, 2) + "\n"
         : `restored ${fmtInt(res.restored)} files from ${res.batch} into ${res.to}\n` +
-            `  read with: ach stats --dir ${res.to}   (state dir: ${res.stateDir})\n`,
+            `  read with: ach stats --transcript-dir ${res.to}   (state dir: ${res.stateDir})\n`,
     );
     return 0;
   }
