@@ -78,6 +78,8 @@ import { cmdAudit } from "./audit.ts";
 import { EXIT_CODES, noDataExitCode, parseExitCodesMode, runExitCode } from "./exit-codes.ts";
 import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
 import { alertFlagsToBudget } from "./alerts.ts";
+import { cmdStatus } from "./status.ts";
+import { cmdStatusline } from "./statusline.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -136,6 +138,16 @@ usage:
                 (re-derive each RunRecord's token/cost totals from its raw transcript
                  and report recorded vs recomputed deltas; exit 1 on drift;
                  --fix rewrites drifted totals and logs RunRecord.corrections)
+  ach status [--compact|--json] [--transcripts] [--budget-usd N]
+             [--once] [--write-state <path>] [--interval-ms MS=5000]
+                (runs, active runs, trailing-24h spend = \`stats --days 1\`,
+                 budget left; --write-state writes the snapshot atomically,
+                 once with --once, else every --interval-ms; see docs/STATUS.md)
+  ach statusline [--chain "<cmd>"] [--separator " | "] [--chain-timeout-ms MS]
+                 [--cache <path>] [--max-age-ms MS] [--no-cache] [--transcripts]
+                (Claude Code statusLine.command: reads its JSON on stdin, prints
+                 model · session · today · block · budget; --chain keeps your
+                 existing statusline in front)
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -1141,6 +1153,10 @@ async function main(argv: string[]): Promise<number> {
       return cmdStats(rest);
     case "audit":
       return cmdAudit(rest);
+    case "status":
+      return cmdStatus(rest);
+    case "statusline":
+      return cmdStatusline(rest);
     case "emit":
       return cmdEmit(rest);
     case "report":
