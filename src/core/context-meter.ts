@@ -17,9 +17,9 @@
 //    an upper bound, and renderers mark it `≤`.
 //  - unknown model → `available: false` (renders n/a), never a guessed window.
 //
-// Pure apart from the one lazy read of the bundled JSON.
+// The default table is embedded; explicit external tables are read from disk.
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import bundledPricingData from './pricing-data.json' with { type: 'json' };
 import { resolveAlias } from './pricing.js';
 import type { AgentEvent, CanonicalTokenRecord, UsageAvailability } from './types.js';
 
@@ -47,8 +47,9 @@ let bundledTable: Map<string, number> | null = null;
 export function loadContextWindowTable(path?: string): Map<string, number> {
   const table = new Map<string, number>();
   try {
-    const file = path ?? fileURLToPath(new URL('./pricing-data.json', import.meta.url));
-    const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    const raw: Record<string, unknown> = path === undefined
+      ? bundledPricingData
+      : JSON.parse(readFileSync(path, 'utf8'));
     for (const [key, entry] of Object.entries(raw)) {
       const max = (entry as { max_input_tokens?: unknown } | null)?.max_input_tokens;
       if (typeof max !== 'number' || !Number.isFinite(max) || max <= 0) continue;
@@ -57,8 +58,7 @@ export function loadContextWindowTable(path?: string): Map<string, number> {
       if (!table.has(alias)) table.set(alias, max);
     }
   } catch {
-    // Missing/unreadable extract (e.g. a standalone bundle): every lookup is
-    // then unknown and the meter reports n/a — never a guess.
+    // An unreadable external table reports unknown windows, never guesses.
   }
   return table;
 }

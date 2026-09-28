@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import bundledPricingData from './pricing-data.json' with { type: 'json' };
 import { z } from 'zod';
 import type { CanonicalTokenRecord } from './types.js';
 
@@ -94,7 +94,10 @@ export function resolveAlias(model: string): string {
 }
 
 function loadExternalMap(path: string): Record<string, ModelPrice> {
-  const raw: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  return parsePriceMap(JSON.parse(readFileSync(path, 'utf8')));
+}
+
+function parsePriceMap(raw: unknown): Record<string, ModelPrice> {
   const parsed = z.record(z.string(), ExternalPrice).parse(raw);
   const map: Record<string, ModelPrice> = {};
   for (const [key, entry] of Object.entries(parsed)) {
@@ -112,19 +115,9 @@ function loadExternalMap(path: string): Record<string, ModelPrice> {
   return map;
 }
 
-/**
- * Bundled LiteLLM extract (claude / gpt / gemini prefixed entries from
- * model_prices_and_context_window.json). Loaded as the base price map;
- * returns {} when the file is absent so the embedded fallback still covers
- * the flagships.
- */
-function loadBundledData(): Record<string, ModelPrice> {
-  try {
-    return loadExternalMap(fileURLToPath(new URL('./pricing-data.json', import.meta.url)));
-  } catch {
-    return {};
-  }
-}
+// Static JSON import keeps the authoritative extract inside every distributed
+// bundle (Node CLI/library, Bun and standalone), without sibling-file lookups.
+const BUNDLED_PRICES = parsePriceMap(bundledPricingData);
 
 /**
  * Per-model usage slice as embedded by the adapters under extra.raw.models
@@ -185,10 +178,8 @@ export function pricedSources(rec: CanonicalTokenRecord): { reported: boolean; c
 }
 
 export function createPricer(costMapPath?: string): Pricer {
-  // Base map: embedded fallback, layered with the bundled LiteLLM extract
-  // (src/core/pricing-data.json) when it is present — a missing file (e.g.
-  // in the standalone bun build) silently keeps the embedded fallback.
-  let prices = { ...FALLBACK_PRICES, ...loadBundledData() };
+  // Preserve precedence: fallback < authoritative extract < external override.
+  let prices = { ...FALLBACK_PRICES, ...BUNDLED_PRICES };
   const warnings: string[] = [];
 
   if (costMapPath !== undefined) {
