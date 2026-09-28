@@ -113,7 +113,8 @@ and honor the same cooldown and reset behavior.
 
 Concurrent runs serialize the state read, cooldown check, and atomic write with
 `alerts.json.lock`, preserving other runs' cooldowns. The wait is bounded at
-250 ms. A busy lock or failed write produces a warning and still allows the live
+250 ms (3 s on Windows, where file operations are slower and a just-released
+lock can stay delete-pending for a moment). A busy lock or failed write produces a warning and still allows the live
 alert and run to continue; persistence is not guaranteed in that degraded case.
 If a writer crashed leaving the lock, remove `alerts.json.lock` only after that
 writer has stopped. The cooldown reset remains deleting `alerts.json` and

@@ -80,34 +80,98 @@ export function saveAlertState(file: string, state: AlertState): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, file);
+  // win32: replacing a file a reader or scanner has open without share-delete
+  // fails EPERM/EACCES for a moment; retry rather than drop the write.
+  retryTransientSync(() => fs.renameSync(tmp, file), process.platform, 1000);
+}
+
+/**
+ * How long a writer waits for the alert lock before reporting it busy.
+ * POSIX: 250 ms. win32: 3 s, because every step of the critical section
+ * (create, read, write, rename, unlink) costs far more there — real-time
+ * scanners open each new file — and a handful of simultaneous writers
+ * overran 250 ms on GitHub's windows runners (#39).
+ */
+export function alertLockWaitMs(platform: NodeJS.Platform = process.platform): number {
+  return platform === "win32" ? 3000 : 250;
+}
+
+/**
+ * Whether a failed exclusive create of the lock means "another writer holds
+ * it". EEXIST everywhere. On win32 also EPERM/EACCES: a lock file that was
+ * just unlinked while another handle (a scanner) still had it open is
+ * delete-pending, and CreateFile refuses it with ACCESS_DENIED until that
+ * handle closes — contention, not a permission problem.
+ */
+export function isAlertLockBusy(code: string | undefined, platform: NodeJS.Platform = process.platform): boolean {
+  if (code === "EEXIST") return true;
+  return platform === "win32" && (code === "EPERM" || code === "EACCES");
+}
+
+/** win32 errors a sharing violation / delete-pending file surfaces as; retried briefly. */
+const WIN32_TRANSIENT = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+function sleepSync(sleeper: Int32Array, ms: number): void {
+  Atomics.wait(sleeper, 0, 0, ms);
+}
+
+/**
+ * Run `op`, retrying for up to `budgetMs` on win32 while it fails with a
+ * transient sharing error. POSIX runs it once, so behaviour there is unchanged.
+ */
+function retryTransientSync<T>(op: () => T, platform: NodeJS.Platform, budgetMs: number): T {
+  if (platform !== "win32") return op();
+  const deadline = performance.now() + budgetMs;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try {
+      return op();
+    } catch (err) {
+      if (!WIN32_TRANSIENT.has((err as NodeJS.ErrnoException).code ?? "") || performance.now() >= deadline) throw err;
+      sleepSync(sleeper, 10);
+    }
+  }
+}
+
+export interface AlertLockOptions {
+  /** Platform whose lock semantics apply (tests); defaults to process.platform. */
+  platform?: NodeJS.Platform;
+  /** Exclusive-create of the lock file (tests); defaults to fs.openSync(p, "wx", 0o600). */
+  open?: (lock: string) => number;
+  /** Lock release (tests); defaults to fs.unlinkSync. */
+  unlink?: (lock: string) => void;
 }
 
 /** Serialize read/check/write across processes; contention is bounded and nonfatal upstream.
  * Never steal an old lock: its owner may merely be paused. An orphaned lock
- * causes a warning after 250ms rather than an indefinite wait or an unsafe write.
+ * causes a warning after alertLockWaitMs() rather than an indefinite wait or
+ * an unsafe write. On win32 a transiently refused release is retried so a
+ * scanner's open handle cannot leave the lock behind for every later writer.
  */
-function withAlertLock<T>(file: string, action: () => T): T {
+export function withAlertLock<T>(file: string, action: () => T, opts: AlertLockOptions = {}): T {
+  const platform = opts.platform ?? process.platform;
+  const open = opts.open ?? ((p: string) => fs.openSync(p, "wx", 0o600));
+  const unlink = opts.unlink ?? ((p: string) => fs.unlinkSync(p));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const lock = `${file}.lock`;
-  const deadline = performance.now() + 250;
+  const deadline = performance.now() + alertLockWaitMs(platform);
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
   let fd: number;
   for (;;) {
     try {
-      fd = fs.openSync(lock, "wx", 0o600);
+      fd = open(lock);
       break;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (!isAlertLockBusy((err as NodeJS.ErrnoException).code, platform)) throw err;
       if (performance.now() >= deadline) throw new Error(`alert state lock busy: ${lock}; remove it only if its writer has stopped`);
-      Atomics.wait(sleeper, 0, 0, 5);
+      sleepSync(sleeper, 5);
     }
   }
   try {
     return action();
   } finally {
     fs.closeSync(fd);
-    fs.unlinkSync(lock);
+    retryTransientSync(() => unlink(lock), platform, 1000);
   }
 }
 

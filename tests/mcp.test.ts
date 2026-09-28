@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, after, beforeEach, describe, it } from 'node:test';
+import { stopChild } from './helpers/stop-child.ts';
 import type { JsonRpcRequest, JsonRpcResponse } from '../src/mcp/contract.js';
 import { __testables__ } from '../src/mcp/server.js';
 
@@ -113,6 +114,7 @@ const TSX_IMPORT = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).
 let child: ChildProcessWithoutNullStreams | null = null;
 let stateTmp = '';
 let cwdTmp = '';
+const tmpDirs: string[] = [];
 let nextId = 1;
 let pending: JsonRpcResponse[] = [];
 let lineBuf = '';
@@ -122,6 +124,7 @@ const waiters = new Map<number, (m: JsonRpcResponse) => void>();
 function startServer(): void {
   stateTmp = mkdtempSync(join(tmpdir(), 'harness-mcp-state-'));
   cwdTmp = mkdtempSync(join(tmpdir(), 'harness-mcp-cwd-'));
+  tmpDirs.push(stateTmp, cwdTmp);
   nextId = 1;
   pending = [];
   lineBuf = '';
@@ -228,23 +231,19 @@ describe('mcp server (real subprocess over NDJSON stdio)', () => {
     startServer();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (child) {
-      child.removeAllListeners();
-      child.kill('SIGTERM');
       const c = child;
-      setTimeout(() => {
-        if (c.exitCode === null && !c.killed) c.kill('SIGKILL');
-      }, 500);
       child = null;
+      c.removeAllListeners();
+      // Kill the whole tree and wait for exit: Windows refuses to remove a
+      // directory a live process still has as its cwd (EBUSY).
+      await stopChild(c);
     }
   });
 
   after(() => {
-    // Windows refuses to remove a directory a just-killed child still has as
-    // its cwd (EBUSY) until the process is gone; retry instead of racing it.
-    rmSync(stateTmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
-    rmSync(cwdTmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
 
   it('initialize returns protocolVersion 2025-06-18 and a serverInfo name', { timeout: 30_000 }, async () => {
