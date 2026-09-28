@@ -18,8 +18,8 @@ import {
 } from '../src/adapters/kiro.js';
 import type { KiroEffective } from '../src/core/types.js';
 import type { SpawnFn } from '../src/adapters/shared.ts';
-import type { ChildProcess } from 'node:child_process';
-import { FakeChild, runCall, versionProbeSpawnFn, type FakeSpawnCall } from './helpers/fake-child.ts';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { FakeChild, fakeSpawnFn, runCall, versionProbeSpawnFn, type FakeSpawnCall } from './helpers/fake-child.ts';
 
 const BASE_ARGS = ['chat', '--no-interactive', '--output-format', 'stream-json', '--agent-engine', 'v2'];
 
@@ -360,22 +360,39 @@ describe('kiro launch (driver contract)', () => {
 
   it('probes kiro-cli --version ONCE per adapter instance and caches it', async () => {
     const calls: FakeSpawnCall[] = [];
-    const child1 = new FakeChild();
-    const spawnFn = versionProbeSpawnFn(child1, calls);
+    const children = [new FakeChild(), new FakeChild()];
+    let nextChild = 0;
+    const probeSpawn = versionProbeSpawnFn(new FakeChild(), calls);
+    const spawnFn: SpawnFn = (command, args, opts) => {
+      if (args[0] === '--version') return probeSpawn(command, args, opts);
+      const child = children[nextChild++];
+      assert.ok(child, 'every run must get a fresh process');
+      return fakeSpawnFn(child, calls)(command, args, opts);
+    };
     const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn });
 
-    const first = adapter.launch({ prompt: 'a' });
-    child1.close(0);
-    const handle1 = await first;
-    assert.equal(handle1.kiro?.()?.cliVersion, '2.21.2');
-
-    const second = adapter.launch({ prompt: 'b' });
-    child1.close(0);
-    await second;
-
+    for (const [index, child] of children.entries()) {
+      const launching = adapter.launch({ prompt: `run-${index}` });
+      child.close(0);
+      const handle = await launching;
+      for await (const _ of handle.attach()) { /* prove the run queue closes */ }
+      assert.equal(await handle.wait(), 'success');
+      assert.equal(handle.kiro?.()?.cliVersion, '2.21.2');
+    }
+    assert.equal(nextChild, 2, 'both launches spawned independent run processes');
     const versionCalls = calls.filter((c) => c.args[0] === '--version');
     assert.equal(versionCalls.length, 1, 'the --version probe must be cached per adapter instance');
     assert.equal(versionCalls[0]!.command, 'kiro-cli');
+
+    // Control: the cache is per adapter, not process-global.
+    const independentChild = new FakeChild();
+    const independent = new KiroAdapter({ command: 'kiro-cli', spawnFn: versionProbeSpawnFn(independentChild, calls) });
+    const launching = independent.launch({ prompt: 'independent' });
+    independentChild.close(0);
+    const handle = await launching;
+    assert.equal(await handle.wait(), 'success');
+    assert.equal(handle.kiro?.()?.cliVersion, '2.21.2');
+    assert.equal(calls.filter((c) => c.args[0] === '--version').length, 2);
   });
 
   it('an unparseable but non-empty `--version` probe is kept verbatim', async () => {
@@ -395,26 +412,36 @@ describe('kiro launch (driver contract)', () => {
     // pin wait() forever because version.settle() awaited the probe.
     const calls: FakeSpawnCall[] = [];
     const child = new FakeChild();
-    const hungProbe = new FakeChild();
+    // A real idle child supplies the process handle that the production
+    // unref'ed timeout relies on. An EventEmitter-only fake lets Node exit.
+    const hungProbe = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const probeClosed = new Promise<NodeJS.Signals | null>((resolve) => {
+      hungProbe.once('close', (_code, signal) => resolve(signal));
+    });
     const spawnFn: SpawnFn = (command, args, opts) => {
       calls.push({ command, args, opts });
-      if (args[0] === '--version') return hungProbe as unknown as ChildProcess;
+      if (args[0] === '--version') return hungProbe;
       queueMicrotask(() => child.emit('spawn'));
       return child as unknown as ChildProcess;
     };
     const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn, versionProbeMs: 40 });
 
-    const launchPromise = adapter.launch({ prompt: 'ping' });
-    child.writeStdout('{"type":"runFinished","data":{"sessionId":"sid-hung","status":"success"}}\n');
-    child.close(0);
-    const handle = await launchPromise;
-    for await (const _ of handle.attach()) {
-      /* drain */
+    try {
+      const launchPromise = adapter.launch({ prompt: 'ping' });
+      child.writeStdout('{"type":"runFinished","data":{"sessionId":"sid-hung","status":"success"}}\n');
+      child.close(0);
+      const handle = await launchPromise;
+      for await (const _ of handle.attach()) {
+        /* drain */
+      }
+      assert.equal(await handle.wait(), 'success');
+      assert.equal(handle.kiro?.()?.cliVersion, 'unknown');
+      assert.equal(await probeClosed, 'SIGKILL', 'the ceiling must reap the real hung probe');
+      assert.equal(calls.filter((c) => c.args[0] === '--version').length, 1);
+    } finally {
+      if (hungProbe.exitCode === null && hungProbe.signalCode === null) hungProbe.kill('SIGKILL');
+      await probeClosed;
     }
-    assert.equal(await handle.wait(), 'success');
-    assert.equal(handle.kiro?.()?.cliVersion, 'unknown');
-    assert.deepEqual(hungProbe.signals, ['SIGKILL'], 'the ceiling must reap the hung probe');
-    assert.equal(calls.filter((c) => c.args[0] === '--version').length, 1);
   });
 
   it('a `failed to set model` stderr warning sets modelAck:unsupported and emits a step', async () => {
