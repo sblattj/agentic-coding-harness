@@ -47,6 +47,8 @@ export interface RunSpec {
   maxTurns?: number;
   /** Session id from a previous run; passed to claude as `--resume`. */
   resume?: string;
+  /** Model override; passed to claude as `--model <value>`. */
+  model?: string;
   cwd?: string;
   env?: Record<string, string>;
   extraArgs?: string[];
@@ -598,6 +600,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     runner.spawn({
       prompt: spec.prompt,
       resume: spec.resume,
+      model: spec.model,
       maxTurns: spec.budget?.maxTurns,
       cwd: spec.cwd,
       env: spec.env,
@@ -666,6 +669,9 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     ];
     if (task.resume) {
       args.push('--resume', task.resume);
+    }
+    if (task.model) {
+      args.push('--model', task.model);
     }
     if (task.sandbox) {
       args.push(...claudeSandboxArgs(task.sandbox));

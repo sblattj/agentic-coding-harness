@@ -35,7 +35,9 @@ it('distributed CLI and library retain authoritative prices and context windows'
     }
     mkdirSync(join(dir, 'raw/claude'), { recursive: true });
     const commands = [[process.execPath, nodeCli], ['bun', bunCli], [standalone]];
-    for (const model of ['claude-3-haiku', 'claude-sonnet-4-5']) {
+    // claude-3-haiku proves the bundled extract ships; the -5-5 flagships
+    // (issue #103) prove the mirrored extract entries survive bundling too.
+    for (const model of ['claude-3-haiku', 'claude-sonnet-4-5', 'claude-sonnet-5-5', 'claude-opus-5-5']) {
       const record = { agent: 'claude', model, inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
       const expected = createPricer().price(record);
       assert.ok(Number.isFinite(expected) && expected > 0);

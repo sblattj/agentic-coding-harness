@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { formatSummary } from "../src/cli/lib.ts";
+import { extraArgsFromValues, formatSummary, joinOptionValues, wantsHelp } from "../src/cli/lib.ts";
 
 const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
 
@@ -545,5 +545,166 @@ describe("run summary — truthful usage", () => {
     assert.match(summary, /cost {7}\$0\.2500/);
     assert.ok(!summary.includes("n/a"), summary);
     assert.ok(!summary.includes("context"), summary);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #101: `ach <subcommand> --help` / `-h` prints that subcommand's usage block
+// and exits 0 (previously ERR_PARSE_ARGS_UNKNOWN_OPTION + stack trace);
+// unknown options render as a one-line usage error, never a stack trace.
+// #104: `--extra-args <value>` space form parses (value may start with "-"),
+// repeats accumulate, and the `=` form still works.
+// ---------------------------------------------------------------------------
+
+describe("harness cli: subcommand help + argv preprocessing (#101/#104)", () => {
+  let tmp: string;
+  let fakeCli: string;
+
+  /** Fake agent CLI: echoes its argv as one JSON stdout line (custom-agent
+   *  template runs it; extraArgs are appended after the prompt). */
+  const FAKE_CLI_SRC = `process.stdout.write(JSON.stringify({ type: 'result', argv: process.argv.slice(2) }) + '\\n');\n`;
+
+  before(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "harness-argv-"));
+    fakeCli = path.join(tmp, "fake-cli.mjs");
+    await fs.writeFile(fakeCli, FAKE_CLI_SRC);
+  });
+
+  after(async () => {
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  /** Fresh state dir per call so runs never touch a shared registry. */
+  const freshEnv = async (): Promise<Record<string, string>> => ({
+    AGENTIC_CODING_HARNESS_STATE_DIR: await fs.mkdtemp(path.join(tmp, "state-")),
+  });
+
+  /** Run the fake CLI through `run --agent custom` and return the argv it saw. */
+  const runFakeEcho = async (args: string[]): Promise<string[]> => {
+    const r = runCli(["run", "--agent", "custom", "--template", `'${process.execPath}' '${fakeCli}' {prompt}`, "--json", ...args], await freshEnv());
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const result = JSON.parse(r.stdout) as { exitStatus: string; events: Array<Record<string, unknown>> };
+    assert.equal(result.exitStatus, "success");
+    const msgs = result.events.filter((e) => e.type === "message" && typeof e.content === "string");
+    for (let i = msgs.length - 1; i >= 0; i -= 1) {
+      try {
+        const obj = JSON.parse(msgs[i]!.content as string) as { argv?: string[] };
+        if (Array.isArray(obj.argv)) return obj.argv;
+      } catch {
+        /* not the echo line */
+      }
+    }
+    throw new Error(`no argv echo in events: ${JSON.stringify(result.events)}`);
+  };
+
+  test("#101 run --help prints the run usage block and exits 0", () => {
+    const r = runCli(["run", "--help"], {});
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.stderr, "");
+    assert.match(r.stdout, /^usage:\n  ach run --agent /);
+    assert.match(r.stdout, /--extra-args|--budget-usd/);
+  });
+
+  test("#101 run -h is the same help", () => {
+    const r = runCli(["run", "-h"], {});
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /^usage:\n  ach run --agent /);
+  });
+
+  test("#101 stats --help prints the stats usage block and exits 0", () => {
+    const r = runCli(["stats", "--help"], {});
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /^usage:\n  ach stats \[--agent A\]/);
+  });
+
+  test("#101 emit --help prints the emit usage block and exits 0", () => {
+    const r = runCli(["emit", "--help"], {});
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /^usage:\n  ach emit --input /);
+  });
+
+  test("#101 help works for a subcommand defined outside ach.ts (doctor)", () => {
+    const r = runCli(["doctor", "--help"], {});
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /^usage:\n  ach doctor /);
+  });
+
+  test("#101 '--help' after -- is a positional prompt, not help", async () => {
+    const r = runCli(["run", "--agent", "null", "--", "--help"], await freshEnv());
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.doesNotMatch(r.stdout, /^usage:/);
+    assert.match(r.stderr, /null adapter: deterministic reply 1\/1 to: --help/);
+  });
+
+  test("#101 an unknown option is a one-line usage error, not a stack trace", () => {
+    const r = runCli(["run", "--nope", "p"], {});
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /^harness: Unknown option '--nope'\./);
+    assert.ok(!r.stderr.includes("unexpected error"), r.stderr);
+    assert.ok(!r.stderr.includes("at parseArgs"), r.stderr);
+  });
+
+  test("#104 space-form --extra-args passes a dash-leading value through", async () => {
+    const argv = await runFakeEcho(["--extra-args", "--effort medium", "hello"]);
+    assert.deepEqual(argv, ["hello", "--effort", "medium"]);
+  });
+
+  test("#104 repeated --extra-args accumulate, = form still works, spaces split per occurrence", async () => {
+    const argv = await runFakeEcho(["--extra-args", "--a 1", "--extra-args=--b", "p"]);
+    assert.deepEqual(argv, ["p", "--a", "1", "--b"]);
+  });
+
+  test("#104 a trailing --extra-args with no value is a one-line usage error", () => {
+    const r = runCli(["run", "--agent", "null", "--extra-args"], {});
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /^harness: Option '--extra-args <value>' argument missing/);
+    assert.ok(!r.stderr.includes("unexpected error"), r.stderr);
+  });
+});
+
+describe("argv preprocessing helpers (lib.ts)", () => {
+  test("joinOptionValues: space form becomes =, next token always the value", () => {
+    assert.deepEqual(joinOptionValues(["--extra-args", "--flag", "p"], ["extra-args"]), ["--extra-args=--flag", "p"]);
+    assert.deepEqual(joinOptionValues(["--extra-args", "x y", "p"], ["extra-args"]), ["--extra-args=x y", "p"]);
+  });
+
+  test("joinOptionValues: = form and unknown flags pass through untouched", () => {
+    assert.deepEqual(joinOptionValues(["--extra-args=--flag", "--agent", "null"], ["extra-args"]), ["--extra-args=--flag", "--agent", "null"]);
+    assert.deepEqual(joinOptionValues(["--agent", "--extra-args"], ["extra-args"]), ["--agent", "--extra-args"]);
+  });
+
+  test("joinOptionValues: every occurrence is joined", () => {
+    assert.deepEqual(
+      joinOptionValues(["--extra-args", "a", "--extra-args", "-b"], ["extra-args"]),
+      ["--extra-args=a", "--extra-args=-b"],
+    );
+  });
+
+  test("joinOptionValues: -- ends preprocessing (everything after is positional)", () => {
+    assert.deepEqual(
+      joinOptionValues(["p", "--", "--extra-args", "x"], ["extra-args"]),
+      ["p", "--", "--extra-args", "x"],
+    );
+  });
+
+  test("joinOptionValues: a trailing flag with no value is left for parseArgs to reject", () => {
+    assert.deepEqual(joinOptionValues(["--extra-args"], ["extra-args"]), ["--extra-args"]);
+  });
+
+  test("wantsHelp: -h/--help before -- only", () => {
+    assert.equal(wantsHelp(["-h"]), true);
+    assert.equal(wantsHelp(["--help"]), true);
+    assert.equal(wantsHelp(["--agent", "null", "--help"]), true);
+    assert.equal(wantsHelp(["--", "--help"]), false);
+    assert.equal(wantsHelp(["--helper"]), false);
+    assert.equal(wantsHelp([]), false);
+  });
+
+  test("extraArgsFromValues: undefined stays undefined; occurrences split on spaces and accumulate", () => {
+    assert.equal(extraArgsFromValues(undefined), undefined);
+    assert.deepEqual(extraArgsFromValues(["--effort medium"]), ["--effort", "medium"]);
+    assert.deepEqual(extraArgsFromValues(["--a 1", "--b"]), ["--a", "1", "--b"]);
+    assert.deepEqual(extraArgsFromValues(["a  b"]), ["a", "b"]);
+    assert.deepEqual(extraArgsFromValues([""]), []);
   });
 });
