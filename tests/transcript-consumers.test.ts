@@ -32,6 +32,22 @@ test('public dash projects meter-only taps and transcripts, state-only excludes 
     const cursor = f.run('run', '--agent', 'cursor', 'hello'); assert.notEqual(cursor.status, 0); assert.match(cursor.stderr, /read-only transcript source/);
   } finally { rmSync(f.home, { recursive: true, force: true }); }
 });
+test('public stats distinguishes transcript and state totals after filtering', () => {
+  const f = fixture();
+  try {
+    const run = f.run('run', '--agent', 'null', '--json', 'offline');
+    assert.equal(run.status, 0, run.stderr);
+    const p = f.run('stats', '--json'); assert.equal(p.status, 0, p.stderr);
+    const stats = JSON.parse(p.stdout);
+    assert.equal(stats.sources.transcript.records, 1);
+    assert.equal(stats.sources.transcript.inputTokens, 12);
+    assert.ok(stats.sources.state.records > 0);
+    assert.equal(stats.total.records, stats.sources.state.records + stats.sources.transcript.records);
+    assert.match(f.run('stats').stdout, /source: transcript.*input=12/);
+    assert.equal(JSON.parse(f.run('stats', '--state-only', '--json').stdout).sources, undefined);
+    assert.equal(existsSync(join(f.state, 'runs', 'external-session.json')), false);
+  } finally { rmSync(f.home, { recursive: true, force: true }); }
+});
 test('archive restores extra source and warehouse avoids counting live copy twice', async () => {
   const f = fixture();
   try {
