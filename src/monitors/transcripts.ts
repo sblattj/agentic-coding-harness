@@ -4,6 +4,8 @@
 //  - Claude Code: ~/.claude/projects/**/*.jsonl (assistant message usage)
 //  - Codex CLI:   ~/.codex/sessions/**/rollout-*.jsonl (cumulative token_usage_record)
 //  - Gemini CLI:  ~/.gemini/tmp/*/chats/*.json (per-message token usage)
+//  - Amp / Goose / Qwen Code: read-only sources registered in
+//    ./transcript-sources.ts (contract + matrix: docs/transcript-adapters.md)
 //
 // TODO-MERGE: CanonicalTokenRecord is declared locally (task spec shape:
 // input/output/cacheRead/cacheWrite/reasoning + agent/sessionId/timestamp/model).
@@ -19,14 +21,16 @@ import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
+import { TRANSCRIPT_SOURCES, type TranscriptOnlyAgent } from "./transcript-sources.ts";
 
 // ---------------------------------------------------------------------------
 // Canonical record
 // ---------------------------------------------------------------------------
 
 export interface CanonicalTokenRecord {
-  /** Which CLI agent produced the record. */
-  agent: "claude" | "codex" | "gemini";
+  /** Which CLI agent produced the record. amp/goose/qwen are read-only
+   * transcript sources (src/monitors/transcript-sources.ts). */
+  agent: "claude" | "codex" | "gemini" | "amp" | "goose" | "qwen";
   /** Session identifier when the source exposes one, else null. */
   sessionId: string | null;
   /** ISO-8601 timestamp when the source exposes one, else null. */
@@ -346,6 +350,9 @@ export interface ScanOptions {
   codexDir?: string;
   /** Gemini tmp dir containing <hash>/chats/*.json files. */
   geminiDir?: string;
+  /** Root overrides for the read-only sources in TRANSCRIPT_SOURCES
+   * (amp/goose/qwen); an omitted agent uses its defaultRoots(homedir()). */
+  sourceRoots?: Partial<Record<TranscriptOnlyAgent, string[]>>;
 }
 
 export async function walkFiles(
@@ -411,18 +418,33 @@ export function scanOptionsForRoot(root: string): Required<ScanOptions> {
     claudeDir: join(root, ".claude", "projects"),
     codexDir: join(root, ".codex", "sessions"),
     geminiDir: join(root, ".gemini", "tmp"),
+    // #22 read-only sources resolve under the same home-shaped root.
+    sourceRoots: Object.fromEntries(TRANSCRIPT_SOURCES.map((src) => [src.agent, src.defaultRoots(root)])) as Partial<
+      Record<TranscriptOnlyAgent, string[]>
+    >,
   };
 }
 
 /**
  * Yield canonical token records from every Claude, Codex, and Gemini
- * transcript on the machine. Files are walked depth-first in sorted order;
- * missing or unreadable directories are skipped silently.
+ * transcript on the machine, then every read-only source in
+ * TRANSCRIPT_SOURCES (amp, goose, qwen). Files are walked depth-first in
+ * sorted order; missing or unreadable directories are skipped silently.
+ * Records a read-only parser could not read are skipped and reported via
+ * drainTranscriptWarnings() (./transcript-warnings.ts).
  */
 export async function* scanAll(
   opts: ScanOptions = {},
 ): AsyncGenerator<CanonicalTokenRecord> {
-  for (const { dir, keep, parse } of transcriptSources(opts)) {
+  const sources: Array<Pick<TranscriptSource, "dir" | "keep" | "parse">> = [...transcriptSources(opts)];
+  // #22: read-only sources (amp/goose/qwen), each over its override roots
+  // or its defaultRoots(homedir()).
+  for (const src of TRANSCRIPT_SOURCES) {
+    const roots = opts.sourceRoots?.[src.agent as TranscriptOnlyAgent] ?? src.defaultRoots(homedir());
+    for (const root of roots) sources.push({ dir: root, keep: src.keep, parse: src.parse });
+  }
+
+  for (const { dir, keep, parse } of sources) {
     for (const file of await walkFiles(dir, keep)) {
       for (const record of await parse(file)) {
         yield record;

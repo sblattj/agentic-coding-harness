@@ -1,0 +1,4 @@
+{"uuid":"a-0","parentUuid":null,"timestamp":"2026-09-22T08:00:00.000Z","type":"assistant","cwd":"/work/demo-project","version":"0.0.0","model":"qwen3-coder-plus","usageMetadata":{"prom
+{"uuid":"a-1","parentUuid":null,"timestamp":"2026-09-22T08:00:01.000Z","type":"assistant","cwd":"/work/demo-project","version":"0.0.0","model":"qwen3-coder-plus","usageMetadata":{"totalTokenCount":321}}
+{"uuid":"a-2","parentUuid":"a-1","timestamp":"2026-09-22T08:00:02.000Z","type":"assistant","cwd":"/work/demo-project","version":"0.0.0","model":"qwen3-coder-plus","usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0}}
+{"uuid":"a-3","parentUuid":"a-2","timestamp":"2026-09-22T08:00:03.000Z","type":"assistant","cwd":"/work/demo-project","version":"0.0.0","usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"totalTokenCount":120}}

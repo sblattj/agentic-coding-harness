@@ -53,6 +53,8 @@ import {
   parseGeminiChat,
   scanAll,
 } from "../monitors/transcripts.ts";
+import { TRANSCRIPT_SOURCES, isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
+import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary } from "./lib.ts";
@@ -158,7 +160,8 @@ usage:
                 (--since/--last: print history newer than the bound on startup)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
             [--tz Z] [--by day|week|month] [--json] [--state-only] [--include-unavailable]
-                (machine claude/codex/gemini transcripts + harness state;
+                (machine claude/codex/gemini transcripts, read-only
+                 amp/goose/qwen stores, + harness state;
                  --state-only skips machine transcript dirs; agents.d usage taps
                  count as machine transcripts; metering=none runs are a separate
                  "unmetered" group, never zeros in the totals;
@@ -419,6 +422,8 @@ async function cmdRun(rest: string[]): Promise<number> {
   const trialFlags = parseTrialFlags(args.values);
   const agent = args.values.agent;
   if (!agent) throw new HarnessError("run requires --agent <name>", "USAGE");
+  // amp/goose/qwen (#22) are read-only transcript sources, never launchable.
+  if (isTranscriptOnlyAgent(agent)) throw new HarnessError(readOnlySourceMessage(agent), "READ_ONLY_SOURCE");
   // Built-ins, `custom` (template), or an agents.d descriptor (#38).
   const catalog = isKnownAgent(agent) ? null : loadCatalog();
   if (catalog) reportCatalogIssues(catalog);
@@ -749,12 +754,13 @@ async function cmdWatch(rest: string[]): Promise<number> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
+  type WatchedAgent = "claude" | "codex" | "gemini" | (typeof TRANSCRIPT_SOURCES)[number]["agent"];
   interface Watched {
     file: string;
-    agent: "claude" | "codex" | "gemini";
+    agent: WatchedAgent;
     parse: (file: string) => Promise<
       Array<{
-        agent: "claude" | "codex" | "gemini";
+        agent: WatchedAgent;
         sessionId: string | null;
         timestamp: string | null;
         model: string | null;
@@ -770,6 +776,13 @@ async function cmdWatch(rest: string[]): Promise<number> {
   for (const f of await listByExt(claudeDir, ".jsonl")) watched.push({ file: f, agent: "claude", parse: parseClaudeTranscript });
   for (const f of await listByExt(codexDir, ".jsonl")) watched.push({ file: f, agent: "codex", parse: parseCodexRollout });
   for (const f of await listGeminiChats(geminiDir)) watched.push({ file: f, agent: "gemini", parse: parseGeminiChat });
+  // Read-only transcript sources (amp/goose/qwen). Files present at start
+  // are watched; like the three above, new files need a watch restart.
+  for (const src of TRANSCRIPT_SOURCES) {
+    for (const root of src.defaultRoots(os.homedir())) {
+      for (const f of await listByExt(root, "")) if (src.keep(f)) watched.push({ file: f, agent: src.agent, parse: src.parse });
+    }
+  }
 
   let firstTick = true;
   const tick = async (): Promise<void> => {
@@ -800,6 +813,8 @@ async function cmdWatch(rest: string[]): Promise<number> {
       } catch {
         continue;
       }
+      // A SQLite store (goose sessions.db) grows in its -wal sidecar first.
+      size += await fs.stat(`${w.file}-wal`).then((s) => s.size, () => 0);
       const prev = offsets.files[w.file];
       const replay = firstTick && lookback !== undefined;
       if (prev === size && !replay) continue;
@@ -870,6 +885,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
     }
 
     if (fresh.length > 0) await appendRecords(fresh);
+    for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
     for (const d of deltas.values()) {
       process.stdout.write(
         `${d.agent.padEnd(8)} ${d.sessionId.slice(0, 12).padEnd(12)} +${fmtInt(d.input)} input +${fmtInt(d.output)} output +${fmtInt(d.cacheRead)} cacheR +${fmtInt(d.cacheWrite)} cacheW ${fmtUsd(d.cost)}\n`,
@@ -1017,7 +1033,8 @@ async function cmdStats(rest: string[]): Promise<number> {
   // agents.d descriptors (#38) are valid --agent filters; `custom` runs too.
   const catalog = loadCatalog();
   reportCatalogIssues(catalog);
-  if (agent && !isKnownAgent(agent) && agent !== "custom" && !findDescriptor(catalog, agent)) {
+  // amp/goose/qwen (#22) are read-only transcript sources: valid filters.
+  if (agent && !isKnownAgent(agent) && !isTranscriptOnlyAgent(agent) && agent !== "custom" && !findDescriptor(catalog, agent)) {
     throw unknownAgentError(agent, catalog);
   }
   // One code path computes the window (#26) and the zone (#84); every output
@@ -1110,6 +1127,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for (const w of new Set(tap.warnings)) process.stderr.write(`[warn] ${w}\n`);
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
+  for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
 
   if (wantProject !== undefined) records = records.filter((r) => projectMatches(r.cwd, wantProject, projectAliases));
   const agg = aggregate(records, { timeZone, by });
