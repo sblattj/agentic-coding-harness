@@ -159,13 +159,14 @@ describe("harness cli", () => {
     assert.equal(r.code, 0);
     assert.doesNotMatch(r.stderr, /harness:/);
     const out = JSON.parse(r.stdout);
-    // Base contract keys, plus the additive #21 runs, #26/#84 timezone/window
-    // and #27/#69 keys (tests/stats-dims.test.ts).
+    // Base contract keys, plus the additive #21 runs, #26/#84 timezone/window,
+    // #27/#69 keys (tests/stats-dims.test.ts) and #19 pace.
     assert.deepEqual(Object.keys(out).sort(), [
       "byAgent",
       "byDay",
       "byModel",
       "cacheHitRatio",
+      "pace",
       "runs",
       "timezone",
       "total",

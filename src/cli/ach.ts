@@ -69,6 +69,8 @@ import { cmdReport } from "./report.ts";
 import { runContextRows } from "./context-stats.ts";
 import { listRunRecords } from "../core/registry.ts";
 import { cmdDash } from "./dash.ts";
+import { statsExtras } from "./usage-render.ts";
+import { resolvePlan } from "../core/plans.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
@@ -118,6 +120,15 @@ usage:
                  --by project: repo-root rollup, aliases also via
                  AGENTIC_CODING_HARNESS_PROJECT_ALIASES; every row shows
                  cacheHit = cacheRead/(input+cacheRead+cacheWrite))
+            [--blocks] [--budget-usd N]
+            [--plan pro|max5|max20|custom [--plan-window-tokens N --plan-window-usd N
+             [--plan-window-messages N]]]
+                (--blocks: Claude 5h billing windows; a block starts at its first
+                 event floored to the hour and spans 5h; active block shows
+                 burn = cost / (now - first event) and projected = cost + burn
+                 x time left. Always: pace over trailing 15m/1h windows, ETA to
+                 --budget-usd. --plan frames the active window as % of the
+                 plan allowance; built-in presets are community estimates)
   --exit-codes ladder   (run / stats / watch) automation exit codes: 0 ok,
                         10 near-limit, 11 limit hit, 20 unavailable, 30 no data,
                         1 errors — see docs/EXIT-CODES.md; default stays 0/1
@@ -133,8 +144,9 @@ usage:
                 LANGFUSE_SECRET_KEY)
   ach report <trials-dir> [--out path]
                  (single-file HTML comparison; a trials/ root scans subdirs)
-  ach dash [--json] [--all] [--dir <stateDir>]
-               (live run dashboard; --json dumps RunRecords and exits)
+  ach dash [--json] [--all] [--dir <stateDir>] [--budget-usd N]
+               (live run dashboard; --json dumps RunRecords and exits; live
+                runs get a pace row: $/h + tok/min over 15m/1h, budget ETA)
   ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
@@ -162,7 +174,9 @@ env:
   AGENTIC_CODING_HARNESS_BUDGET_ALERTS    default for --budget-alerts (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WARN_THRESHOLDS  default for --warn-at (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H  hours before a threshold may re-alert (default 24)
-  AGENTIC_CODING_HARNESS_TZ          default for stats/watch --tz (CLI flags win over env)`;
+  AGENTIC_CODING_HARNESS_TZ          default for stats/watch --tz (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_PLAN        default for stats --plan (CLI flags win over env;
+                                     also _PLAN_WINDOW_TOKENS/_USD/_MESSAGES)`;
 
 // ---------------------------------------------------------------- helpers
 
@@ -742,6 +756,13 @@ async function cmdStats(rest: string[]): Promise<number> {
       project: { type: "string" },
       "project-alias": { type: "string", multiple: true },
       "project-aliases": { type: "string" },
+      // #18 / #19 / #36 blocks, pace, plans (src/cli/usage-render.ts)
+      blocks: { type: "boolean", default: false },
+      plan: { type: "string" },
+      "plan-window-tokens": { type: "string" },
+      "plan-window-usd": { type: "string" },
+      "plan-window-messages": { type: "string" },
+      "budget-usd": { type: "string" },
     },
     allowPositionals: true,
   });
@@ -768,6 +789,12 @@ async function cmdStats(rest: string[]): Promise<number> {
     pairs: args.values["project-alias"],
   });
   const wantProject = args.values.project;
+  const plan = resolvePlan(args.values.plan ?? process.env.AGENTIC_CODING_HARNESS_PLAN, {
+    windowTokens: optNumWithEnv(args.values["plan-window-tokens"], "--plan-window-tokens", "AGENTIC_CODING_HARNESS_PLAN_WINDOW_TOKENS"),
+    windowUsd: optNumWithEnv(args.values["plan-window-usd"], "--plan-window-usd", "AGENTIC_CODING_HARNESS_PLAN_WINDOW_USD"),
+    windowMessages: optNumWithEnv(args.values["plan-window-messages"], "--plan-window-messages", "AGENTIC_CODING_HARNESS_PLAN_WINDOW_MESSAGES"),
+  });
+  const statsBudgetUsd = optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD");
   const agent = args.values.agent;
   if (agent && !isKnownAgent(agent)) {
     throw new HarnessError(
@@ -881,6 +908,15 @@ async function cmdStats(rest: string[]): Promise<number> {
     ...(agg.byWeek ? { byWeek: agg.byWeek } : {}),
     ...(agg.byMonth ? { byMonth: agg.byMonth } : {}),
   };
+  // #18/#19/#36: blocks, pace and plan framing over the same windowed records.
+  const extras = statsExtras({
+    records,
+    now: Date.now(),
+    blocks: args.values.blocks,
+    ...(plan !== undefined ? { plan } : {}),
+    ...(statsBudgetUsd !== undefined ? { budgetUsd: statsBudgetUsd } : {}),
+    spentUsd: agg.totals.costUsd,
+  });
 
   if (args.values.json) {
     process.stdout.write(
@@ -902,6 +938,8 @@ async function cmdStats(rest: string[]): Promise<number> {
           // #60: run-outcome rollup. Named runOutcomes (not `runs`) because
           // #21 already owns the `runs` array key.
           ...(outcomes !== undefined ? { runOutcomes: outcomes } : {}),
+          // #18/#19/#36: pace always; blocks/blocksNote with --blocks; plan with --plan.
+          ...extras.json,
         },
         null,
         2,
@@ -909,7 +947,11 @@ async function cmdStats(rest: string[]): Promise<number> {
     );
   } else {
     process.stdout.write(statsLine("totals", agg.totals) + "\n");
-    for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(statsLine(a, b) + "\n");
+    for (const [a, b] of Object.entries(agg.byAgent).sort()) {
+      process.stdout.write(statsLine(a, b) + "\n");
+      if (a === "claude" && extras.planLine) process.stdout.write(extras.planLine + "\n");
+    }
+    if (extras.planLine && !agg.byAgent.claude) process.stdout.write(extras.planLine + "\n");
     for (const m of Object.values(timeMaps)) {
       for (const [d, b] of Object.entries(m).sort()) process.stdout.write(statsLine(d, b) + "\n");
     }
@@ -919,6 +961,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     if (outcomes !== undefined) {
       for (const [a, b] of Object.entries(outcomes.byAgent)) process.stdout.write(formatOutcomeLine(a, b) + "\n");
     }
+    for (const l of extras.text) process.stdout.write(l + "\n");
   }
   hintCcusage();
   return noDataExitCode(records.length + runRecords.length, exitMode);
