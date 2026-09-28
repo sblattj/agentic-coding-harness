@@ -83,7 +83,8 @@ export function formatSummary(r: RunSummaryInput): string {
   const ctx = r.usage?.context;
   if (ctx?.available === true && ctx.tokens !== undefined) {
     lines.push(
-      `context    ${formatContextCell(ctx)}${ctx.windowSource === "assumed" ? " (assumed window)" : ""}`,
+      `context    ${formatContextCell(ctx)}${ctx.windowSource === "assumed" ? " (assumed window)" : ""}` +
+        (ctx.toolOutputShare !== undefined ? ` tool-output ~${(ctx.toolOutputShare * 100).toFixed(0)}% (estimated)` : ""),
     );
   }
   lines.push(`duration   ${(r.durationMs / 1000).toFixed(1)}s`, `exit       ${r.exitStatus}`);
@@ -98,7 +99,8 @@ export function formatSummary(r: RunSummaryInput): string {
 export function formatContextCell(ctx: NonNullable<UsageAvailability["context"]>): string {
   if (ctx.available !== true || ctx.tokens === undefined) return "n/a";
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
-  return `ctx ~= ${fmtInt(ctx.tokens)} tok${pct}`;
+  // #21: a turn-total basis is an upper bound on occupancy.
+  return `ctx ${ctx.basis === "turn-total" ? "<=" : "~="} ${fmtInt(ctx.tokens)} tok${pct}`;
 }
 
 // ---------- Aggregation ----------

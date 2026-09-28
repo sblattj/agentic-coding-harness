@@ -317,7 +317,9 @@ function contextCell(r: LoadedRun): string {
   if (ctx?.available !== true || ctx.tokens === undefined) return NA_CELL;
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
   const title = ctx.windowSource === "assumed" ? " title=\"context window assumed, not reported\"" : "";
-  return `<td data-v="${ctx.tokens}" class="num"${title}>ctx ≈ ${fmtInt(ctx.tokens)} tok${esc(pct)}</td>`;
+  // #21: a turn-total basis is an upper bound on occupancy.
+  const approx = ctx.basis === "turn-total" ? "≤" : "≈";
+  return `<td data-v="${ctx.tokens}" class="num"${title}>ctx ${approx} ${fmtInt(ctx.tokens)} tok${esc(pct)}</td>`;
 }
 
 function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
