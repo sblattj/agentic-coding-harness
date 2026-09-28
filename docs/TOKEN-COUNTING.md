@@ -306,3 +306,52 @@ step/message event → the RunSpec `model`.
     toolOutputShare?: number            // omitted when no tool events
   }
   ```
+
+---
+
+## 6. `ach stats` dimensions: model, project, cache-hit ratio (#27, #43, #69)
+
+Implemented in `src/cli/stats-dims.ts` (`aggregateDims`) and
+`src/core/cache-ratio.ts` (`cacheHitRatio`); the base `aggregate()` in
+`src/cli/lib.ts` and its `total`/`byAgent`/`byDay` shapes are unchanged.
+
+**Cache-hit ratio.** `cacheRead / (input + cacheRead + cacheWrite)` on
+canonical records, where `input` is uncached-only for every provider (§2). A
+cache write is prompt the provider processed uncached, so it counts as a miss.
+For OpenAI/Gemini `cacheWrite` is 0 and the ratio equals the provider's own
+`cached / prompt`. No prompt tokens → `null` (`n/a`), never `NaN`; a provider
+without caching reports a real `0%`. Shown as `cacheHit=` on every `ach stats`
+line, as `cacheHitRatio` in `--json` (top-level `{total, byAgent, byDay}` plus
+a field on every `byModel`/`byProject` row), in the dashboard run header, and
+in `/trio` metrics (run card plus one card per model from
+`/api/runs/:runId/observability` `byModel`).
+
+**`byModel` (always in `--json`; printed with `--by model`).** Keys are
+runtime-scoped `agent/model`, so `claude/gpt-5` and `opencode/gpt-5` stay two
+rows. A record carrying per-model slices (`extra.raw.models`, the claude
+`result.modelUsage` split) contributes one row per slice: the CLI-reported
+slice `costUsd` when present, else the slice priced at its own model's rates.
+Rows therefore sum to the run's token and cost totals. A record without
+slices belongs to its `model` when that names one model; an absent,
+`multi`, `unknown`, or joined (`a+b`, the `usage_raw` lane) label goes to the
+explicit `agent/unattributed` row, never to a guessed dominant model.
+An unpriceable model keeps its tokens, gets `costUsd: null`, and is listed in
+`unpricedModels` plus a stderr warning; its cost is excluded from `total`.
+`--by model` adds `byModelDay` (`{day: {key: row}}`) and the model × day
+table; compose with `--days N`. `--merge-models` (with
+`--model-alias FROM=TO`, repeatable) is the only way scoped rows combine into
+bare model rows; `--json` then echoes `mergedModels: true` and
+`modelAliases`.
+
+**`byProject` (`--by project` or `--project NAME`).** The key is the
+repository root of the run's `cwd`: the outermost enclosing directory holding
+`.git` (so a nested worktree groups with its repo), never the home directory
+or `/`; a non-git or vanished directory keys on the cwd itself; no cwd →
+`unknown`. The cwd comes from the run registry (`runs/*.json`, joined by
+agent + session id) for harness-state records, and from the transcript itself
+for machine records (claude line `cwd`, codex `session_meta.cwd`). Aliases
+rename a root (or any directory containing it) to a friendly name; sources
+layer env `AGENTIC_CODING_HARNESS_PROJECT_ALIASES` (JSON object) →
+`--project-aliases FILE.json` → `--project-alias PATH=NAME` (later wins, `~`
+expands). `--project NAME` filters by alias name or root path before
+aggregating and composes with `--agent`/`--days`.
