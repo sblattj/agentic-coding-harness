@@ -779,21 +779,26 @@ export const UsageAvailabilitySchema = z.object({
     cumulative: z.boolean().optional(),
     complete: z.boolean().optional(),
   }),
-  credits: z.object({
-    available: z.boolean(),
-    source: z.enum(["native", "tap", "reconciled"]).optional(),
-    scope: z.enum(["run", "turn", "call"]).optional(),
-    cumulative: z.boolean().optional(),
-    complete: z.boolean().optional(),
-    value: z.number().optional(),
-    sources: z
-      .object({
-        stream: z.number().optional(),
-        "session-store": z.number().optional(),
-        tap: z.number().optional(),
-      })
-      .optional(),
-  }),
+  // A record whose usage predates or omits `credits` (older writers, external
+  // producers) parses with credits UNKNOWN — available: false, no value —
+  // instead of failing the whole record and vanishing from listRunRecords.
+  credits: z
+    .object({
+      available: z.boolean(),
+      source: z.enum(["native", "tap", "reconciled"]).optional(),
+      scope: z.enum(["run", "turn", "call"]).optional(),
+      cumulative: z.boolean().optional(),
+      complete: z.boolean().optional(),
+      value: z.number().optional(),
+      sources: z
+        .object({
+          stream: z.number().optional(),
+          "session-store": z.number().optional(),
+          tap: z.number().optional(),
+        })
+        .optional(),
+    })
+    .default({ available: false }),
   usd: z.object({
     available: z.boolean(),
     source: z.literal("pricer").optional(),
