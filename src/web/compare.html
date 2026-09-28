@@ -241,7 +241,7 @@ td.num.succ { color: var(--cyan); }
     ms = Number(ms) || 0;
     return ms >= 1000 ? (ms / 1000).toFixed(2) + "s" : Math.round(ms) + "ms";
   }
-  function fmtPct(n) { return ((Number(n) || 0) * 100).toFixed(1) + "%"; }
+  function fmtPct(n) { return n === null || n === undefined ? "n/a" : ((Number(n) || 0) * 100).toFixed(1) + "%"; }
 
   /* ===== table machinery ===== */
   var METRIC_COLS = ["runs", "avgTotalTokens", "avgCostUsd", "avgDurationMs", "successRate"];

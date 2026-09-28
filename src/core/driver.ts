@@ -7,6 +7,7 @@ import { createPricer, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { computeUsageAvailability } from './usage-availability.js';
+import { classifyLaunchError, classifyUnavailable } from './availability.ts';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
 import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
@@ -513,7 +514,9 @@ export function createDriver(options: DriverOptions): Driver {
               ? 'success'
               : exit === 'aborted' || exit === 'cancelled' || exit === 'budget_exceeded' || exit === 'turn_limit' || exit === 'timeout'
                 ? 'aborted'
-                : 'error';
+                : exit === 'unavailable'
+                  ? 'unavailable'
+                  : 'error';
           rec.exitStatus = exit;
           // Bridged handles resolve the real session id late; prefer it when
           // the stream never carried a session event.
@@ -719,7 +722,11 @@ export function createDriver(options: DriverOptions): Driver {
         }
 
         // Driver enforcement verdicts override whatever the adapter reported.
-        const exitStatus: ExitStatus = enforcedStatus ?? adapterExit;
+        // An adapter `error` with an outage signature is reclassified
+        // `unavailable` (#60, src/core/availability.ts).
+        const unavailableReason = enforcedStatus === null ? classifyUnavailable({ adapterExit, events }) : null;
+        if (unavailableReason !== null) warnings.push(`unavailable: ${unavailableReason}`);
+        const exitStatus: ExitStatus = enforcedStatus ?? (unavailableReason !== null ? 'unavailable' : adapterExit);
         finalizeRunRecord(exitStatus);
 
         // Read the sessionId late: bridged handles expose a getter that reports
@@ -743,6 +750,13 @@ export function createDriver(options: DriverOptions): Driver {
         await settleArtifacts(exitStatusToRunStatus(exitStatus, budgetTripKind), result);
         return result;
       } catch (err) {
+        // A launch that cannot even start the CLI (#60) is an outage, not a
+        // task failure: settle as 'unavailable' and surface a typed error.
+        const launchUnavailable = classifyLaunchError(err, typeof parsed.cwd === 'string' ? parsed.cwd : undefined);
+        if (launchUnavailable !== null) {
+          await settleArtifacts('unavailable');
+          throw new HarnessError(`agent "${agentName}" unavailable: ${launchUnavailable}`, 'UNAVAILABLE');
+        }
         await settleArtifacts('error');
         throw err;
       }

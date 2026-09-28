@@ -86,7 +86,8 @@ The tool returns promptly, without waiting for the run. Poll with
 `harness_run_status` `{"runId":"3f9c8a52-..."}` → `found` (false for unknown
 ids), `status`, `sessionId`, `totals`, `lastEvent`, `startedAt`, `updatedAt`,
 `elapsedMs`, `exitStatus` once finished. Statuses: `running`, `success`,
-`error`, `aborted`, `interrupted` — the record said `running` but the process
+`error`, `aborted`, `unavailable` (the agent CLI or its service was not there —
+no task verdict; see [EXIT-CODES.md](EXIT-CODES.md)), `interrupted` — the record said `running` but the process
 is no longer live: pid dead or heartbeat stale beyond 15s. No automatic
 resumption; recovering an interrupted run is an explicit opt-in parameter on
 adapters that support it.

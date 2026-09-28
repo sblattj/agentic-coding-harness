@@ -452,7 +452,10 @@ export type ExitStatus =
   | "aborted"
   | "cancelled"
   | "budget_exceeded"
-  | "turn_limit";
+  | "turn_limit"
+  /** The agent CLI / vendor service was not there (missing binary, no auth,
+   *  outage): no verdict about the task. See src/core/availability.ts (#60). */
+  | "unavailable";
 
 /** What an adapter's handle.wait() may report. Driver verdicts override. */
 export type AdapterExit = "success" | "error" | "timeout" | "aborted" | "cancelled";
@@ -1053,6 +1056,7 @@ export const RunResultSchema = z.object({
     "cancelled",
     "budget_exceeded",
     "turn_limit",
+    "unavailable",
   ]),
   warnings: z.array(z.string()),
   kiro: KiroEffectiveSchema.optional(),

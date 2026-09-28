@@ -388,6 +388,39 @@ ${rows}
   </table>`;
 }
 
+/**
+ * Availability summary (#60): per adapter, how many runs were `unavailable`
+ * (CLI/service outage, no task verdict) and the success rate over the runs
+ * that DID produce a verdict. An adapter with no verdicts reads n/a.
+ */
+function renderAvailability(runs: LoadedRun[]): string {
+  const byAgent = new Map<string, { runs: number; unavailable: number; success: number }>();
+  for (const r of runs) {
+    const b = byAgent.get(r.agent) ?? { runs: 0, unavailable: 0, success: 0 };
+    b.runs++;
+    if (r.result.exitStatus === "unavailable") b.unavailable++;
+    else if (r.result.exitStatus === "success") b.success++;
+    byAgent.set(r.agent, b);
+  }
+  const rows = [...byAgent.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([agent, b]) => {
+      const verdicts = b.runs - b.unavailable;
+      const rate =
+        verdicts > 0
+          ? `<td data-v="${b.success / verdicts}" class="num">${((b.success / verdicts) * 100).toFixed(1)}%</td>`
+          : NA_CELL;
+      return `      <tr><td class="agent-cell">${esc(agent)}</td><td class="num">${b.runs}</td><td class="num">${b.unavailable}</td>${rate}</tr>`;
+    })
+    .join("\n");
+  return `  <table class="cmp" id="availability">
+    <thead><tr><th>agent</th><th class="num">runs</th><th class="num">unavailable</th><th class="num">success rate (excl. unavailable)</th></tr></thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>`;
+}
+
 // ---------------------------------------------------------------- sections
 
 function renderAgentSection(r: LoadedRun): string {
@@ -454,6 +487,7 @@ th.sorted-desc::after { content: " ↓"; color: #7dcfff; }
 .st-error { background: #2d1f23; color: #f7768e; border: 1px solid #4a2d33; }
 .st-timeout, .st-aborted, .st-cancelled, .st-budget_exceeded, .st-turn_limit {
   background: #2d281f; color: #e0af68; border: 1px solid #4a3f2d; }
+.st-unavailable { background: #1f2330; color: #7aa2f7; border: 1px solid #2f3a5a; }
 .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
 .chart-card { background: #1a1a26; border: 1px solid #2f334d; border-radius: 10px; padding: 16px; }
@@ -561,6 +595,10 @@ export function renderReport(trialSet: TrialSet, opts: RenderOptions): string {
   <section>
     <h3>comparison</h3>
 ${renderComparisonTable(runs, multiTrial)}
+  </section>
+  <section>
+    <h3>availability</h3>
+${renderAvailability(runs)}
   </section>
 ${renderCharts(runs)}
   <section>

@@ -47,6 +47,9 @@ import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
+import { EXIT_CODES, noDataExitCode, parseExitCodesMode, runExitCode } from "./exit-codes.ts";
+import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
+import { listRunRecords } from "../core/registry.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -67,9 +70,13 @@ usage:
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
   ach watch [--dir <transcriptDir>]
-  ach stats [--agent A] [--days N] [--json] [--state-only]
+  ach stats [--agent A] [--days N] [--json] [--state-only] [--include-unavailable]
                 (machine claude/codex/gemini transcripts + harness state;
-                 --state-only skips machine transcript dirs)
+                 --state-only skips machine transcript dirs; run success rate
+                 excludes 'unavailable' runs unless --include-unavailable)
+  --exit-codes ladder   (run / stats / watch) automation exit codes: 0 ok,
+                        10 near-limit, 11 limit hit, 20 unavailable, 30 no data,
+                        1 errors — see docs/EXIT-CODES.md; default stays 0/1
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -241,9 +248,11 @@ async function cmdRun(rest: string[]): Promise<number> {
       "claude-default-config": { type: "boolean", default: false },
       "kiro-mcp-server": { type: "string", multiple: true },
       json: { type: "boolean", default: false },
+      "exit-codes": { type: "string" },
     },
     allowPositionals: true,
   });
+  const exitMode = parseExitCodesMode(args.values["exit-codes"]);
   const agent = args.values.agent;
   if (!agent) throw new HarnessError("run requires --agent <name>", "USAGE");
   if (!isKnownAgent(agent)) {
@@ -269,22 +278,27 @@ async function cmdRun(rest: string[]): Promise<number> {
   });
 
   let result: RunResult;
+  const budget = {
+    usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
+    maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
+    wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
+    idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
+  };
   try {
     result = await driver.run(agent, {
       prompt,
       model: args.values.model,
       resume: args.values.resume,
-      budget: {
-        usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
-        maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
-        wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
-        idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
-      },
+      budget,
       extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
       ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Launch-time outage (#60): exit 20 under the ladder, 1 otherwise.
+    if (err instanceof HarnessError && err.code === "UNAVAILABLE") {
+      throw new HarnessError(message, "UNAVAILABLE", exitMode === "ladder" ? EXIT_CODES.indeterminate : 1);
+    }
     throw new HarnessError(message, "RUN_FAILED");
   }
   for (const w of result.warnings) process.stderr.write(`[warn] ${w}\n`);
@@ -333,7 +347,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
     process.stdout.write(summary + "\n");
   }
-  return result.exitStatus === "success" ? 0 : 1;
+  return runExitCode(result, { mode: exitMode, budget, agent });
 }
 
 // ------------------------------------------------------------ preflight
@@ -408,9 +422,12 @@ const POLL_MS = 5_000;
 async function cmdWatch(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
-    options: { dir: { type: "string" } },
+    options: { dir: { type: "string" }, "exit-codes": { type: "string" } },
     allowPositionals: true,
   });
+  // Accepted for uniformity (#31); watch only ends on SIGINT/SIGTERM (exit 0)
+  // and never reaches a verdict, so the ladder has nothing to add here.
+  parseExitCodesMode(args.values["exit-codes"]);
   const claudeDir = args.values.dir || path.join(os.homedir(), ".claude", "projects");
   const codexDir = path.join(os.homedir(), ".codex", "sessions");
   const geminiDir = path.join(os.homedir(), ".gemini", "tmp");
@@ -639,9 +656,12 @@ async function cmdStats(rest: string[]): Promise<number> {
       days: { type: "string" },
       json: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      "include-unavailable": { type: "boolean", default: false },
+      "exit-codes": { type: "string" },
     },
     allowPositionals: true,
   });
+  const exitMode = parseExitCodesMode(args.values["exit-codes"]);
   const agent = args.values.agent;
   if (agent && !isKnownAgent(agent)) {
     throw new HarnessError(
@@ -710,6 +730,15 @@ async function cmdStats(rest: string[]): Promise<number> {
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
 
   const agg = aggregate(records);
+  // Run outcomes (#60) from the run registry: shown only when there are runs,
+  // so the historical {total, byAgent, byDay} shape is untouched otherwise.
+  const runRecords = listRunRecords(stateDir()).filter(
+    (r) => (!agent || r.agent === agent) && (sinceTs === undefined || r.startedAt >= sinceTs),
+  );
+  const outcomes =
+    runRecords.length > 0
+      ? summarizeRunOutcomes(runRecords, { includeUnavailable: args.values["include-unavailable"] })
+      : undefined;
 
   if (args.values.json) {
     process.stdout.write(
@@ -718,6 +747,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           total: agg.totals,
           byAgent: agg.byAgent,
           byDay: agg.byDay,
+          ...(outcomes !== undefined ? { runs: outcomes } : {}),
         },
         null,
         2,
@@ -729,9 +759,12 @@ async function cmdStats(rest: string[]): Promise<number> {
     process.stdout.write(line("totals", agg.totals) + "\n");
     for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, b) + "\n");
     for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(line(d, b) + "\n");
+    if (outcomes !== undefined) {
+      for (const [a, b] of Object.entries(outcomes.byAgent)) process.stdout.write(formatOutcomeLine(a, b) + "\n");
+    }
   }
   hintCcusage();
-  return 0;
+  return noDataExitCode(records.length + runRecords.length, exitMode);
 }
 
 function hintCcusage(): void {
