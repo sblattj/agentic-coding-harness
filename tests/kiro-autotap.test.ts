@@ -66,6 +66,35 @@ exit 0
 `;
 }
 
+/**
+ * The fake mitmdump. POSIX: the sh script above (its TERM trap is the graceful
+ * stop path). Windows: a `.cmd` shim forwarding to node, the way pip/npm
+ * install a real CLI, because an sh stub's `$$` is an MSYS pid (not the
+ * Windows pid process.kill() checks) and its MSYS process tree does not
+ * reliably die under the adapter's `taskkill /T /F` — the stop hit its 3 s
+ * ceiling with the stub still alive (#39). Same contract: pid file, one
+ * metering line, ready.<port> marker, then stay up until killed.
+ */
+function writeFakeMitmdump(readyDir: string): string {
+  if (process.platform !== 'win32') return writeExecutable('fake-mitmdump.sh', fakeMitmdump(readyDir));
+  const script = join(readyDir, 'fake-mitmdump.mjs');
+  writeFileSync(script, `import { writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+const port = process.argv[3];
+if (process.env.FAKE_MITMDUMP_PIDFILE) writeFileSync(process.env.FAKE_MITMDUMP_PIDFILE, String(process.pid) + '\\n');
+process.stdout.write(${JSON.stringify(METERING_LINE + '\n')});
+const ready = join(${JSON.stringify(readyDir)}, 'ready.' + port);
+writeFileSync(ready, '');
+const stop = () => { rmSync(ready, { force: true }); process.exit(0); };
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);
+setTimeout(() => {}, 30_000);
+`);
+  const shim = join(readyDir, 'fake-mitmdump.cmd');
+  writeFileSync(shim, `@"${process.execPath}" "${script}" %*\r\n`);
+  return shim;
+}
+
 let dir: string;
 let mitmdump: string;
 let kiroCli: string;
@@ -98,7 +127,7 @@ async function withCapturedStderr<T>(fn: () => Promise<T>): Promise<{ result: T;
 
 before(() => {
   dir = mkdtempSync(join(tmpdir(), 'kiro-autotap-'));
-  mitmdump = writeExecutable('fake-mitmdump.sh', fakeMitmdump(dir));
+  mitmdump = writeFakeMitmdump(dir);
   kiroCli = writeExecutable('fake-kiro-cli.sh', fakeKiroCli(dir));
 });
 

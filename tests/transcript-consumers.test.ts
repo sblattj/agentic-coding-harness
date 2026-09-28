@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { archiveTranscripts, restoreBatch, scanWarehouse } from '../src/core/warehouse.ts';
 import { scanAll, scanOptionsForRoot } from '../src/monitors/transcripts.ts';
+import { stopChild } from './helpers/stop-child.ts';
 
 // Cursor/Goose read SQLite through the sqlite3 CLI; skip (with the reason) where it is absent.
 const SQLITE_SKIP = spawnSync('sqlite3', ['-version'], { stdio: 'ignore' }).status === 0 ? false : 'sqlite3 CLI not on PATH';
@@ -192,5 +193,5 @@ test('public watch discovers post-start sessions while retaining the initial bas
     assert.match(text, /external-ses\s+\+10 input \+0 output/, errors);
     assert.match(text, /new-session\s+\+77 input \+3 output/, errors);
     assert.doesNotMatch(text, /\+22 input|\+12 input|\+34 output/);
-  } finally { child?.kill('SIGKILL'); rmSync(f.home, { recursive: true, force: true }); }
+  } finally { if (child) await stopChild(child); rmSync(f.home, { recursive: true, force: true }); }
 });

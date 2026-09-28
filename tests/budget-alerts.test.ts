@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -14,6 +14,9 @@ import {
   loadAlertState,
   parseThresholds,
   saveAlertState,
+  alertLockWaitMs,
+  isAlertLockBusy,
+  withAlertLock,
   DEFAULT_COOLDOWN_MS,
 } from '../src/core/budget-alerts.ts';
 import { createDriver } from '../src/core/driver.ts';
@@ -170,6 +173,72 @@ describe('alert state file', () => {
     rmSync(file);
     const b = new ThresholdAlerter({ thresholds: [0.5, 0.8], cooldownMs: 24 * HOUR, state: loadAlertState(file).state, now: () => 1 });
     assert.deepEqual(b.observe('src', 0.9), [0.5, 0.8]);
+  });
+});
+
+describe('alert state lock (platform policy, #39)', () => {
+  const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code });
+
+  it('waits 250 ms on POSIX and longer on win32, where fs latency is higher', () => {
+    assert.equal(alertLockWaitMs('linux'), 250);
+    assert.equal(alertLockWaitMs('darwin'), 250);
+    assert.ok(alertLockWaitMs('win32') >= 2000);
+  });
+
+  it('a delete-pending lock (EPERM/EACCES) reads as busy on win32 only', () => {
+    for (const platform of ['linux', 'darwin', 'win32'] as const) assert.equal(isAlertLockBusy('EEXIST', platform), true);
+    assert.equal(isAlertLockBusy('EPERM', 'win32'), true);
+    assert.equal(isAlertLockBusy('EACCES', 'win32'), true);
+    assert.equal(isAlertLockBusy('EPERM', 'linux'), false);
+    assert.equal(isAlertLockBusy('EACCES', 'darwin'), false);
+    assert.equal(isAlertLockBusy('ENOENT', 'win32'), false);
+  });
+
+  it('win32: waits out a delete-pending lock instead of failing the write', () => {
+    const lock = join(tmpDir(), 'alerts.json.lock');
+    let opens = 0;
+    const result = withAlertLock(lock.slice(0, -'.lock'.length), () => 'ran', {
+      platform: 'win32',
+      open: (p) => {
+        opens += 1;
+        if (opens < 3) throw errno('EPERM');
+        return openSync(p, 'wx');
+      },
+    });
+    assert.equal(result, 'ran');
+    assert.equal(opens, 3);
+    assert.equal(existsSync(lock), false, 'lock released');
+  });
+
+  it('win32: retries a transiently refused lock release so the lock is not left behind', () => {
+    const lock = join(tmpDir(), 'alerts.json.lock');
+    let unlinks = 0;
+    const result = withAlertLock(lock.slice(0, -'.lock'.length), () => 42, {
+      platform: 'win32',
+      unlink: (p) => {
+        unlinks += 1;
+        if (unlinks < 3) throw errno('EBUSY');
+        rmSync(p);
+      },
+    });
+    assert.equal(result, 42);
+    assert.equal(unlinks, 3);
+    assert.equal(existsSync(lock), false, 'lock released');
+  });
+
+  it('POSIX: EPERM on the lock is a real error, not contention (behavior unchanged)', () => {
+    const file = join(tmpDir(), 'alerts.json');
+    assert.throws(
+      () => withAlertLock(file, () => 1, { platform: 'linux', open: () => { throw errno('EPERM'); } }),
+      /EPERM/,
+    );
+  });
+
+  it('a lock held past the wait budget is reported busy, never stolen', () => {
+    const file = join(tmpDir(), 'alerts.json');
+    writeFileSync(`${file}.lock`, '');
+    assert.throws(() => withAlertLock(file, () => 1, { platform: 'linux' }), /alert state lock busy/);
+    assert.equal(existsSync(`${file}.lock`), true, 'a foreign lock is left in place');
   });
 });
 

@@ -21,6 +21,7 @@ import {
   type StatusSnapshot,
 } from "../src/cli/status.ts";
 import { parseClaudeStatusInput, renderStatusline } from "../src/cli/statusline.ts";
+import { stopChild } from "./helpers/stop-child.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
 const STDIN_FIXTURE = fileURLToPath(new URL("./fixtures/claude-statusline/status-input.json", import.meta.url));
@@ -335,7 +336,9 @@ describe("status --once --write-state (#62)", () => {
       assert.ok(reads >= 300, `only ${reads} reads`);
       assert.ok(rewrites >= 5, `writer only rewrote ${rewrites} times`);
     } finally {
-      child.kill("SIGTERM");
+      // Wait for the writer to exit, or after() races its 5 ms rewrite loop
+      // (ENOTEMPTY on Windows: a new tmp file lands mid-rm).
+      await stopChild(child);
     }
   });
 });

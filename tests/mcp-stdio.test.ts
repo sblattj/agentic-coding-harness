@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, beforeEach, describe, it } from 'node:test';
+import { stopChild } from './helpers/stop-child.ts';
 
 // ---------------------------------------------------------------------------
 // `ach mcp` stdio transport (e2e, real subprocess)
@@ -233,15 +234,14 @@ describe('ach mcp (stdio subcommand, real subprocess)', () => {
     startServer();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (child) {
-      child.removeAllListeners();
-      child.kill('SIGTERM');
       const c = child;
-      setTimeout(() => {
-        if (c.exitCode === null) c.kill('SIGKILL');
-      }, 500);
       child = null;
+      c.removeAllListeners();
+      // Kill the whole tree and wait for exit: Windows refuses to remove a
+      // directory a live process still has as its cwd (EBUSY).
+      await stopChild(c);
     }
   });
 
@@ -258,7 +258,6 @@ describe('ach mcp (stdio subcommand, real subprocess)', () => {
   });
 
   after(() => {
-    // Windows: a just-killed child may still hold its cwd (EBUSY); retry.
     for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
 

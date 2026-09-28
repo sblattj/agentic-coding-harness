@@ -21,12 +21,27 @@ it('distributed CLI and library retain authoritative prices and context windows'
     assert.equal(result.status, 0, `${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
     return result.stdout;
   };
+  // What a compiled binary sees as its entry identity, for the failure message:
+  // an empty stdout from the standalone build means invokedAsCli() said "library".
+  const entryProbe = (): string => {
+    try {
+      const src = join(dir, 'entry-probe.mjs');
+      const bin = join(dir, 'entry-probe');
+      writeFileSync(src, 'console.log(JSON.stringify({ argv1: process.argv[1], url: import.meta.url, bunMain: typeof Bun === "undefined" ? null : Bun.main, execPath: process.execPath }));\n');
+      spawnSync('bun', ['build', src, '--compile', '--outfile', bin], { cwd: dir, encoding: 'utf8', timeout: 60_000 });
+      const r = spawnSync(bin, [], { cwd: dir, encoding: 'utf8', timeout: 30_000 });
+      return `${r.stdout}${r.stderr}`.trim() || `(probe printed nothing; status ${r.status}, error ${String(r.error)})`;
+    } catch (err) {
+      return `(probe failed: ${String(err)})`;
+    }
+  };
   const runJson = (command: string, args: string[]) => {
     const out = run(command, args);
     try {
       return JSON.parse(out);
     } catch (err) {
-      throw new Error(`${command} ${args.join(' ')}: stdout is not JSON (${String(err)}): ${JSON.stringify(out.slice(0, 400))}`);
+      const probe = command === join(dir, 'ach') ? `\ncompiled entry probe: ${entryProbe()}` : '';
+      throw new Error(`${command} ${args.join(' ')}: stdout is not JSON (${String(err)}): ${JSON.stringify(out.slice(0, 400))}${probe}`);
     }
   };
   try {
