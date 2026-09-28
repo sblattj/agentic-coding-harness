@@ -122,6 +122,26 @@ describe('ClaudeCodeAdapter.spawn', () => {
     cleanup(stateDir);
   });
 
+  it('passes --model <value> when RunSpec.model is provided; emits no --model when unset (#102)', async () => {
+    const withModel = makeAdapter();
+    withModel.adapter.spawn({ prompt: 'reply with the word ok', model: 'claude-haiku-4-5-20251001' });
+    withModel.captured.child.end(0);
+
+    assert.ok(withModel.captured.args.includes('--model'));
+    assert.equal(
+      withModel.captured.args[withModel.captured.args.indexOf('--model') + 1],
+      'claude-haiku-4-5-20251001',
+    );
+    assert.equal(withModel.captured.args[withModel.captured.args.indexOf('-p') + 1], 'reply with the word ok');
+    cleanup(withModel.stateDir);
+
+    const withoutModel = makeAdapter();
+    withoutModel.adapter.spawn({ prompt: 'x' });
+    withoutModel.captured.child.end(0);
+    assert.ok(!withoutModel.captured.args.includes('--model'), 'no --model flag when unset');
+    cleanup(withoutModel.stateDir);
+  });
+
   it('useDefaultClaudeConfig option: no per-run CLAUDE_CONFIG_DIR, inherited override dropped, configDir null', async () => {
     const { adapter, captured, stateDir } = makeAdapter({ useDefaultClaudeConfig: true });
     adapter.spawn({ prompt: 'x', env: { CLAUDE_CONFIG_DIR: '/inherited/should/be/dropped' } });
@@ -632,6 +652,20 @@ describe('ClaudeCodeAdapter.launch (driver contract)', () => {
     assert.equal(models[0]!.costUsd, 0.001005);
     assert.equal(models[1]!.model, 'claude-opus-5[1m]');
     assert.equal(models[1]!.costUsd, 0.101811);
+    cleanup(stateDir);
+  });
+
+  it('launch() forwards spec.model into the claude argv as --model <value> (#102)', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+
+    const launchPromise = adapter.launch({ prompt: 'reply with the word ok', model: 'claude-haiku-4-5-20251001' });
+    captured.child.end(0);
+    const handle = await launchPromise;
+    await handle.wait();
+
+    assert.ok(captured.args.includes('--model'));
+    assert.equal(captured.args[captured.args.indexOf('--model') + 1], 'claude-haiku-4-5-20251001');
+    assert.ok(captured.args.includes('--verbose'));
     cleanup(stateDir);
   });
 
