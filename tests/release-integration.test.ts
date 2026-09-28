@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { runExitCode } from '../src/cli/exit-codes.ts';
 import { statsProvenance } from '../src/cli/stats-provenance.ts';
@@ -51,7 +51,7 @@ test('calculate ignores per-model reported costs, display leaves unpriced projec
   const calc = aggregateDims([mixed], { pricer: createPricer(), costMode: 'calculate' });
   assert.equal(auto.byModel['claude/claude-sonnet-4-5']!.costUsd, 9);
   assert.ok(calc.byModel['claude/claude-sonnet-4-5']!.costUsd! < 1);
-  assert.equal(aggregateDims([{ ...row, costUsd: undefined }], { byProject: true }).byProject!['/project']!.costUsd, null);
+  assert.equal(aggregateDims([{ ...row, costUsd: undefined }], { byProject: true }).byProject![resolve('/project')]!.costUsd, null);
 });
 
 test('repeat ladder matches single-run limit and verify failure policies', () => {
@@ -86,7 +86,7 @@ test('doctor discovers a descriptor and null without invoking a real vendor', ()
   const state = mkdtempSync(join(tmpdir(), 'ach-doctor-integration-'));
   try {
     mkdirSync(join(state, 'agents.d'));
-    writeFileSync(join(state, 'agents.d', 'local.json'), JSON.stringify({ name: 'localprobe', launch: { template: `${process.execPath} {prompt}` } }));
+    writeFileSync(join(state, 'agents.d', 'local.json'), JSON.stringify({ name: 'localprobe', launch: { template: `'${process.execPath}' {prompt}` } }));
     for (const agent of ['localprobe', 'null']) {
       const r = invoke(state, ['doctor', '--agent', agent, '--json']);
       assert.equal(r.status, 0, r.stderr + r.stdout);

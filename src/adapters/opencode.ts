@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
+import { homeDir } from '../core/platform.ts';
 import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import type { AdapterCapabilities, CanonicalEvent, CanonicalTokenRecord, RunOptions } from './types.ts';
@@ -547,7 +547,7 @@ export interface OpencodeSessionStat {
  * opencode keeps its data under the XDG data dir, which it resolves to
  * `<home>/.local/share` on every OS, Windows included (xdg-basedir).
  */
-export function defaultOpencodeDbPath(home: string = os.homedir()): string {
+export function defaultOpencodeDbPath(home: string = homeDir()): string {
   return path.join(home, '.local', 'share', 'opencode', 'opencode.db');
 }
 

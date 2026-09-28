@@ -14,7 +14,6 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import type { SpawnOptions } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { z } from 'zod';
@@ -36,7 +35,7 @@ import {
   validateCliSessionProfile,
   type HouseTokens,
 } from './shared.ts';
-import { spawnTarget, withTreeKill } from '../core/platform.ts';
+import { homeDir, spawnTarget, withTreeKill } from '../core/platform.ts';
 
 // ---------------------------------------------------------------------------
 // Local adapter-lane types (kept exported for existing tests; the core
@@ -585,7 +584,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     const stateDir =
       options.stateDir ??
       process.env.AGENTIC_CODING_HARNESS_STATE_DIR ??
-      path.join(os.homedir(), '.agentic-coding-harness', 'state');
+      path.join(homeDir(), '.agentic-coding-harness', 'state');
     this.opts = { ...options, stateDir, command: options.command ?? 'claude' };
   }
 

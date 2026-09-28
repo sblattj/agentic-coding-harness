@@ -8,7 +8,11 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+
+// Project keys are path.resolve()d cwds: "/alpha" on POSIX, "D:\\alpha" on Windows.
+const ALPHA = resolve("/alpha");
+const BETA = resolve("/beta");
 import { test } from "node:test";
 
 const cli = fileURLToPath(new URL("../src/cli/ach.ts", import.meta.url));
@@ -102,7 +106,7 @@ test("every ach stats --json section honours --project and --until together", ()
     assert.equal(all.runOutcomes.total.runs, 8);
     assert.equal(all.unmetered.runs, 4);
     assert.equal(all.byRepeatGroup.length, 4);
-    assert.deepEqual(keysOf(all.byProject), ["/alpha", "/beta"]);
+    assert.deepEqual(keysOf(all.byProject), [ALPHA, BETA]);
 
     const r = invoke(state, [
       "stats", "--state-only", "--json", "--by", "day,week,month,model,project", "--blocks", "--plan", "pro",
@@ -133,8 +137,8 @@ test("every ach stats --json section honours --project and --until together", ()
       },
       byModelDay: (v) => assert.deepEqual(keysOf(v), ["2026-09-20"]),
       byProject: (v) => {
-        assert.deepEqual(keysOf(v), ["/alpha"]);
-        assert.equal(v["/alpha"].records, 1);
+        assert.deepEqual(keysOf(v), [ALPHA]);
+        assert.equal(v[ALPHA].records, 1);
       },
       projectAliases: () => {},
       runs: (v) => assert.deepEqual(v.map((x: Json) => x.runId).sort(), ["claude-a1", "custom-a1"]),
@@ -182,7 +186,7 @@ test("ach stats text output honours --project and --until in every section", () 
     assert.match(r.stdout, /^unmetered runs=1 /m);
     assert.match(r.stdout, /^2026-09-20 /m);
     assert.doesNotMatch(r.stdout, /2026-09-21/);
-    assert.doesNotMatch(r.stdout, /\/beta/);
+    assert.ok(!r.stdout.includes(BETA), r.stdout);
     assert.doesNotMatch(r.stdout, /g-(b1|a2|b2)/);
     assert.match(r.stdout, /g-a1/);
   } finally {

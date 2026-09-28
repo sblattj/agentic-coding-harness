@@ -12,9 +12,9 @@
 // built-in always wins. Schema reference: docs/CUSTOM-AGENTS.md.
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { expandHome } from './platform.ts';
 import { AGENTS } from './types.js';
 import { CUSTOM_AGENT, getPath, type CustomAgentConfig } from '../adapters/custom.ts';
 
@@ -132,12 +132,6 @@ export function builtinAgentNames(): string[] {
 
 export function descriptorDirs(opts: { cwd?: string; stateDir: string }): string[] {
   return [path.join(opts.cwd ?? process.cwd(), '.ach', 'agents.d'), path.join(opts.stateDir, 'agents.d')];
-}
-
-function expandHome(p: string): string {
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
 }
 
 export function formatDescriptorIssue(i: DescriptorIssue): string {

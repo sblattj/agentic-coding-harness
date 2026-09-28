@@ -7,9 +7,9 @@
 //    src/core/driver.ts as <stateDir>/raw/<agent>-<sessionId>.jsonl
 // plus offsets.json for `harness watch` growth tracking.
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { homeDir } from "./platform.ts";
 import { normalizeAuto } from "./normalize.js";
 import type { CanonicalTokenRecord } from "./types.js";
 
@@ -19,7 +19,7 @@ export type OffsetMap = { v: number; files: Record<string, number> };
 /** Root state dir. Override with AGENTIC_CODING_HARNESS_STATE_DIR (tests, sandboxes). */
 export function stateDir(): string {
   return (
-    process.env.AGENTIC_CODING_HARNESS_STATE_DIR || path.join(os.homedir(), ".agentic-coding-harness")
+    process.env.AGENTIC_CODING_HARNESS_STATE_DIR || path.join(homeDir(), ".agentic-coding-harness")
   );
 }
 

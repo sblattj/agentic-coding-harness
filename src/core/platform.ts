@@ -17,6 +17,7 @@
 //   - shell strings run through `%ComSpec% /d /s /c`.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export interface PlatformOptions {
@@ -132,8 +133,55 @@ function comspecFor(env: PlatformOptions["env"], platform: NodeJS.Platform): str
   return (
     (env !== undefined ? getEnvVar("ComSpec", env, platform) : undefined) ??
     getEnvVar("ComSpec", process.env, platform) ??
-    "cmd.exe"
+    system32Exe("cmd.exe", env, platform)
   );
+}
+
+/**
+ * Absolute path of a Windows system binary (`cmd.exe`, `taskkill.exe`) under
+ * %SystemRoot%\System32, so it launches even from a minimal env whose PATH
+ * lacks System32 (and whose ComSpec was not passed through).
+ */
+export function system32Exe(
+  exe: string,
+  env: PlatformOptions["env"] = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const root =
+    (env !== undefined ? getEnvVar("SystemRoot", env, platform) ?? getEnvVar("windir", env, platform) : undefined) ??
+    getEnvVar("SystemRoot", process.env, platform) ??
+    getEnvVar("windir", process.env, platform) ??
+    "C:\\Windows";
+  return path.win32.join(root, "System32", exe);
+}
+
+/**
+ * The user's home directory. POSIX: os.homedir(), which already honours
+ * $HOME. win32: $HOME when set (Git Bash / MSYS users and the test suite set
+ * it; os.homedir() ignores it there), else os.homedir() (USERPROFILE).
+ */
+export function homeDir(
+  env: PlatformOptions["env"] = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    const home = getEnvVar("HOME", env, platform);
+    if (home !== undefined && home !== "") return home;
+  }
+  return os.homedir();
+}
+
+/** Expand a leading `~` / `~/` (and `~\` on win32) against homeDir(). */
+export function expandHome(
+  p: string,
+  env: PlatformOptions["env"] = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (p === "~") return homeDir(env, platform);
+  if (p.startsWith("~/") || (platform === "win32" && p.startsWith("~\\"))) {
+    return pathApi(platform).join(homeDir(env, platform), p.slice(2));
+  }
+  return p;
 }
 
 /** The platform's command interpreter for a shell string. */
@@ -183,7 +231,7 @@ export function withTreeKill<T extends { pid?: number | undefined; kill(signal?:
   const original = child.kill.bind(child);
   child.kill = (signal?: NodeJS.Signals | number): boolean => {
     if (child.pid === undefined) return original(signal);
-    const r = spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    const r = spawnSync(system32Exe("taskkill.exe"), ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     return r.status === 0 || original(signal);
   };
   return child;

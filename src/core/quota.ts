@@ -27,8 +27,8 @@
 //
 //  gemini, opencode, kiro — no vendor quota source is wired: n/a.
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
+import { homeDir } from "./platform.ts";
 import { stateDir } from "./store.ts";
 import { AGENTS, type AgentName } from "./types.ts";
 
@@ -218,7 +218,7 @@ export function claudeSnapshotPath(stateDir: string): string {
 }
 
 export function codexSessionsDir(): string {
-  return process.env.AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR || path.join(os.homedir(), ".codex", "sessions");
+  return process.env.AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR || path.join(homeDir(), ".codex", "sessions");
 }
 
 /** Atomic write (tmp + rename) so a concurrent `ach quota` never reads a torn file. */

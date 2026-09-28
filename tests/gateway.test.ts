@@ -263,7 +263,9 @@ describe('harness serve --gateway (subprocess integration)', () => {
       `escaped cwd must be rejected, got: ${text}`,
     );
     assert.ok(
-      text.includes(outside) || text.includes(resolve(outside)),
+      // Windows paths carry backslashes, which come back JSON-escaped (once per
+      // serialization layer), so also look for the escaped spellings.
+      [outside, resolve(outside)].some((p) => [p, JSON.stringify(p).slice(1, -1), JSON.stringify(JSON.stringify(p)).slice(3, -3)].some((s) => text.includes(s))),
       `rejection must name the cwd "${outside}", got: ${text}`,
     );
   });
