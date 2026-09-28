@@ -32,7 +32,7 @@ function harness(scenario: string, opts: { log?: boolean } = {}): Harness {
   const h: Harness = { spawnFn: () => ({}) as ChildProcessLike, argv: [], pids: [], log };
   h.spawnFn = (_command, args, spawnOpts) => {
     h.argv = args;
-    const child = spawn(process.execPath, ['--import', 'tsx', SERVER], {
+    const child = spawn(process.execPath, (process.versions as { bun?: string }).bun ? [SERVER] : ['--import', 'tsx', SERVER], {
       ...spawnOpts,
       cwd: REPO_ROOT,
       env: {

@@ -291,7 +291,7 @@ describe("runDoctor — per-agent checks", () => {
         'case "$1" in',
         '  --version) echo "kiro-cli 2.21.2" ;;',
         '  whoami) echo "someone@example.com" ;;',
-        `  *) cd ${JSON.stringify(REPO_ROOT)} && exec ${JSON.stringify(process.execPath)} --import tsx ${JSON.stringify(ACP_SERVER)} ;;`,
+        `  *) cd ${JSON.stringify(REPO_ROOT)} && exec ${JSON.stringify(process.execPath)} ${(process.versions as { bun?: string }).bun ? "" : "--import tsx "}${JSON.stringify(ACP_SERVER)} ;;`,
         "esac",
       ].join("\n"),
     );
