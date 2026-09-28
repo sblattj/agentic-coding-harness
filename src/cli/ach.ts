@@ -61,7 +61,7 @@ import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer } from "../core/pricing.ts";
-import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary } from "./lib.ts";
+import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, resolveDirFlag } from "./lib.ts";
 import {
   aggregateDims,
   baseCacheRatios,
@@ -177,8 +177,9 @@ usage:
   ach regrade <run-id> --verify '<cmd>' [--verify-timeout-ms MS] [--json]
                 (re-run a checker against a saved run's cwd; appends to the record's
                  regrades[] — no agent launched, run-time verify never rewritten)
-  ach watch [--dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
-                (--since/--last: print history newer than the bound on startup)
+  ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
+                (--since/--last: print history newer than the bound on startup;
+                 --dir is an alias of --transcript-dir here)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
             [--tz Z] [--by day|week|month] [--json] [--state-only] [--include-unavailable]
                 (machine claude/codex/gemini transcripts, read-only
@@ -209,21 +210,24 @@ usage:
                  x time left. Always: pace over trailing 15m/1h windows, ETA to
                  --budget-usd. --plan frames the active window as % of the
                  plan allowance; built-in presets are community estimates)
-            [--with-warehouse] [--dir <root>]
+            [--with-warehouse] [--transcript-dir <root>]
                 (--with-warehouse adds archived copies whose live file is gone;
-                 --dir reads machine transcripts from <root>/.claude/projects
-                 etc., e.g. a restore)
-  ach archive [--agent A] [--days N] [--out DIR] [--dir <stateDir>] [--json]
+                 --transcript-dir reads machine transcripts from
+                 <root>/.claude/projects etc., e.g. a restore; --dir is an
+                 alias of --transcript-dir here, NOT a state dir)
+  ach archive [--agent A] [--days N] [--out DIR] [--state-dir <stateDir>] [--json]
   ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
                 (snapshot transcripts + RunRecords into <stateDir>/warehouse,
-                 sha256-deduped, never deletes; see docs/ARCHIVE.md)
+                 sha256-deduped, never deletes; see docs/ARCHIVE.md;
+                 --dir is an alias of --state-dir here)
   --exit-codes ladder   (run / stats / status / watch) automation exit codes: 0 ok,
                         10 near-limit, 11 limit hit, 20 unavailable, 30 no data,
                         1 errors — see docs/EXIT-CODES.md; default stays 0/1
-  ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--dir <stateDir>]
+  ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--state-dir <stateDir>]
                 (re-derive each RunRecord's token/cost totals from its raw transcript
                  and report recorded vs recomputed deltas; exit 1 on drift;
-                 --fix rewrites drifted totals and logs RunRecord.corrections)
+                 --fix rewrites drifted totals and logs RunRecord.corrections;
+                 --dir is an alias of --state-dir here)
   ach status [--compact|--json] [--transcripts] [--budget-usd N] [--exit-codes ladder]
              [--once] [--write-state <path>] [--interval-ms MS=5000]
                 (runs, active runs, trailing-24h spend = \`stats --days 1\`,
@@ -243,10 +247,11 @@ usage:
                 LANGFUSE_SECRET_KEY)
   ach report <trials-dir> [--out path]
                  (single-file HTML comparison; a trials/ root scans subdirs)
-  ach dash [--json] [--all] [--state-only] [--dir <stateDir>] [--budget-usd N]
+  ach dash [--json] [--all] [--state-only] [--state-dir <stateDir>] [--budget-usd N]
                (live run dashboard; --json dumps RunRecords and exits; live
                 runs get a pace row: $/h + tok/min over 15m/1h, budget ETA;
-                QUOTA column shows vendor-reported headroom per agent)
+                QUOTA column shows vendor-reported headroom per agent;
+                --dir is an alias of --state-dir here)
   ach quota [--json] [--agent A]
                 (vendor-reported subscription headroom per agent: window, used,
                  time remaining, % left; n/a where the vendor reports nothing)
@@ -257,7 +262,7 @@ usage:
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
   ach web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
-              [--dir D] [--no-open] [--source URL] [--source-token T]
+              [--state-dir <stateDir>] [--no-open] [--source URL] [--source-token T]
               [--source-mode poll|sse|ws] [--source-poll-ms N=3000]
               [--source-merge state|only=only]
                 (browser dashboard over the live registry; token via --token
@@ -265,7 +270,8 @@ usage:
                   --source reads runs from an external http(s) feed instead of the
                   state dir — flags or env AGENTIC_CODING_HARNESS_SOURCE[_TOKEN|_MODE|
                   _POLL_MS|_MERGE]; --source-token falls back to --token;
-                  --source-merge state unions the local registry under the feed)
+                  --source-merge state unions the local registry under the feed;
+                  --dir is an alias of --state-dir here)
   ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
               (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
                framing tolerated; same tools and gateway flags as \`ach serve\`)
@@ -743,6 +749,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
     args: joinAgoTokens(rest),
     options: {
       dir: { type: "string" },
+      "transcript-dir": { type: "string" },
       since: { type: "string" },
       last: { type: "string" },
       tz: { type: "string" },
@@ -761,7 +768,9 @@ async function cmdWatch(rest: string[]): Promise<number> {
     now: Date.now(),
     timeZone: resolveTimeZone(args.values.tz, process.env[TZ_ENV]),
   }).sinceMs;
-  const sources = transcriptSources(args.values.dir ? scanOptionsForRoot(path.resolve(args.values.dir)) : {});
+  // --transcript-dir (alias --dir): a home-shaped root to read transcripts from.
+  const transcriptDir = resolveDirFlag(args.values, "transcript-dir");
+  const sources = transcriptSources(transcriptDir ? scanOptionsForRoot(path.resolve(transcriptDir)) : {});
   const state = stateDir();
   const offsets = await loadOffsets();
   type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
@@ -876,7 +885,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
 
     // --- opencode SQLite store (adapter). First tick baselines silently.
     try {
-      for (const s of args.values.dir ? [] : await statsFromDb()) {
+      for (const s of transcriptDir ? [] : await statsFromDb()) {
         const key = `opencode\u0000${s.id}\u0000${s.time_created}`;
         if (seenOpencode.has(key)) continue;
         seenOpencode.add(key);
@@ -1011,6 +1020,7 @@ async function cmdStats(rest: string[]): Promise<number> {
       "budget-usd": { type: "string" },
       "with-warehouse": { type: "boolean", default: false },
       dir: { type: "string" },
+      "transcript-dir": { type: "string" },
       "cost-mode": { type: "string" },
     },
     allowPositionals: true,
@@ -1031,6 +1041,8 @@ async function cmdStats(rest: string[]): Promise<number> {
     }
   }
   const costMode = resolveCostMode(args.values["cost-mode"], process.env[COST_MODE_ENV]);
+  // --transcript-dir (alias --dir): a home-shaped root for machine transcripts.
+  const transcriptDir = resolveDirFlag(args.values, "transcript-dir");
 
   // Every record gets a reported cost (state lines that carried costUsd; the
   // machine transcripts carry none) and a computed one (token × bundled price,
@@ -1133,7 +1145,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   // --state-only skips this scan entirely: stateDir records only (e.g. on a
   // machine whose transcript dirs are huge or being rotated).
   if (!args.values["state-only"]) {
-    const machine = statsMachineRecords({ scan: statsScanOptions(args.values.dir), withWarehouse, stateDir: stateDir() });
+    const machine = statsMachineRecords({ scan: statsScanOptions(transcriptDir), withWarehouse, stateDir: stateDir() });
     for await (const rec of machine) {
       if (agent && rec.agent !== agent) continue;
       const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
@@ -1273,7 +1285,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     );
   } else {
     const line = (label: string, b: CostModeBucket, p: ProvenanceMap | undefined) =>
-      `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${b.costUsd === null ? "n/a" : fmtUsd(b.costUsd) + markerFor(p?.costUsd)} cacheHit=${fmtCacheHit(cacheHitRatio(b))}`;
+      `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${b.costUsd === null ? "n/a" : fmtUsd(b.costUsd) + markerFor(p?.costUsd)} cacheHit=${fmtCacheHit(cacheHitRatio(b))}${b.unpricedRecords > 0 ? ` unpriced=${fmtInt(b.unpricedRecords)}` : ""}`;
     process.stdout.write(line("totals", view(agg.totals), prov.total) + ` costMode=${costMode}` + "\n");
     if (hasTranscripts) {
       for (const [source, bucket] of Object.entries(sources)) {

@@ -230,7 +230,11 @@ Every JSON bucket (`total`, `byAgent.*`, `byDay.*`) carries `costSource`: `"repo
 `"computed"` when all of its cost-bearing records share that source, `null` when none carried a
 cost or when both contributed, plus `costBySource: {reported, computed}` (USD, `null` for a
 source nothing used). In `display`/`calculate`, a bucket with no cost of the accepted source has
-`costUsd: null`; `auto` keeps `0` for a bucket with no priceable record. One deliberate change
+`costUsd: null`; `auto` keeps `0` for a bucket with no priceable record. Every bucket also carries
+`unpricedRecords` (0.11.1): how many of its records got no cost under the active mode (in `auto`,
+an unknown model with nothing reported). They count in `records` and the token sums but not in
+`costUsd`, which is then a lower bound; text rows append `unpriced=N`, and `ach status` reports the
+same count as `today.unpricedRecords`. One deliberate change
 from pre-0.11.0 `auto`: a harness-state line that carried NO `costUsd` used to contribute `$0`
 (the store defaulted it); it is now priced from its tokens like any other unreported record, and
 labelled `computed`. Machine

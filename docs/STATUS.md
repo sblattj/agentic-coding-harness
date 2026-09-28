@@ -15,17 +15,17 @@ Every form exits 0 when there is no data, including when the state dir does not 
 | Number | Source | Notes |
 |---|---|---|
 | runs / running / success / error | run registry `<stateDir>/runs/*.json` | Counts runs started in the trailing 24 h. A run that is still live counts no matter how old it is. `running` is the **effective** status, so a dead pid or a stale heartbeat reads `interrupted`, the same as `ach dash`. |
-| `cost_today` / `today.costUsd` | the records `ach stats --days 1` aggregates | Covers the **trailing 24 h** (`now - 86 400 000 ms`), not the calendar day. By default only the state dir (`<stateDir>/raw`) is read, so it equals `ach stats --days 1 --state-only`. With `--transcripts` it also scans the machine Claude/Codex/Gemini transcript dirs and equals `ach stats --days 1`. A test pins both equalities. Registry `totals` are **not** added in: the driver writes the same usage to `raw/`, so adding them would count it twice. |
+| `cost_today` / `today.costUsd` | the records `ach stats --days 1` aggregates | Covers the **trailing 24 h** (`now - 86 400 000 ms`), not the calendar day. By default only the state dir (`<stateDir>/raw`) is read, so it equals `ach stats --days 1 --state-only`. With `--transcripts` it also scans the machine Claude/Codex/Gemini transcript dirs and equals `ach stats --days 1`. A test pins both equalities. Registry `totals` are **not** added in: the driver writes the same usage to `raw/`, so adding them would count it twice. State records are priced exactly as `stats` prices them: the stored CLI-reported cost when the line has one (an explicit `0` stays a reported $0), else tokens x bundled price. A record with neither (an unknown model, nothing reported) is excluded from `costUsd` and counted in `today.unpricedRecords`, so a nonzero count means `costUsd` is a lower bound. |
 | block cost | the open Claude 5-hour block over the same records as "today" (`currentBlockCost`, built on `currentBlock` from `src/core/usage-windows.ts`) | `ach status` and `ach statusline` pass it through the `BlockCostProvider` seam. Shows `null` / `n/a` when no block is open or none of its records is priced. Blocks are chained from the trailing-24h records only. A library caller of `computeStatusSnapshot` that passes no `blockCost` gets `null`. |
 | budget | `--budget-usd N`, else `AGENTIC_CODING_HARNESS_BUDGET_USD` | `status` reads this value as a **trailing-24 h spend ceiling**, while `ach run` reads the same env var as a per-run cap. `remaining = budget - cost_today`, and it can go negative. State is `ok` below 80 % used (`BUDGET_NEAR_FRACTION = 0.8`), `near` from 80 % up to 100 %, and `exceeded` at 100 % or more. When no budget is set, the budget is omitted (`budget_left` absent, `budget.configured: false`) rather than shown as 0. An unparseable env value prints a `[warn]` and is ignored. |
 
 ## `ach status --compact` grammar
 
 ```
-runs=<int> running=<int> success=<int> error=<int> cost_today=$<d>.<dddd>[ budget_left=$<-?d>.<dddd>]
+runs=<int> running=<int> success=<int> error=<int> cost_today=$<d>.<dddd>[ budget_left=$<-?d>.<dddd>][ unpriced=<int>]
 ```
 
-The key order is fixed. `budget_left` appears only when a budget is configured. With no data at all the line is:
+The key order is fixed. `budget_left` appears only when a budget is configured. `unpriced` appears only when some record in the window has no cost (it is excluded from `cost_today`). With no data at all the line is:
 
 ```
 runs=0 running=0 success=0 error=0 cost_today=$0.0000
@@ -44,7 +44,7 @@ This is the zod schema `StatusSnapshotSchema` in `src/cli/status.ts`. Top-level 
 | `runs` | `{ total, running, success, error, aborted, interrupted, unavailable }` (ints) | Registry counts, as described above. `unavailable` (#60) counts runs the vendor could not serve (see docs/EXIT-CODES.md). |
 | `activeByAgent` | `Record<agent, int>` | Live runs per agent. Agents with no live run are omitted. |
 | `newestRun` | `{ runId, agent, status, startedAt: ISO, durationMs: number \| null } \| null` | The newest counted run and its wall-clock duration (to now while running). `null` when the end time is unknown. |
-| `today` | `{ costUsd: number, records: int, byAgent: Record<agent, { costUsd, records }> }` | Per-adapter spend in the window, rounded to 1e-6 USD. |
+| `today` | `{ costUsd: number, records: int, byAgent: Record<agent, { costUsd, records, unpricedRecords }>, unpricedRecords: int }` | Per-adapter spend in the window, rounded to 1e-6 USD. `unpricedRecords` (added in 0.11.1) counts records with no cost; they are in `records` but not in `costUsd`. |
 | `block` | `{ costUsd: number \| null, source: "unavailable" \| "provider" }` | 5-hour block cost of the open Claude block; `null` when no block is open, it is unpriced, or no provider was passed. |
 | `budget` | `{ configured: false }` or `{ configured: true, usd, remainingUsd, usedFraction, state: "ok"\|"near"\|"exceeded", nearFraction }` | The budget level and its state. |
 

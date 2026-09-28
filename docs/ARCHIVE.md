@@ -6,7 +6,7 @@ after about 30 days. Once a transcript is gone, `ach stats` can no longer count 
 `ach archive` copies those files into a warehouse under the state dir, where the CLIs never look.
 
 ```
-ach archive [--agent A] [--days N] [--out DIR] [--dir <stateDir>] [--json]
+ach archive [--agent A] [--days N] [--out DIR] [--state-dir <stateDir>] [--json]
 ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
 ```
 
@@ -92,7 +92,7 @@ A restore writes a home-shaped tree:
 <to>/.agentic-coding-harness/raw/…   <to>/.agentic-coding-harness/runs/…
 ```
 
-`ach stats --dir <to>` reads the machine transcripts from that tree. Setting
+`ach stats --transcript-dir <to>` (alias `--dir`) reads the machine transcripts from that tree. Setting
 `AGENTIC_CODING_HARNESS_STATE_DIR=<to>/.agentic-coding-harness` gives `ach audit`, `ach dash` and
 `ach web` the restored records. Relocated raw transcripts are found by basename, so the absolute
 paths stored in the records do not need rewriting. A single batch contains only the files that

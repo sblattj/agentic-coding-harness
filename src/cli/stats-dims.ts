@@ -176,6 +176,7 @@ function addContribution(b: ModelBucket, c: Contribution): void {
   b.cacheWriteTokens += c.cacheWriteTokens;
   b.reasoningTokens += c.reasoningTokens;
   b.costUsd = b.costUsd === null || c.costUsd === null ? null : b.costUsd + c.costUsd;
+  if (c.costUsd === null) b.unpricedRecords += 1;
 }
 
 function finishModel(b: ModelBucket): ModelBucket {
@@ -358,6 +359,7 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
       b.cacheWriteTokens += r.cacheWriteTokens;
       b.reasoningTokens += r.reasoningTokens;
       b.costUsd = b.costUsd === null || r.costUsd === undefined ? null : b.costUsd + r.costUsd;
+      if (r.costUsd === undefined) b.unpricedRecords += 1;
     }
   }
   for (const b of Object.values(byModel)) finishModel(b);
