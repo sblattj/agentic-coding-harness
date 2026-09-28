@@ -5,6 +5,7 @@
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
+import { resolveDirFlag } from "./lib.ts";
 import { describeAlert } from "../core/budget-alerts.ts";
 import { PACE_WINDOWS, paceFromSamples, type Pace, type PaceSample } from "../core/usage-windows.ts";
 import {
@@ -435,6 +436,7 @@ export async function cmdDash(rest: string[]): Promise<number> {
       all: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
       dir: { type: "string" },
+      "state-dir": { type: "string" },
       "budget-usd": { type: "string" },
     },
     allowPositionals: true,
@@ -451,7 +453,10 @@ export async function cmdDash(rest: string[]): Promise<number> {
   if (args.values.dir === undefined && rest.some((a) => a.startsWith("--dir"))) {
     throw new HarnessError("dash --dir expects a state directory path", "USAGE");
   }
-  const dir = args.values.dir ?? stateDir();
+  if (args.values["state-dir"] === undefined && rest.some((a) => a.startsWith("--state-dir"))) {
+    throw new HarnessError("dash --state-dir expects a state directory path", "USAGE");
+  }
+  const dir = resolveDirFlag(args.values, "state-dir") ?? stateDir();
   if (args.values.json || !process.stdout.isTTY) {
     if (!args.values.json) {
       process.stderr.write("dash: stdout is not a TTY — dumping JSON (pass --json to silence this hint)\n");

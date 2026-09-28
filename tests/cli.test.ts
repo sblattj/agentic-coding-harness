@@ -33,9 +33,10 @@ function runCli(args: string[], env: Record<string, string>): RunOut {
   };
 }
 
-/** Drop the #28/#33 provenance fields so a bucket compares against pre-mode output. */
+/** Drop the #28/#33 provenance fields (and the additive 0.11.1 unpricedRecords
+ *  count) so a bucket compares against pre-mode output. */
 function withoutProvenance(b: Record<string, unknown>): Record<string, unknown> {
-  const { costSource: _s, costBySource: _b, costDisagreements: _d, provenance: _p, ...rest } = b;
+  const { costSource: _s, costBySource: _b, costDisagreements: _d, provenance: _p, unpricedRecords: _u, ...rest } = b;
   return rest;
 }
 

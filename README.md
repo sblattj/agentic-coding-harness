@@ -217,25 +217,30 @@ ach run --agent <claude|opencode|kiro|codex|gemini|null|custom|descriptor> [--mo
                        [--kiro-startup-ms N] [--kiro-require-model-ack] [--kiro-mcp-server '<json>']...
             claude only: [--claude-default-config]   # default CLAUDE_CONFIG_DIR (keychain OAuth)
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
-ach watch [--dir <transcriptDir>]              # live per-session token deltas
-ach stats [--agent A] [--days N] [--json] [--state-only]
-ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--dir <stateDir>]
+ach watch [--transcript-dir <root>]           # live per-session token deltas
+ach stats [--agent A] [--days N] [--json] [--state-only] [--transcript-dir <root>]
+ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--state-dir <stateDir>]
             # re-derive RunRecord totals from raw transcripts; exit 1 on drift
 ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 ach report <trials-dir> [--out path]           # single-file HTML comparison
-ach dash [--json] [--all] [--dir <stateDir>]   # live run dashboard; q quits
+ach dash [--json] [--all] [--state-dir <stateDir>]   # live run dashboard; q quits
 ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
             (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
              framing tolerated; same 10 tools and gateway flags as `ach serve`)
 ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
             (MCP over streamable HTTP on POST /mcp; GET /health probe;
              token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
-ach web [trials-dir] [--port N=8399] [--host H] [--token T] [--dir D] [--no-open]
+ach web [trials-dir] [--port N=8399] [--host H] [--token T] [--state-dir <stateDir>] [--no-open]
           [--source URL] [--source-token T] [--source-mode poll|sse|ws]
           [--source-poll-ms N=3000] [--source-merge state|only]
 ```
+
+`--dir` is kept as an alias with a per-command meaning: for `watch` and `stats` it is
+`--transcript-dir` (a home-shaped root holding `.claude/projects` etc.); for `archive`, `audit`,
+`dash` and `web` it is `--state-dir`. Passing both spellings with different values is a usage
+error.
 
 `ach audit` is the self-check on the numbers themselves. For every RunRecord under
 `<stateDir>/runs/` it replays the run's raw transcript (`<stateDir>/raw/<agent>-<session>.jsonl`),
