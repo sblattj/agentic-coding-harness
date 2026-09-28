@@ -491,6 +491,22 @@ export interface ClaudeAdapterOptions {
   useDefaultClaudeConfig?: boolean;
 }
 
+/**
+ * Key-order-independent JSON serialization, so two deep-equal parsed lines map
+ * to the same string (issue #14 result-line dedupe). Pure; exported for tests.
+ */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj)
+      .filter((k) => obj[k] !== undefined)
+      .sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
 /** True when the run should use the default (authenticated) Claude config. */
 export function useDefaultClaudeConfig(opts: ClaudeAdapterOptions, env: NodeJS.ProcessEnv = process.env): boolean {
   return opts.useDefaultClaudeConfig === true || env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG === '1';
@@ -534,6 +550,8 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
   private done = false;
   private aborted = false;
   private sawResult = false;
+  /** canonicalJson() of every result line seen (issue #14 dedupe). */
+  private readonly seenResultKeys = new Set<string>();
   private parseErrors = 0;
   private stderrTail = '';
   private killTimer: ReturnType<typeof setTimeout> | null = null;
@@ -809,6 +827,14 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       }
       this.sawResult = true;
       if (parsed.data.session_id) this.sessionId = parsed.data.session_id;
+      // Issue #14: a result line is the CLI's cumulative-final record for its
+      // session, and CLI 2.1.277 was observed re-emitting it byte-identically.
+      // Summing both doubles totalCost and trips a spurious budget_exceeded,
+      // so a deep-equal repeat (same session_id, same payload) counts once.
+      // A distinct result line (different payload or session) still counts.
+      const key = canonicalJson(raw);
+      if (this.seenResultKeys.has(key)) return;
+      this.seenResultKeys.add(key);
       const record =
         canonicalFromModelUsage(parsed.data.modelUsage, parsed.data.total_cost_usd) ??
         (parsed.data.usage
