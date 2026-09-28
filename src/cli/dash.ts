@@ -11,6 +11,7 @@ import {
   listRunRecords,
   type RunRecord,
 } from "../core/registry.ts";
+import { markerFor, PROVENANCE_LEGEND, PROVENANCE_MARKER, provenanceOf } from "../core/provenance.ts";
 
 const REDRAW_MS = 500;
 const HOUR_MS = 3_600_000;
@@ -43,12 +44,12 @@ function usdUnavailable(rec: RunRecord): boolean {
   return rec.usage?.usd.available === false;
 }
 
-/** `ctx 10.0k (5.0%)` — DERIVED occupancy, visually distinct from billed tokens. */
+/** `≈10.0k (5.0%)` — DERIVED occupancy (provenance: estimated), visually distinct from billed tokens. */
 function fmtContext(rec: RunRecord): string {
   const ctx = rec.usage?.context;
   if (ctx?.available !== true || ctx.tokens === undefined) return "";
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
-  return `${compact(ctx.tokens)}${pct}`;
+  return `${PROVENANCE_MARKER.estimated}${compact(ctx.tokens)}${pct}`;
 }
 
 function fmtElapsed(ms: number): string {
@@ -98,9 +99,9 @@ const COL = {
   in: 8,
   out: 8,
   cache: 8,
-  cost: 8,
+  cost: 11, // up to "$9999.9999*": padL truncates, and the provenance marker is the char it would drop
   credits: 8,
-  ctx: 14,
+  ctx: 15,
 } as const;
 
 const HEADER =
@@ -133,7 +134,7 @@ function tableRow(rec: RunRecord, now: number, ansi: boolean, lastW: number): st
     padL(tokensUnavailable(rec) ? "n/a" : compact(t.inputTokens), COL.in),
     padL(tokensUnavailable(rec) ? "n/a" : compact(t.outputTokens), COL.out),
     padL(tokensUnavailable(rec) ? "n/a" : compact(cache), COL.cache),
-    padL(usdUnavailable(rec) ? "n/a" : fmtCost(t.costUsd), COL.cost),
+    padL(usdUnavailable(rec) ? "n/a" : fmtCost(t.costUsd) + markerFor(provenanceOf(rec).costUsd), COL.cost),
     padL(fmtCredits(t.credits), COL.credits),
     padL(fmtContext(rec), COL.ctx),
     padR(rec.lastEvent ?? "", lastW),
@@ -147,6 +148,8 @@ function footer(visible: RunRecord[]): string {
   let cost = 0;
   let credits = 0;
   let hasCredits = false;
+  // A sum with any computed part is itself computed (issue #33).
+  let costComputed = false;
   for (const r of visible) {
     // Unavailable rows contribute nothing: a fleet total must not silently
     // absorb a credits-only run as "0 tokens, $0".
@@ -155,7 +158,10 @@ function footer(visible: RunRecord[]): string {
       input += t.inputTokens;
       output += t.outputTokens;
     }
-    if (t !== undefined && !usdUnavailable(r)) cost += t.costUsd;
+    if (t !== undefined && !usdUnavailable(r)) {
+      cost += t.costUsd;
+      if (provenanceOf(r).costUsd === "computed") costComputed = true;
+    }
     if (t?.credits !== undefined) {
       credits += t.credits;
       hasCredits = true;
@@ -165,7 +171,7 @@ function footer(visible: RunRecord[]): string {
     `${visible.length} run${visible.length === 1 ? "" : "s"}`,
     `in ${compact(input)}`,
     `out ${compact(output)}`,
-    `cost ${fmtCost(cost)}`,
+    `cost ${fmtCost(cost)}${costComputed ? PROVENANCE_MARKER.computed : ""}`,
   ];
   if (hasCredits) parts.push(`credits ${fmtCredits(credits)}`);
   parts.push("q quit");
@@ -185,6 +191,7 @@ export function frame(recs: RunRecord[], dir: string, showAll: boolean, width: n
     );
   } else {
     for (const r of visible) lines.push(tableRow(r, now, ansi, lastW));
+    lines.push(PROVENANCE_LEGEND);
   }
   lines.push("");
   lines.push(footer(visible));

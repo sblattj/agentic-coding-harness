@@ -92,6 +92,17 @@ export interface StatRecord extends CanonicalTokenRecord {
   ts: string; // ISO-8601
   /** Always resolved by the time a record is stored (fallbacks fill "unknown"). */
   agent: string;
+  /**
+   * The producer-reported USD cost, set ONLY when the source line actually
+   * carried a finite costUsd. `costUsd` above defaults an absent cost to 0, so
+   * it cannot tell "the CLI said $0" from "no cost reported"; this can
+   * (issue #28: `ach stats --cost-mode`).
+   */
+  reportedCostUsd?: number;
+}
+
+function finiteCost(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
 const RecordLineSchema = z
@@ -172,7 +183,18 @@ function fromEventLine(line: Record<string, unknown>, fallbackAgent: string): Ca
 function eventLineToStatRecord(line: Record<string, unknown>, relPath: string): StatRecord | null {
   const rec = fromEventLine(line, agentFromPath(relPath) ?? "unknown");
   if (!rec) return null;
-  return { ...rec, agent: rec.agent ?? agentFromPath(relPath) ?? "unknown", ts: isoTs(rec.timestamp) };
+  // usage_raw: the normalizer sets costUsd only when the provider reported
+  // one. usage: fromEventLine defaults it to 0, so read the raw payload.
+  const reported =
+    line.type === "usage"
+      ? finiteCost((line.usage as { costUsd?: unknown } | undefined)?.costUsd)
+      : finiteCost(rec.costUsd);
+  return {
+    ...rec,
+    agent: rec.agent ?? agentFromPath(relPath) ?? "unknown",
+    ts: isoTs(rec.timestamp),
+    ...(reported !== undefined ? { reportedCostUsd: reported } : {}),
+  };
 }
 
 function toStatRecord(parsed: z.infer<typeof RecordLineSchema>, relPath: string, line: Record<string, unknown>): StatRecord | null {
@@ -197,6 +219,7 @@ function toStatRecord(parsed: z.infer<typeof RecordLineSchema>, relPath: string,
     reasoningTokens: parsed.reasoningTokens,
     costUsd: parsed.costUsd,
     extra: parsed.extra,
+    ...(finiteCost(line.costUsd) !== undefined ? { reportedCostUsd: line.costUsd as number } : {}),
   };
 }
 

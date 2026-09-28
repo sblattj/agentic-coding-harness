@@ -205,10 +205,51 @@ cost_usd = ( inputTokens        × price.input
   and `-latest/-preview` so `anthropic/claude-sonnet-4-20250514` matches `claude-sonnet-4`.
 - Unknown model → `NaN` + warning surfaced in `RunResult.warnings` — cost is never silently 0
   (exception: credit-metered kiro records, below).
-- **Reported beats computed:** the transcript tap prefers `costUSD` when the row carries it;
-  the driver accumulates computed cost otherwise. Provider-reported figures always win.
+- **Reported beats computed (by default):** the transcript tap prefers `costUSD` when the row
+  carries it; the driver accumulates computed cost otherwise. `ach stats` makes this a choice
+  (below) instead of a silent blend.
 - The CLI transcript tap prices unpriced rows through this same `Pricer` (`cli/ach.ts`) — the
   old `cli/lib.ts estimateCostUsd` prefix table is gone (that merge is closed).
+
+### `ach stats --cost-mode` and cost provenance
+
+Why the modes exist: a CLI-reported cost and our token × bundled-price math disagree in
+practice. The bundled LiteLLM extract drifts from the vendor's live price list, cache tiers and
+TTLs are billed differently from how they are logged, and enterprise or negotiated rates never
+appear in any public table. Blending the two into one number hides which one is wrong. So
+`ach stats --cost-mode <mode>` (env `AGENTIC_CODING_HARNESS_COST_MODE`; the flag wins; a bad
+name errors with the valid list) lets you pick:
+
+| mode | per-record cost | use it when |
+|---|---|---|
+| `auto` (default) | CLI-reported when present, else computed | historical behavior; best single number |
+| `calculate` | always tokens × bundled price, even when a reported number exists; multi-model slices are priced from their own tokens, never from their reported `costUsd` | one consistent methodology across agents |
+| `display` | CLI-reported verbatim; `null` when absent, never computed | reconciling with a vendor dashboard or invoice |
+
+Every JSON bucket (`total`, `byAgent.*`, `byDay.*`) carries `costSource`: `"reported"` or
+`"computed"` when all of its cost-bearing records share that source, `null` when none carried a
+cost or when both contributed, plus `costBySource: {reported, computed}` (USD, `null` for a
+source nothing used). In `display`/`calculate`, a bucket with no cost of the accepted source has
+`costUsd: null`; `auto` keeps `0` for a bucket with no priceable record. One deliberate change
+from pre-0.11.0 `auto`: a harness-state line that carried NO `costUsd` used to contribute `$0`
+(the store defaulted it); it is now priced from its tokens like any other unreported record, and
+labelled `computed`. Machine
+transcripts (`scanAll`) carry no reported cost, so they are computed-only; harness-state records
+are reported when their line carried `costUsd`.
+
+**Disagreements:** whenever a record has both values and they differ by more than 1%
+(`|reported − computed| / max(|reported|, |computed|)`), stats prints a `[warn] cost
+disagreement:` line on stderr with both values and the delta (first 10, then a count), adds a
+`disagree` row to the table, and reports the count as `total.costDisagreements`, in every mode.
+
+Driver runs: `RunRecord.totals.costSource` is `"computed"` when `cumulativeCost` came only from
+token math, `"reported"` when it came only from CLI-reported multi-model slice costs, and absent
+when both (or neither) fed it. The number itself is unchanged.
+
+Every bucket and every RunRecord also carries a sibling `provenance` map
+(`reported | computed | estimated` per field). There, a blended cost is labelled `computed`, and
+the dash, web UI, stats table and report mark computed numbers with `*` and estimated ones with
+`≈`. See [PROVENANCE.md](PROVENANCE.md) for the per-number table.
 
 ### Credit metering (kiro) and multi-model runs
 

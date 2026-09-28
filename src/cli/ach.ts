@@ -41,6 +41,18 @@ import {
 import { statsFromDb } from "../adapters/opencode.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary, type AggregatableRecord } from "./lib.ts";
+import {
+  applyCostMode,
+  COST_DISAGREEMENT_PCT,
+  COST_MODE_ENV,
+  costDisagreement,
+  formatDisagreement,
+  resolveCostMode,
+  selectCost,
+  type CostModeBucket,
+} from "./cost-mode.ts";
+import { statsProvenance, type StatsProvenanceRecord } from "./stats-provenance.ts";
+import { markerFor, PROVENANCE_LEGEND, type ProvenanceMap } from "../core/provenance.ts";
 import { kiroPreflight } from "../adapters/kiro-preflight.ts";
 import { cmdReport } from "./report.ts";
 import { cmdDash } from "./dash.ts";
@@ -67,9 +79,11 @@ usage:
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
   ach watch [--dir <transcriptDir>]
-  ach stats [--agent A] [--days N] [--json] [--state-only]
+  ach stats [--agent A] [--days N] [--json] [--state-only] [--cost-mode auto|calculate|display]
                 (machine claude/codex/gemini transcripts + harness state;
-                 --state-only skips machine transcript dirs)
+                 --state-only skips machine transcript dirs; --cost-mode or env
+                 AGENTIC_CODING_HARNESS_COST_MODE: auto = CLI-reported else
+                 computed, calculate = always computed, display = reported only)
   ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (langfuse POSTs OTLP to the Langfuse instance; auth via
@@ -639,6 +653,7 @@ async function cmdStats(rest: string[]): Promise<number> {
       days: { type: "string" },
       json: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      "cost-mode": { type: "string" },
     },
     allowPositionals: true,
   });
@@ -651,10 +666,46 @@ async function cmdStats(rest: string[]): Promise<number> {
   }
   const days = optNum(args.values.days, "--days");
   const sinceTs = days !== undefined ? Date.now() - days * 86_400_000 : undefined;
+  const costMode = resolveCostMode(args.values["cost-mode"], process.env[COST_MODE_ENV]);
+
+  // Every record gets a reported cost (state lines that carried costUsd; the
+  // machine transcripts carry none) and a computed one (token × bundled price,
+  // never reading CLI-reported slice costs), then --cost-mode picks between
+  // them. `pricer` prices values the mode actually uses, so its unknown-model
+  // warnings surface; `probe` prices values used only for the disagreement
+  // check, and its warnings are dropped.
+  const pricer = createPricer();
+  const probe = createPricer();
+  const disagreements: string[] = [];
+  const costFor = (
+    r: Pick<StatRecord, "agent" | "sessionId" | "model" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "extra">,
+    reported: number | undefined,
+  ) => {
+    const needComputed = costMode === "calculate" || (costMode === "auto" && reported === undefined);
+    let computed: number | undefined;
+    const priceable = r.model && r.model !== "unknown" && r.extra?.tokensAvailable !== false;
+    if (priceable && (needComputed || reported !== undefined)) {
+      const c = (needComputed ? pricer : probe).price(
+        {
+          model: r.model,
+          inputTokens: r.inputTokens,
+          outputTokens: r.outputTokens,
+          cacheReadTokens: r.cacheReadTokens,
+          cacheWriteTokens: r.cacheWriteTokens,
+          ...(r.extra !== undefined ? { extra: r.extra } : {}),
+        },
+        { computedOnly: true },
+      );
+      if (!Number.isNaN(c)) computed = c;
+    }
+    const d = costDisagreement(reported, computed);
+    if (d) disagreements.push(formatDisagreement(`${r.agent} session=${r.sessionId ?? "unknown"} model=${r.model ?? "unknown"}`, d));
+    return selectCost(costMode, reported, computed);
+  };
 
   // Harness state (driver-run NDJSON + watch-persisted opencode) ...
   const stateRecords = await readAllRecords({ agent, sinceTs });
-  const records: AggregatableRecord[] = stateRecords.map((r) => ({
+  const records: (AggregatableRecord & StatsProvenanceRecord)[] = stateRecords.map((r) => ({
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,
@@ -664,16 +715,16 @@ async function cmdStats(rest: string[]): Promise<number> {
     cacheReadTokens: r.cacheReadTokens,
     cacheWriteTokens: r.cacheWriteTokens,
     reasoningTokens: r.reasoningTokens ?? 0,
-    costUsd: r.costUsd,
+    ...costFor(r, r.reportedCostUsd),
+    ...(r.extra?.tokensAvailable === false ? { tokensAvailable: false } : {}),
   }));
   const seen = new Set(stateRecords.map(dedupeKey));
 
-  // ... plus machine CLI transcripts (claude/codex/gemini), priced with the
-  // shared core pricer. costUsd is set only when the record has a model the
-  // pricer knows; undefined costs contribute nothing to the sums.
+  // ... plus machine CLI transcripts (claude/codex/gemini), computed-only (no
+  // reported cost on these rows). costUsd is set only when the record has a
+  // model the pricer knows; undefined costs contribute nothing to the sums.
   // --state-only skips this scan entirely: stateDir records only (e.g. on a
   // machine whose transcript dirs are huge or being rotated).
-  const pricer = createPricer();
   if (!args.values["state-only"]) {
     for await (const rec of scanAll()) {
       if (agent && rec.agent !== agent) continue;
@@ -693,42 +744,51 @@ async function cmdStats(rest: string[]): Promise<number> {
       const key = dedupeKey(row);
       if (seen.has(key)) continue;
       seen.add(key);
-      let costUsd: number | undefined;
-      if (rec.model) {
-        const cost = pricer.price({
-          model: rec.model,
-          inputTokens: row.inputTokens,
-          outputTokens: row.outputTokens,
-          cacheReadTokens: row.cacheReadTokens,
-          cacheWriteTokens: row.cacheWriteTokens,
-        });
-        if (!Number.isNaN(cost)) costUsd = cost;
-      }
-      records.push(costUsd === undefined ? { ...row } : { ...row, costUsd });
+      records.push({ ...row, ...costFor(row, undefined) });
     }
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
+  probe.drainWarnings();
+  // Disagreements go to stderr (capped) and are counted in total.costDisagreements.
+  const MAX_DISAGREEMENT_LINES = 10;
+  for (const msg of disagreements.slice(0, MAX_DISAGREEMENT_LINES)) process.stderr.write(`[warn] ${msg}\n`);
+  if (disagreements.length > MAX_DISAGREEMENT_LINES) {
+    process.stderr.write(
+      `[warn] cost disagreement: ${disagreements.length - MAX_DISAGREEMENT_LINES} more record(s) not shown (${disagreements.length} total)\n`,
+    );
+  }
 
   const agg = aggregate(records);
+  const view = (b: typeof agg.totals) => applyCostMode(b, costMode);
+  // Issue #33: a sibling `provenance` map on every bucket (numbers unchanged).
+  const prov = statsProvenance(records);
+  const mapView = (m: Record<string, typeof agg.totals>, pm: Record<string, ProvenanceMap>) =>
+    Object.fromEntries(Object.entries(m).map(([k, b]) => [k, { ...view(b), provenance: pm[k] ?? {} }]));
 
   if (args.values.json) {
     process.stdout.write(
       JSON.stringify(
         {
-          total: agg.totals,
-          byAgent: agg.byAgent,
-          byDay: agg.byDay,
+          total: { ...view(agg.totals), costDisagreements: disagreements.length, provenance: prov.total },
+          byAgent: mapView(agg.byAgent, prov.byAgent),
+          byDay: mapView(agg.byDay, prov.byDay),
         },
         null,
         2,
       ) + "\n",
     );
   } else {
-    const line = (label: string, b: typeof agg.totals) =>
-      `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${fmtUsd(b.costUsd)}`;
-    process.stdout.write(line("totals", agg.totals) + "\n");
-    for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, b) + "\n");
-    for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(line(d, b) + "\n");
+    const line = (label: string, b: CostModeBucket, p: ProvenanceMap | undefined) =>
+      `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${b.costUsd === null ? "n/a" : fmtUsd(b.costUsd) + markerFor(p?.costUsd)}`;
+    process.stdout.write(`${line("totals", view(agg.totals), prov.total)} costMode=${costMode}\n`);
+    if (disagreements.length > 0) {
+      process.stdout.write(
+        `${"disagree".padEnd(9)} ${fmtInt(disagreements.length)} record(s) where reported and computed cost differ by >${COST_DISAGREEMENT_PCT}% (details on stderr)\n`,
+      );
+    }
+    for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, view(b), prov.byAgent[a]) + "\n");
+    for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(line(d, view(b), prov.byDay[d]) + "\n");
+    process.stdout.write(`${"legend".padEnd(9)} ${PROVENANCE_LEGEND}\n`);
   }
   hintCcusage();
   return 0;

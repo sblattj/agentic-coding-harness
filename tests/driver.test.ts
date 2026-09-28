@@ -641,6 +641,9 @@ describe('kiro usage truth', () => {
     assert.equal(totals.credits, FIXTURE_CREDITS);
     assert.equal(totals.contextTokens, FIXTURE_CTX_TOKENS);
     assert.equal(recs[0]!.usage?.tokens.available, false);
+    // Provenance (issue #33): the unreported token lanes and the underivable
+    // cost carry NO label (they render n/a), never `reported`.
+    assert.deepEqual(totals.provenance, { credits: 'reported', contextTokens: 'estimated' });
   });
 
   it('registry credits prefer the native figure over the tap sum when both observe one charge', async () => {
@@ -1038,5 +1041,64 @@ describe('installSignalAbort (signal-based abort helper)', () => {
     disposeB();
     disposeA(); // already self-removed by its one-shot fire: harmless no-op
     assert.equal(sigListeners('SIGTERM').length, preTerm.size, 'no listener leaks');
+  });
+});
+
+describe('RunRecord totals.costSource (issue #28)', () => {
+  const single = (): CanonicalTokenRecord => ({ model: 'claude-sonnet-4', inputTokens: 100_000, outputTokens: 10_000, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  // Multi-model record whose slices both carry a CLI-reported costUsd: the
+  // pricer sums those verbatim, so the run's cost is reported, not computed.
+  const multiReported = (): CanonicalTokenRecord => ({
+    model: 'claude-opus-4',
+    // Top-level counts are the slices' sum, as the claude tap writes them
+    // (zero here would make the usage verdict call usd unavailable).
+    inputTokens: 20,
+    outputTokens: 20,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    extra: {
+      raw: {
+        models: [
+          { model: 'claude-opus-4', input: 10, output: 10, cacheRead: 0, cacheWrite: 0, costUsd: 0.25 },
+          { model: 'claude-sonnet-4', input: 10, output: 10, cacheRead: 0, cacheWrite: 0, costUsd: 0.05 },
+        ],
+      },
+    },
+  });
+
+  const runWith = async (usages: CanonicalTokenRecord[]) => {
+    const regDir = tmpStateDir();
+    const driver = createDriver({ adapters: { mock: new MockAdapter() }, stateDir: tmpStateDir(), registry: { stateDir: regDir } });
+    await driver.run('mock', { prompt: 'cost', scriptedEvents: usages.map((u) => ev.preNormalized(u)) } as RunSpec);
+    const recs = listRunRecords(regDir);
+    assert.equal(recs.length, 1);
+    return recs[0]!.totals!;
+  };
+
+  it('is "computed" when only token math fed the total', async () => {
+    const t = await runWith([single()]);
+    assert.equal(t.costSource, 'computed');
+    assert.ok(t.costUsd > 0);
+    assert.deepEqual(t.provenance, {
+      inputTokens: 'reported',
+      outputTokens: 'reported',
+      cacheReadTokens: 'reported',
+      cacheWriteTokens: 'reported',
+      costUsd: 'computed',
+    });
+  });
+
+  it('is "reported" when only CLI-reported slice costs fed the total', async () => {
+    const t = await runWith([multiReported()]);
+    assert.equal(t.costSource, 'reported');
+    assert.equal(t.provenance?.costUsd, 'reported');
+    assert.equal(Math.round(t.costUsd * 1e6) / 1e6, 0.3);
+  });
+
+  it('is absent when both paths fed the total (the number is unchanged)', async () => {
+    const t = await runWith([single(), multiReported()]);
+    assert.equal(t.costSource, undefined);
+    assert.equal(t.provenance?.costUsd, 'computed'); // a blend is labelled computed
+    assert.ok(t.costUsd > 0.3);
   });
 });

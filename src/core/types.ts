@@ -65,7 +65,9 @@ export interface AdapterCapabilities {
  *
  * SEMANTICS (docs/TOKEN-COUNTING.md): inputTokens is UNCACHED input only;
  * there is no stored total — derive input + cacheRead + cacheWrite + output
- * at render time. costUsd is provider-reported when available, else computed.
+ * at render time. costUsd is the provider-reported cost when the producer
+ * supplied one (absent otherwise); computed cost comes from the Pricer, and
+ * consumers label which one they show (`ach stats --cost-mode`, costSource).
  * reasoningTokens is informational (already inside outputTokens for OpenAI/
  * Gemini billing).
  *
