@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
+import { resolveDirFlag } from "./lib.ts";
 import { describeListenError } from "./serve.ts";
 import { startWebServer, type WebServerHandle } from "../web/server.ts";
 import { TranscriptRunSource } from "../web/run-source-transcript.ts";
@@ -146,6 +147,7 @@ export async function cmdWeb(rest: string[]): Promise<number> {
       host: { type: "string" },
       token: { type: "string" },
       dir: { type: "string" },
+      "state-dir": { type: "string" },
       "no-open": { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
       source: { type: "string" },
@@ -159,13 +161,15 @@ export async function cmdWeb(rest: string[]): Promise<number> {
   // Optional positional trials-dir: accepted for symmetry with `harness
   // report <trials-dir>` but unused — the dashboard reads the live registry
   // out of the state dir, not a trials tree.
+  // --state-dir (alias --dir); resolved before anything starts so a
+  // conflicting pair fails fast.
+  const dir = resolveDirFlag(args.values, "state-dir") ?? stateDir();
   const [trialsDir] = args.positionals;
   if (trialsDir !== undefined) {
     process.stderr.write(`web: ignoring trials-dir '${trialsDir}' (dashboard reads the live registry)\n`);
   }
 
   const port = optPort(args.values.port, "--port");
-  const dir = args.values.dir ?? stateDir();
   // CLI flag wins over env; when both are unset: warn + force loopback.
   const token = args.values.token ?? (process.env.AGENTIC_CODING_HARNESS_HTTP_TOKEN || undefined);
   let host = args.values.host ?? DEFAULT_HOST;
