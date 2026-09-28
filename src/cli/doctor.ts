@@ -675,13 +675,13 @@ function checkPricing(): DoctorCheck {
     }
     // claude-3-haiku prices ONLY via the bundled LiteLLM extract
     // (src/core/pricing-data.json), so it tells extract from fallback.
-    const bundled = isPriced("claude-3-haiku");
+    if (!isPriced("claude-3-haiku")) {
+      return { ...base, status: "failed", detail: "bundled LiteLLM extract is unavailable", hint: "reinstall the harness", ms: Date.now() - t0 };
+    }
     return {
       ...base,
       status: "verified",
-      detail: bundled
-        ? "pricing table loads (embedded fallback + bundled LiteLLM extract)"
-        : "pricing table loads (embedded fallback only; the bundled LiteLLM extract is absent in this build)",
+      detail: "pricing table loads (embedded fallback + bundled LiteLLM extract)",
       ms: Date.now() - t0,
     };
   } catch (err) {
