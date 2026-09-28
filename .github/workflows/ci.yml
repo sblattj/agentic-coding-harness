@@ -21,12 +21,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         # 18.x resolves to the newest 18.x release, which satisfies the
         # package.json engines floor of >=18.19.
         node-version: ['18.x', '20.x', '22.x']
     steps:
+      # Keep LF line endings on Windows so fixtures, golden files and the
+      # committed bundles hash and compare byte-identically to Linux/macOS.
+      - name: Disable CRLF conversion
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v7
+
+      # npm runs package scripts through cmd.exe on Windows, which neither
+      # expands the `tests/*.test.ts` glob in `npm test` nor has the `rm -rf`
+      # / `cp -R` the build scripts use. Point npm at Git Bash (preinstalled
+      # on windows-latest) so the same package.json scripts run everywhere.
+      - name: Use Git Bash for npm scripts
+        if: runner.os == 'Windows'
+        shell: bash
+        run: npm config set script-shell "C:\\Program Files\\Git\\bin\\bash.exe"
 
       - name: Setup Node ${{ matrix.node-version }}
         uses: actions/setup-node@v7
