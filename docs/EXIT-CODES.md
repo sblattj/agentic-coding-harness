@@ -79,11 +79,11 @@ future reporting command.
 | Code | Name | Trigger condition |
 |---:|---|---|
 | **0** | ok | `run`: `exitStatus` is `success` and no measured budget dimension reached 80%. `stats` / `status`: there was at least one usage record or run record to report. |
-| **10** | near-limit | `run`: `exitStatus` is `success`, and at least one **configured and measurable** budget dimension reached **≥ 80%** (`NEAR_LIMIT_FRACTION`): `totalCost / budget.usd`, turns (step events counted like the driver counts them) `/ budget.maxTurns`, or `durationMs / budget.wallMs`. The USD ratio is skipped when the run says USD is unavailable (kiro: credits only), so it is never estimated. |
-| **11** | limit hit | `run`: `exitStatus` is `budget_exceeded` or `turn_limit`. |
+| **10** | near-limit | `run`: `exitStatus` is `success`, and at least one **configured and measurable** budget dimension reached **≥ 80% and < 100%** (`NEAR_LIMIT_FRACTION`): `totalCost / budget.usd`, turns (step events counted like the driver counts them) `/ budget.maxTurns`, or `durationMs / budget.wallMs`. The USD ratio is skipped when the run says USD is unavailable (kiro: credits only), so it is never estimated. |
+| **11** | limit hit | `run`: `exitStatus` is `budget_exceeded` or `turn_limit`, or a successful run reached 100% of a configured, measurable budget (including warn-only enforcement). |
 | **20** | indeterminate | `run`: `exitStatus` is `unavailable` (see above), or the launch itself failed with `UNAVAILABLE`. |
 | **30** | no data | `stats`: zero usage records **and** zero run records after the `--agent` / `--days` / `--state-only` filters. `status`: zero runs **and** zero usage records in its trailing-24h snapshot (one-shot and `--write-state --once`; the snapshot is still printed or written). |
-| **1** | error | `run`: `exitStatus` is `error`, `timeout`, `aborted` or `cancelled`, or a `--verify` checker did not pass (in both modes; `--repeat` groups exit 0/1 only). Every command: bad arguments, an unknown agent, an unknown `--exit-codes` value, any other harness error. |
+| **1** | error | `run`: `exitStatus` is `error`, `timeout`, `aborted` or `cancelled`, or a `--verify` checker did not pass (in both modes). Every command: bad arguments, an unknown agent, an unknown `--exit-codes` value, any other harness error. |
 
 `watch` accepts the flag so scripts can pass it uniformly. It runs until SIGINT/SIGTERM and exits
 0; it never reaches a verdict, so the ladder has nothing to add there.

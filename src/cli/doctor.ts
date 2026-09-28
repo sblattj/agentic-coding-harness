@@ -28,6 +28,8 @@ import { kiroPreflight, maskIdentity, type PreflightReceipt } from "../adapters/
 import { defaultSpawnFn, type SpawnFn } from "../adapters/shared.ts";
 import { createPricer, resolveAlias } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
+import { descriptorDirs, loadAgentDescriptors } from "../core/agent-descriptors.ts";
+import { splitTemplate } from "../adapters/custom.ts";
 import { AGENTS, HarnessError, isKnownAgent, type AgentName, type CanonicalTokenRecord } from "../core/types.ts";
 
 export type DoctorStatus = "verified" | "failed" | "unproven";
@@ -36,7 +38,7 @@ export type DoctorDepth = "deep" | "shallow";
 
 export interface DoctorCheck {
   /** Agent name, or 'harness' for the harness's own config checks. */
-  agent: AgentName | "harness";
+  agent: string;
   name: string;
   status: DoctorStatus;
   depth: DoctorDepth;
@@ -74,6 +76,7 @@ const INSTALL_HINT: Record<AgentName, string> = {
   codex: "install the Codex CLI (npm i -g @openai/codex) or put `codex` on PATH",
   gemini: "install the Gemini CLI (npm i -g @google/gemini-cli) or put `gemini` on PATH",
   opencode: "install opencode (npm i -g opencode-ai) or put `opencode` on PATH",
+  null: "built-in offline adapter; no installation needed",
   kiro: "install kiro-cli or point KIRO_CLI_BIN at it",
 };
 
@@ -84,6 +87,7 @@ const AUTH_ENV: Record<AgentName, string[]> = {
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   opencode: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"],
   kiro: ["KIRO_API_KEY"],
+  null: [],
 };
 
 /** Claude Code's own model aliases, resolved by the CLI at run time. */
@@ -332,6 +336,7 @@ async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv): Promise<Doct
     ...(hint !== undefined ? { hint } : {}),
     ms: Date.now() - t0,
   });
+  if (agent === "null") return mk("verified", "built-in offline adapter; no credentials required");
   const names = AUTH_ENV[agent];
   const broken: string[] = [];
   const good: string[] = [];
@@ -686,6 +691,20 @@ function checkPricing(): DoctorCheck {
 
 type EnvRule = "num" | "int" | "posint" | "flag" | "string" | "secret" | readonly string[];
 const HARNESS_ENV: Record<string, EnvRule> = {
+  COST_MODE: ["auto", "calculate", "display"],
+  TZ: "string",
+  PROJECT_ALIASES: "string",
+  BUDGET_ALERTS: "string",
+  WARN_THRESHOLDS: "string",
+  WARN_COOLDOWN_H: "num",
+  PLAN: ["pro", "max5", "max20", "custom"],
+  PLAN_WINDOW_TOKENS: "num",
+  PLAN_WINDOW_USD: "num",
+  PLAN_WINDOW_MESSAGES: "num",
+  QUOTA_CLAUDE_FILE: "string",
+  QUOTA_CODEX_DIR: "string",
+  NULL_EXIT: ["error", "timeout", "budget_exceeded"],
+  NULL_TURNS: "posint",
   STATE_DIR: "string",
   HTTP_TOKEN: "secret",
   BUDGET_USD: "num",
@@ -756,6 +775,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   // Agents run concurrently; the report keeps the requested order.
   const perAgent = await Promise.all(
     options.agents.map(async (agent): Promise<DoctorCheck[]> => {
+      if (agent === "null") return [{ agent, name: "runtime", status: "verified", depth: "shallow", detail: "built-in offline adapter; no binary, auth or MCP required", ms: 0 }];
       if (agent === "kiro") return checkKiro({ ...options, env, cwd, versionTimeoutMs });
       const bin = await checkBinary(agent, agent, env, cwd, versionTimeoutMs);
       return [...bin.checks, await checkAuth(agent, env), checkModel(agent, options.model), await checkMcp(agent, env, cwd)];
@@ -801,8 +821,9 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
     allowPositionals: false,
   });
   const agent = args.values.agent;
-  if (agent !== undefined && !isKnownAgent(agent)) {
-    throw new HarnessError(`unknown agent '${agent}' (expected one of: ${AGENTS.join(", ")})`, "UNKNOWN_AGENT");
+  const catalog = loadAgentDescriptors({ dirs: descriptorDirs({ cwd: args.values.cwd ?? process.cwd(), stateDir: defaultStateDir() }) });
+  if (agent !== undefined && !isKnownAgent(agent) && !catalog.descriptors.some((d) => d.descriptor.name === agent)) {
+    throw new HarnessError(`unknown agent '${agent}' (expected one of: ${[...AGENTS, ...catalog.descriptors.map((d) => d.descriptor.name)].join(", ")})`, "UNKNOWN_AGENT");
   }
   if (args.values.model !== undefined && agent === undefined) {
     throw new HarnessError("doctor --model needs --agent (a model belongs to one adapter)", "USAGE");
@@ -810,12 +831,30 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   if (args.values["claude-default-config"]) env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
   const report = await runDoctor({
-    agents: agent !== undefined ? [agent] : AGENTS,
+    agents: agent !== undefined ? (isKnownAgent(agent) ? [agent] : []) : AGENTS.filter((a) => a !== "null"),
     env,
     cwd: args.values.cwd ?? process.cwd(),
     stateDir: defaultStateDir(),
     ...(args.values.model !== undefined ? { model: args.values.model } : {}),
   });
+  for (const { descriptor: d, file } of catalog.descriptors) {
+    if (agent !== undefined && agent !== d.name) continue;
+    report.checks.push({ agent: d.name, name: "descriptor", status: "verified", depth: "shallow", detail: `${file}: validated descriptor`, ms: 0 });
+    if (d.launch) {
+      let command: string | undefined;
+      try { command = d.launch.shell ? "/bin/sh" : splitTemplate(d.launch.template)[0]; } catch { /* reported below */ }
+      const resolved = command ? resolveOnPath(command, env.PATH) : undefined;
+      report.checks.push({ agent: d.name, name: "binary", status: resolved ? "verified" : "failed", depth: "shallow", detail: resolved ? `${resolved}: executable present; not launched` : `template command '${command ?? "unknown"}' is not executable`, ...(resolved ? {} : { hint: "install the descriptor command or correct launch.template" }), ms: 0 });
+      report.checks.push({ agent: d.name, name: "auth", status: "unproven", depth: "shallow", detail: "descriptor supplies no offline authentication probe", ms: 0 });
+    }
+    if (d.usageTap) {
+      const tapPath = d.usageTap.path.replace(/^~(?=\/|$)/, homeOf(env));
+      const present = await exists(tapPath);
+      report.checks.push({ agent: d.name, name: "usageTap", status: present ? "verified" : "unproven", depth: "shallow", detail: present ? `${tapPath}: usage source present` : `${tapPath}: usage source not present yet`, ms: 0 });
+    }
+  }
+  for (const issue of catalog.errors) report.checks.push({ agent: "harness", name: "descriptor", status: "failed", depth: "shallow", detail: JSON.stringify(issue), hint: "correct the invalid agents.d descriptor", ms: 0 });
+  report.ok = report.checks.every((c) => c.status !== "failed");
   process.stdout.write((args.values.json ? JSON.stringify(report, null, 2) : formatDoctorTable(report)) + "\n");
   return report.ok ? 0 : 1;
 }

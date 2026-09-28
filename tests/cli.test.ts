@@ -23,7 +23,7 @@ function runCli(args: string[], env: Record<string, string>): RunOut {
   const base = { ...process.env };
   delete base.AGENTIC_CODING_HARNESS_COST_MODE;
   const p = spawnSync(process.execPath, isBun ? [CLI, ...args] : ["--import", "tsx", CLI, ...args], {
-    env: { ...base, ...env },
+    env: { ...base, AGENTIC_CODING_HARNESS_TZ: "UTC", ...env },
     encoding: "utf8",
   });
   return {

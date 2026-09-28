@@ -356,7 +356,7 @@ const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
 function runCli(args: string[], env: Record<string, string>): { code: number; stdout: string; stderr: string } {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;
   const p = spawnSync(process.execPath, isBun ? [CLI, ...args] : ["--import", "tsx", CLI, ...args], {
-    env: { ...process.env, AGENTIC_CODING_HARNESS_PROJECT_ALIASES: "", ...env },
+    env: { ...process.env, AGENTIC_CODING_HARNESS_PROJECT_ALIASES: "", AGENTIC_CODING_HARNESS_TZ: "UTC", ...env },
     encoding: "utf8",
   });
   return { code: p.status ?? -1, stdout: p.stdout ?? "", stderr: p.stderr ?? "" };

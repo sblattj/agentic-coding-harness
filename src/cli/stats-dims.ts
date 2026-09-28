@@ -13,6 +13,8 @@
 // composite ("a+b", "multi") or absent goes to the explicit `unattributed`
 // bucket, never into a guessed dominant model.
 import fs from "node:fs";
+import { bucketKey } from "./time-window.ts";
+import { selectCost, type CostMode } from "./cost-mode.ts";
 import os from "node:os";
 import path from "node:path";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
@@ -39,11 +41,14 @@ export interface ModelBucket extends Omit<UsageBucket, "costUsd"> {
   cacheHitRatio: number | null;
 }
 
-export interface RatioBucket extends UsageBucket {
+export interface RatioBucket extends Omit<UsageBucket, "costUsd"> {
+  costUsd: number | null;
   cacheHitRatio: number | null;
 }
 
 export interface DimOptions {
+  costMode?: CostMode;
+  timeZone?: string;
   /** Prices slices that carry no CLI-reported cost. Without it they are unpriced. */
   pricer?: Pricer;
   /** Merge scoped `agent/model` rows into bare model rows (after aliasing). */
@@ -130,7 +135,7 @@ function priceSlice(pricer: Pricer | undefined, s: Slice): number | null {
   return Number.isFinite(cost) ? cost : null;
 }
 
-function contributions(r: DimRecord, pricer: Pricer | undefined): Contribution[] {
+function contributions(r: DimRecord, pricer: Pricer | undefined, mode: CostMode = "auto"): Contribution[] {
   const slices = usageSlices(r.extra);
   if (slices) {
     return slices.map((s) => ({
@@ -143,8 +148,7 @@ function contributions(r: DimRecord, pricer: Pricer | undefined): Contribution[]
       // CLI-reported slice cost first; a lone slice IS the record, so the
       // record's cost is its cost; otherwise price the slice at its own rates.
       costUsd:
-        s.costUsd ??
-        (slices.length === 1 && r.costUsd !== undefined ? r.costUsd : priceSlice(pricer, s)),
+        (slices.length === 1 && r.costUsd !== undefined ? r.costUsd : selectCost(mode, s.costUsd, priceSlice(pricer, s) ?? undefined).costUsd ?? null),
     }));
   }
   return [
@@ -338,8 +342,8 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
   const byModelDay: Record<string, Record<string, ModelBucket>> = {};
   const byProject: Record<string, RatioBucket> = {};
   for (const r of records) {
-    const day = r.ts ? r.ts.slice(0, 10) : "unknown";
-    for (const c of contributions(r, opts.pricer)) {
+    const day = opts.timeZone ? bucketKey(r.ts, "day", opts.timeZone) : r.ts ? r.ts.slice(0, 10) : "unknown";
+    for (const c of contributions(r, opts.pricer, opts.costMode)) {
       const key = modelKey(r.agent, c.model, opts);
       addContribution((byModel[key] ??= emptyModelBucket()), c);
       if (opts.byModelDay) addContribution(((byModelDay[day] ??= {})[key] ??= emptyModelBucket()), c);
@@ -353,13 +357,13 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
       b.cacheReadTokens += r.cacheReadTokens;
       b.cacheWriteTokens += r.cacheWriteTokens;
       b.reasoningTokens += r.reasoningTokens;
-      b.costUsd += r.costUsd ?? 0;
+      b.costUsd = b.costUsd === null || r.costUsd === undefined ? null : b.costUsd + r.costUsd;
     }
   }
   for (const b of Object.values(byModel)) finishModel(b);
   for (const cells of Object.values(byModelDay)) for (const b of Object.values(cells)) finishModel(b);
   for (const b of Object.values(byProject)) {
-    b.costUsd = Math.round(b.costUsd * 1e6) / 1e6;
+    if (b.costUsd !== null) b.costUsd = Math.round(b.costUsd * 1e6) / 1e6;
     b.cacheHitRatio = cacheHitRatio(b);
   }
   const out: DimAggregates = {
@@ -402,10 +406,12 @@ export function baseCacheRatios(agg: {
   totals: UsageBucket;
   byAgent: Record<string, UsageBucket>;
   byDay: Record<string, UsageBucket>;
-}): { total: number | null; byAgent: Record<string, number | null>; byDay: Record<string, number | null> } {
+  byWeek?: Record<string, UsageBucket>;
+  byMonth?: Record<string, UsageBucket>;
+}): { byWeek?: Record<string, number | null>; byMonth?: Record<string, number | null>; total: number | null; byAgent: Record<string, number | null>; byDay: Record<string, number | null> } {
   const map = (m: Record<string, UsageBucket>) =>
     Object.fromEntries(Object.entries(m).map(([k, b]) => [k, cacheHitRatio(b)]));
-  return { total: cacheHitRatio(agg.totals), byAgent: map(agg.byAgent), byDay: map(agg.byDay) };
+  return { total: cacheHitRatio(agg.totals), byAgent: map(agg.byAgent), byDay: map(agg.byDay), ...(agg.byWeek ? { byWeek: map(agg.byWeek) } : {}), ...(agg.byMonth ? { byMonth: map(agg.byMonth) } : {}) };
 }
 
 /** One text row, same columns as the base stats lines plus cacheHit. */
