@@ -41,6 +41,12 @@ function finitePositive(what: string) {
     .refine((v) => Number.isFinite(v) && v > 0, { error });
 }
 
+/** Alert threshold list (#20): every entry a fraction in (0, 1]. */
+function thresholdList(what: string) {
+  const error = `${what} entries must be fractions in (0, 1] (write 0.85 for 85%)`;
+  return z.array(z.number({ error }).refine((v) => Number.isFinite(v) && v > 0 && v <= 1, { error }), { error });
+}
+
 // ------------------------------------------------------- CLI capabilities
 // (moved from src/adapters/types.ts; re-exported there)
 
@@ -332,6 +338,23 @@ export interface SessionEndEvent extends BaseEvent {
 }
 
 /**
+ * Driver-synthesized threshold crossing (#20): a budget alert (fraction of
+ * budget.usd) or near-limit warning (fraction of maxTurns / wallMs). Rides the
+ * same stream as adapter events (RunResult.events, raw transcript, outputDir
+ * events, onEvent). `data` is the human one-liner. Never implies an abort.
+ */
+export interface BudgetAlertEvent extends OpenEvent {
+  type: "budget.alert";
+  runId: string;
+  family: "budget" | "near-limit";
+  metric: "usd" | "turns" | "wall";
+  threshold: number;
+  value: number;
+  limit: number;
+  data: string;
+}
+
+/**
  * Union of both event vocabularies:
  *  - driver lane: step/usage/usage_raw (adapters attach raw provider payloads
  *    on `data`; the driver normalizes usage via normalizeAuto)
@@ -359,7 +382,8 @@ export type AgentEvent =
   | SessionStartEvent
   | SessionEndEvent
   | ModelCallStartEvent
-  | ModelCallEndEvent;
+  | ModelCallEndEvent
+  | BudgetAlertEvent;
 
 /**
  * Zod view of the canonical AgentEvent discriminants (each variant
@@ -416,6 +440,14 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
     .object({ type: z.literal("progress"), timestamp: z.number(), text: z.string().optional() })
     .passthrough(),
   z.object({ type: z.literal("done"), timestamp: z.number() }).passthrough(),
+  z
+    .object({
+      type: z.literal("budget.alert"),
+      timestamp: z.number(),
+      metric: z.enum(["usd", "turns", "wall"]),
+      threshold: z.number(),
+    })
+    .passthrough(),
 ]);
 
 // ------------------------------------------------- canonical events (CLI lane)
@@ -788,6 +820,24 @@ export interface RunBudget {
   wallMs?: number;
   /** No-event idle cap in ms (top-level alias: RunSpec.idleTimeoutMs). */
   idleMs?: number;
+  /**
+   * Budget-threshold alerts (#20): fractions in (0, 1] of `usd`. Each crossing
+   * emits one `budget.alert` event; alerts never abort. Opt-in (no default in
+   * the library; `ach run` defaults to 0.5,0.8,1.0 when --budget-usd is set).
+   */
+  alerts?: number[];
+  /**
+   * Near-limit warnings (#20): fractions in (0, 1] of `maxTurns` and `wallMs`
+   * (wall is evaluated on each event). Opt-in like `alerts`.
+   */
+  warnAt?: number[];
+  /**
+   * What exceeding `usd` does: 'abort' (default, the pre-0.11 behavior) or
+   * 'warn' (one warning, the run continues).
+   */
+  onExceed?: "abort" | "warn";
+  /** Cooldown between re-announcements of one threshold (ms); default 24h / env. */
+  alertCooldownMs?: number;
 }
 
 /** Run request as accepted by Driver.run(). Extra keys pass through. */
@@ -890,6 +940,13 @@ export const RunSpecSchema = z
           .optional(),
         wallMs: finitePositive("budget.wallMs").optional(),
         idleMs: finitePositive("budget.idleMs").optional(),
+        alerts: thresholdList("budget.alerts").optional(),
+        warnAt: thresholdList("budget.warnAt").optional(),
+        onExceed: z.enum(["abort", "warn"], { error: "budget.onExceed must be 'abort' or 'warn'" }).optional(),
+        alertCooldownMs: z
+          .number({ error: "budget.alertCooldownMs must be a finite number >= 0" })
+          .refine((v) => Number.isFinite(v) && v >= 0, { error: "budget.alertCooldownMs must be a finite number >= 0" })
+          .optional(),
       })
       .strict()
       .optional(),

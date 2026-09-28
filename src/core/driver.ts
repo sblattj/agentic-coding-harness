@@ -21,6 +21,18 @@ import { KiroAdapter } from '../adapters/kiro.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { GeminiAdapter } from '../adapters/gemini.js';
 import { takeOnOutput } from '../adapters/shared.js';
+import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
+import type { BudgetAlertEvent } from './types.js';
+
+/** Alert cooldown from AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H; a bad value warns and keeps the 24h default (#20). */
+function envCooldownMs(warn: (w: string) => void): number {
+  try {
+    return cooldownMsFromEnv(process.env);
+  } catch (err) {
+    warn(`alerts: ${err instanceof Error ? err.message : String(err)}; using the 24h default`);
+    return DEFAULT_COOLDOWN_MS;
+  }
+}
 
 /** Normalize EventTimestamp (ISO string | epoch ms | Date | undefined) to epoch ms. */
 function toMs(ts: EventTimestamp): number {
@@ -391,6 +403,36 @@ export function createDriver(options: DriverOptions): Driver {
             'budget: usd cap is not enforceable for kiro (credits only); wall/idle/maxTurns still apply',
           );
         }
+        // --- threshold alerts / near-limit warnings (#20) ---
+        // Warn WITHOUT aborting: each crossing becomes a `budget.alert` event on
+        // the same stream as adapter events (RunResult.events, transcript,
+        // outputDir, onEvent) plus a RunRecord.alerts row. Opt-in via
+        // budget.alerts / budget.warnAt; the usd cap's abort is separate
+        // (budget.onExceed). Kiro prices nothing, so usd alerts cannot fire there.
+        const onExceed = parsed.budget?.onExceed ?? 'abort';
+        let exceedWarned = false;
+        const runAlerts = createRunAlerts({
+          runId,
+          stateDir,
+          usd: budgetUsd,
+          maxTurns,
+          wallMs,
+          alerts: parsed.budget?.alerts,
+          warnAt: parsed.budget?.warnAt,
+          cooldownMs:
+            parsed.budget?.alertCooldownMs ??
+            ((parsed.budget?.alerts?.length ?? 0) + (parsed.budget?.warnAt?.length ?? 0) > 0
+              ? envCooldownMs((w) => warnings.push(w))
+              : undefined),
+          onWarning: (w) => warnings.push(w),
+        });
+        // Filled in once the transcript/registry exist (below); alerts only
+        // fire from inside the event loop, after that point.
+        let emitAlert: (a: FiredAlert) => void = () => {};
+        const checkAlert = (metric: AlertMetric, value: number): void => {
+          if (runAlerts === null) return;
+          for (const a of runAlerts.observe(metric, value)) emitAlert(a);
+        };
         // Highest cumulative credit figure the live stream reported
         // (kiro-events puts it on every usage record's extra.creditsCumulative).
         let streamCreditsCumulative: number | null = null;
@@ -527,6 +569,30 @@ export function createDriver(options: DriverOptions): Driver {
           writeRunRecordThrottled(true);
         };
 
+        emitAlert = (a: FiredAlert): void => {
+          const alertEvent: BudgetAlertEvent = {
+            type: 'budget.alert',
+            timestamp: a.at,
+            sessionId: handle.sessionId,
+            runId,
+            family: a.family,
+            metric: a.metric,
+            threshold: a.threshold,
+            value: a.value,
+            limit: a.limit,
+            data: describeAlert(a),
+          };
+          events.push(alertEvent);
+          transcript.write(`${JSON.stringify(alertEvent)}\n`);
+          artifacts?.event(alertEvent);
+          onEvent?.(alertEvent);
+          if (rec) {
+            (rec.alerts ??= []).push({ ...a });
+            rec.lastEvent = `budget.alert ${alertEvent.data}`;
+            writeRunRecordThrottled(true);
+          }
+        };
+
         try {
           for await (const event of handle.attach()) {
             armIdleTimer(); // every AgentEvent defers the idle deadline
@@ -541,6 +607,8 @@ export function createDriver(options: DriverOptions): Driver {
               rec.lastEvent = eventPreview(event);
               if (typeof event.sessionId === 'string' && event.sessionId) rec.sessionId = event.sessionId;
             }
+            // Wall near-limit warnings are event-clocked: checked per event.
+            if (wallMs !== undefined) checkAlert('wall', Date.now() - start);
 
             if (event.type === 'usage_raw' || event.type === 'usage') {
               const ts = toMs(event.timestamp);
@@ -578,10 +646,21 @@ export function createDriver(options: DriverOptions): Driver {
                   }
                 }
               }
+              // Alerts first, so the 100% crossing is on the stream even when
+              // the cap below aborts the run.
+              if (budgetUsd !== undefined) checkAlert('usd', cumulativeCost);
               if (budgetUsd !== undefined && cumulativeCost > budgetUsd) {
-                enforcedStatus = 'budget_exceeded';
-                await handle.abort();
-                break;
+                if (onExceed === 'abort') {
+                  enforcedStatus = 'budget_exceeded';
+                  await handle.abort();
+                  break;
+                }
+                if (!exceedWarned) {
+                  exceedWarned = true;
+                  warnings.push(
+                    `budget: usd cap $${budgetUsd.toFixed(4)} exceeded ($${cumulativeCost.toFixed(4)}); continuing (onExceed: warn)`,
+                  );
+                }
               }
             }
 
@@ -607,6 +686,7 @@ export function createDriver(options: DriverOptions): Driver {
 
             if (event.type === 'step' && countsAsTurn(agentName, event)) {
               steps++;
+              if (maxTurns !== undefined) checkAlert('turns', steps);
               // Enforce the turn ceiling only when the adapter doesn't do it itself.
               if (maxTurns !== undefined && !adapter.enforcesBudget && steps > maxTurns) {
                 enforcedStatus = 'turn_limit';

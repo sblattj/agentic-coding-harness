@@ -5,6 +5,7 @@
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
+import { describeAlert } from "../core/budget-alerts.ts";
 import {
   effectiveStatus,
   isLive,
@@ -182,7 +183,17 @@ export function frame(recs: RunRecord[], dir: string, showAll: boolean, width: n
   const visible = recs.filter((r) => isVisible(r, now, showAll));
   const fixed = Object.values(COL).reduce((a, w) => a + w, 0) + Object.keys(COL).length;
   const lastW = Math.max(10, width - fixed);
-  const lines: string[] = [`harness dash — ${dir}${showAll ? "  (--all)" : ""}`, HEADER];
+  const lines: string[] = [`harness dash — ${dir}${showAll ? "  (--all)" : ""}`];
+  // Banner rows (#20): one per visible run that crossed a budget / near-limit
+  // threshold, showing its latest alert. Data-derived from RunRecord.alerts,
+  // so every refresh shows the same banner — the engine already fired once.
+  for (const r of visible) {
+    const last = r.alerts?.[r.alerts.length - 1];
+    if (last === undefined) continue;
+    const text = `ALERT ${r.runId.slice(0, 8)} ${r.agent} ${describeAlert(last)}`;
+    lines.push(ansi ? `\x1b[33m${text}\x1b[0m` : text);
+  }
+  lines.push(HEADER);
   if (visible.length === 0) {
     lines.push(
       "no runs yet — start one with: harness run --agent claude \"your prompt\"",
