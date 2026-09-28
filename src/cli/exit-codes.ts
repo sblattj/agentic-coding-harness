@@ -21,6 +21,7 @@
 
 import { countsAsTurn } from "../core/driver.ts";
 import { HarnessError, type RunResult } from "../core/types.ts";
+import type { TrialOutcome } from "./trials.ts";
 
 export type ExitCodeMode = "binary" | "ladder";
 
@@ -99,6 +100,35 @@ export function runExitCode(
     default:
       return EXIT_CODES.error;
   }
+}
+
+/** Group exit codes from most to least severe (docs/EXIT-CODES.md, "Repeat groups"). */
+const REPEAT_SEVERITY: readonly number[] = [
+  EXIT_CODES.error,
+  EXIT_CODES.indeterminate,
+  EXIT_CODES.limitHit,
+  EXIT_CODES.nearLimit,
+];
+
+/**
+ * Process exit code for an `ach run --repeat N` group: each child is scored
+ * with the single-run rule (a failed `--verify` checker is a task failure →
+ * 1; a launch that threw UNAVAILABLE → 20 under the ladder, 1 otherwise;
+ * any other thrown child → 1; else `runExitCode`), and the group exits with
+ * the most severe child code: 1 > 20 > 11 > 10 > 0.
+ */
+export function repeatExitCode(
+  outcomes: readonly TrialOutcome[],
+  opts: { mode: ExitCodeMode; budget?: LadderBudget; agent?: string },
+): number {
+  const codes = outcomes.map((o) => {
+    if (o.result === undefined) {
+      return opts.mode === "ladder" && o.errorCode === "UNAVAILABLE" ? EXIT_CODES.indeterminate : EXIT_CODES.error;
+    }
+    if (o.verify !== undefined && o.verify.status !== "pass") return EXIT_CODES.error;
+    return runExitCode(o.result, opts);
+  });
+  return REPEAT_SEVERITY.find((code) => codes.includes(code)) ?? EXIT_CODES.ok;
 }
 
 /** Exit code for a reporting command (`stats`, `status`) that found `count` items. */

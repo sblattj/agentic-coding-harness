@@ -14,7 +14,7 @@ import path from "node:path";
 import type { Driver } from "../core/driver.ts";
 import { registryDir, writeRunRecord, type RepeatMembership, type RunRecord } from "../core/registry.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
-import type { RunResult, RunSpec } from "../core/types.ts";
+import { HarnessError, type RunResult, type RunSpec } from "../core/types.ts";
 import { runVerifier, type VerifyResult } from "../core/verify.ts";
 
 export interface VerifyRequest {
@@ -64,6 +64,8 @@ export interface TrialOutcome {
   verify?: VerifyResult;
   /** driver.run() threw (launch failure etc.) — the child still counts as attempted. */
   error?: string;
+  /** HarnessError code of the throw (e.g. UNAVAILABLE → exit 20 under the ladder). */
+  errorCode?: string;
   repeat?: RepeatMembership;
   /** Registry annotation failed (record missing/unwritable) — surfaced as a warning. */
   annotateFailed?: boolean;
@@ -146,7 +148,12 @@ export async function runRepeatGroup(opts: RepeatOptions): Promise<RepeatGroupRe
         void _drop;
         outcome = await runOnce({ ...opts, spec: spec as RunSpec, repeat });
       } catch (err) {
-        outcome = { index, repeat, error: err instanceof Error ? err.message : String(err) };
+        outcome = {
+          index,
+          repeat,
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof HarnessError ? { errorCode: err.code } : {}),
+        };
       }
       outcomes[index] = outcome;
       opts.onSettled?.(outcome);
