@@ -11,8 +11,12 @@ import {
   listRunRecords,
   type RunRecord,
 } from "../core/registry.ts";
+import { collectQuota, dashQuotaCell, type QuotaRow } from "../core/quota.ts";
 
 const REDRAW_MS = 500;
+/** Quota sources are files on disk (rollouts, statusline snapshot); re-read at most this often. */
+const QUOTA_REFRESH_MS = 30_000;
+const QUOTA_W = 9;
 const HOUR_MS = 3_600_000;
 
 // ---------------------------------------------------------------- formatting
@@ -117,7 +121,7 @@ function isVisible(rec: RunRecord, now: number, showAll: boolean): boolean {
   return rec.status !== "running" && now - (rec.updatedAt ?? rec.startedAt) < HOUR_MS;
 }
 
-function tableRow(rec: RunRecord, now: number, ansi: boolean, lastW: number): string {
+function tableRow(rec: RunRecord, now: number, ansi: boolean, lastW: number, quota?: QuotaRow[]): string {
   const live = isLive(rec, now);
   const end = live ? now : (rec.updatedAt ?? rec.startedAt);
   // Local records always carry totals; an exotic record without one still
@@ -136,8 +140,11 @@ function tableRow(rec: RunRecord, now: number, ansi: boolean, lastW: number): st
     padL(usdUnavailable(rec) ? "n/a" : fmtCost(t.costUsd), COL.cost),
     padL(fmtCredits(t.credits), COL.credits),
     padL(fmtContext(rec), COL.ctx),
-    padR(rec.lastEvent ?? "", lastW),
   ];
+  // QUOTA: vendor-reported headroom for this row's agent (src/core/quota.ts),
+  // only when the caller supplied quota rows — legacy frames stay unchanged.
+  if (quota !== undefined) cells.push(padL(dashQuotaCell(quota, rec.agent), QUOTA_W));
+  cells.push(padR(rec.lastEvent ?? "", lastW));
   return cells.join(" ");
 }
 
@@ -172,19 +179,29 @@ function footer(visible: RunRecord[]): string {
   return parts.join("  ");
 }
 
-/** One rendered dashboard frame. Exported for tests (pure: no TTY, no I/O). */
-export function frame(recs: RunRecord[], dir: string, showAll: boolean, width: number, ansi: boolean): string {
+/** One rendered dashboard frame. Exported for tests (pure: no TTY, no I/O).
+ *  `quota` (rows from collectQuota) adds the QUOTA column; omitted = legacy frame. */
+export function frame(
+  recs: RunRecord[],
+  dir: string,
+  showAll: boolean,
+  width: number,
+  ansi: boolean,
+  quota?: QuotaRow[],
+): string {
   const now = Date.now();
   const visible = recs.filter((r) => isVisible(r, now, showAll));
-  const fixed = Object.values(COL).reduce((a, w) => a + w, 0) + Object.keys(COL).length;
+  const extra = quota === undefined ? 0 : QUOTA_W + 1;
+  const fixed = Object.values(COL).reduce((a, w) => a + w, 0) + Object.keys(COL).length + extra;
   const lastW = Math.max(10, width - fixed);
-  const lines: string[] = [`harness dash — ${dir}${showAll ? "  (--all)" : ""}`, HEADER];
+  const header = quota === undefined ? HEADER : HEADER.replace(" LAST EVENT", ` ${padL("QUOTA", QUOTA_W)} LAST EVENT`);
+  const lines: string[] = [`harness dash — ${dir}${showAll ? "  (--all)" : ""}`, header];
   if (visible.length === 0) {
     lines.push(
       "no runs yet — start one with: harness run --agent claude \"your prompt\"",
     );
   } else {
-    for (const r of visible) lines.push(tableRow(r, now, ansi, lastW));
+    for (const r of visible) lines.push(tableRow(r, now, ansi, lastW, quota));
   }
   lines.push("");
   lines.push(footer(visible));
@@ -231,14 +248,29 @@ async function liveLoop(dir: string, showAll: boolean): Promise<number> {
     if (ansi) process.stdout.write("\x1b[?25h\x1b[?1049l");
   }
 
+  let quota: QuotaRow[] | undefined;
+  let quotaAt = 0;
+  const refreshQuota = (): void => {
+    if (Date.now() - quotaAt < QUOTA_REFRESH_MS) return;
+    quotaAt = Date.now();
+    collectQuota({ stateDir: dir })
+      .then((rows) => {
+        quota = rows;
+      })
+      .catch(() => {
+        /* quota is best-effort; the column shows n/a until a read succeeds */
+      });
+  };
+
   const draw = (): void => {
+    refreshQuota();
     let recs: RunRecord[];
     try {
       recs = listRunRecords(dir);
     } catch {
       recs = [];
     }
-    process.stdout.write("\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi) + "\n");
+    process.stdout.write("\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi, quota ?? []) + "\n");
   };
 
   if (stdin.isTTY && typeof stdin.setRawMode === "function") {
