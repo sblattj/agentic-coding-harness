@@ -797,18 +797,19 @@ async function cmdWatch(rest: string[]): Promise<number> {
       }>
     >;
   }
-  const watched: Watched[] = [];
-  const files = new Set<string>();
-  for (const src of sources) {
-    for (const file of await walkFiles(src.dir, src.keep)) {
-      if (files.has(file)) continue;
-      files.add(file);
-      watched.push({ file, agent: src.agent, parse: src.parse });
-    }
-  }
-
   let firstTick = true;
   const tick = async (): Promise<void> => {
+    // Discover on every poll: sessions and even source directories can be
+    // created after watch starts. Dedupe paths within this poll only.
+    const watched: Watched[] = [];
+    const files = new Set<string>();
+    for (const src of sources) {
+      for (const file of await walkFiles(src.dir, src.keep)) {
+        if (files.has(file)) continue;
+        files.add(file);
+        watched.push({ file, agent: src.agent, parse: src.parse });
+      }
+    }
     const deltas = new Map<string, { agent: string; sessionId: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; priced: boolean }>();
     const bump = (r: { agent?: string; sessionId?: string | null; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd?: number }) => {
       const agent = r.agent ?? "unknown";
@@ -856,7 +857,8 @@ async function cmdWatch(rest: string[]): Promise<number> {
       for (const [key, value] of replay ? recent : totals) {
         // Baseline on startup even with saved offsets. Later snapshots are
         // cumulative per file/session/model, including legacy Goose totals.
-        if (!replay && !previous) continue;
+        // A newly discovered post-start file has a zero baseline.
+        if (firstTick && !replay && !previous) continue;
         const before = replay ? undefined : previous?.get(key);
         const inputTokens = Math.max(0, value.input - (before?.input ?? 0));
         const outputTokens = Math.max(0, value.output - (before?.output ?? 0));
