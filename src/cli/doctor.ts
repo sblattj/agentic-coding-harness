@@ -46,6 +46,8 @@ export interface DoctorCheck {
   /** Fix hint; present on every failed check. */
   hint?: string;
   ms: number;
+  /** Present (and always "agents.d") when the check came from a #38 drop-in descriptor rather than a built-in AGENT. */
+  source?: "agents.d";
 }
 
 export interface DoctorReport {
@@ -839,21 +841,21 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
   });
   for (const { descriptor: d, file } of catalog.descriptors) {
     if (agent !== undefined && agent !== d.name) continue;
-    report.checks.push({ agent: d.name, name: "descriptor", status: "verified", depth: "shallow", detail: `${file}: validated descriptor`, ms: 0 });
+    report.checks.push({ agent: d.name, name: "descriptor", status: "verified", depth: "shallow", detail: `${file}: validated descriptor`, ms: 0, source: "agents.d" });
     if (d.launch) {
       let command: string | undefined;
       try { command = d.launch.shell ? "/bin/sh" : splitTemplate(d.launch.template)[0]; } catch { /* reported below */ }
       const resolved = command ? resolveOnPath(command, env.PATH) : undefined;
-      report.checks.push({ agent: d.name, name: "binary", status: resolved ? "verified" : "failed", depth: "shallow", detail: resolved ? `${resolved}: executable present; not launched` : `template command '${command ?? "unknown"}' is not executable`, ...(resolved ? {} : { hint: "install the descriptor command or correct launch.template" }), ms: 0 });
-      report.checks.push({ agent: d.name, name: "auth", status: "unproven", depth: "shallow", detail: "descriptor supplies no offline authentication probe", ms: 0 });
+      report.checks.push({ agent: d.name, name: "binary", status: resolved ? "verified" : "failed", depth: "shallow", detail: resolved ? `${resolved}: executable present; not launched` : `template command '${command ?? "unknown"}' is not executable`, ...(resolved ? {} : { hint: "install the descriptor command or correct launch.template" }), ms: 0, source: "agents.d" });
+      report.checks.push({ agent: d.name, name: "auth", status: "unproven", depth: "shallow", detail: "descriptor supplies no offline authentication probe", ms: 0, source: "agents.d" });
     }
     if (d.usageTap) {
       const tapPath = d.usageTap.path.replace(/^~(?=\/|$)/, homeOf(env));
       const present = await exists(tapPath);
-      report.checks.push({ agent: d.name, name: "usageTap", status: present ? "verified" : "unproven", depth: "shallow", detail: present ? `${tapPath}: usage source present` : `${tapPath}: usage source not present yet`, ms: 0 });
+      report.checks.push({ agent: d.name, name: "usageTap", status: present ? "verified" : "unproven", depth: "shallow", detail: present ? `${tapPath}: usage source present` : `${tapPath}: usage source not present yet`, ms: 0, source: "agents.d" });
     }
   }
-  for (const issue of catalog.errors) report.checks.push({ agent: "harness", name: "descriptor", status: "failed", depth: "shallow", detail: JSON.stringify(issue), hint: "correct the invalid agents.d descriptor", ms: 0 });
+  for (const issue of catalog.errors) report.checks.push({ agent: "harness", name: "descriptor", status: "failed", depth: "shallow", detail: JSON.stringify(issue), hint: "correct the invalid agents.d descriptor", ms: 0, source: "agents.d" });
   report.ok = report.checks.every((c) => c.status !== "failed");
   process.stdout.write((args.values.json ? JSON.stringify(report, null, 2) : formatDoctorTable(report)) + "\n");
   return report.ok ? 0 : 1;
