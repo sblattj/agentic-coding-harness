@@ -902,6 +902,21 @@ export interface AgentHandle {
    * wait() settles — before that the ack/session evidence is incomplete.
    */
   kiro?: () => KiroEffective | undefined;
+  /**
+   * Handle -> driver hand-off for run-record provenance (#37 custom agents):
+   * the resolved command (prompt redacted) and how the run was metered. The
+   * driver reads it at record creation and again after wait() settles.
+   * Built-in adapters leave it undefined (their records carry no `metering`).
+   */
+  runRecordExtras?: () => RunRecordExtras;
+}
+
+/** What a handle may add to its RunRecord (see AgentHandle.runRecordExtras). */
+export interface RunRecordExtras {
+  /** "tap": usage parsed from a descriptor/template tap; "none": no usage source at all. */
+  metering?: "tap" | "none";
+  /** Resolved argv, with the prompt redacted as `<prompt:N chars>`. */
+  command?: string[];
 }
 
 /** Result of RunHandle.wait(): adapter-reported exit plus raw exit code. */
