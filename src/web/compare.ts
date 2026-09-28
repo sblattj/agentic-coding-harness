@@ -12,12 +12,16 @@ export type CompareGroupKey = (typeof COMPARE_GROUP_KEYS)[number];
 const DEFAULT_GROUP_BY: CompareGroupKey[] = ["experiment", "variant"];
 
 export interface CompareRow {
-  [key: string]: string | number | undefined;
+  [key: string]: string | number | null | undefined;
   runs: number;
   avgTotalTokens: number;
   avgCostUsd: number;
   avgDurationMs: number;
-  successRate: number;
+  /** successes / runs with a verdict (unavailable runs excluded, #60);
+   *  null when every run in the group was unavailable. */
+  successRate: number | null;
+  /** Runs whose exitStatus was `unavailable`; present only when > 0. */
+  unavailable?: number;
 }
 
 /** Filter to the allowed keys; an empty (or all-unknown) list means the
@@ -63,20 +67,28 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
     let costUsd = 0;
     let durationMs = 0;
     let successes = 0;
+    // CLI/service outages (#60) carry no task verdict: counted, but kept
+    // out of the success-rate denominator.
+    let unavailable = 0;
     for (const rec of group.records) {
       totalTokens += (rec.totals?.inputTokens ?? 0) + (rec.totals?.outputTokens ?? 0);
       costUsd += rec.totals?.costUsd ?? 0;
       const end = rec.endedAt ?? rec.updatedAt ?? rec.startedAt;
       durationMs += Math.max(0, end - rec.startedAt);
-      if ((rec.status ?? rec.exitStatus) === "success") successes++;
+      if (rec.exitStatus === "unavailable" || rec.status === "unavailable") unavailable++;
+      else if ((rec.status ?? rec.exitStatus) === "success") successes++;
     }
+    const verdicts = runs - unavailable;
     const row: CompareRow = {
       agent: group.records[0]!.agent, // display convenience: first record's agent
       runs,
       avgTotalTokens: totalTokens / runs,
       avgCostUsd: costUsd / runs,
       avgDurationMs: durationMs / runs,
-      successRate: successes / runs,
+      // An all-unavailable group has no verdicts: null (rendered n/a), never
+      // a fabricated 0%.
+      successRate: verdicts > 0 ? successes / verdicts : null,
+      ...(unavailable > 0 ? { unavailable } : {}),
     };
     keys.forEach((key, i) => {
       const value = group.values[i];
@@ -90,8 +102,8 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
       const av = a[key];
       const bv = b[key];
       if (av === bv) continue;
-      if (av === undefined) return 1; // undefined sorts last
-      if (bv === undefined) return -1;
+      if (av === undefined || av === null) return 1; // undefined sorts last
+      if (bv === undefined || bv === null) return -1;
       return av < bv ? -1 : 1;
     }
     return b.runs - a.runs;

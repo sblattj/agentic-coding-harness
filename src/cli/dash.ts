@@ -80,6 +80,7 @@ const GLYPHS: Record<Status, string> = {
   error: "x",
   aborted: "!",
   interrupted: "!",
+  unavailable: "?", // CLI/service outage, no task verdict (#60)
 };
 
 function statusCell(rec: RunRecord, ansi: boolean, w: number): string {
