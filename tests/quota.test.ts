@@ -1,10 +1,11 @@
 // Provider-reported subscription quota headroom (issue #17).
 //
-// Every number here comes from a recorded vendor payload, never estimated:
+// Recorded provider payloads and a documented edge-case example:
 //  - codex: `rate_limits` on `token_count` events in ~/.codex/sessions rollouts
 //    (fixtures trimmed from real rollouts on disk, ids anonymized)
-//  - claude: `rate_limits` on the statusline stdin JSON (fixture trimmed from
-//    the documented example; ingested via `ach quota ingest claude`)
+//  - claude: real statusline rate_limits captured from Claude Code 2.1.283
+//    after /usage on 2026-09-28 UTC, with zero model tokens or API cost.
+//    The separate documented example covers the optional spend_limit field.
 // Agents without vendor reporting render `n/a`. No live network, no real CLIs.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -90,6 +91,22 @@ describe("quota — codex rollout rate_limits", () => {
 });
 
 describe("quota — claude statusline rate_limits", () => {
+  it("preserves a recorded live Claude quota and renders the tightest window", async () => {
+    const json = JSON.parse(await fs.readFile(path.join(FIX, "claude-statusline-recorded.json"), "utf8"));
+    const now = Date.UTC(2026, 8, 28, 6, 38);
+    const snap = parseClaudeStatusline(json, now);
+    assert.ok(snap);
+    assert.deepEqual(snap.windows, [
+      { name: "5h", windowMinutes: 300, usedPercent: 0, resetsAt: 1790595000 },
+      { name: "7d", windowMinutes: 10080, usedPercent: 34, resetsAt: 1791039600 },
+    ]);
+    const rows = quotaRows({ claude: snap }, now).filter((row) => row.agent === "claude");
+    assert.deepEqual(rows.map((row) => [row.available, row.usedPercent, row.leftPercent]), [
+      [true, 0, 100], [true, 34, 66],
+    ]);
+    assert.equal(dashQuotaCell(rows, "claude"), "66%/7d");
+  });
+
   it("parses five_hour, seven_day, spend_limit from the statusline JSON", async () => {
     const json = JSON.parse(await fs.readFile(CLAUDE_STATUSLINE, "utf8"));
     const snap = parseClaudeStatusline(json, 1234);
