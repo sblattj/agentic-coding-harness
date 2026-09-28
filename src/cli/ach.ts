@@ -80,6 +80,7 @@ import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
 import { alertFlagsToBudget } from "./alerts.ts";
 import { cmdStatus } from "./status.ts";
 import { cmdStatusline } from "./statusline.ts";
+import { cmdQuota } from "./quota.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -158,7 +159,14 @@ usage:
                  (single-file HTML comparison; a trials/ root scans subdirs)
   ach dash [--json] [--all] [--dir <stateDir>] [--budget-usd N]
                (live run dashboard; --json dumps RunRecords and exits; live
-                runs get a pace row: $/h + tok/min over 15m/1h, budget ETA)
+                runs get a pace row: $/h + tok/min over 15m/1h, budget ETA;
+                QUOTA column shows vendor-reported headroom per agent)
+  ach quota [--json] [--agent A]
+                (vendor-reported subscription headroom per agent: window, used,
+                 time remaining, % left; n/a where the vendor reports nothing)
+  ach quota ingest claude
+                (reads Claude Code statusline JSON on stdin and snapshots its
+                 rate_limits; call it from your statusLine script)
   ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
@@ -188,7 +196,9 @@ env:
   AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H  hours before a threshold may re-alert (default 24)
   AGENTIC_CODING_HARNESS_TZ          default for stats/watch --tz (CLI flags win over env)
   AGENTIC_CODING_HARNESS_PLAN        default for stats --plan (CLI flags win over env;
-                                     also _PLAN_WINDOW_TOKENS/_USD/_MESSAGES)`;
+                                     also _PLAN_WINDOW_TOKENS/_USD/_MESSAGES)
+  AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR    quota: Codex rollouts dir (default ~/.codex/sessions)
+  AGENTIC_CODING_HARNESS_QUOTA_CLAUDE_FILE  quota: Claude snapshot (default <state>/quota/claude.json)`;
 
 // ---------------------------------------------------------------- helpers
 
@@ -1169,6 +1179,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdWeb(rest);
     case "mcp":
       return cmdMcp(rest);
+    case "quota":
+      return cmdQuota(rest);
     case "help":
     case "--help":
     case "-h":
