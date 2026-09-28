@@ -5,6 +5,8 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { loadTrials } from "../report/model.ts";
+import { readRunRecord } from "../core/registry.ts";
+import { stateDir } from "../core/store.ts";
 import { readVersion, renderReport } from "../report/html.ts";
 
 export async function cmdReport(rest: string[]): Promise<number> {
@@ -28,6 +30,14 @@ export async function cmdReport(rest: string[]): Promise<number> {
     if (rootDir === null) rootDir = trialSet.rootDir;
     runs = runs.concat(trialSet.runs);
     for (const l of trialSet.labels) labels.add(l);
+  }
+  // Join only by the immutable run id; session ids can contain multiple runs.
+  // Registry verdicts are read-only annotations, never changes to trial JSON.
+  for (const run of runs) {
+    if (!run.result.runId) continue;
+    const record = readRunRecord(stateDir(), run.result.runId);
+    if (run.verify === undefined && record?.verify !== undefined) run.verify = record.verify;
+    if (record?.regrades !== undefined) run.regrades = record.regrades;
   }
   const root = rootDir ?? path.resolve(roots[0] ?? ".");
 

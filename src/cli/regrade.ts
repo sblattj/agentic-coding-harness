@@ -19,6 +19,7 @@ export async function cmdRegrade(rest: string[]): Promise<number> {
     args: rest,
     options: {
       verify: { type: "string" },
+      verifier: { type: "string" },
       "verify-timeout-ms": { type: "string" },
       json: { type: "boolean", default: false },
     },
@@ -28,7 +29,10 @@ export async function cmdRegrade(rest: string[]): Promise<number> {
   if (runId === undefined || args.positionals.length !== 1) {
     throw new HarnessError("regrade requires exactly one <run-id>", "USAGE");
   }
-  const command = args.values.verify;
+  if (args.values.verify !== undefined && args.values.verifier !== undefined) {
+    throw new HarnessError("use only one of --verify or --verifier", "USAGE");
+  }
+  const command = args.values.verify ?? args.values.verifier;
   if (command === undefined || command.trim() === "") {
     throw new HarnessError("regrade requires --verify '<cmd>'", "USAGE");
   }

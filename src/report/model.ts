@@ -59,6 +59,7 @@ export interface LoadedRun {
   usdUnavailable?: boolean;
   /** Post-run checker verdict (`ach run --verify --json`, #29); absent = not scored. */
   verify?: VerifyResult;
+  regrades?: VerifyResult[];
 }
 
 export interface TrialSet {

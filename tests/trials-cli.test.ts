@@ -10,6 +10,9 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
+import { frame } from "../src/cli/dash.ts";
+import type { RunRecord } from "../src/core/registry.ts";
+
 const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
 
 interface RunOut {
@@ -275,9 +278,13 @@ describe("ach regrade (#89)", () => {
     const state = await newState("regrade");
     const work = path.join(root, "regrade-work");
     await fs.mkdir(work, { recursive: true });
-    let r = runCli(["run", "--agent", "kiro", "--verify", "false", "hi"], env(state, bin), work);
+    let r = runCli(["run", "--agent", "kiro", "--verify", "false", "--json", "hi"], env(state, bin), work);
     assert.equal(r.code, 1);
     const [before0] = await records(state);
+    const trialResult = r.stdout;
+    const trialDir = path.join(root, "regrade-trials");
+    await fs.mkdir(trialDir);
+    await fs.writeFile(path.join(trialDir, "kiro.json"), trialResult);
     const runId = before0!.runId as string;
     const transcript = before0!.rawTranscript as string;
     const transcriptBefore = await fs.readFile(transcript);
@@ -286,17 +293,32 @@ describe("ach regrade (#89)", () => {
     r = runCli(["regrade", runId, "--verify", "true"], env(state, bin));
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /^verify     pass \(exit 0,/m);
-    r = runCli(["regrade", runId, "--verify", "true", "--json"], env(state, bin));
+    r = runCli(["regrade", runId, "--verifier", "true", "--json"], env(state, bin));
     assert.equal(r.code, 0, r.stderr);
     assert.equal(JSON.parse(r.stdout).status, "pass");
 
     const [after0] = await records(state);
     assert.equal((after0!.verify as { status: string }).status, "fail"); // never rewritten
-    const regrades = after0!.regrades as Array<{ status: string; command: string }>;
+    const regrades = after0!.regrades as Array<{ status: string; command: string; exitCode: number }>;
     assert.equal(regrades.length, 2);
-    assert.deepEqual(regrades.map((g) => g.status), ["pass", "pass"]);
+    assert.deepEqual(regrades.map((g) => [g.status, g.exitCode, g.command]), [["pass", 0, "true"], ["pass", 0, "true"]]);
     assert.deepEqual(await fs.readFile(transcript), transcriptBefore);
     assert.equal(readFileSync(path.join(probe, "count"), "utf8"), launchesBefore); // no agent launched
+    assert.deepEqual(after0!.verify, before0!.verify);
+    const reportFile = path.join(root, "regraded-report.html");
+    const report = runCli(["report", trialDir, "--out", reportFile], env(state, bin));
+    assert.equal(report.code, 0, report.stderr);
+    const html = await fs.readFile(reportFile, "utf8");
+    assert.match(html, /score history/);
+    assert.match(html, /<td>original<\/td>/);
+    assert.match(html, /<td>regrade 1<\/td>/);
+    assert.match(html, /<td>regrade 2<\/td>/);
+    assert.match(html, /<td>false<\/td>/);
+    assert.equal(await fs.readFile(path.join(trialDir, "kiro.json"), "utf8"), trialResult);
+    const dash = runCli(["dash", "--all"], env(state, bin));
+    assert.equal(dash.code, 0, dash.stderr);
+    assert.equal(JSON.parse(dash.stdout)[0].regrades.length, 2);
+    assert.match(frame([after0 as unknown as RunRecord], state, true, 120, false), /original=fail latest=pass regrades=2/);
   });
 
   it("a run whose workspace is gone fails with a clear error, not a crash", async () => {

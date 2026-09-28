@@ -166,3 +166,30 @@ and the agent are all left alone, and no tokens are spent.
 grades the workspace as it is *now*. If the cwd has been deleted, the
 command fails with a clear error. If the cwd has changed since the run, the
 regrade measures the new state.
+
+### Evolving a verifier while retaining the original score
+
+For example, save a run with a first checker, then tighten its requirements:
+
+```sh
+ach run --agent claude --verify './check-v1.sh' --json 'implement the feature' > trials/demo/claude.json
+ach regrade <run-id> --verifier './check-v2.sh'
+ach regrade <run-id> --verifier './check-v2.sh'
+ach report trials/demo --out report.html
+```
+
+Create `trials/demo` before redirecting output. `--verifier` is an alias for
+`--verify`; both accept a shell command. The report joins trial results to the
+local registry by run ID and displays the original verdict followed by every
+regrade, including the checker command and timestamp. Use the same
+`AGENTIC_CODING_HARNESS_STATE_DIR` for the run, regrades, and report. Original
+trial JSON stays unchanged; keep the registry to retain later scores. Web run
+metadata shows the same history; dash summarizes the latest regrade.
+
+A v1 pass and a v2 fail coexist. Running a deterministic v2 checker twice on
+an unchanged workspace yields the same verdict and exit code; timestamps and
+execution durations naturally differ. Regrades launch only your checker, not
+an agent. Harness regrading itself consumes no model tokens, but a checker
+that calls a paid API can incur its own costs. JSON/LLM rubric execution is
+not built in: encode your evolved rubric in the verifier script. The checker
+reads the current workspace, not a restored historical snapshot.
