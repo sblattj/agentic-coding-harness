@@ -47,6 +47,7 @@ import { cmdDash } from "./dash.ts";
 import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
+import { alertFlagsToBudget } from "./alerts.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -55,6 +56,9 @@ usage:
   ach --version | -v        print the harness version
   ach run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
+              [--budget-alerts 0.5,0.8,1.0] [--warn-at 0.5,0.8,0.95] [--on-budget abort|warn]
+                (threshold alerts warn once per crossing, never abort; fractions in (0,1];
+                 'off' disables; state in <stateDir>/alerts.json, see docs/BUDGET-ALERTS.md)
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
                            AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
@@ -103,7 +107,10 @@ env:
   AGENTIC_CODING_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
   AGENTIC_CODING_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
-  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)`;
+  AGENTIC_CODING_HARNESS_IDLE_MS     default for --idle-ms (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_BUDGET_ALERTS    default for --budget-alerts (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_WARN_THRESHOLDS  default for --warn-at (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H  hours before a threshold may re-alert (default 24)`;
 
 // ---------------------------------------------------------------- helpers
 
@@ -227,6 +234,9 @@ async function cmdRun(rest: string[]): Promise<number> {
       "max-turns": { type: "string" },
       "wall-ms": { type: "string" },
       "idle-ms": { type: "string" },
+      "budget-alerts": { type: "string" },
+      "warn-at": { type: "string" },
+      "on-budget": { type: "string" },
       "extra-args": { type: "string" },
       // Kiro-only typed config (src/core/types.ts KiroConfig). Ignored for
       // other agents; the driver's RunSpecSchema validates the shape.
@@ -270,16 +280,19 @@ async function cmdRun(rest: string[]): Promise<number> {
 
   let result: RunResult;
   try {
+    const budget = {
+      usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
+      maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
+      wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
+      idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
+    };
+    // Threshold alerts (#20): parsed with the other budget flags, before launch.
+    const alertBudget = alertFlagsToBudget(args.values, budget);
     result = await driver.run(agent, {
       prompt,
       model: args.values.model,
       resume: args.values.resume,
-      budget: {
-        usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
-        maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
-        wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
-        idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
-      },
+      budget: { ...budget, ...alertBudget },
       extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
       ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
     });

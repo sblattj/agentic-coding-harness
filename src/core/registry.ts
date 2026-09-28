@@ -52,6 +52,18 @@ export interface RunRecord {
   producer?: string; // e.g. "acme-feed/bridge@1"
   endedAt?: number; // ms epoch — explicit wall-clock end for external runs
   metadata?: Record<string, unknown>; // free-form provenance (request_id, region, ...)
+  /** Threshold crossings fired during the run (#20), oldest first; dash banner + web. */
+  alerts?: RunAlert[];
+}
+
+/** One fired budget alert / near-limit warning (mirror of a budget.alert event). */
+export interface RunAlert {
+  at: number; // ms epoch
+  family: "budget" | "near-limit";
+  metric: "usd" | "turns" | "wall";
+  threshold: number; // fraction in (0, 1]
+  value: number; // observed value (usd | turns | ms)
+  limit: number; // the cap it is a fraction of
 }
 
 const TotalsSchema = z.object({
@@ -92,6 +104,18 @@ export const RunRecordSchema = z.object({
   producer: z.string().min(1).optional(),
   endedAt: z.number().int().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  alerts: z
+    .array(
+      z.object({
+        at: z.number(),
+        family: z.enum(["budget", "near-limit"]),
+        metric: z.enum(["usd", "turns", "wall"]),
+        threshold: z.number(),
+        value: z.number(),
+        limit: z.number(),
+      }),
+    )
+    .optional(),
 });
 
 export function registryDir(stateDir: string): string {
