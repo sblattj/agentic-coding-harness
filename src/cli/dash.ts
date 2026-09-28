@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
 import { describeAlert } from "../core/budget-alerts.ts";
+import { PACE_WINDOWS, paceFromSamples, type Pace, type PaceSample } from "../core/usage-windows.ts";
 import {
   effectiveStatus,
   isLive,
@@ -177,8 +178,86 @@ function footer(visible: RunRecord[]): string {
   return parts.join("  ");
 }
 
+// ---------------------------------------------------------------- pace (#19)
+
+/**
+ * Per-run cumulative samples across redraws, so the trailing-window rate is
+ * refresh-to-refresh rather than a lifetime average. Every run is seeded with
+ * the true observation {startedAt, $0, 0 tok}; with no redraw history the
+ * rate degrades to the average since start (paceFromSamples interpolates).
+ */
+export class PaceTracker {
+  private readonly samples = new Map<string, PaceSample[]>();
+
+  observe(rec: RunRecord, t: number): void {
+    const list = this.samples.get(rec.runId) ?? [];
+    list.push(sampleOf(rec, t));
+    // Keep one sample at/before the longest window's start for interpolation.
+    while (list.length > 2 && list[1]!.t <= t - PACE_WINDOWS["1h"]) list.shift();
+    this.samples.set(rec.runId, list);
+  }
+
+  /** Drop runs no longer live so an ended run's pace never lingers. */
+  retain(liveIds: Set<string>): void {
+    for (const id of this.samples.keys()) if (!liveIds.has(id)) this.samples.delete(id);
+  }
+
+  pace(rec: RunRecord, now: number, budgetUsd: number | undefined): Pace {
+    const seed: PaceSample = {
+      t: rec.startedAt,
+      costUsd: usdUnavailable(rec) ? null : 0,
+      tokens: tokensUnavailable(rec) ? null : 0,
+    };
+    const hist = this.samples.get(rec.runId) ?? [sampleOf(rec, now)];
+    return paceFromSamples([seed, ...hist], { now, ...(budgetUsd !== undefined ? { budgetUsd } : {}) });
+  }
+}
+
+function sampleOf(rec: RunRecord, t: number): PaceSample {
+  const tot = rec.totals;
+  return {
+    t,
+    costUsd: tot === undefined || usdUnavailable(rec) ? null : tot.costUsd,
+    tokens:
+      tot === undefined || tokensUnavailable(rec)
+        ? null
+        : tot.inputTokens + tot.outputTokens + tot.cacheReadTokens + tot.cacheWriteTokens,
+  };
+}
+
+function hhmmLocal(isoTs: string): string {
+  const d = new Date(isoTs);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function paceRow(rec: RunRecord, p: Pace): string {
+  const cell = (w: Pace["windows"]["1h"]): string =>
+    `${w.usdPerHour === null ? "n/a" : `$${w.usdPerHour.toFixed(4)}/h`} ${w.tokensPerMinute === null ? "n/a" : `${w.tokensPerMinute.toFixed(1)} tok/min`}`;
+  const parts = [`pace  ${rec.runId.slice(0, COL.runId)}`, `15m ${cell(p.windows["15m"])}`, `1h ${cell(p.windows["1h"])}`];
+  if (p.budget === "exhausted") parts.push(`budget exhausted ($${p.spentUsd?.toFixed(4)} of $${p.budgetUsd})`);
+  else if (p.budget === "ok") {
+    const eta = p.windows["1h"].etaBudgetHit ?? p.windows["15m"].etaBudgetHit;
+    parts.push(`budget $${p.budgetUsd} hit at ${eta === null ? "n/a" : hhmmLocal(eta)}`);
+  }
+  return parts.join("  ");
+}
+
+export interface FrameOptions {
+  /** ETA target for the pace row (dash --budget-usd / env). */
+  budgetUsd?: number;
+  /** Redraw-to-redraw sample history; omitted → average since run start. */
+  tracker?: PaceTracker;
+}
+
 /** One rendered dashboard frame. Exported for tests (pure: no TTY, no I/O). */
-export function frame(recs: RunRecord[], dir: string, showAll: boolean, width: number, ansi: boolean): string {
+export function frame(
+  recs: RunRecord[],
+  dir: string,
+  showAll: boolean,
+  width: number,
+  ansi: boolean,
+  opts: FrameOptions = {},
+): string {
   const now = Date.now();
   const visible = recs.filter((r) => isVisible(r, now, showAll));
   const fixed = Object.values(COL).reduce((a, w) => a + w, 0) + Object.keys(COL).length;
@@ -201,6 +280,15 @@ export function frame(recs: RunRecord[], dir: string, showAll: boolean, width: n
   } else {
     for (const r of visible) lines.push(tableRow(r, now, ansi, lastW));
   }
+  // Pace rows: live runs only, so a finished run's row disappears instead of
+  // freezing at its last rate.
+  const live = visible.filter((r) => isLive(r, now));
+  opts.tracker?.retain(new Set(live.map((r) => r.runId)));
+  if (live.length > 0) lines.push("");
+  for (const r of live) {
+    opts.tracker?.observe(r, now);
+    lines.push(paceRow(r, (opts.tracker ?? new PaceTracker()).pace(r, now, opts.budgetUsd)));
+  }
   lines.push("");
   lines.push(footer(visible));
   return lines.join("\n");
@@ -208,8 +296,10 @@ export function frame(recs: RunRecord[], dir: string, showAll: boolean, width: n
 
 // ---------------------------------------------------------------- modes
 
-async function liveLoop(dir: string, showAll: boolean): Promise<number> {
+async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined): Promise<number> {
   const ansi = !process.env.NO_COLOR;
+  const tracker = new PaceTracker();
+  const frameOpts: FrameOptions = { tracker, ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
   const width = (): number => process.stdout.columns ?? 120;
   process.stdout.write(ansi ? "\x1b[?1049h\x1b[?25l" : "");
 
@@ -253,7 +343,7 @@ async function liveLoop(dir: string, showAll: boolean): Promise<number> {
     } catch {
       recs = [];
     }
-    process.stdout.write("\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi) + "\n");
+    process.stdout.write("\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi, frameOpts) + "\n");
   };
 
   if (stdin.isTTY && typeof stdin.setRawMode === "function") {
@@ -278,9 +368,19 @@ export async function cmdDash(rest: string[]): Promise<number> {
       json: { type: "boolean", default: false },
       all: { type: "boolean", default: false },
       dir: { type: "string" },
+      "budget-usd": { type: "string" },
     },
     allowPositionals: true,
   });
+  // Same flag-over-env rule as `ach run --budget-usd`.
+  const budgetRaw = args.values["budget-usd"] ?? (process.env.AGENTIC_CODING_HARNESS_BUDGET_USD || undefined);
+  let budgetUsd: number | undefined;
+  if (budgetRaw !== undefined) {
+    budgetUsd = Number(budgetRaw);
+    if (!Number.isFinite(budgetUsd) || budgetUsd < 0) {
+      throw new HarnessError(`dash --budget-usd expects a non-negative number, got '${budgetRaw}'`, "USAGE");
+    }
+  }
   if (args.values.dir === undefined && rest.some((a) => a.startsWith("--dir"))) {
     throw new HarnessError("dash --dir expects a state directory path", "USAGE");
   }
@@ -297,5 +397,5 @@ export async function cmdDash(rest: string[]): Promise<number> {
     process.stdout.write(JSON.stringify(recs, null, 2) + "\n");
     return 0;
   }
-  return liveLoop(dir, args.values.all);
+  return liveLoop(dir, args.values.all, budgetUsd);
 }
