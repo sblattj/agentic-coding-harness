@@ -5,8 +5,10 @@ can run any other CLI in two ways, and neither needs a code change:
 
 1. **Per invocation** (#37): `ach run --agent custom --template '<cmd>' "<prompt>"`.
 2. **Persisted** (#38): drop a JSON descriptor into an `agents.d/` directory.
-   After that, `ach run --agent <name>`, the run registry (`ach dash`, `ach web`)
-   and `ach stats` treat it like any built-in agent, under its own name.
+   After that, `ach run --agent <name>` and `ach stats --agent <name>` accept
+   it, and its runs appear under their own name in the run registry that
+   `ach dash` reads (tested). `ach web` reads the same registry, but custom
+   names there are untested.
 
 ## 1. `--agent custom --template`
 
@@ -34,7 +36,12 @@ ach run --agent custom --model m1 \
   Argv mode requires a `{prompt}` placeholder.
 - **`--prompt-stdin`.** ach writes the prompt to the CLI's stdin and then
   closes it. The template needs no `{prompt}`. Use this for long prompts or
-  for CLIs that read stdin.
+  for CLIs that read stdin. If the template still contains `{prompt}`, the
+  prompt is delivered **twice**, once in argv and once on stdin.
+- `--extra-args` values are appended after the resolved template in argv
+  and stdin modes. With `--template-shell` they are refused, because
+  `sh -c` would silently turn them into `$0`/`$1`. Put them in the template
+  instead.
 - **`--template-shell`.** The template runs under `/bin/sh -c`.
   **Risk:** the template itself is shell code, so pipes, globs and `$vars` in
   it expand. Placeholder *values* are still never pasted into the shell text.
