@@ -9,6 +9,8 @@ import { once } from 'node:events';
 const binary = resolve(process.argv[2]);
 const dir = mkdtempSync(join(tmpdir(), 'ach-binary-smoke-'));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('AGENTIC_CODING_HARNESS_')));
+// The executable must run without finding Node or Bun on PATH.
+env.PATH = dir;
 env.HOME = dir;
 env.AGENTIC_CODING_HARNESS_STATE_DIR = join(dir, 'state');
 const options = { cwd: dir, env, encoding: 'utf8', timeout: 30_000 };
@@ -30,7 +32,7 @@ try {
     assert.equal(report.promptsSent, 0);
     assert.ok(report.checks.length > 0);
     assert.ok(report.checks.some(check => check.agent === 'null'));
-    assert.ok(report.checks.every(check => check.status !== 'fail'));
+    assert.ok(report.checks.every(check => check.status !== 'failed'));
     console.log('doctor:', doctor.stdout.trim());
   }
   const stats = spawnSync(binary, ['stats', '--json', '--state-only'], options);
