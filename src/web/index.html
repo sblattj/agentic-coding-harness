@@ -290,6 +290,15 @@ function renderMeta() {
   box.appendChild(kv("cache", fmtTok(t.cacheReadTokens) + "r " + fmtTok(t.cacheWriteTokens) + "w"));
   box.appendChild(kv("cost", fmtCost(t.costUsd)));
   if (t.credits != null) box.appendChild(kv("credits", String(t.credits)));
+  /* budget / near-limit threshold crossings (#20): latest one, count on hover */
+  if (r.alerts && r.alerts.length) {
+    var la = r.alerts[r.alerts.length - 1];
+    var alertKv = kv("alert", String(la.metric) + " " + Math.round(Number(la.threshold) * 100) + "%");
+    alertKv.title = r.alerts.length + " threshold alert(s): " + r.alerts.map(function (a) {
+      return a.metric + " " + Math.round(Number(a.threshold) * 100) + "%";
+    }).join(", ");
+    box.appendChild(alertKv);
+  }
   var lastTxt = r.lastEvent != null ? String(r.lastEvent) : "";
   var shown = lastTxt.length > 64 ? lastTxt.slice(0, 63) + "\u2026" : lastTxt;
   var lastKv = kv("last", shown || fmtAgo(r.updatedAt));
