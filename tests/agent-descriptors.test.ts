@@ -34,7 +34,7 @@ function runCli(args: string[], env: Record<string, string>, cwd?: string) {
   const isBun = (process.versions as { bun?: string }).bun !== undefined;
   // The loader is resolved from THIS repo: the child may run with a temp cwd.
   const p = spawnSync(NODE, isBun ? [CLI, ...args] : ["--import", import.meta.resolve("tsx"), CLI, ...args], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, HOME: tmp, ...env },
     encoding: "utf8",
     ...(cwd !== undefined ? { cwd } : {}),
   });
