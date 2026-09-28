@@ -102,6 +102,13 @@ and free-form `metadata`, plus `corrections` — the additive log `ach audit --f
 (`{at, field, from, to, by}` per rewritten aggregate) when it re-derives totals from the raw
 transcript (`cli/audit.ts`).
 
+`core/warehouse.ts` (`ach archive`, #79) snapshots machine transcripts (the same sources
+`scanAll` walks), `<stateDir>/raw` transcripts and `<stateDir>/runs` records into
+`<stateDir>/warehouse/<batch>/` with a per-batch `manifest.jsonl`; it never deletes and skips
+files whose sha256 is already archived. `resolveRawTranscript` falls back to the newest archived
+copy (`core/warehouse-index.ts`) when the live file is gone, so audit, the web transcript pane and
+MCP keep working after pruning. See [ARCHIVE.md](ARCHIVE.md).
+
 ### Dash and MCP consumers
 
 `cli/dash.ts` (`harness dash`) is the registry's live reader: `listRunRecords` + `isLive` feed an

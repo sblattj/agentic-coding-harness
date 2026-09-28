@@ -81,6 +81,7 @@ import { alertFlagsToBudget } from "./alerts.ts";
 import { cmdStatus } from "./status.ts";
 import { cmdStatusline } from "./statusline.ts";
 import { cmdQuota } from "./quota.ts";
+import { cmdArchive, statsMachineRecords, statsScanOptions, warehouseStateRecords } from "./archive.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -132,6 +133,14 @@ usage:
                  x time left. Always: pace over trailing 15m/1h windows, ETA to
                  --budget-usd. --plan frames the active window as % of the
                  plan allowance; built-in presets are community estimates)
+            [--with-warehouse] [--dir <root>]
+                (--with-warehouse adds archived copies whose live file is gone;
+                 --dir reads machine transcripts from <root>/.claude/projects
+                 etc., e.g. a restore)
+  ach archive [--agent A] [--days N] [--out DIR] [--dir <stateDir>] [--json]
+  ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
+                (snapshot transcripts + RunRecords into <stateDir>/warehouse,
+                 sha256-deduped, never deletes; see docs/ARCHIVE.md)
   --exit-codes ladder   (run / stats / watch) automation exit codes: 0 ok,
                         10 near-limit, 11 limit hit, 20 unavailable, 30 no data,
                         1 errors — see docs/EXIT-CODES.md; default stays 0/1
@@ -785,6 +794,8 @@ async function cmdStats(rest: string[]): Promise<number> {
       "plan-window-usd": { type: "string" },
       "plan-window-messages": { type: "string" },
       "budget-usd": { type: "string" },
+      "with-warehouse": { type: "boolean", default: false },
+      dir: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -839,7 +850,11 @@ async function cmdStats(rest: string[]): Promise<number> {
   const sinceTs = window.sinceMs;
 
   // Harness state (driver-run NDJSON + watch-persisted opencode) ...
-  const stateRecords = (await readAllRecords({ agent, sinceTs })).filter((r) => inWindow(Date.parse(r.ts), window));
+  const withWarehouse = args.values["with-warehouse"];
+  const stateRecords = [
+    ...(await readAllRecords({ agent, sinceTs })),
+    ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs }) : []),
+  ].filter((r) => inWindow(Date.parse(r.ts), window));
   const runCwd = cwdIndex(listRunRecords(stateDir()));
   let records: DimRecord[] = stateRecords.map((r) => ({
     extra: r.extra,
@@ -864,7 +879,8 @@ async function cmdStats(rest: string[]): Promise<number> {
   // machine whose transcript dirs are huge or being rotated).
   const pricer = createPricer();
   if (!args.values["state-only"]) {
-    for await (const rec of scanAll()) {
+    const machine = statsMachineRecords({ scan: statsScanOptions(args.values.dir), withWarehouse, stateDir: stateDir() });
+    for await (const rec of machine) {
       if (agent && rec.agent !== agent) continue;
       const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
       if (!inWindow(tsMs, window)) continue;
@@ -1167,6 +1183,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdStatus(rest);
     case "statusline":
       return cmdStatusline(rest);
+    case "archive":
+      return cmdArchive(rest);
     case "emit":
       return cmdEmit(rest);
     case "report":

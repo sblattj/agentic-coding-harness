@@ -224,9 +224,20 @@ export interface ReadRecordsOptions {
 /** Read every canonical record under <stateDir>/raw. */
 export async function readAllRecords(opts: ReadRecordsOptions = {}): Promise<StatRecord[]> {
   const root = path.join(stateDir(), "raw");
-  const files = await listFilesRecursive(root);
+  return readRecordFiles((await listFilesRecursive(root)).map((f) => ({ file: f, root })), opts);
+}
+
+/**
+ * Read canonical records from explicit files (e.g. archived copies of
+ * <stateDir>/raw files, #79). `root` is the dir the file's agent-attribution
+ * path is taken relative to, exactly as readAllRecords does for <stateDir>/raw.
+ */
+export async function readRecordFiles(
+  files: Array<{ file: string; root: string }>,
+  opts: ReadRecordsOptions = {},
+): Promise<StatRecord[]> {
   const records: StatRecord[] = [];
-  for (const f of files) {
+  for (const { file: f, root } of files) {
     let text: string;
     try {
       text = await fs.readFile(f, "utf8");
