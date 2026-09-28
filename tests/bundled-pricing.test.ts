@@ -9,7 +9,11 @@ import { createPricer } from '../src/core/pricing.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
-it('distributed CLI and library retain authoritative prices and context windows', { timeout: 120_000 }, () => {
+it('distributed CLI and library retain authoritative prices and context windows', { timeout: 120_000 }, (t) => {
+  if (spawnSync('bun', ['--version'], { encoding: 'utf8' }).status !== 0) {
+    t.skip('bun compiler not on PATH; source pricing tests still run');
+    return;
+  }
   const dir = mkdtempSync(join(tmpdir(), 'ach-bundled-pricing-'));
   const env = { ...process.env, HOME: dir, AGENTIC_CODING_HARNESS_STATE_DIR: dir };
   const run = (command: string, args: string[]) => {
