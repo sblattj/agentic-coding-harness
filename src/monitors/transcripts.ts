@@ -28,9 +28,11 @@ import { TRANSCRIPT_SOURCES, type TranscriptOnlyAgent } from "./transcript-sourc
 // ---------------------------------------------------------------------------
 
 export interface CanonicalTokenRecord {
+  source?: "transcript";
+  sourcePath?: string;
   /** Which CLI agent produced the record. amp/goose/qwen are read-only
    * transcript sources (src/monitors/transcript-sources.ts). */
-  agent: "claude" | "codex" | "gemini" | "amp" | "goose" | "qwen";
+  agent: "claude" | "codex" | "gemini" | "amp" | "goose" | "qwen" | "cursor";
   /** Session identifier when the source exposes one, else null. */
   sessionId: string | null;
   /** ISO-8601 timestamp when the source exposes one, else null. */
@@ -409,6 +411,8 @@ export function transcriptSources(opts: ScanOptions = {}): TranscriptSource[] {
     { agent: "claude", dir: opts.claudeDir ?? join(homedir(), ".claude", "projects"), keep: isJsonl, parse: parseClaudeTranscript },
     { agent: "codex", dir: opts.codexDir ?? join(homedir(), ".codex", "sessions"), keep: isJsonl, parse: parseCodexRollout },
     { agent: "gemini", dir: opts.geminiDir ?? join(homedir(), ".gemini", "tmp"), keep: isGeminiChatFile, parse: parseGeminiChat },
+    ...TRANSCRIPT_SOURCES.flatMap((src) =>
+      (opts.sourceRoots?.[src.agent as TranscriptOnlyAgent] ?? src.defaultRoots(homedir())).map((dir) => ({ ...src, dir }))),
   ];
 }
 
@@ -436,18 +440,15 @@ export function scanOptionsForRoot(root: string): Required<ScanOptions> {
 export async function* scanAll(
   opts: ScanOptions = {},
 ): AsyncGenerator<CanonicalTokenRecord> {
-  const sources: Array<Pick<TranscriptSource, "dir" | "keep" | "parse">> = [...transcriptSources(opts)];
-  // #22: read-only sources (amp/goose/qwen), each over its override roots
-  // or its defaultRoots(homedir()).
-  for (const src of TRANSCRIPT_SOURCES) {
-    const roots = opts.sourceRoots?.[src.agent as TranscriptOnlyAgent] ?? src.defaultRoots(homedir());
-    for (const root of roots) sources.push({ dir: root, keep: src.keep, parse: src.parse });
-  }
+  const sources = transcriptSources(opts);
+  const seenFiles = new Set<string>();
 
   for (const { dir, keep, parse } of sources) {
     for (const file of await walkFiles(dir, keep)) {
+      if (seenFiles.has(file)) continue;
+      seenFiles.add(file);
       for (const record of await parse(file)) {
-        yield record;
+        yield { ...record, source: "transcript", sourcePath: file };
       }
     }
   }

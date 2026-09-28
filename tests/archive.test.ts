@@ -283,7 +283,7 @@ describe("ach archive --restore", () => {
 
     const collect = async (root: string) => {
       const out: string[] = [];
-      for await (const rec of scanAll(scanOptionsForRoot(root))) out.push(JSON.stringify(rec));
+      for await (const rec of scanAll(scanOptionsForRoot(root))) out.push(JSON.stringify({ ...rec, sourcePath: undefined }));
       return out.sort();
     };
     assert.deepEqual(await collect(to), await collect(f.home));

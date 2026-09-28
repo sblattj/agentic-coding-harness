@@ -13,6 +13,9 @@
 // mtime match its newest archived copy is skipped without hashing; otherwise
 // it is hashed and skipped when that sha256 is already archived for the same
 // (kind, agent, relPath). A run that copies nothing creates no batch.
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { warnTranscript } from "../monitors/transcript-warnings.ts";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -123,9 +126,11 @@ async function candidates(opts: ArchiveOptions): Promise<Candidate[]> {
     runsBySession.set(k, [...(runsBySession.get(k) ?? []), r.runId]);
   }
   const out: Candidate[] = [];
-  for (const src of transcriptSources(opts.scan)) {
+  const roots = transcriptSources(opts.scan);
+  for (const src of roots) {
     for (const file of await walkFiles(src.dir, src.keep)) {
-      const relPath = path.relative(src.dir, file);
+      const siblings = roots.filter((r) => r.agent === src.agent);
+      const relPath = path.join(...(siblings.length > 1 ? [`__root${siblings.indexOf(src)}`] : []), path.relative(src.dir, file));
       const sessionId = nativeSessionId(src.agent, relPath);
       out.push({
         kind: "native",
@@ -214,18 +219,35 @@ export async function archiveTranscripts(opts: ArchiveOptions): Promise<ArchiveR
     }
     const key = entryKey(c);
     const prev = latest.get(key);
-    if (prev && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
+    const sqlite = c.kind === "native" && /\.(db|vscdb)$/.test(c.sourcePath);
+    if (!sqlite && prev && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
       result.unchanged++;
       continue;
     }
-    const sha = sha256File(c.sourcePath);
+    let snapshotDir: string | undefined;
+    let copySource = c.sourcePath;
+    if (sqlite) {
+      snapshotDir = fs.mkdtempSync(path.join(tmpdir(), "ach-archive-sqlite-"));
+      copySource = path.join(snapshotDir, "snapshot.db");
+      try {
+        execFileSync("sqlite3", ["-readonly", c.sourcePath, `.backup "${copySource}"`], { stdio: "pipe" });
+      } catch (error) {
+        fs.rmSync(snapshotDir, { recursive: true, force: true });
+        warnTranscript(`archive: skipped SQLite store ${c.sourcePath}: ${(error as Error).message}`);
+        continue;
+      }
+    }
+    const sha = sha256File(copySource);
     if (known.has(`${key}\u0000${sha}`)) {
+      if (snapshotDir) fs.rmSync(snapshotDir, { recursive: true, force: true });
       result.unchanged++;
       continue;
     }
     batch ??= batchId(t0, whDir);
     const archivePath = path.join(batch, archiveSubdir(c));
-    copyPreserving(c.sourcePath, path.join(whDir, archivePath), st);
+    copyPreserving(copySource, path.join(whDir, archivePath), st);
+    const copiedSize = fs.statSync(copySource).size;
+    if (snapshotDir) fs.rmSync(snapshotDir, { recursive: true, force: true });
     const line: ManifestLine = {
       v: 1,
       batch,
@@ -235,7 +257,7 @@ export async function archiveTranscripts(opts: ArchiveOptions): Promise<ArchiveR
       relPath: c.relPath,
       archivePath,
       sha256: sha,
-      size: st.size,
+      size: copiedSize,
       mtimeMs: st.mtimeMs,
       sessionId: c.sessionId,
       runId: c.runIds[0] ?? null,
@@ -245,7 +267,7 @@ export async function archiveTranscripts(opts: ArchiveOptions): Promise<ArchiveR
     known.add(`${key}\u0000${sha}`);
     result.entries.push(line);
     result.archived++;
-    result.bytes += st.size;
+    result.bytes += copiedSize;
     result.byKind[c.kind]++;
   }
   if (batch) {
@@ -304,14 +326,16 @@ export async function restoreBatch(opts: RestoreOptions): Promise<RestoreResult>
   const to = path.resolve(opts.to);
   const home = scanOptionsForRoot(to);
   const stateDir = path.join(to, ".agentic-coding-harness");
-  const nativeRoot: Record<string, string> = { claude: home.claudeDir, codex: home.codexDir, gemini: home.geminiDir };
+  const nativeSources = transcriptSources(home);
   const files: string[] = [];
   for (const l of lines) {
     let dest: string;
     if (l.kind === "native") {
-      const root = nativeRoot[l.agent];
+      const roots = nativeSources.filter((s) => s.agent === l.agent);
+      const match = /^__root(\d+)[/\\](.*)$/.exec(l.relPath);
+      const root = roots[match ? Number(match[1]) : 0];
       if (!root) continue;
-      dest = path.join(root, l.relPath);
+      dest = path.join(root.dir, match ? match[2]! : l.relPath);
     } else if (l.kind === "raw") {
       dest = path.join(stateDir, "raw", l.relPath);
     } else {
@@ -336,15 +360,17 @@ export async function* scanWarehouse(opts: {
   live: ScanOptions;
 }): AsyncGenerator<CanonicalTokenRecord> {
   const whDir = path.resolve(opts.warehouseDir);
-  const sources = new Map(transcriptSources(opts.live).map((s) => [s.agent as string, s]));
+  const sources = transcriptSources(opts.live);
   const latest = [...latestEntries(readManifest(whDir)).values()]
     .filter((l) => l.kind === "native")
     .sort((a, b) => a.archivePath.localeCompare(b.archivePath));
   for (const l of latest) {
-    const src = sources.get(l.agent);
+    const roots = sources.filter((s) => s.agent === l.agent);
+    const match = /^__root(\d+)[/\\](.*)$/.exec(l.relPath);
+    const src = roots[match ? Number(match[1]) : 0];
     if (!src) continue;
-    if (fs.existsSync(path.join(src.dir, l.relPath))) continue;
-    for (const rec of await src.parse(path.join(whDir, l.archivePath))) yield rec;
+    if (fs.existsSync(path.join(src.dir, match ? match[2]! : l.relPath))) continue;
+    for (const rec of await src.parse(path.join(whDir, l.archivePath))) yield { ...rec, source: "transcript", sourcePath: path.join(whDir, l.archivePath) };
   }
 }
 

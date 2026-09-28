@@ -9,6 +9,8 @@ import { readRecordFiles, stateDir as defaultStateDir, type ReadRecordsOptions, 
 import { archiveTranscripts, restoreBatch, scanWarehouse, warehouseRawFiles, type ArchiveResult } from "../core/warehouse.ts";
 import { warehouseDir } from "../core/warehouse-index.ts";
 import { scanAll, scanOptionsForRoot, type CanonicalTokenRecord, type ScanOptions } from "../monitors/transcripts.ts";
+import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
+import { isTranscriptOnlyAgent } from "../monitors/transcript-sources.ts";
 import { fmtInt } from "./lib.ts";
 
 export const ARCHIVE_USAGE = `usage: ach archive [--agent A] [--days N] [--out DIR] [--dir <stateDir>] [--json]
@@ -81,7 +83,7 @@ export async function cmdArchive(rest: string[]): Promise<number> {
   }
 
   const agent = args.values.agent;
-  if (agent && !isKnownAgent(agent)) {
+  if (agent && !isKnownAgent(agent) && !isTranscriptOnlyAgent(agent)) {
     throw new HarnessError(`unknown agent '${agent}' (expected one of: ${AGENTS.join(", ")})`, "UNKNOWN_AGENT");
   }
   const days = optNum(args.values.days, "--days");
@@ -91,6 +93,7 @@ export async function cmdArchive(rest: string[]): Promise<number> {
     ...(agent ? { agent } : {}),
     ...(days !== undefined ? { sinceMs: Date.now() - days * 86_400_000 } : {}),
   });
+  for (const warning of drainTranscriptWarnings()) process.stderr.write(`[warn] ${warning}\n`);
   process.stdout.write(args.values.json ? JSON.stringify(res, null, 2) + "\n" : formatArchiveText(res));
   return 0;
 }

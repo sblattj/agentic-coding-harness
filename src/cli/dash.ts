@@ -16,6 +16,8 @@ import {
 import { collectQuota, dashQuotaCell, type QuotaRow } from "../core/quota.ts";
 import { markerFor, PROVENANCE_LEGEND, PROVENANCE_MARKER, provenanceOf } from "../core/provenance.ts";
 
+import { transcriptView } from "./transcript-view.ts";
+
 const REDRAW_MS = 500;
 /** Quota sources are files on disk (rollouts, statusline snapshot); re-read at most this often. */
 const QUOTA_REFRESH_MS = 30_000;
@@ -97,6 +99,7 @@ const VERIFY_PLAIN = { pass: "p", fail: "f", error: "e" } as const;
 const VERIFY_ANSI = { pass: "\x1b[32m✓\x1b[0m", fail: "\x1b[31m✗\x1b[0m", error: "\x1b[33m?\x1b[0m" } as const;
 
 function statusCell(rec: RunRecord, ansi: boolean, w: number): string {
+  if (rec.metadata?.source === "transcript") return padR("?", w);
   const status = effectiveStatus(rec);
   const v = rec.verify?.status;
   const plain = padR(GLYPHS[status] + (v !== undefined ? VERIFY_PLAIN[v] : ""), w);
@@ -161,7 +164,7 @@ function tableRow(rec: RunRecord, now: number, ansi: boolean, lastW: number, quo
   // QUOTA: vendor-reported headroom for this row's agent (src/core/quota.ts),
   // only when the caller supplied quota rows — legacy frames stay unchanged.
   if (quota !== undefined) cells.push(padL(dashQuotaCell(quota, rec.agent), QUOTA_W));
-  cells.push(padR(rec.lastEvent ?? "", lastW));
+  cells.push(rec.metadata?.source === "transcript" ? "source: transcript" : padR(rec.lastEvent ?? "", lastW));
   return cells.join(" ");
 }
 
@@ -329,7 +332,7 @@ export function frame(
 
 // ---------------------------------------------------------------- modes
 
-async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined): Promise<number> {
+async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined, stateOnly: boolean): Promise<number> {
   const ansi = !process.env.NO_COLOR;
   const tracker = new PaceTracker();
   const frameOpts: FrameOptions = { tracker, ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
@@ -383,14 +386,27 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
       });
   };
 
-  const draw = (): void => {
+  let transcriptRows: RunRecord[] = [];
+  let transcriptAt = 0;
+  let drawing = false;
+  const draw = async (): Promise<void> => {
+    if (drawing) return;
+    drawing = true;
     refreshQuota();
     let recs: RunRecord[];
     try {
       recs = listRunRecords(dir);
+      if (!stateOnly) {
+        if (Date.now() - transcriptAt > 30_000) {
+          transcriptRows = await transcriptView(dir, recs);
+          transcriptAt = Date.now();
+        }
+        recs.push(...transcriptRows);
+      }
     } catch {
       recs = [];
     }
+    drawing = false;
     process.stdout.write(
       "\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi, { ...frameOpts, quota: quota ?? [] }) + "\n",
     );
@@ -417,6 +433,7 @@ export async function cmdDash(rest: string[]): Promise<number> {
     options: {
       json: { type: "boolean", default: false },
       all: { type: "boolean", default: false },
+      "state-only": { type: "boolean", default: false },
       dir: { type: "string" },
       "budget-usd": { type: "string" },
     },
@@ -439,13 +456,16 @@ export async function cmdDash(rest: string[]): Promise<number> {
     if (!args.values.json) {
       process.stderr.write("dash: stdout is not a TTY — dumping JSON (pass --json to silence this hint)\n");
     }
-    const recs = listRunRecords(dir).map((r) => ({
+    const records = listRunRecords(dir);
+    if (!args.values["state-only"]) records.push(...await transcriptView(dir, records));
+    const recs = records.map((r) => ({
       ...r,
+      source: r.metadata?.source === "transcript" ? "transcript" : r.source ?? "local",
       live: isLive(r),
-      effectiveStatus: effectiveStatus(r),
+      effectiveStatus: r.metadata?.source === "transcript" ? null : effectiveStatus(r),
     }));
     process.stdout.write(JSON.stringify(recs, null, 2) + "\n");
     return 0;
   }
-  return liveLoop(dir, args.values.all, budgetUsd);
+  return liveLoop(dir, args.values.all, budgetUsd, args.values["state-only"]);
 }
