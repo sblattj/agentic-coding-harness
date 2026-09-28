@@ -51,6 +51,9 @@ import {
   parseCodexRollout,
   parseGeminiChat,
   scanAll,
+  transcriptSources,
+  scanOptionsForRoot,
+  walkFiles,
 } from "../monitors/transcripts.ts";
 import { TRANSCRIPT_SOURCES, isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
@@ -173,7 +176,7 @@ usage:
   ach regrade <run-id> --verify '<cmd>' [--verify-timeout-ms MS] [--json]
                 (re-run a checker against a saved run's cwd; appends to the record's
                  regrades[] — no agent launched, run-time verify never rewritten)
-  ach watch [--dir <transcriptDir>] [--since DATE | --last D] [--tz Z]
+  ach watch [--dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
                 (--since/--last: print history newer than the bound on startup)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
             [--tz Z] [--by day|week|month] [--json] [--state-only] [--include-unavailable]
@@ -239,7 +242,7 @@ usage:
                 LANGFUSE_SECRET_KEY)
   ach report <trials-dir> [--out path]
                  (single-file HTML comparison; a trials/ root scans subdirs)
-  ach dash [--json] [--all] [--dir <stateDir>] [--budget-usd N]
+  ach dash [--json] [--all] [--state-only] [--dir <stateDir>] [--budget-usd N]
                (live run dashboard; --json dumps RunRecords and exits; live
                 runs get a pace row: $/h + tok/min over 15m/1h, budget ETA;
                 QUOTA column shows vendor-reported headroom per agent)
@@ -757,15 +760,14 @@ async function cmdWatch(rest: string[]): Promise<number> {
     now: Date.now(),
     timeZone: resolveTimeZone(args.values.tz, process.env[TZ_ENV]),
   }).sinceMs;
-  const claudeDir = args.values.dir || path.join(os.homedir(), ".claude", "projects");
-  const codexDir = path.join(os.homedir(), ".codex", "sessions");
-  const geminiDir = path.join(os.homedir(), ".gemini", "tmp");
+  const sources = transcriptSources(args.values.dir ? scanOptionsForRoot(path.resolve(args.values.dir)) : {});
   const state = stateDir();
   const offsets = await loadOffsets();
-  const seenByFile = new Map<string, Set<string>>();
+  type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
+  const seenByFile = new Map<string, Map<string, WatchTotals>>();
   const seenOpencode = new Set<string>();
   const pricer = createPricer();
-  process.stderr.write(`watch: claude=${claudeDir} codex=${codexDir} gemini=${geminiDir}\n`);
+  process.stderr.write(`watch: ${sources.map((s) => `${s.agent}=${s.dir}`).join(" ")}\n`);
   process.stderr.write(`watch: state=${state}, poll=${POLL_MS / 1000}s — Ctrl-C to stop\n`);
 
   let stopping = false;
@@ -796,30 +798,29 @@ async function cmdWatch(rest: string[]): Promise<number> {
     >;
   }
   const watched: Watched[] = [];
-  for (const f of await listByExt(claudeDir, ".jsonl")) watched.push({ file: f, agent: "claude", parse: parseClaudeTranscript });
-  for (const f of await listByExt(codexDir, ".jsonl")) watched.push({ file: f, agent: "codex", parse: parseCodexRollout });
-  for (const f of await listGeminiChats(geminiDir)) watched.push({ file: f, agent: "gemini", parse: parseGeminiChat });
-  // Read-only transcript sources (amp/goose/qwen). Files present at start
-  // are watched; like the three above, new files need a watch restart.
-  for (const src of TRANSCRIPT_SOURCES) {
-    for (const root of src.defaultRoots(os.homedir())) {
-      for (const f of await listByExt(root, "")) if (src.keep(f)) watched.push({ file: f, agent: src.agent, parse: src.parse });
+  const files = new Set<string>();
+  for (const src of sources) {
+    for (const file of await walkFiles(src.dir, src.keep)) {
+      if (files.has(file)) continue;
+      files.add(file);
+      watched.push({ file, agent: src.agent, parse: src.parse });
     }
   }
 
   let firstTick = true;
   const tick = async (): Promise<void> => {
-    const deltas = new Map<string, { agent: string; sessionId: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }>();
+    const deltas = new Map<string, { agent: string; sessionId: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; priced: boolean }>();
     const bump = (r: { agent?: string; sessionId?: string | null; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd?: number }) => {
       const agent = r.agent ?? "unknown";
       const sessionId = r.sessionId ?? "unknown";
       const key = `${agent}\u0000${sessionId}`;
-      const d = deltas.get(key) ?? { agent, sessionId, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+      const d = deltas.get(key) ?? { agent, sessionId, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, priced: true };
       d.input += r.inputTokens;
       d.output += r.outputTokens;
       d.cacheRead += r.cacheReadTokens;
       d.cacheWrite += r.cacheWriteTokens;
       d.cost += r.costUsd ?? 0;
+      if (r.costUsd === undefined) d.priced = false;
       deltas.set(key, d);
     };
     // Only records scanAll cannot see (opencode SQLite) are persisted to the
@@ -830,62 +831,49 @@ async function cmdWatch(rest: string[]): Promise<number> {
 
     // --- machine transcripts (claude / codex / gemini)
     for (const w of watched) {
-      let size: number;
+      let fingerprint: number;
       try {
-        size = (await fs.stat(w.file)).size;
-      } catch {
-        continue;
-      }
-      // A SQLite store (goose sessions.db) grows in its -wal sidecar first.
-      size += await fs.stat(`${w.file}-wal`).then((s) => s.size, () => 0);
-      const prev = offsets.files[w.file];
+        const st = await fs.stat(w.file);
+        const wal = await fs.stat(`${w.file}-wal`).catch(() => null);
+        fingerprint = st.mtimeMs + st.size + (wal ? wal.mtimeMs + wal.size : 0);
+      } catch { continue; }
       const replay = firstTick && lookback !== undefined;
-      if (prev === size && !replay) continue;
-      // First sight or grew: parse the whole file; the parsers dedupe
-      // internally (assistant replays, cumulative rollouts), and we diff
-      // against records already emitted for this file.
-      const seen = seenByFile.get(w.file) ?? new Set<string>();
-      const firstSight = prev === undefined;
-      try {
-        for (const rec of await w.parse(w.file)) {
-          const key = JSON.stringify(rec);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const costUsd =
-            rec.model != null
-              ? safePrice(pricer, {
-                  model: rec.model,
-                  inputTokens: rec.input,
-                  outputTokens: rec.output,
-                  cacheReadTokens: rec.cacheRead,
-                  cacheWriteTokens: rec.cacheWrite,
-                })
-              : 0;
-          // First sight of a file baselines its existing records without
-          // printing them as deltas; only post-watch growth prints lines.
-          // With --since, the first tick instead replays records at/after it.
-          if (replay ? inWindow(rec.timestamp ? Date.parse(rec.timestamp) : NaN, { sinceMs: lookback }) : !firstSight) {
-            bump({
-              agent: rec.agent,
-              sessionId: rec.sessionId ?? "unknown",
-              inputTokens: rec.input,
-              outputTokens: rec.output,
-              cacheReadTokens: rec.cacheRead,
-              cacheWriteTokens: rec.cacheWrite,
-              costUsd,
-            });
-          }
-        }
-      } catch {
-        continue; // unreadable mid-write; retry next tick
+      const previous = seenByFile.get(w.file);
+      if (offsets.files[w.file] === fingerprint && previous && !replay) continue;
+      const totals = new Map<string, WatchTotals>();
+      const recent = new Map<string, WatchTotals>();
+      const collect = (map: Map<string, WatchTotals>, rec: Awaited<ReturnType<typeof w.parse>>[number]): void => {
+        const key = `${rec.agent}\0${rec.sessionId}\0${rec.model}`;
+        const value = map.get(key) ?? { agent: rec.agent, sessionId: rec.sessionId ?? "unknown", model: rec.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+        value.input += rec.input; value.output += rec.output;
+        value.cacheRead += rec.cacheRead; value.cacheWrite += rec.cacheWrite;
+        map.set(key, value);
+      };
+      for (const rec of await w.parse(w.file)) {
+        collect(totals, rec);
+        if (replay && inWindow(rec.timestamp ? Date.parse(rec.timestamp) : NaN, { sinceMs: lookback })) collect(recent, rec);
       }
-      seenByFile.set(w.file, seen);
-      offsets.files[w.file] = size;
+      for (const [key, value] of replay ? recent : totals) {
+        // Baseline on startup even with saved offsets. Later snapshots are
+        // cumulative per file/session/model, including legacy Goose totals.
+        if (!replay && !previous) continue;
+        const before = replay ? undefined : previous?.get(key);
+        const inputTokens = Math.max(0, value.input - (before?.input ?? 0));
+        const outputTokens = Math.max(0, value.output - (before?.output ?? 0));
+        const cacheReadTokens = Math.max(0, value.cacheRead - (before?.cacheRead ?? 0));
+        const cacheWriteTokens = Math.max(0, value.cacheWrite - (before?.cacheWrite ?? 0));
+        if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) continue;
+        const priced = value.model ? pricer.price({ model: value.model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }) : NaN;
+        bump({ agent: value.agent, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+          ...(Number.isFinite(priced) ? { costUsd: priced } : {}) });
+      }
+      seenByFile.set(w.file, totals);
+      offsets.files[w.file] = fingerprint;
     }
 
     // --- opencode SQLite store (adapter). First tick baselines silently.
     try {
-      for (const s of await statsFromDb()) {
+      for (const s of args.values.dir ? [] : await statsFromDb()) {
         const key = `opencode\u0000${s.id}\u0000${s.time_created}`;
         if (seenOpencode.has(key)) continue;
         seenOpencode.add(key);
@@ -911,7 +899,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
     for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
     for (const d of deltas.values()) {
       process.stdout.write(
-        `${d.agent.padEnd(8)} ${d.sessionId.slice(0, 12).padEnd(12)} +${fmtInt(d.input)} input +${fmtInt(d.output)} output +${fmtInt(d.cacheRead)} cacheR +${fmtInt(d.cacheWrite)} cacheW ${fmtUsd(d.cost)}\n`,
+        `${d.agent.padEnd(8)} ${d.sessionId.slice(0, 12).padEnd(12)} +${fmtInt(d.input)} input +${fmtInt(d.output)} output +${fmtInt(d.cacheRead)} cacheR +${fmtInt(d.cacheWrite)} cacheW ${d.priced ? fmtUsd(d.cost) : "n/a"} source: transcript\n`,
       );
     }
     firstTick = false;

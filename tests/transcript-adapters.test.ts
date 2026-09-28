@@ -259,13 +259,13 @@ describe("transcript source registry", () => {
   it("lists amp, goose and qwen as read-only transcript sources", () => {
     assert.deepStrictEqual(
       TRANSCRIPT_SOURCES.map((s) => s.agent),
-      ["amp", "goose", "qwen"],
+      ["cursor", "amp", "goose", "qwen"],
     );
     assert.ok(isTranscriptOnlyAgent("amp"));
     assert.ok(isTranscriptOnlyAgent("goose"));
     assert.ok(isTranscriptOnlyAgent("qwen"));
     assert.ok(!isTranscriptOnlyAgent("claude"));
-    assert.ok(!isTranscriptOnlyAgent("cursor"));
+    assert.ok(isTranscriptOnlyAgent("cursor"));
   });
 
   it("default roots are per-OS paths under the given home", () => {

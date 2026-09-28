@@ -10,6 +10,7 @@ import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
 import { describeListenError } from "./serve.ts";
 import { startWebServer, type WebServerHandle } from "../web/server.ts";
+import { TranscriptRunSource } from "../web/run-source-transcript.ts";
 import { FsRunSource, type RunSource } from "../web/run-source.ts";
 import { HttpRunSource } from "../web/run-source-http.ts";
 import { MergedRunSource } from "../web/run-source-merged.ts";
@@ -146,6 +147,7 @@ export async function cmdWeb(rest: string[]): Promise<number> {
       token: { type: "string" },
       dir: { type: "string" },
       "no-open": { type: "boolean", default: false },
+      "state-only": { type: "boolean", default: false },
       source: { type: "string" },
       "source-token": { type: "string" },
       "source-mode": { type: "string" },
@@ -183,7 +185,8 @@ export async function cmdWeb(rest: string[]): Promise<number> {
     },
     process.env,
   );
-  let runSource: RunSource | undefined;
+  const localSource = args.values["state-only"] ? new FsRunSource(dir) : new TranscriptRunSource(dir);
+  let runSource: RunSource | undefined = localSource;
   let sourceUrl: string | undefined;
   if (source !== null) {
     // Spec §9: log the resolved host once the source is validated.
@@ -199,7 +202,7 @@ export async function cmdWeb(rest: string[]): Promise<number> {
     // merge=state: local registry first, external feed LAST so it wins
     // runId collisions. merge=only: the hub consumes just the feed.
     runSource =
-      source.merge === "state" ? new MergedRunSource([new FsRunSource(dir), httpSource]) : httpSource;
+      source.merge === "state" ? new MergedRunSource([localSource, httpSource]) : httpSource;
     sourceUrl = source.url;
   }
 

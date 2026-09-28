@@ -9,6 +9,7 @@
 
 import { basename, dirname, extname, join } from "node:path";
 import type { CanonicalTokenRecord } from "./transcripts.ts";
+import { parseCursorDb } from "./cursor.ts";
 import { parseAmpThread } from "./amp.ts";
 import { parseGooseDb } from "./goose.ts";
 import { parseQwenChat } from "./qwen.ts";
@@ -25,6 +26,12 @@ export interface TranscriptSource {
 }
 
 export const TRANSCRIPT_SOURCES: readonly TranscriptSource[] = [
+  {
+    agent: "cursor",
+    defaultRoots: (home) => [join(home, "Library", "Application Support", "Cursor", "User", "globalStorage"), join(home, ".config", "Cursor", "User", "globalStorage"), join(home, "AppData", "Roaming", "Cursor", "User", "globalStorage")],
+    keep: (f) => basename(f) === "state.vscdb",
+    parse: (f) => parseCursorDb(f),
+  },
   {
     agent: "amp",
     defaultRoots: (home) => [join(home, ".local", "share", "amp", "threads")],
@@ -49,7 +56,7 @@ export const TRANSCRIPT_SOURCES: readonly TranscriptSource[] = [
   },
 ];
 
-export type TranscriptOnlyAgent = "amp" | "goose" | "qwen";
+export type TranscriptOnlyAgent = "amp" | "goose" | "qwen" | "cursor";
 
 export function isTranscriptOnlyAgent(a: string): a is TranscriptOnlyAgent {
   return TRANSCRIPT_SOURCES.some((s) => s.agent === a);

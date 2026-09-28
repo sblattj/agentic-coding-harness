@@ -48,7 +48,7 @@ function dashArgs(stateDir: string, extra: string[] = []): string[] {
 function runCli(args: string[], stateDir: string): { code: number; stdout: string; stderr: string } {
   const cli = isBun ? [CLI, ...args] : ['--import', 'tsx', CLI, ...args];
   const p = spawnSync(isBun ? 'bun' : process.execPath, cli, {
-    env: { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: stateDir },
+    env: { ...process.env, HOME: stateDir, AGENTIC_CODING_HARNESS_STATE_DIR: stateDir },
     encoding: 'utf8',
     timeout: 15_000,
     killSignal: 'SIGKILL',
