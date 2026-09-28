@@ -43,6 +43,20 @@ Every check is `verified`, `failed`, or `unproven`, the same vocabulary as
 | harness | `pricing` | The price table loads and prices the flagships. The detail says whether the bundled LiteLLM extract is present. |
 | harness | `env` | `AGENTIC_CODING_HARNESS_*` numeric and enum variables parse. An unknown name is flagged `unproven` as a possible typo. Token values are never printed. |
 
+## agents.d descriptors (#38)
+
+`ach doctor` also diagnoses every loaded [agents.d descriptor](CUSTOM-AGENTS.md),
+not just the five built-in AGENTS. Its checks are additive to the ones above;
+in `--json` output each descriptor-sourced check carries `"source": "agents.d"`
+so scripts can tell it apart from a built-in check with the same `name`.
+
+| check | what is proven |
+|---|---|
+| `descriptor` | The file parsed as JSON and validated against the descriptor schema (zod). An invalid descriptor (bad JSON, an unknown field, a missing tap path, …) never aborts doctor: it becomes a `failed` check under `agent: "harness"` with the zod issue in `detail`, and every other descriptor is still checked. |
+| `binary` | For a descriptor with a `launch` block: the first argv element of `launch.template` (or `/bin/sh` when `launch.shell` is set) resolves on `PATH`. Skipped for a meter-only descriptor (`launch: null`). |
+| `auth` | Always `unproven`: a descriptor supplies no offline authentication probe. |
+| `usageTap` | For a descriptor with a `usageTap` block: whether the configured transcript path (file or directory) exists. |
+
 ## Not proven, by design
 
 - Whether a vendor accepts a credential. For claude, codex, gemini, and
