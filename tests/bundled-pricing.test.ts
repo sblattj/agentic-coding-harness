@@ -21,6 +21,14 @@ it('distributed CLI and library retain authoritative prices and context windows'
     assert.equal(result.status, 0, `${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
     return result.stdout;
   };
+  const runJson = (command: string, args: string[]) => {
+    const out = run(command, args);
+    try {
+      return JSON.parse(out);
+    } catch (err) {
+      throw new Error(`${command} ${args.join(' ')}: stdout is not JSON (${String(err)}): ${JSON.stringify(out.slice(0, 400))}`);
+    }
+  };
   try {
     const cli = join(root, 'src/cli/ach.ts');
     const nodeCli = join(dir, 'cli.mjs');
@@ -41,12 +49,12 @@ it('distributed CLI and library retain authoritative prices and context windows'
       assert.ok(Number.isFinite(expected) && expected > 0);
       writeFileSync(join(dir, 'raw/claude/model.jsonl'), JSON.stringify({ ...record, ts: new Date().toISOString(), sessionId: 'parity' }) + '\n');
       for (const [command, ...prefix] of commands) {
-        const result = JSON.parse(run(command, [...prefix, 'stats', '--state-only', '--json', '--cost-mode', 'calculate']));
+        const result = runJson(command, [...prefix, 'stats', '--state-only', '--json', '--cost-mode', 'calculate']);
         assert.equal(result.total.costUsd, expected, `${command}: ${model} differs from source`);
       }
     }
     for (const [command, ...prefix] of commands) {
-      const report = JSON.parse(run(command, [...prefix, 'doctor', '--agent', 'null', '--json']));
+      const report = runJson(command, [...prefix, 'doctor', '--agent', 'null', '--json']);
       const pricing = report.checks.find((check: { name: string }) => check.name === 'pricing');
       assert.equal(pricing.status, 'verified');
       assert.match(pricing.detail, /bundled LiteLLM extract/);
@@ -72,7 +80,7 @@ it('distributed CLI and library retain authoritative prices and context windows'
       const result = await createDriver({ adapters: { claude: adapter }, stateDir: process.cwd() }).run('claude', { prompt: 'fixture' });
       console.log(JSON.stringify(result.usage.context));
     `);
-    const context = JSON.parse(run(process.execPath, [consumer]));
+    const context = runJson(process.execPath, [consumer]);
     assert.equal(context.available, true);
     assert.equal(context.windowTokens, 200_000);
     assert.equal(context.tokens, 4 + 84 + 14_629);
