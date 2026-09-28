@@ -17,6 +17,7 @@ import { OPENCODE_CAPABILITIES } from "../adapters/opencode.ts";
 import { KIRO_CAPABILITIES } from "../adapters/kiro.ts";
 import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
 import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
+import { NULL_CAPABILITIES } from "../adapters/null.ts";
 import { checkCwd, filterExtraArgs, type GatewayConfig } from "../serve/gateway.ts";
 
 // Shared with tools-jobs.ts (harness_run_async mirrors harness_run args).
@@ -104,8 +105,11 @@ export const KIRO_INPUT_SCHEMA = {
 
 // Mirrors each concrete adapter's own command resolution (e.g. kiro.ts reads
 // $KIRO_CLI_BIN or 'kiro-cli'); the driver-registry wrappers returned by
-// defaultAdapters() carry only name/launch, not capabilities.
-function agentInfo(name: string): { command: string; capabilities?: AdapterCapabilities } {
+// defaultAdapters() carry only name/launch, not capabilities. `command: null`
+// (null adapter only, issue #55) means "no backing CLI binary at all" — the
+// harness_agents handler below treats that as always-available rather than
+// probing PATH for a binary that was never meant to exist.
+function agentInfo(name: string): { command: string | null; capabilities?: AdapterCapabilities } {
   switch (name) {
     case "claude":
       return { command: "claude", capabilities: claudeCapabilities() };
@@ -117,6 +121,8 @@ function agentInfo(name: string): { command: string; capabilities?: AdapterCapab
       return { command: "codex", capabilities: CODEX_CAPABILITIES };
     case "gemini":
       return { command: "gemini", capabilities: GEMINI_CAPABILITIES };
+    case "null":
+      return { command: null, capabilities: NULL_CAPABILITIES };
     default:
       return { command: name };
   }
@@ -223,7 +229,8 @@ export function registerRunTools(
           return {
             name,
             command: info.command,
-            available: isOnPath(info.command),
+            // No backing binary (null adapter) is trivially always available.
+            available: info.command === null ? true : isOnPath(info.command),
             capabilities: info.capabilities,
           };
         }),

@@ -128,7 +128,7 @@ version: ${VERSION}
 
 usage:
   ach --version | -v        print the harness version
-  ach run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
+  ach run --agent <claude|opencode|kiro|codex|gemini|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               [--budget-alerts 0.5,0.8,1.0] [--warn-at 0.5,0.8,0.95] [--on-budget abort|warn]
                 (threshold alerts warn once per crossing, never abort; fractions in (0,1];
@@ -140,6 +140,11 @@ usage:
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
                            AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
+              null: negative-control smoke test — no CLI binary, no auth, no network,
+                    deterministic zero-cost usage (ach run --agent null "<prompt>");
+                    env AGENTIC_CODING_HARNESS_NULL_EXIT=error|timeout|budget_exceeded
+                    forces that exitStatus; AGENTIC_CODING_HARNESS_NULL_TURNS=N sets
+                    the scripted turn count (default 1)
               kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                          [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                          [--kiro-startup-ms MS] [--kiro-require-model-ack]
@@ -275,7 +280,9 @@ env:
   AGENTIC_CODING_HARNESS_PLAN        default for stats --plan (CLI flags win over env;
                                      also _PLAN_WINDOW_TOKENS/_USD/_MESSAGES)
   AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR    quota: Codex rollouts dir (default ~/.codex/sessions)
-  AGENTIC_CODING_HARNESS_QUOTA_CLAUDE_FILE  quota: Claude snapshot (default <state>/quota/claude.json)`;
+  AGENTIC_CODING_HARNESS_QUOTA_CLAUDE_FILE  quota: Claude snapshot (default <state>/quota/claude.json)
+  AGENTIC_CODING_HARNESS_NULL_EXIT   --agent null only: force exitStatus (error|timeout|budget_exceeded)
+  AGENTIC_CODING_HARNESS_NULL_TURNS  --agent null only: scripted turn count (default 1)`;
 
 // ---------------------------------------------------------------- helpers
 

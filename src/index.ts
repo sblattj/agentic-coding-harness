@@ -78,6 +78,7 @@ export {
   type LoadedDescriptor,
 } from './core/agent-descriptors.ts';
 export { withPricingHints, type PricingHint } from './core/pricing-hints.ts';
+export { NullAdapter, NULL_EXIT_ENV, NULL_TURNS_ENV, NULL_CAPABILITIES } from './adapters/null.ts';
 export { VERSION } from './version.ts';
 
 // --- public run-record contract (0.9.0 spec §3): registry + external feed ---
