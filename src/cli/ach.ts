@@ -944,14 +944,22 @@ async function main(argv: string[]): Promise<number> {
  * - library import (`import('agentic-coding-harness')`,
  *   `await import(pathToFileURL('…/dist/cli/ach.js').href)`): argv[1] is the
  *   CONSUMER's entry (its script / test runner) -> no CLI, no process.exit.
+ * - standalone `bun build --compile` executable: both argv[1] and
+ *   import.meta.url collapse to the SAME synthetic `/$bunfs/root/<name>`
+ *   path baked in at compile time (verified: identical regardless of the
+ *   real on-disk filename or how the binary is invoked). realpathSync
+ *   throws ENOENT on that virtual path since it has no real inode — fall
+ *   back to a raw string comparison so the compiled binary still runs
+ *   instead of silently exiting 0 with no output.
  */
 function invokedAsCli(): boolean {
   const argv1 = process.argv[1];
   if (!argv1) return false;
+  const entryPath = fileURLToPath(import.meta.url);
   try {
-    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+    return realpathSync(argv1) === realpathSync(entryPath);
   } catch {
-    return false;
+    return argv1 === entryPath;
   }
 }
 
