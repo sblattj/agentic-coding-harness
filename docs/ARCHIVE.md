@@ -14,7 +14,7 @@ ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
 
 | kind     | source                                                                  | stored at                                   |
 |----------|-------------------------------------------------------------------------|---------------------------------------------|
-| `native` | machine transcripts `ach stats` reads: `~/.claude/projects/**/*.jsonl` (subagent files included), `~/.codex/sessions/**/*.jsonl`, `~/.gemini/tmp/*/chats/*.json` | `<batch>/native/<agent>/<path under the source dir>` |
+| `native` | machine transcripts `ach stats` reads: `~/.claude/projects/**/*.jsonl` (subagent files included), `~/.codex/sessions/**/*.jsonl`, `~/.gemini/tmp/*/chats/*.json`, plus every read-only source (amp, goose, qwen, cursor; roots in [transcript-adapters.md](transcript-adapters.md), SQLite stores snapshotted) | `<batch>/native/<agent>/<path under the source dir>` |
 | `raw`    | harness raw transcripts referenced by `RunRecord.rawTranscript` (`<stateDir>/raw/<agent>-<session>.jsonl`) | `<batch>/raw/<basename>` |
 | `record` | registry records `<stateDir>/runs/<runId>.json`                          | `<batch>/runs/<runId>.json`                 |
 
@@ -88,6 +88,7 @@ A restore writes a home-shaped tree:
 
 ```
 <to>/.claude/projects/…   <to>/.codex/sessions/…   <to>/.gemini/tmp/…
+<to>/.local/share/amp/threads/…   <to>/.qwen/projects/…   (each read-only source under its home-relative root)
 <to>/.agentic-coding-harness/raw/…   <to>/.agentic-coding-harness/runs/…
 ```
 
