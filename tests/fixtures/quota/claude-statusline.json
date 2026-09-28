@@ -1,0 +1,13 @@
+{
+  "_fixture_note": "Claude Code statusline stdin, trimmed from the documented example at https://code.claude.com/docs/en/statusline (fetched 2026-09-27). rate_limits is verbatim from the docs; no live payload was captured on this machine.",
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "model": { "id": "claude-opus-5-5", "display_name": "Opus" },
+  "version": "2.1.90",
+  "cost": { "total_cost_usd": 0.01234, "total_duration_ms": 45000 },
+  "context_window": { "context_window_size": 200000, "used_percentage": 8, "remaining_percentage": 92 },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 23.5, "resets_at": 1738425600 },
+    "seven_day": { "used_percentage": 41.2, "resets_at": 1738857600 },
+    "spend_limit": { "used_percentage": 62.8, "resets_at": 1740787200 }
+  }
+}
