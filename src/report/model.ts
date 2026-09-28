@@ -13,6 +13,7 @@ import {
   type RunResult,
   type UsageAvailability,
 } from "../core/types.ts";
+import { VerifyResultSchema, type VerifyResult } from "../core/verify.ts";
 
 /** Tolerant RunResult view: `harness run --json` writes the full envelope, but
  * hand-trimmed fixtures may omit numeric/cost fields. Everything except
@@ -51,6 +52,8 @@ export interface LoadedRun {
   tokensUnavailable?: boolean;
   /** True when the run states no USD price is derivable (render n/a). */
   usdUnavailable?: boolean;
+  /** Post-run checker verdict (`ach run --verify --json`, #29); absent = not scored. */
+  verify?: VerifyResult;
 }
 
 export interface TrialSet {
@@ -68,6 +71,17 @@ export function looksLikeRunResult(v: unknown): v is RunResult {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const o = v as Record<string, unknown>;
   return Array.isArray(o.events) && ("tokens" in o || "exitStatus" in o || "durationMs" in o);
+}
+
+/** `ach run --repeat N --json` writes one envelope `{repeat, stats?, runs: [...]}`
+ *  per group; each RunResult child is loaded as its own run (#57 → #30).
+ *  Children that errored before producing a RunResult are skipped. */
+export function repeatEnvelopeRuns(v: unknown): RunResult[] | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.repeat !== "object" || o.repeat === null || !Array.isArray(o.runs)) return null;
+  const runs = o.runs.filter(looksLikeRunResult);
+  return runs.length > 0 ? runs : null;
 }
 
 function toNum(v: unknown): number {
@@ -145,6 +159,8 @@ export function toLoadedRun(
   const usdUnavailable = usage?.usd.available === false;
   const costUsd = usdUnavailable ? undefined : hasCost ? (costSum as number) : totalCost;
   const events = Array.isArray(result.events) ? result.events : [];
+  // A malformed verdict is treated as "not scored" rather than guessed at.
+  const parsedVerify = VerifyResultSchema.safeParse((result as { verify?: unknown }).verify);
   return {
     agent: typeof result.agent === "string" && result.agent ? result.agent : agent,
     trialDir,
@@ -165,6 +181,7 @@ export function toLoadedRun(
     ...(usage !== undefined ? { usage } : {}),
     tokensUnavailable,
     usdUnavailable,
+    ...(parsedVerify.success ? { verify: parsedVerify.data as VerifyResult } : {}),
   };
 }
 
@@ -192,8 +209,13 @@ export async function loadTrialDir(dir: string): Promise<LoadedRun[]> {
   for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!e.isFile() || !e.name.endsWith(".json")) continue;
     const parsed = await readJson(path.join(dir, e.name));
-    if (!looksLikeRunResult(parsed)) continue;
     const name = e.name.slice(0, -".json".length);
+    const children = repeatEnvelopeRuns(parsed);
+    if (children !== null) {
+      children.forEach((child) => runs.push(toLoadedRun(name, child, dir, label, null, false)));
+      continue;
+    }
+    if (!looksLikeRunResult(parsed)) continue;
     const secsRaw = await fs
       .readFile(path.join(dir, `${name}.secs`), "utf8")
       .catch(() => null);
@@ -216,7 +238,7 @@ async function hasRunResults(dir: string): Promise<boolean> {
     for (const e of entries) {
       if (!e.isFile() || !e.name.endsWith(".json")) continue;
       const parsed = await readJson(path.join(dir, e.name));
-      if (looksLikeRunResult(parsed)) return true;
+      if (looksLikeRunResult(parsed) || repeatEnvelopeRuns(parsed) !== null) return true;
     }
   } catch {
     return false;

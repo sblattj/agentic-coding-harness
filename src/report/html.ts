@@ -6,6 +6,7 @@
 import fs from "node:fs/promises";
 import type { LoadedRun, TrialSet } from "./model.ts";
 import { VERSION } from "../version.ts";
+import { repeatStats } from "../core/repeat-stats.ts";
 
 const MESSAGE_CAP = 2000;
 const TIMELINE_CAP = 500;
@@ -323,6 +324,7 @@ function contextCell(r: LoadedRun): string {
 function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
   const showCredits = runs.some((r) => r.credits !== null);
   const showContext = runs.some((r) => r.usage?.context?.available === true);
+  const showVerify = runs.some((r) => r.verify !== undefined);
   // Identity column (spec §6.3): when ANY run carries a variant label the
   // comparison groups by variant (matching the live /compare view's default
   // experiment×variant rollup); otherwise the historical by-agent column.
@@ -343,6 +345,7 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
     ...(showContext ? [`<th data-k="context" data-t="n" class="num">context</th>`] : []),
     `<th data-k="dur" data-t="n" class="num">duration</th>`,
     `<th data-k="exit" data-t="s">exit status</th>`,
+    ...(showVerify ? [`<th data-k="verify" data-t="s">verify</th>`] : []),
   ].join("");
   const rows = runs
     .map((r) => {
@@ -376,6 +379,13 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
         ...(showContext ? [contextCell(r)] : []),
         `<td data-v="${esc(fmtDuration(r))}" class="num">${esc(fmtDuration(r))}</td>`,
         `<td data-v="${esc(r.result.exitStatus ?? "unknown")}">${statusBadge(r.result.exitStatus ?? "unknown")}</td>`,
+        ...(showVerify
+          ? [
+              r.verify === undefined
+                ? `<td data-v="" class="na">n/a</td>`
+                : `<td data-v="${esc(r.verify.status)}" title="${esc(r.verify.command)}">${statusBadge(r.verify.status)}</td>`,
+            ]
+          : []),
       ];
       return `      <tr data-agent="${esc(r.agent)}" data-trial="${esc(r.trialLabel)}">${cells.join("")}</tr>`;
     })
@@ -386,6 +396,58 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
 ${rows}
     </tbody>
   </table>`;
+}
+
+// ------------------------------------------------------- repeat statistics
+
+const pct = (n: number): string => `${(n * 100).toFixed(1)}%`;
+
+/** Repeat statistics (#30) over VERIFIED runs, grouped like the comparison
+ *  table (variant when any run has one, else agent). Empty string when no
+ *  run carries a verdict. k=1 groups render pass@1 with n/a for the CI and
+ *  k-draw columns — never a degenerate interval. */
+function renderRepeatStats(runs: LoadedRun[]): string {
+  const scored = runs.filter((r) => r.verify !== undefined);
+  if (scored.length === 0) return "";
+  const byVariant = runs.some((r) => r.variant !== undefined);
+  const groupKey = byVariant ? "variant" : "agent";
+  const groups = new Map<string, boolean[]>();
+  for (const r of scored) {
+    const key = byVariant ? (r.variant ?? "—") : r.agent;
+    const list = groups.get(key) ?? [];
+    list.push(r.verify!.status === "pass");
+    groups.set(key, list);
+  }
+  const na = `<td data-v="" class="num na">n/a</td>`;
+  const rows = [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, outcomes]) => {
+      const s = repeatStats(outcomes)!;
+      const cells = [
+        `<td data-v="${esc(key)}" class="agent-cell">${esc(key)}</td>`,
+        `<td data-v="${s.k}" class="num">${s.k}</td>`,
+        `<td data-v="${s.passes}" class="num">${s.passes}</td>`,
+        `<td data-v="${s.passAt1}" class="num">${pct(s.passAt1)}</td>`,
+        s.wilsonLo === undefined || s.wilsonHi === undefined
+          ? na
+          : `<td data-v="${s.wilsonLo}" class="num">${pct(s.wilsonLo)} – ${pct(s.wilsonHi)}</td>`,
+        s.passHatK === undefined ? na : `<td data-v="${s.passHatK}" class="num">${pct(s.passHatK)}</td>`,
+        s.anyPassAtK === undefined ? na : `<td data-v="${s.anyPassAtK}" class="num">${pct(s.anyPassAtK)}</td>`,
+      ];
+      return `      <tr>${cells.join("")}</tr>`;
+    })
+    .join("\n");
+  return `  <section>
+    <h3>repeat statistics</h3>
+    <p class="meta">k = verified runs per ${groupKey}; pass@1 with a Wilson 95% interval; pass^k = all k passed; any-pass@k = at least one passed. Verifier errors count as not passed.</p>
+  <table class="cmp sortable" id="repeat-stats">
+    <thead><tr><th data-k="${groupKey}" data-t="s">${groupKey}</th><th data-k="k" data-t="n" class="num">k</th><th data-k="passes" data-t="n" class="num">passes</th><th data-k="p1" data-t="n" class="num">pass@1</th><th data-k="ci" data-t="n" class="num">Wilson 95% CI</th><th data-k="phk" data-t="n" class="num">pass^k</th><th data-k="apk" data-t="n" class="num">any-pass@k</th></tr></thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>
+  </section>
+`;
 }
 
 // ---------------------------------------------------------------- sections
@@ -450,7 +512,8 @@ th.sorted-desc::after { content: " ↓"; color: #7dcfff; }
 .agent-cell { font-weight: 600; color: #e6e6ef; }
 .badge { display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: 11px;
   font-weight: 600; letter-spacing: 0.03em; vertical-align: middle; }
-.st-success { background: #1f2b23; color: #9ece6a; border: 1px solid #2d4a33; }
+.st-success, .st-pass { background: #1f2b23; color: #9ece6a; border: 1px solid #2d4a33; }
+.st-fail { background: #2d1f23; color: #f7768e; border: 1px solid #4a2d33; }
 .st-error { background: #2d1f23; color: #f7768e; border: 1px solid #4a2d33; }
 .st-timeout, .st-aborted, .st-cancelled, .st-budget_exceeded, .st-turn_limit {
   background: #2d281f; color: #e0af68; border: 1px solid #4a3f2d; }
@@ -562,7 +625,7 @@ export function renderReport(trialSet: TrialSet, opts: RenderOptions): string {
     <h3>comparison</h3>
 ${renderComparisonTable(runs, multiTrial)}
   </section>
-${renderCharts(runs)}
+${renderRepeatStats(runs)}${renderCharts(runs)}
   <section>
     <h3>per-agent detail</h3>
 ${runs.map(renderAgentSection).join("\n")}

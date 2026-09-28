@@ -4,6 +4,7 @@
 // functions only: no server, no fs, no rounding. Field mapping follows THIS
 // tree's RunRecord (totals/endedAt/status), not the spec's older names.
 import type { RunRecord } from "../core/registry.ts";
+import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
 
 export const COMPARE_GROUP_KEYS = ["experiment", "variant", "workflow", "agent"] as const;
 
@@ -12,12 +13,17 @@ export type CompareGroupKey = (typeof COMPARE_GROUP_KEYS)[number];
 const DEFAULT_GROUP_BY: CompareGroupKey[] = ["experiment", "variant"];
 
 export interface CompareRow {
-  [key: string]: string | number | undefined;
+  [key: string]: string | number | RepeatStats | undefined;
   runs: number;
   avgTotalTokens: number;
   avgCostUsd: number;
   avgDurationMs: number;
   successRate: number;
+  /** Share of VERIFIED runs whose checker passed (#29). Present only when at
+   *  least one record in the group carries a `verify` verdict (else n/a). */
+  passRate?: number;
+  /** Repeat statistics over the group's verified runs (#30); k=1 omits CI. */
+  repeats?: RepeatStats;
 }
 
 /** Filter to the allowed keys; an empty (or all-unknown) list means the
@@ -63,7 +69,12 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
     let costUsd = 0;
     let durationMs = 0;
     let successes = 0;
+    // Outcome axis (#29/#30): only records with a run-time verify verdict are
+    // scored; a verifier error counts as not-passed. Later regrades are a
+    // separate history and never rewrite the run-time verdict.
+    const outcomes: boolean[] = [];
     for (const rec of group.records) {
+      if (rec.verify !== undefined) outcomes.push(rec.verify.status === "pass");
       totalTokens += (rec.totals?.inputTokens ?? 0) + (rec.totals?.outputTokens ?? 0);
       costUsd += rec.totals?.costUsd ?? 0;
       const end = rec.endedAt ?? rec.updatedAt ?? rec.startedAt;
@@ -78,6 +89,11 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
       avgDurationMs: durationMs / runs,
       successRate: successes / runs,
     };
+    const stats = repeatStats(outcomes);
+    if (stats !== undefined) {
+      row.passRate = stats.passAt1;
+      row.repeats = stats;
+    }
     keys.forEach((key, i) => {
       const value = group.values[i];
       if (value !== undefined) row[key] = value;

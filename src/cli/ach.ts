@@ -24,7 +24,24 @@ import {
   type AgentEvent,
   type KiroConfig,
   type RunResult,
+  type RunSpec,
 } from "../core/types.ts";
+import { DEFAULT_VERIFY_TIMEOUT_MS, type VerifyResult } from "../core/verify.ts";
+import {
+  formatRepeatGroupLine,
+  formatStatsInline,
+  formatVerifyLine,
+  outcomeOk,
+  outcomeStats,
+  repeatGroupRollup,
+  runOnce,
+  runRepeatGroup,
+  type RunLabels,
+  type TrialOutcome,
+  type VerifyRequest,
+} from "./trials.ts";
+import { cmdRegrade } from "./regrade.ts";
+import { listRunRecords } from "../core/registry.ts";
 import { z } from "zod";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { VERSION } from "../version.ts";
@@ -55,6 +72,10 @@ usage:
   ach --version | -v        print the harness version
   ach run --agent <claude|opencode|kiro|codex|gemini> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
+              [--verify '<cmd>' [--verify-timeout-ms MS=120000]]  (checker run in cwd after
+                           the agent exits; verdict on the RunRecord, exit 1 unless it passes)
+              [--repeat N [--parallel K]]  (N fresh sessions, one repeat group)
+              [--experiment E] [--variant V]  (compare-view labels on the RunRecord)
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
                            AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
@@ -66,6 +87,9 @@ usage:
                     [--cwd DIR] [--json] [--kiro-startup-ms MS] [--kiro-mcp-server '<json>']...
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
+  ach regrade <run-id> --verify '<cmd>' [--verify-timeout-ms MS] [--json]
+                (re-run a checker against a saved run's cwd; appends to the record's
+                 regrades[] — no agent launched, run-time verify never rewritten)
   ach watch [--dir <transcriptDir>]
   ach stats [--agent A] [--days N] [--json] [--state-only]
                 (machine claude/codex/gemini transcripts + harness state;
@@ -241,9 +265,17 @@ async function cmdRun(rest: string[]): Promise<number> {
       "claude-default-config": { type: "boolean", default: false },
       "kiro-mcp-server": { type: "string", multiple: true },
       json: { type: "boolean", default: false },
+      // Outcome scoring + repeat trials (#29/#57): see src/cli/trials.ts.
+      verify: { type: "string" },
+      "verify-timeout-ms": { type: "string" },
+      repeat: { type: "string" },
+      parallel: { type: "string" },
+      experiment: { type: "string" },
+      variant: { type: "string" },
     },
     allowPositionals: true,
   });
+  const trialFlags = parseTrialFlags(args.values);
   const agent = args.values.agent;
   if (!agent) throw new HarnessError("run requires --agent <name>", "USAGE");
   if (!isKnownAgent(agent)) {
@@ -268,27 +300,152 @@ async function cmdRun(rest: string[]): Promise<number> {
     registry: { stateDir: stateDir() },
   });
 
-  let result: RunResult;
+  const spec: RunSpec = {
+    prompt,
+    model: args.values.model,
+    resume: args.values.resume,
+    budget: {
+      usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
+      maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
+      wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
+      idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
+    },
+    extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
+    ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
+    ...(trialFlags.labels.variant !== undefined ? { variant: trialFlags.labels.variant } : {}),
+  };
+  const trialOpts = {
+    driver,
+    agent,
+    spec,
+    stateDir: stateDir(),
+    ...(trialFlags.verify !== undefined ? { verify: trialFlags.verify } : {}),
+    labels: trialFlags.labels,
+  };
+
+  if (trialFlags.repeat !== undefined) {
+    return runRepeatCli(trialOpts, trialFlags.repeat, trialFlags.parallel, args.values.json, args.values.model);
+  }
+
+  let outcome: TrialOutcome;
   try {
-    result = await driver.run(agent, {
-      prompt,
-      model: args.values.model,
-      resume: args.values.resume,
-      budget: {
-        usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
-        maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
-        wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
-        idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
-      },
-      extraArgs: args.values["extra-args"]?.split(" ").filter(Boolean),
-      ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
-    });
+    outcome = await runOnce(trialOpts);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new HarnessError(message, "RUN_FAILED");
   }
+  const result = outcome.result!;
   for (const w of result.warnings) process.stderr.write(`[warn] ${w}\n`);
+  if (outcome.annotateFailed) process.stderr.write(`[warn] registry: could not record verify/labels on run ${result.runId}\n`);
 
+  if (args.values.json) {
+    // Full RunResult: sessionId, events, tokens, totalCost, durationMs,
+    // exitStatus, warnings — plus `verify` only when a checker ran.
+    const out = outcome.verify !== undefined ? { ...result, verify: outcome.verify } : result;
+    process.stdout.write(JSON.stringify(out, null, 2) + "\n");
+  } else {
+    process.stdout.write(runSummaryText(agent, result, args.values.model, outcome.verify) + "\n");
+  }
+  return outcomeOk(outcome) ? 0 : 1;
+}
+
+/** `--repeat N [--parallel K]`: N fresh sessions, one summary block per child
+ *  as it settles, then the group line. Exit 0 only when every child passed
+ *  the gate (agent success and, with --verify, checker pass). */
+async function runRepeatCli(
+  opts: Omit<Parameters<typeof runRepeatGroup>[0], "count" | "parallel" | "onSettled">,
+  count: number,
+  parallel: number | undefined,
+  json: boolean,
+  modelFlag: string | undefined,
+): Promise<number> {
+  const { group, outcomes } = await runRepeatGroup({
+    ...opts,
+    count,
+    ...(parallel !== undefined ? { parallel } : {}),
+    onSettled: (o) => {
+      for (const w of o.result?.warnings ?? []) process.stderr.write(`[warn] [${o.index}] ${w}\n`);
+      if (o.annotateFailed) process.stderr.write(`[warn] [${o.index}] registry: could not record repeat/verify on the run\n`);
+      if (o.error !== undefined) process.stderr.write(`[error] [${o.index}] ${o.error}\n`);
+    },
+  });
+  const succeeded = outcomes.filter((o) => o.result?.exitStatus === "success").length;
+  const verified = outcomes.filter((o) => o.verify !== undefined);
+  const passed = verified.filter((o) => o.verify!.status === "pass").length;
+  const stats = outcomeStats(outcomes);
+  if (json) {
+    const runs = outcomes.map((o) =>
+      o.result !== undefined
+        ? { ...o.result, repeat: o.repeat, ...(o.verify !== undefined ? { verify: o.verify } : {}) }
+        : { repeat: o.repeat, error: o.error },
+    );
+    const envelope = {
+      repeat: { group, count, attempted: outcomes.length, succeeded, ...(verified.length > 0 ? { verified: verified.length, passed } : {}) },
+      ...(stats !== undefined ? { stats } : {}),
+      runs,
+    };
+    process.stdout.write(JSON.stringify(envelope, null, 2) + "\n");
+  } else {
+    for (const o of outcomes) {
+      process.stdout.write(`--- repeat ${o.index + 1}/${count} (${group.slice(0, 8)})\n`);
+      if (o.result !== undefined) {
+        process.stdout.write(runSummaryText(opts.agent, o.result, modelFlag, o.verify) + "\n");
+      } else {
+        process.stdout.write(`error      ${o.error ?? "unknown"}\n`);
+      }
+    }
+    let line = `repeat     ${outcomes.length} attempted · ${succeeded} succeeded`;
+    if (verified.length > 0) line += ` · ${passed}/${verified.length} verified pass`;
+    process.stdout.write(`--- group ${group}\n${line}\n`);
+    if (stats !== undefined) process.stdout.write(`stats      ${formatStatsInline(stats)}\n`);
+  }
+  return outcomes.every(outcomeOk) ? 0 : 1;
+}
+
+/** Validate the #29/#57 flags up front (before any agent launches). */
+function parseTrialFlags(v: {
+  verify?: string;
+  "verify-timeout-ms"?: string;
+  repeat?: string;
+  parallel?: string;
+  resume?: string;
+  experiment?: string;
+  variant?: string;
+}): { verify?: VerifyRequest; repeat?: number; parallel?: number; labels: RunLabels } {
+  const verifyTimeout = optPositiveInt(v["verify-timeout-ms"], "--verify-timeout-ms");
+  if (verifyTimeout !== undefined && v.verify === undefined) {
+    throw new HarnessError("--verify-timeout-ms requires --verify '<cmd>'", "USAGE");
+  }
+  if (v.verify !== undefined && v.verify.trim() === "") {
+    throw new HarnessError("--verify expects a non-empty command", "USAGE");
+  }
+  const repeat = optPositiveInt(v.repeat, "--repeat");
+  const parallel = optPositiveInt(v.parallel, "--parallel");
+  if (parallel !== undefined && repeat === undefined) {
+    throw new HarnessError("--parallel requires --repeat N", "USAGE");
+  }
+  if (repeat !== undefined && v.resume !== undefined) {
+    throw new HarnessError("--repeat starts fresh sessions; it cannot be combined with --resume", "USAGE");
+  }
+  for (const f of ["experiment", "variant"] as const) {
+    if (v[f] !== undefined && v[f]!.trim() === "") throw new HarnessError(`--${f} expects a non-empty label`, "USAGE");
+  }
+  return {
+    ...(v.verify !== undefined
+      ? { verify: { command: v.verify, timeoutMs: verifyTimeout ?? DEFAULT_VERIFY_TIMEOUT_MS, cwd: process.cwd() } }
+      : {}),
+    ...(repeat !== undefined ? { repeat } : {}),
+    ...(parallel !== undefined ? { parallel } : {}),
+    labels: {
+      ...(v.experiment !== undefined ? { experiment: v.experiment } : {}),
+      ...(v.variant !== undefined ? { variant: v.variant } : {}),
+    },
+  };
+}
+
+/** The human `ach run` summary block (unchanged format; one `verify` line
+ *  is appended only when a checker ran). */
+function runSummaryText(agent: string, result: RunResult, modelFlag: string | undefined, verify: VerifyResult | undefined): string {
   const sum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
   let lastModel: string | undefined;
   let totalCredits: number | undefined;
@@ -314,26 +471,20 @@ async function cmdRun(rest: string[]): Promise<number> {
     }
   }
 
-  if (args.values.json) {
-    // Full RunResult: sessionId, events, tokens, totalCost, durationMs,
-    // exitStatus, warnings.
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-  } else {
-    let summary = formatSummary({
-      agent,
-      sessionId: result.sessionId,
-      model: args.values.model ?? lastModel,
-      tokens: sum,
-      costUsd: result.totalCost,
-      durationMs: result.durationMs,
-      exitStatus: result.exitStatus,
-      ...(result.usage !== undefined ? { usage: result.usage } : {}),
-    });
-    if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
-    if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
-    process.stdout.write(summary + "\n");
-  }
-  return result.exitStatus === "success" ? 0 : 1;
+  let summary = formatSummary({
+    agent,
+    sessionId: result.sessionId,
+    model: modelFlag ?? lastModel,
+    tokens: sum,
+    costUsd: result.totalCost,
+    durationMs: result.durationMs,
+    exitStatus: result.exitStatus,
+    ...(result.usage !== undefined ? { usage: result.usage } : {}),
+  });
+  if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
+  if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
+  if (verify !== undefined) summary += `\n${formatVerifyLine(verify)}`;
+  return summary;
 }
 
 // ------------------------------------------------------------ preflight
@@ -710,6 +861,13 @@ async function cmdStats(rest: string[]): Promise<number> {
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
 
   const agg = aggregate(records);
+  // Per-repeat-group rollup (#57) from the run registry; the key only
+  // appears when some `ach run --repeat` group exists.
+  const repeatGroups = repeatGroupRollup(
+    listRunRecords(stateDir()).filter(
+      (r) => (!agent || r.agent === agent) && (sinceTs === undefined || r.startedAt >= sinceTs),
+    ),
+  );
 
   if (args.values.json) {
     process.stdout.write(
@@ -718,6 +876,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           total: agg.totals,
           byAgent: agg.byAgent,
           byDay: agg.byDay,
+          ...(repeatGroups.length > 0 ? { byRepeatGroup: repeatGroups } : {}),
         },
         null,
         2,
@@ -729,6 +888,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     process.stdout.write(line("totals", agg.totals) + "\n");
     for (const [a, b] of Object.entries(agg.byAgent).sort()) process.stdout.write(line(a, b) + "\n");
     for (const [d, b] of Object.entries(agg.byDay).sort()) process.stdout.write(line(d, b) + "\n");
+    for (const g of repeatGroups) process.stdout.write(formatRepeatGroupLine(g, fmtUsd) + "\n");
   }
   hintCcusage();
   return 0;
@@ -908,6 +1068,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdStats(rest);
     case "emit":
       return cmdEmit(rest);
+    case "regrade":
+      return cmdRegrade(rest);
     case "report":
       return cmdReport(rest);
     case "dash":
