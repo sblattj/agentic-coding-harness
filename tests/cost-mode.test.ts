@@ -216,7 +216,7 @@ describe("ach stats --cost-mode (CLI)", () => {
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /^totals .* costMode=display$/m);
     assert.match(r.stdout, /^disagree +1 record\(s\) where reported and computed cost differ by >1%/m);
-    assert.match(r.stdout, /^codex .* cost=n\/a$/m);
+    assert.match(r.stdout, /^codex .* cost=n\/a cacheHit=/m);
   });
 
   test("provenance map (#33): transcript tokens reported, priced cost computed, a blend computed, n/a unlabelled", () => {
@@ -236,8 +236,8 @@ describe("ach stats --cost-mode (CLI)", () => {
   test("text table marks computed cost with * and prints the legend", () => {
     const r = runCli(["stats"], env());
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, /^codex .* cost=\$\d+\.\d{4}\*$/m);
-    assert.match(r.stdout, /^claude .* cost=\$\d+\.\d{4}$/m);
+    assert.match(r.stdout, /^codex .* cost=\$\d+\.\d{4}\* cacheHit=/m);
+    assert.match(r.stdout, /^claude .* cost=\$\d+\.\d{4} cacheHit=/m);
     assert.match(r.stdout, /^legend +\* computed/m);
   });
 

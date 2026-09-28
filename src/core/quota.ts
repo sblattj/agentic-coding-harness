@@ -81,6 +81,7 @@ const NO_SOURCE: Record<QuotaAgent, string> = {
   gemini: "no vendor quota source wired",
   opencode: "no vendor quota source wired",
   kiro: "no vendor quota source wired",
+  null: "offline adapter; no vendor quota",
 };
 
 function windowName(minutes: number | undefined): string {

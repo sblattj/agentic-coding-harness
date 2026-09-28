@@ -1,6 +1,7 @@
 // CLI glue for custom agents (#37 `--agent custom --template ...`) and agents.d
 // descriptors (#38). Kept out of ach.ts so the dispatch file only gains a few
 // wiring lines.
+import { selectCost, type CostMode } from "./cost-mode.ts";
 import { parseArgs } from "node:util";
 import { AGENTS, HarnessError, isKnownAgent, type AgentAdapter } from "../core/types.ts";
 import { CUSTOM_AGENT, createCustomAdapter } from "../adapters/custom.ts";
@@ -114,9 +115,9 @@ export interface UnmeteredGroup {
  * They carry no token records at all, so they are counted as RUNS in their own
  * group — never folded into the metered totals as fabricated zeros.
  */
-export function unmeteredRuns(dir: string, opts: { agent?: string; sinceTs?: number } = {}): UnmeteredGroup {
+export function unmeteredRuns(dir: string, opts: { agent?: string; sinceTs?: number; records?: ReturnType<typeof listRunRecords> } = {}): UnmeteredGroup {
   const group: UnmeteredGroup = { runs: 0, byAgent: {} };
-  for (const rec of listRunRecords(dir)) {
+  for (const rec of opts.records ?? listRunRecords(dir)) {
     if (rec.metering !== "none") continue;
     if (opts.agent && rec.agent !== opts.agent) continue;
     if (opts.sinceTs !== undefined && rec.startedAt < opts.sinceTs) continue;
@@ -133,9 +134,9 @@ export function unmeteredRuns(dir: string, opts: { agent?: string; sinceTs?: num
 export async function descriptorTapRows(
   load: DescriptorLoad,
   pricer: Pricer,
-  opts: { agent?: string; sinceTs?: number } = {},
-): Promise<{ rows: TapUsageRow[]; warnings: string[] }> {
-  const out: TapUsageRow[] = [];
+  opts: { agent?: string; sinceTs?: number; costMode?: CostMode } = {},
+): Promise<{ rows: (TapUsageRow & { costSource?: "reported" | "computed" })[]; warnings: string[] }> {
+  const out: (TapUsageRow & { costSource?: "reported" | "computed" })[] = [];
   const warnings: string[] = [];
   for (const d of load.descriptors) {
     if (!d.descriptor.usageTap) continue;
@@ -147,8 +148,8 @@ export async function descriptorTapRows(
         const ms = row.ts ? Date.parse(row.ts) : NaN;
         if (!Number.isFinite(ms) || ms < opts.sinceTs) continue;
       }
-      let costUsd = row.costUsd;
-      if (costUsd === undefined && row.model) {
+      let computed: number | undefined;
+      if (row.model && (row.costUsd === undefined || opts.costMode === "calculate")) {
         const c = p.price({
           model: row.model,
           inputTokens: row.inputTokens,
@@ -156,9 +157,10 @@ export async function descriptorTapRows(
           cacheReadTokens: row.cacheReadTokens,
           cacheWriteTokens: row.cacheWriteTokens,
         });
-        if (!Number.isNaN(c)) costUsd = c;
+        if (!Number.isNaN(c)) computed = c;
       }
-      out.push(costUsd === undefined ? { ...row } : { ...row, costUsd });
+      const { costUsd: reported, ...rest } = row;
+      out.push({ ...rest, ...selectCost(opts.costMode ?? "auto", reported, computed) });
     }
     // A hint-priced model is announced, never silent (drains base warnings too).
     if (p !== pricer) warnings.push(...p.drainWarnings());

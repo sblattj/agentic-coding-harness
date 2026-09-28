@@ -94,8 +94,9 @@ export interface StatRecord extends CanonicalTokenRecord {
   agent: string;
   /**
    * The producer-reported USD cost, set ONLY when the source line actually
-   * carried a finite costUsd. `costUsd` above defaults an absent cost to 0, so
-   * it cannot tell "the CLI said $0" from "no cost reported"; this can
+   * carried a finite costUsd. Absent cost remains undefined, preserving the difference between
+   * "the CLI said $0" and "no cost reported"; this field explicitly tracks
+   * the provider-reported amount
    * (issue #28: `ach stats --cost-mode`).
    */
   reportedCostUsd?: number;
@@ -117,7 +118,7 @@ const RecordLineSchema = z
     cacheReadTokens: z.number().default(0),
     cacheWriteTokens: z.number().default(0),
     reasoningTokens: z.number().default(0),
-    costUsd: z.number().default(0),
+    costUsd: z.number().optional(),
     extra: z.record(z.string(), z.unknown()).optional(),
   })
   .passthrough();
@@ -172,7 +173,7 @@ function fromEventLine(line: Record<string, unknown>, fallbackAgent: string): Ca
       cacheReadTokens: usage.cacheReadTokens ?? cached,
       cacheWriteTokens: usage.cacheWriteTokens ?? 0,
       reasoningTokens: usage.reasoningTokens,
-      costUsd: usage.costUsd ?? 0,
+      costUsd: usage.costUsd,
       extra: usage.extra,
     };
   }
@@ -184,7 +185,7 @@ function eventLineToStatRecord(line: Record<string, unknown>, relPath: string): 
   const rec = fromEventLine(line, agentFromPath(relPath) ?? "unknown");
   if (!rec) return null;
   // usage_raw: the normalizer sets costUsd only when the provider reported
-  // one. usage: fromEventLine defaults it to 0, so read the raw payload.
+  // one. usage: read the raw payload to preserve an absent cost.
   const reported =
     line.type === "usage"
       ? finiteCost((line.usage as { costUsd?: unknown } | undefined)?.costUsd)

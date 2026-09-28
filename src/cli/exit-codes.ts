@@ -87,6 +87,7 @@ export function runExitCode(
   if (opts.mode === "binary") return result.exitStatus === "success" ? EXIT_CODES.ok : EXIT_CODES.error;
   switch (result.exitStatus) {
     case "success":
+      if (budgetFractions(result, opts).some((f) => f.fraction >= 1)) return EXIT_CODES.limitHit;
       return budgetFractions(result, opts).some((f) => f.fraction >= NEAR_LIMIT_FRACTION)
         ? EXIT_CODES.nearLimit
         : EXIT_CODES.ok;

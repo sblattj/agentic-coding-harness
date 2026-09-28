@@ -30,7 +30,6 @@ import {
   formatRepeatGroupLine,
   formatStatsInline,
   formatVerifyLine,
-  outcomeOk,
   outcomeStats,
   repeatGroupRollup,
   runOnce,
@@ -56,6 +55,7 @@ import {
 import { TRANSCRIPT_SOURCES, isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
+import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer } from "../core/pricing.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatSummary } from "./lib.ts";
 import {
@@ -67,7 +67,6 @@ import {
   parseModelAliases,
   projectMatches,
   renderDimsText,
-  statsLine,
   BY_DIMS,
   type DimRecord,
 } from "./stats-dims.ts";
@@ -118,6 +117,7 @@ import {
   loadCatalog,
   reportCatalogIssues,
   resolveRunAgent,
+  runnableAgentNames,
   unknownAgentError,
   unmeteredRuns,
 } from "./custom-agents.ts";
@@ -134,7 +134,7 @@ usage:
                 (threshold alerts warn once per crossing, never abort; fractions in (0,1];
                  'off' disables; state in <stateDir>/alerts.json, see docs/BUDGET-ALERTS.md)
               [--verify '<cmd>' [--verify-timeout-ms MS=120000]]  (checker run in cwd after
-                           the agent exits; verdict on the RunRecord, exit 1 unless it passes)
+                           the agent exits; verdict on the RunRecord, failed checker exits 1; passing checker keeps the run exit code)
               [--repeat N [--parallel K]]  (N fresh sessions, one repeat group)
               [--experiment E] [--variant V]  (compare-view labels on the RunRecord)
               claude only: [--claude-default-config]  (use the default, authenticated
@@ -492,7 +492,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   };
 
   if (trialFlags.repeat !== undefined) {
-    return runRepeatCli(trialOpts, trialFlags.repeat, trialFlags.parallel, args.values.json, args.values.model);
+    return runRepeatCli(trialOpts, trialFlags.repeat, trialFlags.parallel, args.values.json, args.values.model, exitMode);
   }
 
   let outcome: TrialOutcome;
@@ -533,6 +533,7 @@ async function runRepeatCli(
   parallel: number | undefined,
   json: boolean,
   modelFlag: string | undefined,
+  exitMode: "binary" | "ladder",
 ): Promise<number> {
   const { group, outcomes } = await runRepeatGroup({
     ...opts,
@@ -574,7 +575,9 @@ async function runRepeatCli(
     process.stdout.write(`--- group ${group}\n${line}\n`);
     if (stats !== undefined) process.stdout.write(`stats      ${formatStatsInline(stats)}\n`);
   }
-  return outcomes.every(outcomeOk) ? 0 : 1;
+  const codes = outcomes.map((o) => !o.result || (o.verify && o.verify.status !== "pass") ? 1 : runExitCode(o.result, { mode: exitMode, budget: opts.spec.budget, agent: opts.agent }));
+  // Errors dominate; otherwise unavailable, limit hit, near limit, then success.
+  return [1, 20, 11, 10].find((code) => codes.includes(code)) ?? 0;
 }
 
 /** Validate the #29/#57 flags up front (before any agent launches). */
@@ -1069,8 +1072,7 @@ async function cmdStats(rest: string[]): Promise<number> {
       if (!Number.isNaN(c)) computed = c;
     }
     const d = costDisagreement(reported, computed);
-    if (d) disagreements.push(formatDisagreement(`${r.agent} session=${r.sessionId ?? "unknown"} model=${r.model ?? "unknown"}`, d));
-    return selectCost(costMode, reported, computed);
+    return { ...selectCost(costMode, reported, computed), ...(d ? { costDisagreement: formatDisagreement(`${r.agent} session=${r.sessionId ?? "unknown"} model=${r.model ?? "unknown"}`, d) } : {}) };
   };
 
   const dimsBy = parseByDims(byDims);
@@ -1093,7 +1095,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   reportCatalogIssues(catalog);
   // amp/goose/qwen (#22) are read-only transcript sources: valid filters.
   if (agent && !isKnownAgent(agent) && !isTranscriptOnlyAgent(agent) && agent !== "custom" && !findDescriptor(catalog, agent)) {
-    throw unknownAgentError(agent, catalog);
+    throw new HarnessError(`unknown agent '${agent}' (expected one of: ${[...runnableAgentNames(catalog), ...TRANSCRIPT_SOURCES.map((s) => s.agent)].join(", ")})`, "UNKNOWN_AGENT");
   }
   // One code path computes the window (#26) and the zone (#84); every output
   // surface below (table, --json, per-bucket maps) reads the same records.
@@ -1116,7 +1118,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs }) : []),
   ].filter((r) => inWindow(Date.parse(r.ts), window));
   const runCwd = cwdIndex(listRunRecords(stateDir()));
-  let records: (DimRecord & StatsProvenanceRecord)[] = stateRecords.map((r) => ({
+  let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string })[] = stateRecords.map((r) => ({
     extra: r.extra,
     cwd: runCwd(r.agent, r.sessionId),
     ts: r.ts,
@@ -1162,7 +1164,7 @@ async function cmdStats(rest: string[]): Promise<number> {
       records.push({ ...row, ...costFor(row, undefined), ...(cwd ? { cwd } : {}) });
     }
     // agents.d usage taps (#38): descriptor-declared transcript sources.
-    const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs });
+    const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs, costMode });
     for (const row of tap.rows) {
       // Tap rows honour the full #26 [since, until) window, not only sinceTs.
       if (!inWindow(row.ts ? Date.parse(row.ts) : NaN, window)) continue;
@@ -1177,9 +1179,11 @@ async function cmdStats(rest: string[]): Promise<number> {
   for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
 
   if (wantProject !== undefined) records = records.filter((r) => projectMatches(r.cwd, wantProject, projectAliases));
+  disagreements.push(...records.flatMap((r) => r.costDisagreement ? [r.costDisagreement] : []));
   const agg = aggregate(records, { timeZone, by });
   const showProject = dimsBy.has("project") || wantProject !== undefined;
   const dims = aggregateDims(records, {
+    costMode, timeZone,
     pricer: createPricer(),
     mergeModels: args.values["merge-models"],
     modelAliases,
@@ -1193,7 +1197,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     );
   }
   // Run records from the registry, honouring the full #26 [since, until) window.
-  const windowedRunRecords = listRunRecords(stateDir()).filter((r) => inWindow(r.startedAt, window));
+  const windowedRunRecords = listRunRecords(stateDir()).filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)));
   // Run outcomes (#60) from the run registry: shown only when there are runs,
   // so the historical {total, byAgent, byDay} shape is untouched otherwise.
   const runRecords = windowedRunRecords.filter((r) => !agent || r.agent === agent);
@@ -1220,7 +1224,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     spentUsd: agg.totals.costUsd,
   });
   // metering=none runs (#37) carry no token records: counted as runs, apart.
-  const unmetered = unmeteredRuns(stateDir(), { agent, sinceTs });
+  const unmetered = unmeteredRuns(stateDir(), { agent, sinceTs, records: runRecords });
   probe.drainWarnings();
   // Disagreements go to stderr (capped) and are counted in total.costDisagreements.
   const MAX_DISAGREEMENT_LINES = 10;
@@ -1233,7 +1237,7 @@ async function cmdStats(rest: string[]): Promise<number> {
 
   const view = (b: typeof agg.totals) => applyCostMode(b, costMode);
   // Issue #33: a sibling `provenance` map on every bucket (numbers unchanged).
-  const prov = statsProvenance(records);
+  const prov = statsProvenance(records, { timeZone, by });
   const mapView = (m: Record<string, typeof agg.totals>, pm: Record<string, ProvenanceMap>) =>
     Object.fromEntries(Object.entries(m).map(([k, b]) => [k, { ...view(b), provenance: pm[k] ?? {} }]));
 
@@ -1243,7 +1247,7 @@ async function cmdStats(rest: string[]): Promise<number> {
         {
           total: { ...view(agg.totals), costDisagreements: disagreements.length, provenance: prov.total },
           byAgent: mapView(agg.byAgent, prov.byAgent),
-          ...Object.fromEntries(Object.entries(timeMaps).map(([k, v]) => [k, mapView(v, k === "byDay" ? prov.byDay : {})])),
+          ...Object.fromEntries(Object.entries(timeMaps).map(([k, v]) => [k, mapView(v, k === "byDay" ? prov.byDay : k === "byWeek" ? prov.byWeek ?? {} : prov.byMonth ?? {})])),
           timezone: timeZone,
           window: windowJson(window),
           byModel: dims.byModel,
@@ -1269,8 +1273,9 @@ async function cmdStats(rest: string[]): Promise<number> {
     );
   } else {
     const line = (label: string, b: CostModeBucket, p: ProvenanceMap | undefined) =>
-      `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${b.costUsd === null ? "n/a" : fmtUsd(b.costUsd) + markerFor(p?.costUsd)}`;
+      `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${b.costUsd === null ? "n/a" : fmtUsd(b.costUsd) + markerFor(p?.costUsd)} cacheHit=${fmtCacheHit(cacheHitRatio(b))}`;
     process.stdout.write(line("totals", view(agg.totals), prov.total) + ` costMode=${costMode}` + "\n");
+    if (disagreements.length > 0) process.stdout.write(`disagree  ${disagreements.length} record(s) where reported and computed cost differ by >${COST_DISAGREEMENT_PCT}% (details on stderr)\n`);
     if (unmetered.runs > 0) {
       process.stdout.write(`unmetered runs=${fmtInt(unmetered.runs)} tokens=n/a cost=n/a\n`);
       for (const [a, g] of Object.entries(unmetered.byAgent).sort()) {
@@ -1283,7 +1288,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     }
     if (extras.planLine && !agg.byAgent.claude) process.stdout.write(extras.planLine + "\n");
     for (const m of Object.values(timeMaps)) {
-      for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, view(b), prov.byDay[d]) + "\n");
+      for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, view(b), prov.byDay[d] ?? prov.byWeek?.[d] ?? prov.byMonth?.[d]) + "\n");
     }
     for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject })) {
       process.stdout.write(l + "\n");

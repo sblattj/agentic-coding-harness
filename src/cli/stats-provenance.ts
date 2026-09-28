@@ -7,6 +7,7 @@
 //                (extra.tokensAvailable !== false); absent otherwise (n/a)
 //   costUsd      the one source every cost-bearing record shares; a blend of
 //                reported + computed is `computed`; absent when none had a cost
+import { bucketKey, type TimeGranularity } from "./time-window.ts";
 import type { CostSource } from "./lib.ts";
 import type { ProvenanceMap } from "../core/provenance.ts";
 
@@ -23,6 +24,8 @@ export interface StatsProvenance {
   total: ProvenanceMap;
   byAgent: Record<string, ProvenanceMap>;
   byDay: Record<string, ProvenanceMap>;
+  byWeek?: Record<string, ProvenanceMap>;
+  byMonth?: Record<string, ProvenanceMap>;
 }
 
 const LANES = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens"] as const;
@@ -49,15 +52,19 @@ function toMap(t: Tally): ProvenanceMap {
   return out;
 }
 
-export function statsProvenance(records: StatsProvenanceRecord[]): StatsProvenance {
+export function statsProvenance(records: StatsProvenanceRecord[], opts: { timeZone?: string; by?: TimeGranularity[] } = {}): StatsProvenance {
   const total = empty();
   const byAgent: Record<string, Tally> = {};
   const byDay: Record<string, Tally> = {};
+  const byWeek: Record<string, Tally> = {};
+  const byMonth: Record<string, Tally> = {};
   for (const r of records) {
     tally(total, r);
     tally((byAgent[r.agent] ??= empty()), r);
-    tally((byDay[r.ts ? r.ts.slice(0, 10) : "unknown"] ??= empty()), r);
+    tally((byDay[opts.timeZone ? bucketKey(r.ts, "day", opts.timeZone) : r.ts ? r.ts.slice(0, 10) : "unknown"] ??= empty()), r);
+    if (opts.by?.includes("week")) tally((byWeek[bucketKey(r.ts, "week", opts.timeZone ?? "UTC")] ??= empty()), r);
+    if (opts.by?.includes("month")) tally((byMonth[bucketKey(r.ts, "month", opts.timeZone ?? "UTC")] ??= empty()), r);
   }
   const mapAll = (m: Record<string, Tally>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, toMap(v)]));
-  return { total: toMap(total), byAgent: mapAll(byAgent), byDay: mapAll(byDay) };
+  return { total: toMap(total), byAgent: mapAll(byAgent), byDay: mapAll(byDay), ...(opts.by?.includes("week") ? { byWeek: mapAll(byWeek) } : {}), ...(opts.by?.includes("month") ? { byMonth: mapAll(byMonth) } : {}) };
 }
