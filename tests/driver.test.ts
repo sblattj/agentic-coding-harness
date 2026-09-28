@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { createDriver, defaultAdapters } from '../src/core/driver.js';
 import { listRunRecords } from '../src/core/registry.js';
+import { AGENTS } from '../src/core/types.js';
 import type { AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, RunResult, RunSpec } from '../src/core/types.js';
 
 type ScriptedEvent =
@@ -268,7 +269,10 @@ describe('registry', () => {
     } finally {
       console.warn = original;
     }
-    assert.deepEqual(Object.keys(adapters).sort(), ['claude', 'codex', 'gemini', 'kiro', 'null', 'opencode']);
+    // Derived from the exported AGENTS list (not a hardcoded literal) so a
+    // new agent added there without a matching defaultAdapters() entry fails
+    // this test instead of being silently skipped.
+    assert.deepEqual(Object.keys(adapters).sort(), [...AGENTS].sort());
     assert.equal(warnings.length, 0);
     for (const [name, adapter] of Object.entries(adapters)) {
       assert.equal(adapter.name, name, `adapter "${name}" carries its name`);
