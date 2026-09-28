@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 // Issue #33: provenance labels (reported | computed | estimated) on every
 // displayed number — the core map, the dash/report/web markers, and the
 // stats bucket maps. The stats CLI end-to-end assertions live next to the
@@ -203,7 +204,7 @@ describe("report markers", () => {
 });
 
 describe("web dashboard markers (index.html)", () => {
-  const html = readFileSync(join(import.meta.dirname, "../src/web/index.html"), "utf8");
+  const html = readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), "../src/web/index.html"), "utf8");
   const m = /\/\* provenance:begin \*\/([\s\S]*?)\/\* provenance:end \*\//.exec(html);
 
   it("embeds the provenance helpers and the legend", () => {

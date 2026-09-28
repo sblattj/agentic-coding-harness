@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createContext, runInContext } from 'node:vm';
@@ -11,7 +12,7 @@ import { describe, it } from 'node:test';
  * a DOM package. connect()/WebSocket/location are never exercised here.
  */
 
-const FEED_SRC = readFileSync(join(import.meta.dirname, '../src/web/feed.js'), 'utf8');
+const FEED_SRC = readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), '../src/web/feed.js'), 'utf8');
 const T0 = Date.parse('2026-09-13T12:00:00Z');
 
 /** The subset of Element that feed.js actually touches. */

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,12 +32,12 @@ type FakeAcpScenarioName =
 // Harness: every test drives the scripted fake server, never the paid binary.
 // ---------------------------------------------------------------------------
 
-const FIXTURE_DIR = join(import.meta.dirname, 'fixtures/kiro');
+const FIXTURE_DIR = join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures/kiro');
 const SERVER = join(FIXTURE_DIR, 'fake-acp-server.ts');
 // `node --import tsx <file>` keeps the server in ONE process. The `tsx`
 // CLI wrapper re-spawns node, so a SIGKILL would land on the wrapper and the
 // real server would outlive it — which is exactly what the SIGKILL test proves.
-const REPO_ROOT = join(import.meta.dirname, '..');
+const REPO_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const SERVER_ARGV = (process.versions as { bun?: string }).bun ? [SERVER] : ['--import', 'tsx', SERVER];
 
 const TMP = mkdtempSync(join(tmpdir(), 'kiro-acp-test-'));

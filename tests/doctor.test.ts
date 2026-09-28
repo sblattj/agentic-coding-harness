@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -13,8 +14,8 @@ import { runDoctor, formatDoctorTable, type DoctorCheck, type DoctorReport } fro
 // No real agent CLI and no network is ever touched.
 
 const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
-const REPO_ROOT = path.join(import.meta.dirname, "..");
-const ACP_SERVER = path.join(import.meta.dirname, "fixtures/kiro/fake-acp-server.ts");
+const REPO_ROOT = path.join(fileURLToPath(new URL('.', import.meta.url)), "..");
+const ACP_SERVER = path.join(fileURLToPath(new URL('.', import.meta.url)), "fixtures/kiro/fake-acp-server.ts");
 const IS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
 
 interface World {

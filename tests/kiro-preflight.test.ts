@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
@@ -11,9 +12,9 @@ import type { ChildProcessLike, SpawnFn } from '../src/adapters/shared.ts';
 import type { McpToolDef } from '../src/mcp/contract.ts';
 import type { GatewayConfig } from '../src/serve/gateway.ts';
 
-const FIXTURE_DIR = join(import.meta.dirname, 'fixtures/kiro');
+const FIXTURE_DIR = join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures/kiro');
 const SERVER = join(FIXTURE_DIR, 'fake-acp-server.ts');
-const REPO_ROOT = join(import.meta.dirname, '..');
+const REPO_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const TMP = mkdtempSync(join(tmpdir(), 'kiro-preflight-'));
 
 interface Fake {

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 // End-to-end proof of the external-source pipeline (spec §10 integration
 // items) through the REAL CLI process: `npx tsx src/cli/ach.ts web ...` is
 // spawned as a child, a node:http stub feed plays the Reference bridge
@@ -12,7 +13,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { writeRunRecord, type RunRecord } from '../src/core/registry.ts';
 
-const WORKTREE_ROOT = path.resolve(import.meta.dirname, '..');
+const WORKTREE_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const T0 = 1_700_000_000_000;
 const SOURCE_TOKEN = 'st1';
 

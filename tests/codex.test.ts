@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -6,7 +7,7 @@ import { CodexAdapter, CODEX_CAPABILITIES, parseCodexLine } from '../src/adapter
 import type { CanonicalEvent } from '../src/adapters/types.ts';
 import { FakeChild, fakeSpawnFn, splitMidFirstLine, type FakeSpawnCall } from './helpers/fake-child.ts';
 
-const FIXTURE = readFileSync(join(import.meta.dirname, 'fixtures/codex-session.ndjson'), 'utf8');
+const FIXTURE = readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures/codex-session.ndjson'), 'utf8');
 
 async function collect(handle: { events: AsyncIterable<CanonicalEvent>; wait(): Promise<number> }) {
   const events: CanonicalEvent[] = [];
@@ -266,14 +267,15 @@ describe('codex spawn integration (fake child, real plumbing)', () => {
     const child = new FakeChild();
     const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child) });
     const chunks: string[] = [];
-    const handle = await adapter.launch({ prompt: 'list the files', onOutput: (c) => chunks.push(c) });
+    const launching = adapter.launch({ prompt: 'list the files', onOutput: (c) => chunks.push(c) });
+    child.writeStdout(FIXTURE);
+    child.close(0);
+    const handle = await launching;
     const collected = (async () => {
       const events: unknown[] = [];
       for await (const event of handle.attach()) events.push(event);
       return { events, exit: await handle.wait() };
     })();
-    child.writeStdout(FIXTURE);
-    child.close(0);
     const { events, exit } = await collected;
     assert.equal(exit, 'success');
     assert.deepEqual(chunks, [FIXTURE], 'raw passthrough RunSpec tap received the exact chunk');
@@ -283,13 +285,14 @@ describe('codex spawn integration (fake child, real plumbing)', () => {
   it('launch() ignores a non-function onOutput passthrough value', async () => {
     const child = new FakeChild();
     const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child) });
-    const handle = await adapter.launch({ prompt: 'x', onOutput: 'not-a-function' } as unknown as import('../src/core/types.js').RunSpec);
+    const launching = adapter.launch({ prompt: 'x', onOutput: 'not-a-function' } as unknown as import('../src/core/types.js').RunSpec);
+    child.writeStdout(FIXTURE);
+    child.close(0);
+    const handle = await launching;
     const collected = (async () => {
       for await (const _ of handle.attach()) void _;
       return handle.wait();
     })();
-    child.writeStdout(FIXTURE);
-    child.close(0);
     assert.equal(await collected, 'success');
   });
 
