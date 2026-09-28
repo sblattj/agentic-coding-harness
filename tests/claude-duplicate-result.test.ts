@@ -41,7 +41,7 @@ class FakeChild extends EventEmitter implements HarnessChildProcess {
  * A driver over a real ClaudeCodeAdapter whose spawned child replays `lines`
  * on stdout and exits 0 — no real CLI, no network.
  */
-async function runWithLines(lines: string[], budgetUsd?: number): Promise<RunResult> {
+async function runWithLines(lines: string[], budgetUsd?: number, exitCode = 0): Promise<RunResult> {
   const stateDir = mkdtempSync(path.join(tmpdir(), 'ach-claude-dup-'));
   try {
     const spawnFn: SpawnFn = () => {
@@ -50,7 +50,7 @@ async function runWithLines(lines: string[], budgetUsd?: number): Promise<RunRes
         child.stdout.write(lines.join('\n') + '\n');
         child.stdout.end();
         child.stderr.end();
-        setImmediate(() => child.emit('close', 0, null));
+        setImmediate(() => child.emit('close', exitCode, null));
       });
       return child;
     };
@@ -58,7 +58,7 @@ async function runWithLines(lines: string[], budgetUsd?: number): Promise<RunRes
     const driver = createDriver({ adapters: { claude: adapter }, stateDir });
     return await driver.run('claude', {
       prompt: 'x',
-      ...(budgetUsd !== undefined ? { budget: { usd: budgetUsd } } : {}),
+      ...(budgetUsd !== undefined ? { budget: { usd: budgetUsd, onExceed: 'abort' as const } } : {}),
     });
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
@@ -87,6 +87,23 @@ describe('claude adapter: duplicate result line (#14)', () => {
     approx(result.totalCost, single.totalCost);
     assert.equal(result.tokens.length, 1);
     assert.equal(result.events.filter((e) => e.type === 'usage').length, 1);
+  });
+
+  it('final accounting above the cap preserves completion even with explicit abort', async () => {
+    const control = await runWithLines(DUP_LINES.slice(0, 3));
+    const result = await runWithLines(DUP_LINES, control.totalCost / 2);
+    assert.equal(result.exitStatus, 'success');
+    approx(result.totalCost, control.totalCost);
+    assert.equal(result.tokens.length, 1);
+    assert.equal(result.events.find((e) => e.type === 'usage')?.finalAccounting, true);
+    assert.ok(result.warnings.some((w) => /exceeded .*by final accounting/.test(w)));
+    assert.ok(!control.warnings.some((w) => /by final accounting/.test(w)));
+  });
+
+  it('final-accounting exemption does not hide a failing Claude process', async () => {
+    const result = await runWithLines(DUP_LINES, 0.000001, 1);
+    assert.equal(result.exitStatus, 'error');
+    assert.ok(result.warnings.some((w) => /by final accounting/.test(w)));
   });
 
   it('a deep-equal repeat with a different key order also counts once', async () => {

@@ -265,6 +265,8 @@ export interface ToolResultEvent extends BaseEvent {
 export interface UsageEvent extends BaseEvent {
   type: "usage";
   usage: CanonicalTokenRecord;
+  /** Final result accounting: wait for process exit instead of aborting on this bill. */
+  finalAccounting?: boolean;
   callId?: string;
 }
 
@@ -352,7 +354,7 @@ export interface BudgetAlertEvent extends OpenEvent {
   type: "budget.alert";
   runId: string;
   family: "budget" | "near-limit";
-  metric: "usd" | "turns" | "wall";
+  metric: "usd" | "turns" | "wall" | "context";
   threshold: number;
   value: number;
   limit: number;
@@ -449,7 +451,7 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("budget.alert"),
       timestamp: z.number(),
-      metric: z.enum(["usd", "turns", "wall"]),
+      metric: z.enum(["usd", "turns", "wall", "context"]),
       threshold: z.number(),
     })
     .passthrough(),
@@ -837,8 +839,8 @@ export interface RunBudget {
    */
   warnAt?: number[];
   /**
-   * What exceeding `usd` does: 'abort' (default, the pre-0.11 behavior) or
-   * 'warn' (one warning, the run continues).
+   * What exceeding `usd` does: 'warn' (default, the run continues) or
+   * explicit 'abort' (mid-run enforcement; final accounting only warns).
    */
   onExceed?: "abort" | "warn";
   /** Cooldown between re-announcements of one threshold (ms); default 24h / env. */

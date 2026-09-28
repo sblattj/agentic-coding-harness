@@ -37,12 +37,15 @@ The same event reaches every consumer:
 
 **Alerts never abort.** Enforcement is separate:
 
-- `--on-budget abort` is the default and keeps the pre-0.11 behavior. Going
+- `--on-budget abort` explicitly opts into enforcement. Going
   over `--budget-usd` aborts the run with `budget_exceeded`. The 100% alert is
   emitted before the abort, so it is still on the stream.
-- `--on-budget warn` (`RunSpec.budget.onExceed: "warn"`) lets the run
+- `--on-budget warn` is the default (`RunSpec.budget.onExceed: "warn"`) and lets the run
   continue past the cap. The run gets one warning:
   `budget: usd cap $X exceeded ($Y); continuing (onExceed: warn)`.
+- Claude final-result accounting never aborts the completed work, even with
+  `--on-budget abort`. An over-cap final bill emits a final-accounting warning;
+  the process exit determines success or error.
 - `--max-turns` and `--wall-ms` still enforce as before. Near-limit warnings
   only fire *before* those caps trip.
 
@@ -100,3 +103,10 @@ allowance** (for example, 80% of a 5-hour subscription window). ach has no
 source for that allowance: no vendor exposes one to the harness, and ach has no
 config for one. The engine takes arbitrary source keys and an arbitrary
 fraction, so the family can be wired in once an allowance input exists.
+
+Context pressure uses the same persisted crossing engine: a `near-limit` alert
+with metric `context`, threshold `0.85`, value in percentage points and limit
+`100`. It is enabled automatically for supported context meters. Only known
+last-call occupancy can trigger it; unknown windows and turn-total upper bounds
+do not. Context alerts appear in the same dash/web banners and event stream,
+and honor the same cooldown and reset behavior.

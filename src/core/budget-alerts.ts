@@ -3,6 +3,7 @@
 // One crossing engine serves both families:
 //   - budget alerts   : fractions of RunBudget.usd       (metric 'usd')
 //   - near-limit warns: fractions of maxTurns / wallMs    (metrics 'turns' | 'wall')
+//   - context pressure: known last-call window occupancy (metric 'context')
 //
 // A threshold t fires for a source when the observed fraction CROSSES it
 // (prev < t <= cur — edge-triggered, never "while above") AND the last time
@@ -18,7 +19,7 @@ import path from "node:path";
 import { HarnessError } from "./types.ts";
 
 export type AlertFamily = "budget" | "near-limit";
-export type AlertMetric = "usd" | "turns" | "wall";
+export type AlertMetric = "usd" | "turns" | "wall" | "context";
 
 /** Default cooldown between re-announcements of one (source, threshold). */
 export const DEFAULT_COOLDOWN_MS = 24 * 3_600_000;
@@ -198,6 +199,8 @@ export interface RunAlertsOptions {
   alerts?: readonly number[];
   /** Fractions of `maxTurns` / `wallMs` (near-limit family). */
   warnAt?: readonly number[];
+  /** Enable the fixed 85% context-pressure threshold (percentage points / 100). */
+  context?: boolean;
   cooldownMs?: number;
   /** Load / save problems land here (run warnings); never thrown. */
   onWarning: (w: string) => void;
@@ -215,10 +218,10 @@ export interface RunAlerts {
  * alert-less run never touches alerts.json.
  */
 export function createRunAlerts(opts: RunAlertsOptions): RunAlerts | null {
-  const limits: Record<AlertMetric, number | undefined> = { usd: opts.usd, turns: opts.maxTurns, wall: opts.wallMs };
+  const limits: Record<AlertMetric, number | undefined> = { usd: opts.usd, turns: opts.maxTurns, wall: opts.wallMs, context: opts.context ? 100 : undefined };
   const budgetT = opts.usd !== undefined ? (opts.alerts ?? []) : [];
   const nearT = opts.maxTurns !== undefined || opts.wallMs !== undefined ? (opts.warnAt ?? []) : [];
-  if (budgetT.length === 0 && nearT.length === 0) return null;
+  if (budgetT.length === 0 && nearT.length === 0 && !opts.context) return null;
 
   const file = alertStateFile(opts.stateDir);
   const loaded = loadAlertState(file);
@@ -227,6 +230,7 @@ export function createRunAlerts(opts: RunAlertsOptions): RunAlerts | null {
   const now = opts.now ?? Date.now;
   const budget = new ThresholdAlerter({ thresholds: budgetT, cooldownMs, state: loaded.state, now });
   const near = new ThresholdAlerter({ thresholds: nearT, cooldownMs, state: loaded.state, now });
+  const context = new ThresholdAlerter({ thresholds: [0.85], cooldownMs, state: loaded.state, now });
   let saveWarned = false;
 
   return {
@@ -234,7 +238,7 @@ export function createRunAlerts(opts: RunAlertsOptions): RunAlerts | null {
       const limit = limits[metric];
       if (limit === undefined || !(limit > 0)) return [];
       const family: AlertFamily = metric === "usd" ? "budget" : "near-limit";
-      const engine = family === "budget" ? budget : near;
+      const engine = metric === "context" ? context : family === "budget" ? budget : near;
       const fired = engine.observe(`run:${opts.runId}:${metric}`, value / limit);
       if (fired.length === 0) return [];
       try {
@@ -264,6 +268,8 @@ export function describeAlert(a: {
       return `usd ${pct} ($${a.value.toFixed(4)} of $${a.limit.toFixed(4)})`;
     case "turns":
       return `turns ${pct} (${a.value} of ${a.limit})`;
+    case "context":
+      return `context ${pct} (${a.value.toFixed(1)}% of window; estimated, assumed window)`;
     case "wall":
       return `wall ${pct} (${Math.round(a.value / 1000)}s of ${Math.round(a.limit / 1000)}s)`;
   }

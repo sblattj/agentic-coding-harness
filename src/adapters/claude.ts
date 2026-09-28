@@ -452,6 +452,7 @@ function claudeEventToCore(event: AgentEvent): CoreAgentEvent {
         type: 'usage',
         agent: 'claude',
         usage: claudeUsageToCore(event.payload),
+        finalAccounting: true, // Claude usage events originate only from result lines.
         data: event.payload,
         timestamp,
       };

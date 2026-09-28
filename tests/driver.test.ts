@@ -91,7 +91,7 @@ describe('budget enforcement', () => {
     // Each usage = 100k in * $3/1M + 10k out * $15/1M = $0.45. Budget $0.50.
     const result: RunResult = await driver.run('mock', {
       prompt: 'hi',
-      budget: { usd: 0.5 },
+      budget: { usd: 0.5, onExceed: 'abort' },
       scriptedEvents: [
         ev.step(),
         ev.usage('mock', claudeUsage(100_000, 10_000)),

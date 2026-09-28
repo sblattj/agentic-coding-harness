@@ -5,7 +5,7 @@
 //   --warn-at F,F,..         fractions of --max-turns / --wall-ms
 //                            env AGENTIC_CODING_HARNESS_WARN_THRESHOLDS
 //                            default 0.5,0.8,0.95 when either cap is set
-//   --on-budget abort|warn   what exceeding --budget-usd does (default abort)
+//   --on-budget abort|warn   what exceeding --budget-usd does (default warn; abort is explicit opt-in)
 //   AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H   cooldown hours (default 24)
 //
 // CLI flags win over env; 'off' / 'none' disable a family.
