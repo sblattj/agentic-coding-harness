@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { findArchivedRaw } from "./warehouse-index.ts";
 import {
   KiroEffectiveSchema,
   UsageAvailabilitySchema,
@@ -160,7 +161,9 @@ export function readRunRecord(stateDir: string, runId: string): RunRecord | null
  * still points at a directory that no longer exists. When the stored path is
  * gone but a file of the same basename sits under the CURRENT
  * `<stateDir>/raw/`, that relocated path is returned instead. Records on disk
- * are never rewritten; when neither file exists the stored path comes back
+ * are never rewritten. When neither exists but `ach archive` snapshotted the
+ * file into <stateDir>/warehouse, the newest archived copy is returned. When
+ * none of those exist the stored path comes back
  * unchanged so callers keep their existing "missing → empty" behaviour.
  */
 export function resolveRawTranscript(stateDir: string, rec: RunRecord): string {
@@ -169,7 +172,8 @@ export function resolveRawTranscript(stateDir: string, rec: RunRecord): string {
   if (fs.existsSync(stored)) return stored;
   const relocated = path.join(stateDir, "raw", path.basename(stored));
   if (fs.existsSync(relocated)) return relocated;
-  return stored;
+  // #79: the live file was pruned — fall back to the newest `ach archive` copy.
+  return findArchivedRaw(stateDir, path.basename(stored)) ?? stored;
 }
 
 export function listRunRecords(stateDir: string): RunRecord[] {

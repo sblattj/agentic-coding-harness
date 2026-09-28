@@ -340,7 +340,7 @@ export interface ScanOptions {
   geminiDir?: string;
 }
 
-async function walkFiles(
+export async function walkFiles(
   dir: string,
   keep: (filePath: string) => boolean,
 ): Promise<string[]> {
@@ -375,6 +375,37 @@ function isGeminiChatFile(filePath: string): boolean {
   return extname(filePath) === ".json" && basename(dirname(filePath)) === "chats";
 }
 
+/** One machine transcript source: root dir, file filter, per-file parser. */
+export interface TranscriptSource {
+  agent: CanonicalTokenRecord["agent"];
+  dir: string;
+  keep: (filePath: string) => boolean;
+  parse: (filePath: string) => Promise<CanonicalTokenRecord[]>;
+}
+
+/**
+ * The machine transcript sources scanAll walks, with ScanOptions overrides
+ * applied (defaults: ~/.claude/projects, ~/.codex/sessions, ~/.gemini/tmp).
+ * Shared with the warehouse (src/core/warehouse.ts) so `ach archive` snapshots
+ * exactly the files `ach stats` reads.
+ */
+export function transcriptSources(opts: ScanOptions = {}): TranscriptSource[] {
+  return [
+    { agent: "claude", dir: opts.claudeDir ?? join(homedir(), ".claude", "projects"), keep: isJsonl, parse: parseClaudeTranscript },
+    { agent: "codex", dir: opts.codexDir ?? join(homedir(), ".codex", "sessions"), keep: isJsonl, parse: parseCodexRollout },
+    { agent: "gemini", dir: opts.geminiDir ?? join(homedir(), ".gemini", "tmp"), keep: isGeminiChatFile, parse: parseGeminiChat },
+  ];
+}
+
+/** ScanOptions for a home-shaped root (<root>/.claude/projects, ...). */
+export function scanOptionsForRoot(root: string): Required<ScanOptions> {
+  return {
+    claudeDir: join(root, ".claude", "projects"),
+    codexDir: join(root, ".codex", "sessions"),
+    geminiDir: join(root, ".gemini", "tmp"),
+  };
+}
+
 /**
  * Yield canonical token records from every Claude, Codex, and Gemini
  * transcript on the machine. Files are walked depth-first in sorted order;
@@ -383,17 +414,7 @@ function isGeminiChatFile(filePath: string): boolean {
 export async function* scanAll(
   opts: ScanOptions = {},
 ): AsyncGenerator<CanonicalTokenRecord> {
-  const claudeDir = opts.claudeDir ?? join(homedir(), ".claude", "projects");
-  const codexDir = opts.codexDir ?? join(homedir(), ".codex", "sessions");
-  const geminiDir = opts.geminiDir ?? join(homedir(), ".gemini", "tmp");
-
-  const sources: Array<[string, (filePath: string) => boolean, (p: string) => Promise<CanonicalTokenRecord[]>]> = [
-    [claudeDir, isJsonl, parseClaudeTranscript],
-    [codexDir, isJsonl, parseCodexRollout],
-    [geminiDir, isGeminiChatFile, parseGeminiChat],
-  ];
-
-  for (const [dir, keep, parse] of sources) {
+  for (const { dir, keep, parse } of transcriptSources(opts)) {
     for (const file of await walkFiles(dir, keep)) {
       for (const record of await parse(file)) {
         yield record;
