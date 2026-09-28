@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
@@ -21,7 +23,7 @@ import { after, describe, it } from "node:test";
 // that path is exercised by scripts/build-binaries.sh itself, not here.
 const REPO_ROOT = new URL("..", import.meta.url).pathname;
 const SCRIPT = join(REPO_ROOT, "scripts", "build-binaries.sh");
-const DIST_BIN = join(REPO_ROOT, "dist-bin");
+const DIST_BIN = mkdtempSync(join(tmpdir(), "ach-binaries-test-"));
 
 function nativeTarget(): string | null {
   const os = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : null;
@@ -35,17 +37,7 @@ function bunAvailable(): boolean {
 }
 
 const target = nativeTarget();
-const built: string[] = [];
-
-after(() => {
-  for (const p of built) {
-    try {
-      rmSync(p, { force: true });
-    } catch {
-      // best-effort cleanup
-    }
-  }
-});
+after(() => rmSync(DIST_BIN, { recursive: true, force: true }));
 
 describe("scripts/build-binaries.sh", () => {
   it("exists and is executable", () => {
@@ -59,10 +51,16 @@ describe("scripts/build-binaries.sh", () => {
       t.skip("bun not on PATH");
       return;
     }
-    const r = spawnSync("bash", [SCRIPT, "bogus-target"], { encoding: "utf8" });
+    const r = spawnSync("bash", [SCRIPT, "bogus-target", "--out-dir", DIST_BIN], { encoding: "utf8" });
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /unknown target 'bogus-target'/);
     assert.ok(!existsSync(join(DIST_BIN, "ach-bogus-target")));
+  });
+
+  it("rejects a missing output directory", () => {
+    const result = spawnSync("bash", [SCRIPT, "--out-dir"], { encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--out-dir needs a directory/);
   });
 
   it("builds the native-target binary and it actually runs --version / help", (t) => {
@@ -75,11 +73,19 @@ describe("scripts/build-binaries.sh", () => {
       return;
     }
     const outPath = join(DIST_BIN, `ach-${target}`);
-    built.push(outPath, join(DIST_BIN, "SHA256SUMS"));
 
-    const build = spawnSync("bash", [SCRIPT, target], { encoding: "utf8" });
+    const unrelated = join(DIST_BIN, "ach-unrelated");
+    writeFileSync(unrelated, "preserve existing output");
+    const build = spawnSync("bash", [SCRIPT, target, "--out-dir", DIST_BIN], { encoding: "utf8" });
     assert.equal(build.status, 0, `build failed: ${build.stderr}`);
     assert.ok(existsSync(outPath), `expected compiled binary at ${outPath}`);
+
+    assert.equal(readFileSync(unrelated, "utf8"), "preserve existing output");
+    const hash = createHash("sha256").update(readFileSync(outPath)).digest("hex");
+    assert.equal(readFileSync(join(DIST_BIN, "SHA256SUMS"), "utf8"), `${hash}  ach-${target}\n`);
+
+    const smoke = spawnSync(process.execPath, [join(REPO_ROOT, "scripts/smoke-binary.mjs"), outPath], { encoding: "utf8" });
+    assert.equal(smoke.status, 0, smoke.stdout + smoke.stderr);
 
     const version = spawnSync(outPath, ["--version"], { encoding: "utf8" });
     assert.equal(version.status, 0, `--version exited ${version.status}: ${version.stderr}`);

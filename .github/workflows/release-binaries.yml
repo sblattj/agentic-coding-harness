@@ -1,0 +1,108 @@
+name: Standalone release binaries
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build (for example v0.11.0)'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-binaries-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: darwin-arm64, runner: macos-15 }
+          - { target: darwin-x64, runner: macos-15-intel }
+          - { target: linux-x64, runner: ubuntu-24.04 }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: npm ci
+      - name: Validate tag and build
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          test "$RELEASE_TAG" = "v$(node -p 'require("./package.json").version')"
+          test "$TARGET" = "$(node -p 'process.platform + "-" + process.arch')"
+          scripts/build-binaries.sh "$TARGET" --out-dir "$RUNNER_TEMP/binaries"
+      - name: Runtime smoke from empty directory
+        env:
+          TARGET: ${{ matrix.target }}
+        run: EXPECTED_VERSION="$(node -p 'require("./package.json").version')" node scripts/smoke-binary.mjs "$RUNNER_TEMP/binaries/ach-$TARGET" --doctor
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ runner.temp }}/binaries/ach-*
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: binaries
+          merge-multiple: true
+      - name: Checksum and upload verified binaries
+        working-directory: binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$(find . -maxdepth 1 -name 'ach-*' | wc -l)" -eq 4
+          chmod +x ach-*
+          sha256sum ach-* > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" ach-* SHA256SUMS --clobber
+  homebrew:
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Update same-repository tap from published npm tarball
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_TAG" = "v$(node -p 'require("./package.json").version')"
+          node scripts/update-homebrew.mjs "${RELEASE_TAG#v}"
+          if git diff --quiet -- Formula/ach.rb; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- Formula/ach.rb
+          git commit -m "chore: update Homebrew formula for $RELEASE_TAG"
+          git pull --rebase origin "$DEFAULT_BRANCH"
+          git push origin "HEAD:$DEFAULT_BRANCH"

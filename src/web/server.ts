@@ -113,6 +113,7 @@ const embeddedLoaders: Record<string, () => Promise<string>> = {
   "grid.html": () => import("./grid.html", { with: { type: "text" } }).then(text),
   "compare.html": () => import("./compare.html", { with: { type: "text" } }).then(text),
   "trio.html": () => import("./trio.html", { with: { type: "text" } }).then(text),
+  "term-pane.html": () => import("./term-pane.html", { with: { type: "text" } }).then(text),
   "feed.js": () => import("./feed.js", { with: { type: "text" } }).then(text),
   "vendor/xterm/xterm.js": () =>
     import("./vendor/xterm/xterm.js", { with: { type: "text" } }).then(text),
@@ -415,6 +416,12 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
 
         if (get && (pathname === "/" || pathname === "/index.html")) {
           const page = await readAsset("index.html");
+          if (page === null) return notFound(res);
+          return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
+        }
+
+        if (get && pathname === "/term-pane.html") {
+          const page = await readAsset("term-pane.html");
           if (page === null) return notFound(res);
           return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
         }
