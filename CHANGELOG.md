@@ -24,6 +24,8 @@ Note: releases before 0.8.1 predate this changelog.
 
 - Identical repeated Claude final result records count once; final accounting is distinguished from mid-run budget enforcement (#14).
 - Integrated stats filters, cost selection, report history, transcript dashboards, and archive coverage across the new features.
+- Flush queued CLI output before exit so older Node runtimes preserve complete help and large JSON responses in pipes.
+- Reconcile missed filesystem notifications so dashboards observe newly created and updated run records on macOS.
 
 ### Changed
 
