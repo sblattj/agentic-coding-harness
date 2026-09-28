@@ -13,7 +13,7 @@
 // status.json is written atomically (tmp+rename, like the run registry) and
 // is persisted on EVERY exit path — natural end, watchdog timeout, idle
 // timeout, abort, and any throw out of the run lifecycle. Lifecycle:
-// running -> success | error | timeout | idle-timeout | aborted. Artifact
+// running -> success | error | timeout | idle-timeout | aborted | unavailable. Artifact
 // failures never break the run itself (registry precedent): the driver
 // drains them into RunResult.warnings.
 
@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import type { AgentEvent, ExitStatus, RunResult } from './types.ts';
 
 /** Lifecycle states of status.json: 'running' until exactly one terminal state. */
-export type RunDirStatus = 'running' | 'success' | 'error' | 'timeout' | 'idle-timeout' | 'aborted';
+export type RunDirStatus = 'running' | 'success' | 'error' | 'timeout' | 'idle-timeout' | 'aborted' | 'unavailable';
 
 /** The status.json shape (required fields per #6 plus observed exit evidence). */
 export interface RunStatusFile {
@@ -73,6 +73,9 @@ export function exitStatusToRunStatus(exitStatus: ExitStatus, budgetTripKind: 'w
       return 'error';
     case 'timeout':
       return budgetTripKind === 'idle' ? 'idle-timeout' : 'timeout';
+    case 'unavailable':
+      // CLI/service outage (#60): its own terminal state, never 'aborted'.
+      return 'unavailable';
     default:
       return 'aborted';
   }
@@ -155,7 +158,9 @@ export class RunArtifacts {
     if (result !== undefined) {
       writeJsonAtomic(join(this.dir, 'result.json'), result);
     }
-    this.#exitStatus = result?.exitStatus;
+    // A launch-time outage (#60) settles with no RunResult; its exitStatus is
+    // still known, so status.json carries it.
+    this.#exitStatus = result?.exitStatus ?? (status === 'unavailable' ? 'unavailable' : undefined);
     this.#writeStatus(true);
   }
 

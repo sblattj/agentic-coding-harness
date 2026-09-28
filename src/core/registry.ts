@@ -25,7 +25,7 @@ export interface RunRecord {
   promptPreview?: string; // first 120 chars of prompt
   startedAt: number; // ms epoch
   updatedAt?: number; // ms epoch — heartbeat
-  status?: "running" | "interrupted" | "success" | "error" | "aborted"; // 'interrupted' is derived (effectiveStatus), never written to disk
+  status?: "running" | "interrupted" | "success" | "error" | "aborted" | "unavailable"; // 'unavailable': CLI/service outage, no task verdict (#60); 'interrupted' is derived (effectiveStatus), never written to disk
   exitStatus?: string; // final RunResult.exitStatus
   totals?: {
     // running aggregates, updated per usage event
@@ -91,7 +91,7 @@ export const RunRecordSchema = z.object({
   promptPreview: z.string().optional(),
   startedAt: z.number(),
   updatedAt: z.number().optional(),
-  status: z.enum(["running", "interrupted", "success", "error", "aborted"]).optional(),
+  status: z.enum(["running", "interrupted", "success", "error", "aborted", "unavailable"]).optional(),
   exitStatus: z.string().optional(),
   totals: TotalsSchema.optional(),
   lastEvent: z.string().optional(),
