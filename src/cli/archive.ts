@@ -8,7 +8,7 @@ import { AGENTS, HarnessError, isKnownAgent } from "../core/types.ts";
 import { readRecordFiles, stateDir as defaultStateDir, type ReadRecordsOptions, type StatRecord } from "../core/store.ts";
 import { archiveTranscripts, restoreBatch, scanWarehouse, warehouseRawFiles, type ArchiveResult } from "../core/warehouse.ts";
 import { warehouseDir } from "../core/warehouse-index.ts";
-import { scanAll, scanOptionsForRoot, type CanonicalTokenRecord, type ScanOptions } from "../monitors/transcripts.ts";
+import { scanAll, scanOptionsForRoot, transcriptAgentNames, type CanonicalTokenRecord, type ScanOptions } from "../monitors/transcripts.ts";
 import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { isTranscriptOnlyAgent } from "../monitors/transcript-sources.ts";
 import { fmtInt } from "./lib.ts";
@@ -17,7 +17,8 @@ export const ARCHIVE_USAGE = `usage: ach archive [--agent A] [--days N] [--out D
        ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
 
   Copies machine transcripts (~/.claude/projects, ~/.codex/sessions,
-  ~/.gemini/tmp), harness raw transcripts (<stateDir>/raw) and registry
+  ~/.gemini/tmp, and the read-only amp/goose/qwen/cursor stores; SQLite
+  stores are snapshotted), harness raw transcripts (<stateDir>/raw) and registry
   records (<stateDir>/runs) into DIR (default <stateDir>/warehouse/<batch>/)
   with a manifest.jsonl (sourcePath, sha256, runId). Unchanged files are never
   re-copied and nothing is ever deleted. --days N keeps files modified in the
@@ -84,7 +85,7 @@ export async function cmdArchive(rest: string[]): Promise<number> {
 
   const agent = args.values.agent;
   if (agent && !isKnownAgent(agent) && !isTranscriptOnlyAgent(agent)) {
-    throw new HarnessError(`unknown agent '${agent}' (expected one of: ${AGENTS.join(", ")})`, "UNKNOWN_AGENT");
+    throw new HarnessError(`unknown agent '${agent}' (expected one of: ${[...new Set([...AGENTS, ...transcriptAgentNames()])].join(", ")})`, "UNKNOWN_AGENT");
   }
   const days = optNum(args.values.days, "--days");
   const res = await archiveTranscripts({

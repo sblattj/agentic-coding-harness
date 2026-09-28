@@ -51,6 +51,7 @@ import {
   parseCodexRollout,
   parseGeminiChat,
   scanAll,
+  transcriptAgentNames,
   transcriptSources,
   scanOptionsForRoot,
   walkFiles,
@@ -1085,7 +1086,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   reportCatalogIssues(catalog);
   // amp/goose/qwen (#22) are read-only transcript sources: valid filters.
   if (agent && !isKnownAgent(agent) && !isTranscriptOnlyAgent(agent) && agent !== "custom" && !findDescriptor(catalog, agent)) {
-    throw new HarnessError(`unknown agent '${agent}' (expected one of: ${[...runnableAgentNames(catalog), ...TRANSCRIPT_SOURCES.map((s) => s.agent)].join(", ")})`, "UNKNOWN_AGENT");
+    throw new HarnessError(`unknown agent '${agent}' (expected one of: ${[...new Set([...runnableAgentNames(catalog), ...transcriptAgentNames()])].join(", ")})`, "UNKNOWN_AGENT");
   }
   // One code path computes the window (#26) and the zone (#84); every output
   // surface below (table, --json, per-bucket maps) reads the same records.
