@@ -48,6 +48,7 @@ import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
 import { cmdAudit } from "./audit.ts";
+import { cmdArchive, statsMachineRecords, statsScanOptions, warehouseStateRecords } from "./archive.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -68,9 +69,15 @@ usage:
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
   ach watch [--dir <transcriptDir>]
-  ach stats [--agent A] [--days N] [--json] [--state-only]
+  ach stats [--agent A] [--days N] [--json] [--state-only] [--with-warehouse] [--dir <root>]
                 (machine claude/codex/gemini transcripts + harness state;
-                 --state-only skips machine transcript dirs)
+                 --state-only skips machine transcript dirs; --with-warehouse adds
+                 archived copies whose live file is gone; --dir reads machine
+                 transcripts from <root>/.claude/projects etc., e.g. a restore)
+  ach archive [--agent A] [--days N] [--out DIR] [--dir <stateDir>] [--json]
+  ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
+                (snapshot transcripts + RunRecords into <stateDir>/warehouse,
+                 sha256-deduped, never deletes; see docs/ARCHIVE.md)
   ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--dir <stateDir>]
                 (re-derive each RunRecord's token/cost totals from its raw transcript
                  and report recorded vs recomputed deltas; exit 1 on drift;
@@ -644,6 +651,8 @@ async function cmdStats(rest: string[]): Promise<number> {
       days: { type: "string" },
       json: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      "with-warehouse": { type: "boolean", default: false },
+      dir: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -658,7 +667,11 @@ async function cmdStats(rest: string[]): Promise<number> {
   const sinceTs = days !== undefined ? Date.now() - days * 86_400_000 : undefined;
 
   // Harness state (driver-run NDJSON + watch-persisted opencode) ...
-  const stateRecords = await readAllRecords({ agent, sinceTs });
+  const withWarehouse = args.values["with-warehouse"];
+  const stateRecords = [
+    ...(await readAllRecords({ agent, sinceTs })),
+    ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs }) : []),
+  ];
   const records: AggregatableRecord[] = stateRecords.map((r) => ({
     ts: r.ts,
     agent: r.agent,
@@ -680,7 +693,8 @@ async function cmdStats(rest: string[]): Promise<number> {
   // machine whose transcript dirs are huge or being rotated).
   const pricer = createPricer();
   if (!args.values["state-only"]) {
-    for await (const rec of scanAll()) {
+    const machine = statsMachineRecords({ scan: statsScanOptions(args.values.dir), withWarehouse, stateDir: stateDir() });
+    for await (const rec of machine) {
       if (agent && rec.agent !== agent) continue;
       const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
       if (sinceTs !== undefined && (!Number.isFinite(tsMs) || tsMs < sinceTs)) continue;
@@ -913,6 +927,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdStats(rest);
     case "audit":
       return cmdAudit(rest);
+    case "archive":
+      return cmdArchive(rest);
     case "emit":
       return cmdEmit(rest);
     case "report":
