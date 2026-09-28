@@ -141,9 +141,11 @@ export interface UsageBucket {
   /** Per-source split of costUsd; a source no record used is null. */
   costBySource: { reported: number | null; computed: number | null };
   /**
-   * Records that carried no cost at all (no CLI-reported cost and a model the
-   * pricer cannot price). They count in `records` and the token sums but are
-   * excluded from costUsd, so a nonzero count means costUsd is a lower bound.
+   * Records for which the active cost mode produced no cost (in `auto`: no
+   * CLI-reported cost and a model the pricer cannot price; in `display`: no
+   * reported cost; in `calculate`: an unpriceable model). They count in
+   * `records` and the token sums but are excluded from costUsd, so a nonzero
+   * count means costUsd is a lower bound.
    */
   unpricedRecords: number;
 }
