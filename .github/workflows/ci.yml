@@ -20,10 +20,10 @@ jobs:
         # package.json engines floor of >=18.19.
         node-version: ['18.x', '20.x', '22.x']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -34,20 +34,27 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
+      # Run once before Bun is on PATH, and once after, so both code paths in
+      # tests/*.test.ts get exercised every time:
+      #   - before: `isBun` is false, so the Node+tsx fallback runs (this is
+      #     what a contributor machine without Bun installed sees) and the
+      #     bun-pty-only PTY suites (tests/web-pty.test.ts,
+      #     tests/web-pty-health.test.ts, tests/web-trio.test.ts,
+      #     tests/web.test.ts) skip themselves cleanly with a "bun not on
+      #     PATH" reason instead of failing.
+      #   - after: `isBun` is true, so those same PTY suites actually run
+      #     bun-pty for real — this is the only place in the matrix that
+      #     verifies the PTY layer #39 calls out as unverified risk.
+      - name: Test (Bun not on PATH)
         run: npm test
 
-      # Only the build needs Bun (bun build for dist/cli, dist/bun, dist/index.js).
-      # It is installed after the test step on purpose: tests/*.test.ts already
-      # detect Bun's presence at runtime (isBun) and take the Node+tsx fallback
-      # path when it is absent, so running the suite before Bun exists on PATH
-      # exercises that fallback the same way a Bun-less contributor machine
-      # would, while the PTY suites that hard-require bun-pty skip themselves
-      # cleanly with a "bun not on PATH" reason.
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Test (Bun on PATH)
+        run: npm test
 
       - name: Build
         run: npm run build
@@ -59,10 +66,10 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
