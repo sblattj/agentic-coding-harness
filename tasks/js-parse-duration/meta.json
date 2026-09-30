@@ -1,0 +1,16 @@
+{
+  "language": "javascript",
+  "kind": "implement",
+  "difficulty": "medium",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "implement"
+  ],
+  "description": "Implement a duration-string parser (1h30m, 250ms, 1.5s) with strict validation.",
+  "broken": "accepts a bare number without a unit",
+  "verifyTimeoutMs": 60000
+}

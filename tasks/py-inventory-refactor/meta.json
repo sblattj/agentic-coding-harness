@@ -1,0 +1,17 @@
+{
+  "language": "python",
+  "kind": "refactor",
+  "difficulty": "medium",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "refactor",
+    "multi-file"
+  ],
+  "description": "Rename a method across a small package with a deprecated alias, and remove duplicated logic.",
+  "broken": "calc() kept as a plain alias with no DeprecationWarning",
+  "verifyTimeoutMs": 60000
+}

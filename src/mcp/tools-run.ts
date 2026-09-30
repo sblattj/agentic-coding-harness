@@ -159,6 +159,17 @@ function isOnPath(command: string): boolean {
   return spawnSync("which", [command], { stdio: "ignore" }).status === 0;
 }
 
+/**
+ * Is a built-in agent's backing CLI resolvable? The same probe
+ * `harness_agents` reports; `ach trial --suite` (#51) uses it to skip
+ * agents whose CLI is absent. `command: null` (null adapter) is always
+ * available.
+ */
+export function agentCliAvailability(name: string): { command: string | null; available: boolean } {
+  const { command } = agentInfo(name);
+  return { command, available: command === null ? true : isOnPath(command) };
+}
+
 export function registerRunTools(
   server: McpServer,
   opts: { stateDir: string; gateway?: GatewayConfig },
@@ -228,9 +239,7 @@ export function registerRunTools(
           const info = agentInfo(name);
           return {
             name,
-            command: info.command,
-            // No backing binary (null adapter) is trivially always available.
-            available: info.command === null ? true : isOnPath(info.command),
+            ...agentCliAvailability(name),
             capabilities: info.capabilities,
           };
         }),

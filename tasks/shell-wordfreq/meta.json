@@ -1,0 +1,16 @@
+{
+  "language": "shell",
+  "kind": "implement",
+  "difficulty": "easy",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "implement"
+  ],
+  "description": "Implement a word-frequency counter in POSIX sh.",
+  "broken": "case-sensitive counting (does not lowercase first)",
+  "verifyTimeoutMs": 60000
+}
