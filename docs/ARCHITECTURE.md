@@ -112,10 +112,10 @@ was measurable. `ach stats --json` copies it onto each `runs[]` row. Fields:
 - `ttft` — `model_call_start` → first output event (agent message or `tool_call`) inside that
   call, as `{count, totalMs, avgMs, p50Ms, p95Ms, maxMs}` (p95 nearest-rank).
 - `modelCalls` — end-to-end latency of closed model calls (start → `model_call_end`).
-- `outputTokensPerSec` / `tpotMs` — output tokens (`model_call_end.usage`, or `usage` events
-  tagged with the call's `callId`) over the post-TTFT window (first output → end), pooled across
-  calls. When tool execution falls inside a model call this window includes it, so throughput is
-  a lower bound.
+- `outputTokensPerSec` / `tpotMs` — output tokens (`model_call_end.usage`, else
+  `model_call_end.outputTokens`, else `usage` events tagged with the call's `callId`) over the
+  post-TTFT window (first output → end), pooled across calls. When tool execution falls inside a
+  model call this window includes it, so throughput is a lower bound.
 - `tools[]` — per tool name: `count`, `avgMs`, `totalMs`, `p50Ms`, `p95Ms`, `maxMs`, `errors`
   (`tool_call` → last `tool_result` with the same id, so codex's `item.updated` + `item.completed`
   pair measures to completion). A call whose result never arrived is not measured.
@@ -123,10 +123,27 @@ was measurable. `ach stats --json` copies it onto each `runs[]` row. Fields:
 Only real timestamps count: unlike the span view, missing timestamps are never carried forward,
 negative deltas and unclosed calls are skipped, and an unmeasurable metric is `null` (`n/a` in
 the UI), never `0` or `NaN`. Built-in adapters stamp events with harness arrival time
-(`Date.now()`), so durations include stream buffering. No built-in adapter emits
-`model_call_start`/`model_call_end` today, so TTFT, throughput and TPOT appear only for event
-logs that carry them (external producers, imported transcripts); claude, codex, gemini and kiro
-runs get the per-tool breakdown; opencode emits no tool events, so it gets neither.
+(`Date.now()`), so durations include stream buffering. Built-in adapters emit
+`model_call_start`/`model_call_end` on driver runs where the stream shows a request start. The
+boundaries never carry `usage`; they carry the per-call count, when there is one, in
+`outputTokens`. Web metrics (`deriveMetrics`, `deriveModelCache`) and the otel, langfuse and atif
+emitters sum `model_call_end.usage` alongside `usage` events, and the run totals already arrive on
+`usage`, so a usage-bearing boundary would double those series.
+
+| agent | boundaries | request start → first output | TTFT precision | throughput |
+|---|---|---|---|---|
+| claude | every call, per lane (main loop; each sub-agent by `parent_tool_use_id`) | init line / last `tool_result` line → first `assistant` line of a new `message.id`; end = last line of that id | first completed content block (ach does not pass `--include-partial-messages`) | yes: `message.usage.output_tokens` over first → last block. Upper bound: the first block's tokens count but its generation time does not, and a single-block response is skipped |
+| codex | first request of each turn | `turn.started` → first surfaced item (completed reasoning/message, or a tool's `item.started`); end after that tool start, else `turn.completed` | first completed item | no (usage is per turn, across requests) |
+| gemini | every call | `init`, user message or last `tool_result` → first assistant message / `tool_use`; end = last output before the next `tool_result` or `result` | first streamed chunk | no (`result.stats` is run-level) |
+| kiro (headless) | first request of the run | `runStarted` → first `agent_message_chunk`/`agent_thought_chunk` step (counted as output); end after the first tool start, else the last chunk | first streamed chunk | no (no token counts) |
+| kiro (ACP) | none | no request start on the stream | — | — |
+| opencode | none | `step_start` is emitted after its text has begun (recorded 1.18.30: text `time.start` 1789014419194 < `step_start` 1789014419196, 28 ms step window for a 67k-token call), so the stream holds no request timing | — | — |
+
+A response whose request start was never observed (a claude sub-agent's first call, gemini output
+before any `init`) is left without boundaries rather than given an invented start. codex and
+kiro bracket only the first request because their streams cannot tell a follow-up request from
+a second tool call of the same response. Every agent except opencode also gets the per-tool
+breakdown; opencode emits no tool events, so it gets no latency at all.
 
 `core/warehouse.ts` (`ach archive`, #79) snapshots machine transcripts (the same sources
 `scanAll` walks), `<stateDir>/raw` transcripts and `<stateDir>/runs` records into
