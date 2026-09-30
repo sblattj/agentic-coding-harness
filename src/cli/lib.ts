@@ -101,10 +101,26 @@ function clip(s: string, max = CLIP): string {
   return one.length > max ? one.slice(0, max - 1) + "…" : one;
 }
 
-/** One compact stderr line per streamed event. */
-export function formatEventLine(e: AgentEvent): string {
+/**
+ * One compact stderr line per streamed event, or null for an event that
+ * prints nothing on its own: a `model_call_start` is folded into its
+ * `model_call_end` row (#32), so each model call costs one line, not two.
+ * Pass the same `starts` map across calls to get the call's duration.
+ */
+export function formatEventLine(e: AgentEvent, starts?: Map<string, number>): string | null {
   const c = clock(Date.now());
   switch (e.type) {
+    case "model_call_start":
+      if (starts && e.callId && typeof e.timestamp === "number") starts.set(e.callId, e.timestamp);
+      return null;
+    case "model_call_end": {
+      const t0 = e.callId ? starts?.get(e.callId) : undefined;
+      if (e.callId) starts?.delete(e.callId);
+      const parts = [e.model ?? ""];
+      if (typeof e.outputTokens === "number") parts.push(`${e.outputTokens} out`);
+      if (t0 !== undefined && typeof e.timestamp === "number") parts.push(`${e.timestamp - t0}ms`);
+      return `[${c}] model   ${parts.filter(Boolean).join(" · ")}`.trimEnd();
+    }
     case "step":
       return `[${c}] step`;
     case "usage_raw":
