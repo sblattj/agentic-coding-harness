@@ -428,6 +428,11 @@ const { result } = await runToDirectory({
 
 - **`/`** — one run in full: a structured live feed built from the persisted `AgentEvent` rows
   (text, expandable tool-call/result cards, warnings, usage, exit status), streamed over `/ws?runId=`.
+  For claude, codex, gemini and opencode runs every row ends in a context-window gauge
+  (`212.9k 21%`, teal / yellow ≥50% / red ≥80%, red tick at the 85% warn threshold). Tool rows show
+  the last model call's value dimmed; a yellow `+Δ` marks the call that grew it; hover for the
+  input · cache-read · cache-write breakdown. The server computes it with the same context meter as
+  `usage.context` (see [TOKEN-COUNTING.md §5](docs/TOKEN-COUNTING.md)); an unknown window shows tokens only.
 - **`/grid`** — every run as a tile, each tile body carrying that same feed. A green **LIVE** button
   on a tile spawns an interactive PTY for the run's agent (`claude`, `opencode`, `kiro-cli`,
   `codex`, `gemini`, else `bash -i`) and expands the tile to a full-width xterm.js pane you can type
