@@ -301,6 +301,18 @@ describe("ach audit — honesty rules", () => {
     assert.match(text.stdout, /unverifiable=3/);
   });
 
+  it("an imported record (#25) is unverifiable with its own reason, not 'external record'", () => {
+    const dir = tmp("ach-audit-imp-");
+    writeRunRecord(dir, { runId: "imp-1", agent: "claude", startedAt: Date.now(), source: "imported", totals: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 } });
+    writeRunRecord(dir, { runId: "ext-2", agent: "claude", startedAt: Date.now(), source: "external", totals: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 } });
+
+    const by = new Map(auditRuns({ stateDir: dir }).rows.map((r) => [r.runId, r]));
+    assert.equal(by.get("imp-1")!.status, "unverifiable");
+    assert.equal(by.get("imp-1")!.reason, "imported record (transcript history, not an ach run)");
+    assert.doesNotMatch(by.get("imp-1")!.reason!, /external/);
+    assert.match(by.get("ext-2")!.reason!, /no raw transcript path \(external record\)/);
+  });
+
   it("an unpriceable model is reported as n/a, never as a delta", async () => {
     const dir = tmp("ach-audit-np-");
     const rec = await driverRun(dir, "claude", "s-np", [

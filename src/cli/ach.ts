@@ -61,11 +61,13 @@ import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer } from "../core/pricing.ts";
-import { aggregate, extraArgsFromValues, fmtInt, fmtUsd, formatEventLine, formatSummary, joinOptionValues, resolveDirFlag, wantsHelp } from "./lib.ts";
+import { aggregate, extraArgsFromValues, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, resolveDirFlag, wantsHelp } from "./lib.ts";
+import { deriveLatency } from "../web/derive.ts";
 import {
   aggregateDims,
   baseCacheRatios,
   cwdIndex,
+  branchIndex,
   loadProjectAliases,
   parseByDims,
   parseModelAliases,
@@ -107,6 +109,8 @@ import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
 import { cmdAudit } from "./audit.ts";
+import { ccusageHintText, cmdImport, parseStatsOrigin, statsOriginIndex, type StatsOrigin } from "./import.ts";
+import { cmdVerifyRun } from "./verify-run.ts";
 import { EXIT_CODES, noDataExitCode, parseExitCodesMode, repeatExitCode, runExitCode } from "./exit-codes.ts";
 import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
 import { alertFlagsToBudget } from "./alerts.ts";
@@ -194,11 +198,12 @@ usage:
                  boundaries and bare dates; --by week = ISO weeks (2026-W39),
                  month = 2026-09, comma lists allowed; run success rate
                  excludes 'unavailable' runs unless --include-unavailable)
-            [--by model|project]... [--merge-models] [--model-alias FROM=TO]...
+            [--by model|project|branch]... [--merge-models] [--model-alias FROM=TO]...
             [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
                 (--by takes time granularities and dimensions together, e.g.
                  --by week,model; --by model: agent/model rows + model x day table;
-                 --by project: repo-root rollup, aliases also via
+                 --by branch: per-git-branch rollup (branch recorded at run start;
+                 unattributed rows land in '(no branch)'); --by project: repo-root rollup, aliases also via
                  AGENTIC_CODING_HARNESS_PROJECT_ALIASES; every row shows
                  cacheHit = cacheRead/(input+cacheRead+cacheWrite))
             [--blocks] [--budget-usd N]
@@ -211,6 +216,10 @@ usage:
                  --budget-usd. --plan frames the active window as % of the
                  plan allowance; built-in presets are community estimates)
             [--with-warehouse] [--transcript-dir <root>]
+            [--origin all|native|imported|transcript]
+                (--origin counts only rows of that provenance: native = ach
+                 runs, imported = sessions \`ach import\` recorded, transcript =
+                 machine transcripts not in the registry; default all)
                 (--with-warehouse adds archived copies whose live file is gone;
                  --transcript-dir reads machine transcripts from
                  <root>/.claude/projects etc., e.g. a restore; --dir is an
@@ -228,6 +237,18 @@ usage:
                  and report recorded vs recomputed deltas; exit 1 on drift;
                  --fix rewrites drifted totals and logs RunRecord.corrections;
                  --dir is an alias of --state-dir here)
+  ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <stateDir>]
+             [--dry-run] [--json]
+                (record existing local transcripts as RunRecords with
+                 source "imported" so dash/web/compare show history; idempotent,
+                 skips sessions a native run already owns and sessions whose
+                 last activity is older than --days; a corrupt file is an error
+                 line and the import continues (exit 0); \`ach stats\` totals
+                 are unchanged by import; --dir is an alias of --state-dir here)
+  ach verify-run <runId|runDir> [--json] [--records] [--state-dir <stateDir>]
+                (recompute the run's sha256 hash-chained event log and check its
+                 terminal seal + sealed totals (#59); exit 0 intact, 2 tampered
+                 (names the first bad line), 3 unsealed legacy log, 4 open chain)
   ach status [--compact|--json] [--transcripts] [--budget-usd N] [--exit-codes ladder]
              [--once] [--write-state <path>] [--interval-ms MS=5000]
                 (runs, active runs, trailing-24h spend = \`stats --days 1\`,
@@ -674,6 +695,8 @@ function runSummaryText(agent: string, result: RunResult, modelFlag: string | un
   });
   if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
   if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
+  // #32: ttft / throughput / per-tool durations, only the ones measured.
+  for (const l of formatLatencyLines(deriveLatency(result.events))) summary += `\n${l}`;
   if (verify !== undefined) summary += `\n${formatVerifyLine(verify)}`;
   return summary;
 }
@@ -777,7 +800,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
   const sources = transcriptSources(transcriptDir ? scanOptionsForRoot(path.resolve(transcriptDir)) : {});
   const state = stateDir();
   const offsets = await loadOffsets();
-  type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
+  type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number };
   const seenByFile = new Map<string, Map<string, WatchTotals>>();
   const seenOpencode = new Set<string>();
   const pricer = createPricer();
@@ -807,6 +830,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
         output: number;
         cacheRead: number;
         cacheWrite: number;
+        cacheWrite1h?: number;
         reasoning: number;
       }>
     >;
@@ -859,9 +883,10 @@ async function cmdWatch(rest: string[]): Promise<number> {
       const recent = new Map<string, WatchTotals>();
       const collect = (map: Map<string, WatchTotals>, rec: Awaited<ReturnType<typeof w.parse>>[number]): void => {
         const key = `${rec.agent}\0${rec.sessionId}\0${rec.model}`;
-        const value = map.get(key) ?? { agent: rec.agent, sessionId: rec.sessionId ?? "unknown", model: rec.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+        const value = map.get(key) ?? { agent: rec.agent, sessionId: rec.sessionId ?? "unknown", model: rec.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 };
         value.input += rec.input; value.output += rec.output;
         value.cacheRead += rec.cacheRead; value.cacheWrite += rec.cacheWrite;
+        value.cacheWrite1h += rec.cacheWrite1h ?? 0;
         map.set(key, value);
       };
       for (const rec of await w.parse(w.file)) {
@@ -878,8 +903,9 @@ async function cmdWatch(rest: string[]): Promise<number> {
         const outputTokens = Math.max(0, value.output - (before?.output ?? 0));
         const cacheReadTokens = Math.max(0, value.cacheRead - (before?.cacheRead ?? 0));
         const cacheWriteTokens = Math.max(0, value.cacheWrite - (before?.cacheWrite ?? 0));
+        const cacheWrite1hTokens = Math.max(0, value.cacheWrite1h - (before?.cacheWrite1h ?? 0));
         if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) continue;
-        const priced = value.model ? pricer.price({ model: value.model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }) : NaN;
+        const priced = value.model ? pricer.price({ model: value.model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens }) : NaN;
         bump({ agent: value.agent, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
           ...(Number.isFinite(priced) ? { costUsd: priced } : {}) });
       }
@@ -1026,10 +1052,14 @@ async function cmdStats(rest: string[]): Promise<number> {
       dir: { type: "string" },
       "transcript-dir": { type: "string" },
       "cost-mode": { type: "string" },
+      // #25: provenance filter. Not --source: `ach web --source` is a run feed,
+      // and stats rows already carry source: state|transcript.
+      origin: { type: "string" },
     },
     allowPositionals: true,
   });
   const exitMode = parseExitCodesMode(args.values["exit-codes"]);
+  const wantOrigin = parseStatsOrigin(args.values.origin);
   // --by carries both #44 calendar granularities (day|week|month) and #27/#43
   // dimensions (model|project); split them before each parser sees its half.
   const byTime: string[] = [];
@@ -1058,7 +1088,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   const probe = createPricer();
   const disagreements: string[] = [];
   const costFor = (
-    r: Pick<StatRecord, "agent" | "sessionId" | "model" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "extra">,
+    r: Pick<StatRecord, "agent" | "sessionId" | "model" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cacheWrite1hTokens" | "extra">,
     reported: number | undefined,
   ) => {
     const needComputed = costMode === "calculate" || (costMode === "auto" && reported === undefined);
@@ -1072,6 +1102,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           outputTokens: r.outputTokens,
           cacheReadTokens: r.cacheReadTokens,
           cacheWriteTokens: r.cacheWriteTokens,
+          ...(r.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: r.cacheWrite1hTokens } : {}),
           ...(r.extra !== undefined ? { extra: r.extra } : {}),
         },
         { computedOnly: true },
@@ -1128,10 +1159,13 @@ async function cmdStats(rest: string[]): Promise<number> {
   // that fail to parse are counted (skippedRunRecords), never dropped silently.
   const registryScan = scanRunRecords(stateDir());
   const runCwd = cwdIndex(registryScan.records);
-  let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript" })[] = stateRecords.map((r) => ({
+  const runBranch = branchIndex(registryScan.records);
+  const originIndex = statsOriginIndex(registryScan.records);
+  let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript"; origin?: StatsOrigin })[] = stateRecords.map((r) => ({
     source: "state",
     extra: r.extra,
     cwd: runCwd(r.agent, r.sessionId),
+    branch: runBranch(r.agent, r.sessionId),
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,
@@ -1140,6 +1174,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     outputTokens: r.outputTokens,
     cacheReadTokens: r.cacheReadTokens,
     cacheWriteTokens: r.cacheWriteTokens,
+    ...(r.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: r.cacheWrite1hTokens } : {}),
     reasoningTokens: r.reasoningTokens ?? 0,
     ...costFor(r, r.reportedCostUsd),
     ...(r.extra?.tokensAvailable === false ? { tokensAvailable: false } : {}),
@@ -1166,13 +1201,16 @@ async function cmdStats(rest: string[]): Promise<number> {
         outputTokens: rec.output,
         cacheReadTokens: rec.cacheRead,
         cacheWriteTokens: rec.cacheWrite,
+        ...(rec.cacheWrite1h !== undefined ? { cacheWrite1hTokens: rec.cacheWrite1h } : {}),
         reasoningTokens: rec.reasoning,
       };
       const key = dedupeKey(row);
       if (seen.has(key)) continue;
       seen.add(key);
       const cwd = rec.cwd ?? runCwd(rec.agent, rec.sessionId);
-      records.push({ ...row, ...costFor(row, undefined), ...(cwd ? { cwd } : {}), source: "transcript" });
+      // Branch only via the run registry (session match): no fixture proves transcripts carry gitBranch, and we never shell out per row.
+      const branch = runBranch(rec.agent, rec.sessionId);
+      records.push({ ...row, ...costFor(row, undefined), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), source: "transcript" });
     }
     // agents.d usage taps (#38): descriptor-declared transcript sources.
     const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs, costMode });
@@ -1193,6 +1231,9 @@ async function cmdStats(rest: string[]): Promise<number> {
   if (skippedWarning) process.stderr.write(skippedWarning + "\n");
 
   if (wantProject !== undefined) records = records.filter((r) => projectMatches(r.cwd, wantProject, projectAliases));
+  // #25: label every row with its origin (numbers unchanged), then --origin filters.
+  for (const r of records) r.origin = originIndex.originOf(r);
+  if (wantOrigin !== "all") records = records.filter((r) => r.origin === wantOrigin);
   disagreements.push(...records.flatMap((r) => r.costDisagreement ? [r.costDisagreement] : []));
   const agg = aggregate(records, { timeZone, by });
   const showProject = dimsBy.has("project") || wantProject !== undefined;
@@ -1203,6 +1244,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     modelAliases,
     byModelDay: dimsBy.has("model"),
     byProject: showProject,
+    byBranch: dimsBy.has("branch"),
     projectAliases,
   });
   if (dims.unpricedModels.length > 0) {
@@ -1211,10 +1253,12 @@ async function cmdStats(rest: string[]): Promise<number> {
     );
   }
   // Run records from the registry, honouring the full #26 [since, until) window.
-  const windowedRunRecords = registryScan.records.filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)));
+  const windowedRunRecords = registryScan.records.filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)) && (wantOrigin === "all" || originIndex.runOrigin(r) === wantOrigin));
   // Run outcomes (#60) from the run registry: shown only when there are runs,
   // so the historical {total, byAgent, byDay} shape is untouched otherwise.
-  const runRecords = windowedRunRecords.filter((r) => !agent || r.agent === agent);
+  // Imported sessions (#25) carry no task verdict: kept out of the outcome,
+  // repeat-group and unmetered rollups (they still appear in `runs`).
+  const runRecords = windowedRunRecords.filter((r) => (!agent || r.agent === agent) && r.source !== "imported");
   const outcomes =
     runRecords.length > 0
       ? summarizeRunOutcomes(runRecords, { includeUnavailable: args.values["include-unavailable"] })
@@ -1257,6 +1301,13 @@ async function cmdStats(rest: string[]): Promise<number> {
     return [source, { ...view(aggregate(rows, { timeZone, by }).totals), provenance: statsProvenance(rows, { timeZone, by }).total }];
   }));
   const hasTranscripts = records.some((r) => r.source === "transcript");
+  // #25: per-origin totals, shown once the registry holds imported sessions
+  // (or --origin is given) so the historical output shape is otherwise untouched.
+  const showOrigins = originIndex.hasImported || wantOrigin !== "all";
+  const origins = Object.fromEntries((["native", "imported", "transcript"] as const).map((o) => {
+    const rows = records.filter((r) => r.origin === o);
+    return [o, { ...view(aggregate(rows, { timeZone, by }).totals), provenance: statsProvenance(rows, { timeZone, by }).total }];
+  }));
   // Issue #33: a sibling `provenance` map on every bucket (numbers unchanged).
   const prov = statsProvenance(records, { timeZone, by });
   const mapView = (m: Record<string, typeof agg.totals>, pm: Record<string, ProvenanceMap>) =>
@@ -1269,6 +1320,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           total: { ...view(agg.totals), costDisagreements: disagreements.length, provenance: prov.total },
           byAgent: mapView(agg.byAgent, prov.byAgent),
           ...(hasTranscripts ? { sources } : {}),
+          ...(showOrigins ? { origin: wantOrigin, origins } : {}),
           ...Object.fromEntries(Object.entries(timeMaps).map(([k, v]) => [k, mapView(v, k === "byDay" ? prov.byDay : k === "byWeek" ? prov.byWeek ?? {} : prov.byMonth ?? {})])),
           timezone: timeZone,
           window: windowJson(window),
@@ -1278,6 +1330,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(dims.byModelDay ? { byModelDay: dims.byModelDay } : {}),
           ...(args.values["merge-models"] ? { mergedModels: true, modelAliases } : {}),
           ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
+          ...(dims.byBranch ? { byBranch: dims.byBranch } : {}),
           // #21: per-run context-window pressure from the run registry.
           runs: runContextRows(windowedRunRecords, { agent }),
           // #60: run-outcome rollup. Named runOutcomes (not `runs`) because
@@ -1304,6 +1357,9 @@ async function cmdStats(rest: string[]): Promise<number> {
         process.stdout.write(line(`source: ${source}`, bucket, bucket.provenance) + "\n");
       }
     }
+    if (showOrigins) {
+      for (const [o, bucket] of Object.entries(origins)) process.stdout.write(line(`origin: ${o}`, bucket, bucket.provenance) + "\n");
+    }
     if (skippedRunRecords > 0) process.stdout.write(`skipped   ${fmtInt(skippedRunRecords)} unreadable run record(s) (details on stderr)\n`);
     if (disagreements.length > 0) process.stdout.write(`disagree  ${disagreements.length} record(s) where reported and computed cost differ by >${COST_DISAGREEMENT_PCT}% (details on stderr)\n`);
     if (unmetered.runs > 0) {
@@ -1320,7 +1376,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for (const m of Object.values(timeMaps)) {
       for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, view(b), prov.byDay[d] ?? prov.byWeek?.[d] ?? prov.byMonth?.[d]) + "\n");
     }
-    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject })) {
+    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject, branch: dimsBy.has("branch") })) {
       process.stdout.write(l + "\n");
     }
     if (outcomes !== undefined) {
@@ -1337,11 +1393,8 @@ async function cmdStats(rest: string[]): Promise<number> {
 
 function hintCcusage(): void {
   const probe = spawnSync("/bin/sh", ["-c", "command -v ccusage >/dev/null 2>&1"], { stdio: "ignore" });
-  if (probe.status === 0) {
-    process.stderr.write(
-      "hint: 'ccusage' is installed — run `ccusage` for richer batch usage reports (daily/monthly/session breakdowns).\n",
-    );
-  }
+  // #25: offer `ach import` first; ccusage stays the alternative.
+  if (probe.status === 0) process.stderr.write(ccusageHintText());
 }
 
 // ---------------------------------------------------------------- emit
@@ -1499,8 +1552,8 @@ async function cmdEmit(rest: string[]): Promise<number> {
 /** Every subcommand `main` dispatches to (keep in sync with the switch below).
  *  Each accepts -h/--help (#101), answered from the shared USAGE text. */
 const SUBCOMMANDS = new Set([
-  "run", "preflight", "doctor", "watch", "stats", "audit", "status", "statusline",
-  "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents",
+  "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
+  "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
 ]);
 
 /**
@@ -1556,6 +1609,10 @@ async function main(argv: string[]): Promise<number> {
       return cmdStats(rest);
     case "audit":
       return cmdAudit(rest);
+    case "import":
+      return cmdImport(rest);
+    case "verify-run":
+      return cmdVerifyRun(rest);
     case "status":
       return cmdStatus(rest);
     case "statusline":

@@ -199,7 +199,8 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
    *  (not the fs-only readRunRecord) so external records are covered. */
   function isExternalRun(runId: string): boolean {
     const rec = hub.snapshotRuns().find((r) => r.runId === runId);
-    return rec?.source === "external";
+    // Imported (#25) runs are past transcripts: no local process either.
+    return rec?.source === "external" || rec?.source === "imported";
   }
 
   const tailers = new Set<ReturnType<typeof setInterval>>();

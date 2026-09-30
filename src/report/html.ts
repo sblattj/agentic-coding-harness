@@ -306,6 +306,11 @@ ${labels.join("\n")}
 
 // ---------------------------------------------------------------- table
 
+/** Seal verdict cell text (#59): ✓ only for an intact, sealed chain. */
+function sealText(s: "ok" | "tampered" | "unsealed" | "open"): string {
+  return s === "ok" ? "✓ sealed" : s === "tampered" ? "✗ TAMPERED" : s === "open" ? "open (no seal)" : "unsealed (legacy)";
+}
+
 function statusBadge(s: string): string {
   return `<span class="badge st-${esc(s)}">${esc(s)}</span>`;
 }
@@ -328,6 +333,7 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
   const showCredits = runs.some((r) => r.credits !== null);
   const showContext = runs.some((r) => r.usage?.context?.available === true);
   const showVerify = runs.some((r) => r.verify !== undefined);
+  const showSeal = runs.some((r) => r.seal !== undefined);
   // Identity column (spec §6.3): when ANY run carries a variant label the
   // comparison groups by variant (matching the live /compare view's default
   // experiment×variant rollup); otherwise the historical by-agent column.
@@ -349,6 +355,7 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
     `<th data-k="dur" data-t="n" class="num">duration</th>`,
     `<th data-k="exit" data-t="s">exit status</th>`,
     ...(showVerify ? [`<th data-k="verify" data-t="s">verify</th>`] : []),
+    ...(showSeal ? [`<th data-k="seal" data-t="s">seal</th>`] : []),
   ].join("");
   const rows = runs
     .map((r) => {
@@ -387,6 +394,13 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
               r.verify === undefined
                 ? `<td data-v="" class="na">n/a</td>`
                 : `<td data-v="${esc(r.verify.status)}" title="${esc(r.verify.command)}">${statusBadge(r.verify.status)}</td>`,
+            ]
+          : []),
+        ...(showSeal
+          ? [
+              r.seal === undefined
+                ? `<td data-v="" class="na">n/a</td>`
+                : `<td data-v="${esc(r.seal.status)}" title="${esc(r.seal.detail)}">${esc(sealText(r.seal.status))}</td>`,
             ]
           : []),
       ];

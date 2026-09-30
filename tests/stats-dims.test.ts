@@ -134,6 +134,38 @@ describe("per-model breakdown (#27)", () => {
     close(dims.byModel["claude/claude-sonnet-4"]!.costUsd, 3);
   });
 
+  it("computed slices bill 1h cache writes like Pricer.price does (#105)", () => {
+    // Record-level split (claude modelUsage has none per slice): 1h share 100%.
+    const multi = r({
+      model: "claude-opus-5-5",
+      cacheWriteTokens: 1_000_000,
+      cacheWrite1hTokens: 1_000_000,
+      extra: {
+        raw: {
+          models: [
+            { model: "claude-opus-5-5", input: 0, output: 0, cacheRead: 0, cacheWrite: 800_000 },
+            { model: "claude-haiku-4-5", input: 0, output: 0, cacheRead: 0, cacheWrite: 200_000 },
+          ],
+        },
+      },
+    });
+    const dims = aggregateDims([multi], { pricer: createPricer() });
+    close(dims.byModel["claude/claude-opus-5-5"]!.costUsd, 0.8 * 8);
+    close(dims.byModel["claude/claude-haiku-4-5"]!.costUsd, 0.2 * 2);
+    close(
+      Object.values(dims.byModel).reduce((a, b) => a + (b.costUsd ?? Number.NaN), 0),
+      createPricer().price({ ...multi, model: multi.model! }, { computedOnly: true }),
+    );
+    // Lone slice with no record cost: same 1h rate as the single-model pricer path.
+    const lone = r({
+      model: "claude-opus-5-5",
+      cacheWriteTokens: 1_000_000,
+      cacheWrite1hTokens: 1_000_000,
+      extra: { raw: { models: [{ model: "claude-opus-5-5", input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000 }] } },
+    });
+    close(aggregateDims([lone], { pricer: createPricer() }).byModel["claude/claude-opus-5-5"]!.costUsd, 8);
+  });
+
   it("unpriced model: listed, cost null, tokens intact; aggregate totals exclude it", () => {
     const unpriced = r({ model: "mystery-model-9", inputTokens: 100, outputTokens: 10 }); // no costUsd
     const priced = r({ model: "claude-sonnet-4", inputTokens: 10, costUsd: 0.5 });
