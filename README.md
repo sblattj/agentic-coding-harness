@@ -219,11 +219,14 @@ ach run --agent <claude|opencode|kiro|codex|gemini|null|custom|descriptor> [--mo
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach watch [--transcript-dir <root>]           # live per-session token deltas
 ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--json] [--state-only]
-            [--transcript-dir <root>]
+            [--transcript-dir <root>] [--origin all|native|imported|transcript]
             # window is [--since, --until): since inclusive, until EXCLUSIVE (a record
             # stamped exactly at --until is not counted); --until alone = everything before it
 ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--state-dir <stateDir>]
             # re-derive RunRecord totals from raw transcripts; exit 1 on drift
+ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <stateDir>]
+            [--dry-run] [--json]
+            # record existing Claude Code sessions as imported RunRecords
 ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
@@ -242,8 +245,33 @@ ach web [trials-dir] [--port N=8399] [--host H] [--token T] [--state-dir <stateD
 
 `--dir` is kept as an alias with a per-command meaning: for `watch` and `stats` it is
 `--transcript-dir` (a home-shaped root holding `.claude/projects` etc.); for `archive`, `audit`,
-`dash` and `web` it is `--state-dir`. Passing both spellings with different values is a usage
+`import`, `dash` and `web` it is `--state-dir`. Passing both spellings with different values is a usage
 error.
+
+`ach import --agent claude` gives a new install its history on day one. It reads the existing
+Claude Code transcripts (`~/.claude/projects`, or `<root>/.claude/projects` with
+`--transcript-dir <root>`) and writes one RunRecord per session into the same registry native runs
+use (`<stateDir>/runs/`), marked `source: "imported"` and carrying the native `sessionId`, the
+session's token totals, a computed cost, its `cwd`, and the transcript paths in `metadata`. `ach dash`,
+`ach web`, and the compare view then list those sessions next to native runs. The import is
+idempotent: the run id is derived from the session id, so a second import rewrites nothing and
+reports each session `unchanged` (a session that grew since is `updated`). A session a native
+`ach run` already recorded is skipped and reported, never duplicated. Sessions whose last activity
+is older than `--days` (default 30) are reported as `skipped-outside-window`. A corrupt transcript
+file is an `error` line; the import continues and still exits 0. `--dry-run` reports without
+writing; `--json` emits `{summary, sessions, errors, ...}`. Only claude is importable so far.
+
+Import never changes an `ach stats` total. Stats already counts machine transcripts directly, and
+it sums tokens only from those transcripts and from harness state under `<stateDir>/raw/`, never
+from RunRecord totals, so an imported session is counted once, from its transcript, before and
+after import. What import adds is provenance: once the registry holds imported sessions,
+`ach stats` prints an `origin:` line per origin (`--json`: `origins`), and `--origin` counts only
+one of them. `native` means ach runs, `imported` means sessions `ach import` recorded, and
+`transcript` means machine transcripts that are not in the registry. The default is `all`. The flag
+is `--origin` rather than `--source` because `ach web --source` names an external run feed. Imported
+sessions carry no task verdict, so they are excluded from the stats run-outcome rollup and from
+`ach status` run counts. To keep history after Claude Code prunes old transcripts, snapshot them
+with `ach archive` and read them back with `ach stats --with-warehouse`.
 
 `ach audit` is the self-check on the numbers themselves. For every RunRecord under
 `<stateDir>/runs/` it replays the run's raw transcript (`<stateDir>/raw/<agent>-<session>.jsonl`),
