@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { createContext, runInContext } from 'node:vm';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createFrameAnnotator } from '../src/web/context-frames.ts';
+import type { AgentEvent } from '../src/core/types.ts';
 
 /*
  * src/web/feed.js is a browser IIFE with no module system, so it is loaded into
@@ -276,5 +278,139 @@ describe('HarnessFeed chunk streaming', () => {
 
     assert.deepEqual(texts(container, 'hf-msg-agent'), ['Reading the file.', 'It is a readme.']);
     assert.equal(withClass(container, 'hf-card').length, 1);
+  });
+});
+
+/*
+ * Context gauge. Events are stamped by the REAL server-side annotator
+ * (createFrameAnnotator, the same call server.ts makes per run socket), so these
+ * tests pin the wire contract between src/web/context-frames.ts and feed.js.
+ */
+describe('HarnessFeed context gauge', () => {
+  const MODEL = 'claude-sonnet-4-5'; // 200k window in the bundled table
+  const u = (input: number, cacheRead: number, cacheWrite: number) => ({
+    agent: 'claude', model: MODEL, inputTokens: input, outputTokens: 7, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite,
+  });
+
+  function stamped(agent: string, events: Record<string, unknown>[]): Record<string, unknown>[] {
+    const a = createFrameAnnotator({ agent });
+    return events.map((e) => {
+      const ctx = a?.annotate(e as unknown as AgentEvent);
+      return ctx === undefined ? e : { ...e, ctx };
+    });
+  }
+
+  const claudeRun = (): Record<string, unknown>[] => [
+    { type: 'step', agent: 'claude', data: { model: MODEL }, timestamp: T0 },
+    // claude's empty first content block: same call, never drawn as a row
+    { type: 'message', agent: 'claude', source: 'agent', model: MODEL, content: '', usage: u(2, 0, 18_398), timestamp: T0 + 1 },
+    { type: 'message', agent: 'claude', source: 'agent', model: MODEL, content: 'Reading.', usage: u(2, 0, 18_398), timestamp: T0 + 2 },
+    { type: 'tool_call', agent: 'claude', toolCallId: 't1', functionName: 'Bash', arguments: { command: 'ls -la' }, timestamp: T0 + 3 },
+    { type: 'tool_result', agent: 'claude', toolCallId: 't1', content: 'ok', timestamp: T0 + 415 },
+    { type: 'message', agent: 'claude', source: 'agent', model: MODEL, content: 'Grew.', usage: u(6, 18_398, 107_596), timestamp: T0 + 500 },
+    { type: 'message', agent: 'claude', source: 'agent', model: MODEL, content: 'Same call, 2nd block.', usage: u(6, 18_398, 107_596), timestamp: T0 + 501 },
+  ];
+
+  it('a tool card gets the carried-forward gauge, dimmed stale, after the duration', () => {
+    const { container, feed } = mount();
+    feed.append(stamped('claude', claudeRun()));
+    const card = withClass(container, 'hf-card')[0]!;
+    const head = withClass(card, 'hf-head')[0]!;
+    const gauges = withClass(head, 'hf-ctx');
+    assert.equal(gauges.length, 1);
+    const g = gauges[0]!;
+    assert.ok(g.className.split(/\s+/).includes('stale'), g.className);
+    assert.ok(g.className.split(/\s+/).includes('hf-lv0'), 'teal below 50%');
+    assert.equal(texts(g, 'hf-ctx-t')[0], '18.4k 9%');
+    assert.equal(withClass(g, 'hf-ctx-d').length, 0, 'seq 1 already drew its +Δ on "Reading."');
+    // the gauge sits after the duration in the header
+    const order = head.children.map((c) => c.className.split(/\s+/)[0]);
+    assert.deepEqual(order, ['hf-tri', 'hf-fn', 'hf-args', 'hf-chip', 'hf-ms', 'hf-ctx']);
+    assert.equal(texts(head, 'hf-ms')[0], '412ms');
+    // fill at the percentage, warn tick at CONTEXT_WARN_FRACTION
+    const bar = withClass(g, 'hf-ctx-g')[0]!;
+    assert.equal(bar.children[0]!.style.width, '9.2%');
+    assert.equal(bar.children[1]!.style.left, '85%');
+    assert.match(g.attributes.title!, /carried from last model call/);
+  });
+
+  it('a model-call row shows +Δ once, on its first drawn row, with a fresh gauge and breakdown tooltip', () => {
+    const { container, feed } = mount();
+    feed.append(stamped('claude', claudeRun()));
+    const rows = withClass(container, 'hf-row');
+    assert.equal(rows.length, 4, 'Reading. / Bash card / Grew. / 2nd block');
+    assert.deepEqual(
+      texts(container, 'hf-ctx-d'),
+      ['+18.4k', '+107.6k'],
+      'one +Δ per model call, never on the undrawn empty block',
+    );
+    const grew = rows[2]!;
+    const g = withClass(grew, 'hf-ctx')[0]!;
+    assert.ok(!g.className.split(/\s+/).includes('stale'), 'a model-call row is fresh');
+    assert.equal(texts(g, 'hf-ctx-t')[0], '126.0k 63%');
+    assert.ok(g.className.split(/\s+/).includes('hf-lv1'), 'yellow from 50%');
+    const title = g.attributes.title!;
+    assert.match(title, /context 126\.0k \/ 200\.0k \(63\.0%\)/);
+    assert.match(title, /input 6 · cache-read 18\.4k · cache-write 107\.6k/);
+    assert.match(title, /Δ \+107\.6k this call/);
+    assert.match(title, /44\.0k until the 85% threshold/);
+    // the right-aligned wrapper appears only on rows that carry a gauge
+    assert.equal(withClass(grew, 'hf-body-ctx').length, 1);
+    assert.equal(withClass(rows[3]!, 'hf-ctx-d').length, 0, '2nd block of the same call: no repeated +Δ');
+  });
+
+  it('a tool-only model call (empty text block) draws its +Δ on the tool card, still stale', () => {
+    const { container, feed } = mount();
+    feed.append(stamped('claude', [
+      { type: 'message', agent: 'claude', source: 'agent', model: MODEL, content: 'Start.', usage: u(2, 0, 43_498), timestamp: T0 },
+      { type: 'message', agent: 'claude', source: 'agent', model: MODEL, content: '', usage: u(4, 43_498, 3_898), timestamp: T0 + 1 },
+      { type: 'tool_call', agent: 'claude', toolCallId: 's1', functionName: 'Skill', arguments: { command: 'x' }, timestamp: T0 + 2 },
+      { type: 'tool_call', agent: 'claude', toolCallId: 's2', functionName: 'Read', arguments: { path: 'y' }, timestamp: T0 + 3 },
+    ]));
+    const cards = withClass(container, 'hf-card');
+    assert.equal(cards.length, 2);
+    const g = withClass(cards[0]!, 'hf-ctx')[0]!;
+    assert.ok(g.className.split(/\s+/).includes('stale'));
+    assert.deepEqual(texts(g, 'hf-ctx-d'), ['+3.9k']);
+    assert.equal(texts(g, 'hf-ctx-t')[0], '47.4k 24%');
+    assert.equal(withClass(cards[1]!, 'hf-ctx-d').length, 0, 'one +Δ per reading');
+    assert.deepEqual(texts(container, 'hf-ctx-d'), ['+43.5k', '+3.9k']);
+  });
+
+  it('no ctx (unmetered agent, older server) renders no gauge and no wrapper', () => {
+    const { container, feed } = mount();
+    const plain = claudeRun().map((e) => ({ ...e, agent: 'kiro' }));
+    feed.append(stamped('kiro', plain));
+    assert.equal(withClass(container, 'hf-ctx').length, 0);
+    assert.equal(withClass(container, 'hf-body-ctx').length, 0);
+    assert.equal(withClass(container, 'hf-card').length, 1);
+    assert.equal(withClass(container, 'hf-row').length, 4);
+  });
+
+  it('unknown window: tokens only, no bar and no percent', () => {
+    const { container, feed } = mount();
+    feed.append(stamped('claude', [
+      {
+        type: 'message', agent: 'claude', source: 'agent', model: 'claude-nonesuch-9', content: 'hi',
+        usage: { ...u(18_000, 0, 400), model: 'claude-nonesuch-9' }, timestamp: T0,
+      },
+    ]));
+    const g = withClass(container, 'hf-ctx')[0]!;
+    assert.equal(withClass(g, 'hf-ctx-g').length, 0);
+    assert.equal(texts(g, 'hf-ctx-t')[0], '18.4k');
+    assert.ok(!/hf-lv/.test(g.className), g.className);
+  });
+
+  it('a turn-total reading is marked as an upper bound and draws no +Δ', () => {
+    const { container, feed } = mount();
+    const a = createFrameAnnotator({ agent: 'codex', requestedModel: 'gpt-5-codex' })!;
+    const ev = {
+      type: 'usage', agent: 'codex', timestamp: T0,
+      usage: { agent: 'codex', model: 'unknown', inputTokens: 30_000, outputTokens: 10 },
+    };
+    feed.append([{ ...ev, ctx: a.annotate(ev as unknown as AgentEvent) }]);
+    const g = withClass(container, 'hf-ctx')[0]!;
+    assert.match(texts(g, 'hf-ctx-t')[0]!, /^≤30\.0k /);
+    assert.equal(withClass(g, 'hf-ctx-d').length, 0);
   });
 });

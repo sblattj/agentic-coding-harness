@@ -435,7 +435,22 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
     states.push(liveState);
     const raw = join(liveState, 'raw', 'claude-live.jsonl');
     mkdirSync(join(liveState, 'raw'), { recursive: true });
-    writeFileSync(raw, JSON.stringify({ type: 'message', source: 'user', content: 'go', timestamp: T0 }) + '\n');
+    // A claude model call with usage (claude-sonnet-4-5: 200k window) so the
+    // per-socket context annotator has a reading to carry into the live tick.
+    const backlogLines =
+      JSON.stringify({ type: 'message', source: 'user', content: 'go', timestamp: T0 }) +
+      '\n' +
+      JSON.stringify({
+        type: 'message',
+        agent: 'claude',
+        source: 'agent',
+        model: 'claude-sonnet-4-5',
+        content: 'listing',
+        usage: { agent: 'claude', model: 'claude-sonnet-4-5', inputTokens: 10, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 49_990 },
+        timestamp: T0 + 5,
+      }) +
+      '\n';
+    writeFileSync(raw, backlogLines);
     writeRunRecord(
       liveState,
       rec({ runId: 'run-live-1', rawTranscript: raw, status: 'running', updatedAt: Date.now() }),
@@ -444,17 +459,25 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
 
     const ws = new WebSocket(`ws://127.0.0.1:${live.port}/ws?runId=run-live-1`);
     try {
-      const sawBacklog = new Promise<void>((resolve, reject) => {
+      const sawBacklog = new Promise<Record<string, unknown>[]>((resolve, reject) => {
         const deadline = setTimeout(() => reject(new Error('no backlog within 10s')), 10_000);
         ws.addEventListener('message', (mev: MessageEvent) => {
-          const msg = JSON.parse(String(mev.data)) as { type?: string };
+          const msg = JSON.parse(String(mev.data)) as { type?: string; events?: Record<string, unknown>[] };
           if (msg.type === 'backlog') {
             clearTimeout(deadline);
-            resolve();
+            resolve(msg.events ?? []);
           }
         });
       });
-      await sawBacklog;
+      const backlog = await sawBacklog;
+      assert.equal(backlog.length, 2);
+      assert.equal(backlog[0]!.ctx, undefined, 'no gauge before the first usage');
+      const fresh = backlog[1]!.ctx as Record<string, unknown>;
+      assert.equal(fresh.tokens, 50_000);
+      assert.equal(fresh.window, 200_000);
+      assert.equal(fresh.pct, 25);
+      assert.equal(fresh.fresh, true);
+      assert.equal(fresh.delta, 50_000);
 
       const tick = new Promise<Record<string, unknown>>((resolve, reject) => {
         const deadline = setTimeout(() => reject(new Error('no live event within 15s')), 15_000);
@@ -469,8 +492,7 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
       // append a tool_call AFTER the backlog snapshot so the tailer forwards it
       writeFileSync(
         raw,
-        JSON.stringify({ type: 'message', source: 'user', content: 'go', timestamp: T0 }) +
-          '\n' +
+        backlogLines +
           JSON.stringify({
             type: 'tool_call',
             toolCallId: 'call-1',
@@ -487,6 +509,13 @@ describe('web dashboard server (bun subprocess)', { skip: isBun ? false : 'bun n
       assert.equal(event.toolCallId, 'call-1');
       assert.deepEqual(event.arguments, { command: 'ls -la' });
       assert.equal(typeof msg.text, 'string', 'legacy text field kept for grid/trio');
+      // the socket's annotator state survives from the backlog into the tick:
+      // the tool call carries the model call's reading forward, stale
+      const carried = event.ctx as Record<string, unknown>;
+      assert.equal(carried.tokens, 50_000);
+      assert.equal(carried.pct, 25);
+      assert.equal(carried.fresh, false);
+      assert.equal(carried.seq, 1);
     } finally {
       ws.close();
     }
