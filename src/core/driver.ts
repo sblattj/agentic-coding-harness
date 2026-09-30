@@ -28,6 +28,7 @@ import { takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
 import type { BudgetAlertEvent } from './types.js';
 import { deriveLatency, hasLatency } from './latency.ts';
+import { findAncestorInstructions } from './ancestor-instructions.ts';
 
 /** Alert cooldown from AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H; a bad value warns and keeps the 24h default (#20). */
 function envCooldownMs(warn: (w: string) => void): number {
@@ -146,6 +147,11 @@ export interface DriverOptions {
   workspaceRoot?: string;
   /**
    * Confine caller-supplied paths on a run spec to workspaceRoot (issue #9):
+   * NOTE (#106): a hermetic run (src/core/hermetic.ts runHermetic) hands the
+   * driver a harness-minted temp copy OUTSIDE the original workspace, so a
+   * driver confined to that workspace refuses it with WORKSPACE_ESCAPE —
+   * loudly, before launch. Confine to the temp root instead, or leave
+   * confinement off for hermetic runs (the ach CLI and MCP tools never set it).
    * RunSpec.cwd and RunSpec.stateDir are resolved to their REAL paths
    * (symlinks followed, `..` collapsed) and must land inside the root, or
    * the run fails with a WORKSPACE_ESCAPE HarnessError before anything is
@@ -534,8 +540,13 @@ export function createDriver(options: DriverOptions): Driver {
             registryWarn(err);
           }
         };
+        const runCwd = typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd();
+        // #106: instruction files the agent would load from the cwd's
+        // ANCESTOR directories (e.g. ~/CLAUDE.md for a workspace under
+        // $HOME). Recorded only when non-empty, so every other record is
+        // unchanged; `ach run` prints its own pre-launch warning.
+        const ancestorInstructions = findAncestorInstructions(agentName, runCwd);
         if (registryStateDir) {
-          const runCwd = typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd();
           rec = {
             runId,
             agent: agentName,
@@ -549,6 +560,7 @@ export function createDriver(options: DriverOptions): Driver {
             status: 'running',
             totals,
             rawTranscript: transcriptPath,
+            ...(ancestorInstructions.length > 0 ? { ancestorInstructions } : {}),
           };
           applyRunRecordExtras();
           writeRunRecordThrottled(true);
@@ -902,6 +914,7 @@ export function createDriver(options: DriverOptions): Driver {
           ...(typeof parsed.variant === 'string' && parsed.variant !== '' ? { variant: parsed.variant } : {}),
           ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
           ...(attachmentManifest !== undefined ? { attachments: attachmentManifest } : {}),
+          ...(ancestorInstructions.length > 0 ? { ancestorInstructions } : {}),
         };
         // Run-to-directory settle (#6): the terminal status.json lands last,
         // after every other artifact (result.json included) is on disk.

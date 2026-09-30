@@ -26,6 +26,8 @@ import {
   type RunSpec,
 } from "../core/types.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, type VerifyResult } from "../core/verify.ts";
+import { findAncestorInstructions, formatAncestorWarning } from "../core/ancestor-instructions.ts";
+import { formatHermeticLine, type HermeticWorkspace } from "../core/hermetic.ts";
 import {
   formatRepeatGroupLine,
   formatStatsInline,
@@ -146,6 +148,12 @@ usage:
                            the agent exits; verdict on the RunRecord, failed checker exits 1; passing checker keeps the run exit code)
               [--repeat N [--parallel K]]  (N fresh sessions, one repeat group; exits with the most severe child code)
               [--experiment E] [--variant V]  (compare-view labels on the RunRecord)
+              [--hermetic]  (run in a temp copy of cwd whose ancestor dirs hold no
+                           CLAUDE.md/AGENTS.md/GEMINI.md, then sync edits (and deletions)
+                           back before --verify; fails if the temp root is not clean.
+                           Without it, ancestor instruction files are warned about and
+                           recorded as ancestorInstructions; see README "Ancestor
+                           instruction files". Not with --resume or --parallel > 1)
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
                            AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
@@ -182,7 +190,7 @@ usage:
   ach regrade <run-id> --verify '<cmd>' [--verify-timeout-ms MS] [--json]
                 (re-run a checker against a saved run's cwd; appends to the record's
                  regrades[] — no agent launched, run-time verify never rewritten)
-  ach trial --matrix <plan.json> [--dry-run] [--retry-failed] [--ledger PATH] [--json]
+  ach trial --matrix <plan.json> [--dry-run] [--retry-failed] [--ledger PATH] [--json] [--hermetic]
                 (resumable agents x tasks x models x trials grid; every cell is one
                  run labelled experiment/variant/cellId=agent:task:model:trialN;
                  <plan>.ledger.jsonl records finalized cells, so re-running the same
@@ -190,11 +198,12 @@ usage:
                  cells re-run only with --retry-failed; exit 1 only on errors or
                  interruption; see docs/TRIALS.md)
   ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N]
-                [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json]
+                [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json] [--hermetic]
                 (bundled self-verifying tasks as a matrix; default agents = every
                  installed CLI, missing ones skipped with a reason; experiment
                  suite/core, variant agent:model; HTML report next to the ledger in
-                 <stateDir>/suites/)
+                 <stateDir>/suites/; --hermetic runs each cell's agent in a clean
+                 temp copy, as for ach run)
   ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
                 (--since/--last: print history newer than the bound on startup;
                  --dir is an alias of --transcript-dir here)
@@ -480,11 +489,23 @@ async function cmdRun(rest: string[]): Promise<number> {
       parallel: { type: "string" },
       experiment: { type: "string" },
       variant: { type: "string" },
+      // #106: run in a temp copy with no ancestor instruction files.
+      hermetic: { type: "boolean", default: false },
     },
     allowPositionals: true,
   });
   const exitMode = parseExitCodesMode(args.values["exit-codes"]);
   const trialFlags = parseTrialFlags(args.values);
+  const hermetic = args.values.hermetic === true;
+  if (hermetic && args.values.resume !== undefined) {
+    // Claude (and codex) look sessions up by project directory; a fresh temp
+    // copy is a different directory, so a resumed hermetic run would not find
+    // the session it names.
+    throw new HarnessError("--hermetic runs in a fresh temp copy of the workspace; it cannot be combined with --resume", "USAGE");
+  }
+  if (hermetic && trialFlags.parallel !== undefined && trialFlags.parallel > 1) {
+    throw new HarnessError("--hermetic syncs each run back into the one workspace; it cannot be combined with --parallel > 1", "USAGE");
+  }
   const agent = args.values.agent;
   if (!agent) throw new HarnessError("run requires --agent <name>", "USAGE");
   // amp/goose/qwen (#22) are read-only transcript sources, never launchable.
@@ -534,6 +555,13 @@ async function cmdRun(rest: string[]): Promise<number> {
     ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
     ...(trialFlags.labels.variant !== undefined ? { variant: trialFlags.labels.variant } : {}),
   };
+  // #106: ancestor instruction files. Non-hermetic: warn BEFORE launch (the
+  // driver records them on the RunRecord). Hermetic: announce the temp copy.
+  if (!hermetic) {
+    const runCwd = process.cwd();
+    const leaks = findAncestorInstructions(agent, runCwd);
+    if (leaks.length > 0) process.stderr.write(formatAncestorWarning(agent, runCwd, leaks) + "\n");
+  }
   const trialOpts = {
     driver,
     agent,
@@ -541,6 +569,16 @@ async function cmdRun(rest: string[]): Promise<number> {
     stateDir: stateDir(),
     ...(trialFlags.verify !== undefined ? { verify: trialFlags.verify } : {}),
     labels: trialFlags.labels,
+    ...(hermetic
+      ? {
+          hermetic: {
+            onPrepared: (ws: HermeticWorkspace) => {
+              const avoided = ws.avoided.length > 0 ? ` (avoids ${ws.avoided.length} ancestor instruction file${ws.avoided.length === 1 ? "" : "s"}: ${ws.avoided.join(", ")})` : "";
+              process.stderr.write(`[hermetic] running in ${ws.dir}, synced back to ${ws.source} afterwards${avoided}\n`);
+            },
+          },
+        }
+      : {}),
   };
 
   if (trialFlags.repeat !== undefined) {
@@ -715,6 +753,11 @@ function runSummaryText(agent: string, result: RunResult, modelFlag: string | un
   if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
   // #32: ttft / throughput / per-tool durations, only the ones measured.
   for (const l of formatLatencyLines(deriveLatency(result.events))) summary += `\n${l}`;
+  // #106: ancestor instruction files that reached the run, or the hermetic copy.
+  if (result.ancestorInstructions !== undefined && result.ancestorInstructions.length > 0) {
+    summary += `\nancestors  ${result.ancestorInstructions.length} instruction file${result.ancestorInstructions.length === 1 ? "" : "s"} from ancestor dirs: ${result.ancestorInstructions.join(", ")}`;
+  }
+  if (result.hermetic !== undefined) summary += `\n${formatHermeticLine(result.hermetic)}`;
   if (verify !== undefined) summary += `\n${formatVerifyLine(verify)}`;
   return summary;
 }

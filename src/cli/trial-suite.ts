@@ -223,6 +223,8 @@ export interface SuiteCliOptions {
   dryRun: boolean;
   retryFailed: boolean;
   json: boolean;
+  /** #106: run every cell in a hermetic temp copy (src/core/hermetic.ts). */
+  hermetic?: boolean;
   /** Tests: the agent-availability probe. */
   probe?: (name: string) => { command: string | null; available: boolean };
 }
@@ -295,6 +297,7 @@ export async function runSuiteCli(o: SuiteCliOptions): Promise<number> {
     dryRun: o.dryRun,
     retryFailed: o.retryFailed,
     json: o.json,
+    ...(o.hermetic === true ? { hermetic: true } : {}),
     jsonExtra,
     onOutcome: (cell, outcome) => {
       if (outcome.result !== undefined) writeCellArtifact(paths.runs, cell, outcome);

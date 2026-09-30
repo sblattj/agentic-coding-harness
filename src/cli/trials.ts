@@ -12,7 +12,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { Driver } from "../core/driver.ts";
-import { registryDir, writeRunRecord, type RepeatMembership, type RunRecord } from "../core/registry.ts";
+import { patchRunRecord, registryDir, type RepeatMembership, type RunRecord } from "../core/registry.ts";
+import { runHermetic, type RunHermeticOptions } from "../core/hermetic.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
 import { HarnessError, type RunResult, type RunSpec } from "../core/types.ts";
 import { runVerifier, type VerifyResult } from "../core/verify.ts";
@@ -36,19 +37,7 @@ export interface RunLabels {
  *  schema-parsed view, which would inject defaults like source:"local").
  *  Returns false when the record does not exist or cannot be rewritten. */
 export function annotateRunRecord(stateDir: string, runId: string, patch: Partial<RunRecord>): boolean {
-  const file = path.join(registryDir(stateDir), `${runId}.json`);
-  let current: RunRecord;
-  try {
-    current = JSON.parse(fs.readFileSync(file, "utf8")) as RunRecord;
-  } catch {
-    return false;
-  }
-  try {
-    writeRunRecord(stateDir, { ...current, ...patch });
-    return true;
-  } catch {
-    return false;
-  }
+  return patchRunRecord(stateDir, runId, patch);
 }
 
 /** Read one registry record as raw JSON (see annotateRunRecord). */
@@ -90,11 +79,20 @@ export interface RunOnceOptions {
   verify?: VerifyRequest;
   labels?: RunLabels;
   repeat?: RepeatMembership;
+  /**
+   * #106: run in a hermetic temp copy of spec.cwd (src/core/hermetic.ts),
+   * synced back BEFORE the verifier runs, so the checker sees the edits.
+   */
+  hermetic?: Omit<RunHermeticOptions, "stateDir">;
 }
 
-/** Verify + annotate one settled run. Throws only if driver.run throws. */
+/** Verify + annotate one settled run. Throws only if driver.run (or the
+ *  hermetic preparation / sync-back) throws. */
 export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
-  const result = await opts.driver.run(opts.agent, opts.spec);
+  const result =
+    opts.hermetic !== undefined
+      ? await runHermetic(opts.driver, opts.agent, opts.spec, { ...opts.hermetic, stateDir: opts.stateDir })
+      : await opts.driver.run(opts.agent, opts.spec);
   const outcome: TrialOutcome = { index: opts.repeat?.index ?? 0, result };
   if (opts.repeat !== undefined) outcome.repeat = opts.repeat;
   if (opts.verify !== undefined) {

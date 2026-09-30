@@ -586,6 +586,12 @@ export interface RunMatrixOptions {
    * pending, exactly like a killed process).
    */
   signal?: AbortSignal;
+  /**
+   * #106: run each cell's agent in a hermetic temp copy of its workspace
+   * (src/core/hermetic.ts). Setup runs in the real workspace before the copy;
+   * the edits are synced back before the verifier runs there.
+   */
+  hermetic?: boolean;
   /** Called as each cell is decided / settles. */
   onCell?: (report: CellReport, cell: MatrixCell) => void;
   /** Called right before a cell launches (setup included). */
@@ -704,6 +710,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
         spec,
         stateDir: opts.stateDir,
         labels: { experiment: cell.experiment, variant: cell.variant, cellId: cell.cellId },
+        ...(opts.hermetic === true ? { hermetic: {} } : {}),
         ...(cell.task.verify !== undefined
           ? {
               verify: {
@@ -903,6 +910,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       "retry-failed": { type: "boolean", default: false },
       ledger: { type: "string" },
       json: { type: "boolean", default: false },
+      hermetic: { type: "boolean", default: false },
     },
     allowPositionals: false,
   });
@@ -924,6 +932,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       dryRun: args.values["dry-run"],
       retryFailed: args.values["retry-failed"],
       json: args.values.json,
+      ...(args.values.hermetic ? { hermetic: true } : {}),
     });
   }
   if (planFile === undefined || planFile.trim() === "") {
@@ -939,6 +948,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     dryRun: args.values["dry-run"],
     retryFailed: args.values["retry-failed"],
     json: args.values.json,
+    ...(args.values.hermetic ? { hermetic: true } : {}),
   });
 }
 
@@ -951,6 +961,8 @@ export interface ExecuteMatrixCliOptions {
   dryRun: boolean;
   retryFailed: boolean;
   json: boolean;
+  /** #106: run every cell in a hermetic temp copy (RunMatrixOptions.hermetic). */
+  hermetic?: boolean;
   /** Merged into the `--json` output (dry-run and real run). */
   jsonExtra?: Record<string, unknown>;
   /** Passed to runMatrix (see RunMatrixOptions.onOutcome). */
@@ -1037,6 +1049,7 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
     driver,
     stateDir: state,
     retryFailed,
+    ...(o.hermetic === true ? { hermetic: true } : {}),
     ...(plan.budget !== undefined ? { budget: plan.budget } : {}),
     ...(plan.setupTimeoutMs !== undefined ? { setupTimeoutMs: plan.setupTimeoutMs } : {}),
     ...(plan.verifyTimeoutMs !== undefined ? { verifyTimeoutMs: plan.verifyTimeoutMs } : {}),
@@ -1047,7 +1060,15 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
       if (!json) process.stdout.write(cellLine(r, i, cells.length) + "\n");
       i++;
     },
-    ...(o.onOutcome !== undefined ? { onOutcome: o.onOutcome } : {}),
+    onOutcome: (cell, outcome) => {
+      // #106: a cell whose agent loaded ancestor instruction files is not a
+      // clean benchmark sample; say so (the RunRecord carries the list).
+      const leaks = outcome.result?.ancestorInstructions;
+      if (leaks !== undefined && leaks.length > 0) {
+        process.stderr.write(`[warn] ${cell.cellId}: ${cell.agent} loaded ${leaks.length} ancestor instruction file(s): ${leaks.join(", ")} — rerun with --hermetic\n`);
+      }
+      o.onOutcome?.(cell, outcome);
+    },
   });
   const extra = o.after !== undefined ? await o.after(summary) : {};
   if (json) {

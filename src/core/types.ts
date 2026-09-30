@@ -1159,7 +1159,31 @@ export interface RunResult {
   usage?: UsageAvailability;
   /** Attachment manifest when RunSpec.attachments was used (#12). */
   attachments?: AttachmentManifest;
+  /** #106: instruction files the agent would load from ANCESTOR dirs of its
+   *  cwd (src/core/ancestor-instructions.ts); absent when there are none. */
+  ancestorInstructions?: string[];
+  /** #106: set when the run executed in a hermetic temp copy (--hermetic). */
+  hermetic?: HermeticRunInfo;
 }
+
+/** #106: how a `--hermetic` run was isolated (src/core/hermetic.ts). */
+export interface HermeticRunInfo {
+  /** The temp copy the agent ran in (removed after sync-back). */
+  tempDir: string;
+  /** The original workspace the copy came from and was synced back to. */
+  source: string;
+  /** Ancestor instruction files of `source` the copy avoided loading. */
+  avoided?: string[];
+  /** Sync-back tally: files/symlinks written back, entries deleted. */
+  synced: { copied: number; deleted: number };
+}
+
+export const HermeticRunInfoSchema = z.object({
+  tempDir: z.string().min(1),
+  source: z.string().min(1),
+  avoided: z.array(z.string()).optional(),
+  synced: z.object({ copied: z.number().int().nonnegative(), deleted: z.number().int().nonnegative() }),
+});
 
 /** Zod mirror of RunResult (events/tokens kept structurally tolerant). */
 export const RunResultSchema = z.object({
@@ -1191,6 +1215,8 @@ export const RunResultSchema = z.object({
       totalBytes: z.number().int().nonnegative(),
     })
     .optional(),
+  ancestorInstructions: z.array(z.string()).optional(),
+  hermetic: HermeticRunInfoSchema.optional(),
 });
 
 // ---------------------------------------------------------------- errors

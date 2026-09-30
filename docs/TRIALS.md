@@ -367,6 +367,30 @@ variables `ACH_CELL_ID`, `ACH_EXPERIMENT`, `ACH_VARIANT`, `ACH_AGENT`,
 For example, a suite is a plan whose `tasks` are `{dir}` entries.
 `ach trial --suite` (below) is exactly that.
 
+## Hermetic trials: ancestor instruction files (#106)
+
+A benchmark cell whose workspace sits under `$HOME` can silently load `~/CLAUDE.md`, or
+any `CLAUDE.md` / `CLAUDE.local.md` in an ancestor directory, as project memory. For
+codex and gemini the same applies to `AGENTS.md` / `GEMINI.md` up to the git root. The
+cell then measures your instructions, not the agent. This matters for trials because
+**fresh workspaces default to `<ledger>.work/`, next to the ledger**, and for
+`ach trial --suite` that is under `<stateDir>/suites/`, normally inside `$HOME`.
+
+- Each cell whose agent loaded such files prints a `[warn] <cellId>: ...` line on stderr,
+  and its RunRecord carries `ancestorInstructions`.
+- `ach trial --matrix plan.json --hermetic` (and `--suite core --hermetic`) runs each
+  cell's agent in a temp copy of its workspace whose ancestors are clean. The copy lives
+  under `os.tmpdir()`, or `$AGENTIC_CODING_HARNESS_HERMETIC_ROOT`. The task's `setup`
+  runs in the real workspace first. The agent's edits and deletions are synced back
+  before `verify` runs there, so the verdict is unchanged in meaning. A temp root that is
+  not clean fails the cell as an `error`; it never runs non-hermetically. The RunRecord
+  carries `hermetic: {tempDir, source, avoided?, synced}`.
+- Without `--hermetic`, put the ledger (`--ledger`) and shared `cwd`s outside `$HOME`,
+  for example under `/tmp`.
+
+See the README section "Ancestor instruction files and `--hermetic`" for the copy,
+sync and cleanup rules.
+
 ## `ach trial --suite core`: the bundled task suite
 
 ```sh

@@ -19,6 +19,12 @@ import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
 import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
 import { NULL_CAPABILITIES } from "../adapters/null.ts";
 import { checkCwd, filterExtraArgs, type GatewayConfig } from "../serve/gateway.ts";
+import { runHermetic } from "../core/hermetic.ts";
+
+/** One-line MCP warning for ancestor instruction files (#106). */
+export function ancestorWarningLine(agent: string, files: readonly string[]): string {
+  return `ancestor instructions: ${agent} loaded ${files.length} instruction file(s) from ancestor directories of cwd: ${files.join(", ")} — pass hermetic: true for an isolated run (#106)`;
+}
 
 // Shared with tools-jobs.ts (harness_run_async mirrors harness_run args).
 export const RunArgsSchema = z.object({
@@ -36,6 +42,8 @@ export const RunArgsSchema = z.object({
   idleMs: z.number().positive().optional(),
   extraArgs: z.array(z.string()).optional(),
   kiro: KiroConfigSchema.optional(),
+  /** #106: run in a hermetic temp copy of cwd (src/core/hermetic.ts). */
+  hermetic: z.boolean().optional(),
 });
 
 /** JSON Schema for the `kiro` tool param — shared by harness_run and
@@ -191,6 +199,11 @@ export function registerRunTools(
         idleMs: { type: "number", description: "Abort the run if no agent events arrive for this many milliseconds" },
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
         kiro: KIRO_INPUT_SCHEMA,
+        hermetic: {
+          type: "boolean",
+          description:
+            "Run in a fresh temp copy of cwd whose ancestor directories hold no CLAUDE.md/AGENTS.md/GEMINI.md, then sync the edits (and deletions) back; fails if the temp root is not clean (#106)",
+        },
       },
       required: ["agent", "prompt"],
     },
@@ -220,10 +233,20 @@ export function registerRunTools(
         registry: { stateDir: opts.stateDir },
         pricer: createPricer(),
       });
-      const result = await driver.run(a.agent, spec);
-      return strippedWarning === undefined
-        ? result
-        : { ...result, warnings: [...result.warnings, strippedWarning] };
+      // #106: hermetic runs copy cwd to a clean temp dir and sync back; the
+      // temp path is harness-minted, so the gateway cwd check above (on the
+      // caller's cwd) is the one that matters.
+      const result =
+        a.hermetic === true
+          ? await runHermetic(driver, a.agent, spec, { stateDir: opts.stateDir })
+          : await driver.run(a.agent, spec);
+      const extraWarnings = [
+        ...(result.ancestorInstructions !== undefined && result.ancestorInstructions.length > 0
+          ? [ancestorWarningLine(a.agent, result.ancestorInstructions)]
+          : []),
+        ...(strippedWarning !== undefined ? [strippedWarning] : []),
+      ];
+      return extraWarnings.length === 0 ? result : { ...result, warnings: [...result.warnings, ...extraWarnings] };
     },
   });
 

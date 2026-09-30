@@ -344,6 +344,68 @@ silent. `--json` emits `{rows, summary, total}`; each row carries `recorded`, `r
 `delta` objects keyed by the same field names as `ach stats --json`. Each row also carries
 `chain`, the run's `ach verify-run` verdict (below), taken before any `--fix`.
 
+### Ancestor instruction files and `--hermetic`
+
+Coding agents load "project memory" from the run's working directory **and from its
+ancestor directories**. A workspace under `$HOME` therefore inherits files like
+`~/CLAUDE.md` even when claude runs with `--setting-sources project,local
+--strict-mcp-config`, because a parent-directory `CLAUDE.md` counts as project memory.
+That leaks your own instructions into runs that are meant to be hermetic and skews
+benchmark comparisons (#106).
+
+Before `ach run` launches the agent, it walks from the cwd's **parent** up and lists the
+instruction files that agent would load there. The cwd's own files are the workspace's
+own project memory and are not listed.
+
+| Agent | Files | How far up |
+|---|---|---|
+| claude | `CLAUDE.md`, `CLAUDE.local.md` | every ancestor, up to `/` |
+| codex | `AGENTS.override.md`, `AGENTS.md` | up to the git root (the nearest dir with `.git`); none without one |
+| gemini | `GEMINI.md` | up to the git root; none without one |
+| opencode, kiro, null, custom | none checked | |
+
+When the list is non-empty, `ach run` prints a `[warn]` block naming every file on
+stderr. The run summary gains an `ancestors` line, and the RunRecord and the `--json`
+RunResult carry `ancestorInstructions: string[]`. Records without ancestor files are
+unchanged. MCP `harness_run` adds the same list to the result's `warnings`, and
+`ach trial` warns per cell.
+
+`--hermetic` removes the leak instead of reporting it:
+
+```bash
+ach run --agent claude --hermetic --verify 'npm test' "fix the failing test"
+```
+
+1. The workspace is copied into `mkdtemp(<tmp>/ach-hermetic-XXXX)/<workspace-name>`.
+   `<tmp>` is `os.tmpdir()`, or `$AGENTIC_CODING_HARNESS_HERMETIC_ROOT` when set. On
+   macOS that is `/var/folders/...`, outside `$HOME`.
+2. The detector runs on the copy. If the copy still has ancestor instruction files, for
+   example because `TMPDIR` points under `$HOME`, the run fails with a non-zero exit
+   before the agent launches. It never runs silently non-hermetic.
+3. The agent runs in the copy. Afterwards the changed tree is synced back into the
+   original workspace, so `--verify` and your checkout see the agent's edits.
+   **Deletions propagate**, but only for paths that existed when the copy was made, so a
+   file you create in the original during the run is left alone.
+4. The temp dir is removed. It is kept only if the sync-back itself fails, because it
+   then holds the only copy of the agent's edits; the error prints its path.
+
+The RunRecord records `hermetic: {tempDir, source, avoided?, synced: {copied, deleted}}`,
+and its `cwd` stays the original workspace, so `ach regrade` and `ach stats --project`
+keep working. `--hermetic` also works on `ach trial --matrix` / `--suite` and on the MCP
+`harness_run` / `harness_run_async` tools (`hermetic: true`). It cannot be combined with
+`--resume`, because sessions are keyed by directory, or with `--parallel > 1`, because
+the runs would sync into one tree concurrently.
+
+Limits: symlinks are copied verbatim, so an absolute link still points at its original
+target. In a git **worktree**, `.git` is a file that points at the original gitdir, so
+git commands the agent runs in the copy act on the original repository. A driver created
+with `confineToWorkspace` bound to the original workspace refuses the temp copy with
+`WORKSPACE_ESCAPE`.
+
+The zero-tooling workaround is to keep benchmark workspaces outside `$HOME` and outside
+any directory that holds these files, for example under `/tmp`. The warning tells you
+whether that worked.
+
 ### Tamper-evident metering (`ach verify-run`)
 
 `ach audit` proves the totals follow from the event log; `ach verify-run <runId>` proves the log
