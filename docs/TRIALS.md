@@ -234,33 +234,73 @@ One append-only JSONL ledger sits next to the plan (`plan.json` →
 attempt:
 
 ```json
-{"v":1,"cellId":"claude:fix-bug:claude-sonnet-5-5:trial1","experiment":"fix-bug-sweep","variant":"claude:claude-sonnet-5-5","agent":"claude","task":"fix-bug","model":"claude-sonnet-5-5","trial":1,"status":"completed","runId":"0dbcb142-0c07-478f-b5b2-24cd851ca0b6","exitStatus":"success","verify":"pass","startedAt":1790000000000,"endedAt":1790000042000}
+{"v":1,"cellId":"claude:fix-bug:claude-sonnet-5-5:trial1","experiment":"fix-bug-sweep","variant":"claude:claude-sonnet-5-5","agent":"claude","task":"fix-bug","model":"claude-sonnet-5-5","trial":1,"status":"passed","runId":"0dbcb142-0c07-478f-b5b2-24cd851ca0b6","exitStatus":"success","verify":"pass","startedAt":1790000000000,"endedAt":1790000042000}
 ```
 
-- A row is appended only after the cell's run is finalized, meaning the
-  driver's final registry write and the label and verify annotation are done.
-  If the runner is killed mid-cell, that cell has no row and stays pending.
-- Re-invoking the same command reads the ledger. The last row for each
-  `cellId` decides what happens:
-  - `completed` cells are skipped.
-  - Cells with no row run.
-  - `failed` cells are reported as failed. They are not re-run unless you pass
-    `--retry-failed`. A retry appends a new row, so the ledger keeps every
-    attempt.
-- A cell is `completed` when the agent's `exitStatus` is `success` and, if
-  the task has a checker, the checker passed. This is the same gate `ach run`
-  uses for its exit code.
-- Everything else is `failed`: an agent error or timeout, a checker failure,
-  a setup failure, or a launch that threw. Failed rows carry `exitStatus`,
-  `verify`, and `error` so you can tell these cases apart.
-  - `--retry-failed` re-runs all of them, including checker failures. Keep
-    that in mind before you quote pass rates from a retried sweep.
+A row is appended only after the cell's run is finalized, meaning the
+driver's final registry write and the label and verify annotation are done.
+If the runner is killed mid-cell, that cell has no row and stays pending.
+
+#### Cell outcomes
+
+Each finalized attempt gets one of four statuses (`classifyCell` in
+`src/cli/trial-matrix.ts`). A verify failure is a *result*; only an
+infrastructure failure is an *error*:
+
+| Status | When | On re-run | `--retry-failed` |
+|---|---|---|---|
+| `passed` | `exitStatus` is `success` and the checker passed (or the task has no checker) | skipped | skipped |
+| `verify-failed` | `exitStatus` is `success` and the checker failed, **or** the harness stopped the agent at a plan budget cap (`budget_exceeded`, `turn_limit`) | skipped | **skipped — never retried** |
+| `error` | setup failed; the agent exited `error`, `timeout`, `aborted` or `cancelled`; the checker could not finish (verify `error`, e.g. it timed out); or the launch threw | reported, not re-run | re-run |
+| `skipped-unavailable` | the agent CLI is missing or could not start (`exitStatus: "unavailable"`, see `src/core/availability.ts`) | run again | run again |
+
+- A `verify-failed` cell is never retried. Retrying it would give an agent that
+  failed the task more tries until it passes, which inflates the pass rate.
+  Budget stops count here too, since the harness stopped the agent on purpose.
+  It did not crash.
+- `skipped-unavailable` carries no verdict about the task and is never counted
+  as a failure. Once the CLI is installed, the next invocation runs the cell.
+- A retry appends a new row, so the ledger keeps every attempt. The last row
+  for each `cellId` decides.
 - A torn final line from a crash mid-append is ignored with a warning.
 
-`--dry-run` prints every cell with `run`, `skip`, or `FAIL` (failed earlier,
-not retried). It reads the ledger but launches nothing and writes nothing.
-Each run ends with `completed=N skipped=N failed=N`. The exit code is 1 if
-any cell is failed after the run, and 0 otherwise.
+**Older ledgers.** Ledgers written before this split used `completed` and
+`failed`. They are still read, and mapped when read (the file is not
+rewritten):
+
+| Old row | Read as |
+|---|---|
+| `completed` | `passed` |
+| `failed`, `exitStatus: "success"`, `verify: "fail"` | `verify-failed` |
+| `failed`, `exitStatus: "budget_exceeded"` or `"turn_limit"` | `verify-failed` |
+| `failed`, `exitStatus: "unavailable"` | `skipped-unavailable` |
+| any other `failed` (including `runId: null`, a setup failure or a throw) | `error` |
+
+A legacy `failed` row is never read as `passed`.
+
+#### Output and exit code
+
+`--dry-run` prints every cell with `run`, `skip`, or `ERR ` (an error
+earlier, not retried). It reads the ledger but launches nothing and writes
+nothing.
+
+Each run prints a line for every cell of the plan. Cells whose status comes
+from an earlier invocation say `… earlier`. The run ends with:
+
+```text
+summary    9 cells · passed=5 verify-failed=3 error=1 skipped=0 · ran=6 resumed=3
+```
+
+The counts cover the whole plan, whether a cell ran now or was resumed from
+the ledger. `skipped` means `skipped-unavailable`. `ran` counts the cells this
+invocation attempted, and `resumed` counts the cells taken from the ledger.
+`--json` prints the same counts as `summary: {total, passed, verifyFailed, error,
+skipped, pending, ran, resumed, interrupted}`.
+
+**Exit code:** 1 when any cell is `error` after the run, or the run was
+interrupted. Otherwise it is 0, even when cells are `verify-failed` or
+`skipped-unavailable`. Verify failures are data, not harness errors. Read
+them from the summary, the ledger or the report.
 
 Cells run one at a time, in agent → task → model → trial order.
 
@@ -306,8 +346,8 @@ with `dir` relative to the plan's directory:
 `setup` and `verify` run in the cell's workspace with the environment
 variables `ACH_CELL_ID`, `ACH_EXPERIMENT`, `ACH_VARIANT`, `ACH_AGENT`,
 `ACH_MODEL`, `ACH_TASK_ID`, `ACH_TRIAL`, `ACH_WORKSPACE`, and `ACH_TASK_DIR`
-(task directories only). If setup exits non-zero, the cell fails with
-`runId: null` and no agent is launched.
+(task directories only). If setup exits non-zero, the cell is an `error` with
+`runId: null`, and no agent is launched.
 
 ### Building on it in code (task suites)
 

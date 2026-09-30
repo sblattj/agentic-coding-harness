@@ -182,8 +182,9 @@ usage:
                 (resumable agents x tasks x models x trials grid; every cell is one
                  run labelled experiment/variant/cellId=agent:task:model:trialN;
                  <plan>.ledger.jsonl records finalized cells, so re-running the same
-                 command skips completed cells; failed cells re-run only with
-                 --retry-failed; see docs/TRIALS.md)
+                 command skips cells with a verdict (passed / verify-failed); error
+                 cells re-run only with --retry-failed; exit 1 only on errors or
+                 interruption; see docs/TRIALS.md)
   ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
                 (--since/--last: print history newer than the bound on startup;
                  --dir is an alias of --transcript-dir here)
