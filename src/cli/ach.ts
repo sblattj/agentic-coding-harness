@@ -107,6 +107,7 @@ import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
 import { cmdAudit } from "./audit.ts";
+import { ccusageHintText, cmdImport, parseStatsOrigin, statsOriginIndex, type StatsOrigin } from "./import.ts";
 import { EXIT_CODES, noDataExitCode, parseExitCodesMode, repeatExitCode, runExitCode } from "./exit-codes.ts";
 import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
 import { alertFlagsToBudget } from "./alerts.ts";
@@ -211,6 +212,10 @@ usage:
                  --budget-usd. --plan frames the active window as % of the
                  plan allowance; built-in presets are community estimates)
             [--with-warehouse] [--transcript-dir <root>]
+            [--origin all|native|imported|transcript]
+                (--origin counts only rows of that provenance: native = ach
+                 runs, imported = sessions \`ach import\` recorded, transcript =
+                 machine transcripts not in the registry; default all)
                 (--with-warehouse adds archived copies whose live file is gone;
                  --transcript-dir reads machine transcripts from
                  <root>/.claude/projects etc., e.g. a restore; --dir is an
@@ -228,6 +233,14 @@ usage:
                  and report recorded vs recomputed deltas; exit 1 on drift;
                  --fix rewrites drifted totals and logs RunRecord.corrections;
                  --dir is an alias of --state-dir here)
+  ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <stateDir>]
+             [--dry-run] [--json]
+                (record existing local transcripts as RunRecords with
+                 source "imported" so dash/web/compare show history; idempotent,
+                 skips sessions a native run already owns and sessions whose
+                 last activity is older than --days; a corrupt file is an error
+                 line and the import continues (exit 0); \`ach stats\` totals
+                 are unchanged by import; --dir is an alias of --state-dir here)
   ach status [--compact|--json] [--transcripts] [--budget-usd N] [--exit-codes ladder]
              [--once] [--write-state <path>] [--interval-ms MS=5000]
                 (runs, active runs, trailing-24h spend = \`stats --days 1\`,
@@ -1026,10 +1039,14 @@ async function cmdStats(rest: string[]): Promise<number> {
       dir: { type: "string" },
       "transcript-dir": { type: "string" },
       "cost-mode": { type: "string" },
+      // #25: provenance filter. Not --source: `ach web --source` is a run feed,
+      // and stats rows already carry source: state|transcript.
+      origin: { type: "string" },
     },
     allowPositionals: true,
   });
   const exitMode = parseExitCodesMode(args.values["exit-codes"]);
+  const wantOrigin = parseStatsOrigin(args.values.origin);
   // --by carries both #44 calendar granularities (day|week|month) and #27/#43
   // dimensions (model|project); split them before each parser sees its half.
   const byTime: string[] = [];
@@ -1128,7 +1145,8 @@ async function cmdStats(rest: string[]): Promise<number> {
   // that fail to parse are counted (skippedRunRecords), never dropped silently.
   const registryScan = scanRunRecords(stateDir());
   const runCwd = cwdIndex(registryScan.records);
-  let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript" })[] = stateRecords.map((r) => ({
+  const originIndex = statsOriginIndex(registryScan.records);
+  let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript"; origin?: StatsOrigin })[] = stateRecords.map((r) => ({
     source: "state",
     extra: r.extra,
     cwd: runCwd(r.agent, r.sessionId),
@@ -1193,6 +1211,9 @@ async function cmdStats(rest: string[]): Promise<number> {
   if (skippedWarning) process.stderr.write(skippedWarning + "\n");
 
   if (wantProject !== undefined) records = records.filter((r) => projectMatches(r.cwd, wantProject, projectAliases));
+  // #25: label every row with its origin (numbers unchanged), then --origin filters.
+  for (const r of records) r.origin = originIndex.originOf(r);
+  if (wantOrigin !== "all") records = records.filter((r) => r.origin === wantOrigin);
   disagreements.push(...records.flatMap((r) => r.costDisagreement ? [r.costDisagreement] : []));
   const agg = aggregate(records, { timeZone, by });
   const showProject = dimsBy.has("project") || wantProject !== undefined;
@@ -1211,10 +1232,12 @@ async function cmdStats(rest: string[]): Promise<number> {
     );
   }
   // Run records from the registry, honouring the full #26 [since, until) window.
-  const windowedRunRecords = registryScan.records.filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)));
+  const windowedRunRecords = registryScan.records.filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)) && (wantOrigin === "all" || originIndex.runOrigin(r) === wantOrigin));
   // Run outcomes (#60) from the run registry: shown only when there are runs,
   // so the historical {total, byAgent, byDay} shape is untouched otherwise.
-  const runRecords = windowedRunRecords.filter((r) => !agent || r.agent === agent);
+  // Imported sessions (#25) carry no task verdict: kept out of the outcome,
+  // repeat-group and unmetered rollups (they still appear in `runs`).
+  const runRecords = windowedRunRecords.filter((r) => (!agent || r.agent === agent) && r.source !== "imported");
   const outcomes =
     runRecords.length > 0
       ? summarizeRunOutcomes(runRecords, { includeUnavailable: args.values["include-unavailable"] })
@@ -1257,6 +1280,13 @@ async function cmdStats(rest: string[]): Promise<number> {
     return [source, { ...view(aggregate(rows, { timeZone, by }).totals), provenance: statsProvenance(rows, { timeZone, by }).total }];
   }));
   const hasTranscripts = records.some((r) => r.source === "transcript");
+  // #25: per-origin totals, shown once the registry holds imported sessions
+  // (or --origin is given) so the historical output shape is otherwise untouched.
+  const showOrigins = originIndex.hasImported || wantOrigin !== "all";
+  const origins = Object.fromEntries((["native", "imported", "transcript"] as const).map((o) => {
+    const rows = records.filter((r) => r.origin === o);
+    return [o, { ...view(aggregate(rows, { timeZone, by }).totals), provenance: statsProvenance(rows, { timeZone, by }).total }];
+  }));
   // Issue #33: a sibling `provenance` map on every bucket (numbers unchanged).
   const prov = statsProvenance(records, { timeZone, by });
   const mapView = (m: Record<string, typeof agg.totals>, pm: Record<string, ProvenanceMap>) =>
@@ -1269,6 +1299,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           total: { ...view(agg.totals), costDisagreements: disagreements.length, provenance: prov.total },
           byAgent: mapView(agg.byAgent, prov.byAgent),
           ...(hasTranscripts ? { sources } : {}),
+          ...(showOrigins ? { origin: wantOrigin, origins } : {}),
           ...Object.fromEntries(Object.entries(timeMaps).map(([k, v]) => [k, mapView(v, k === "byDay" ? prov.byDay : k === "byWeek" ? prov.byWeek ?? {} : prov.byMonth ?? {})])),
           timezone: timeZone,
           window: windowJson(window),
@@ -1304,6 +1335,9 @@ async function cmdStats(rest: string[]): Promise<number> {
         process.stdout.write(line(`source: ${source}`, bucket, bucket.provenance) + "\n");
       }
     }
+    if (showOrigins) {
+      for (const [o, bucket] of Object.entries(origins)) process.stdout.write(line(`origin: ${o}`, bucket, bucket.provenance) + "\n");
+    }
     if (skippedRunRecords > 0) process.stdout.write(`skipped   ${fmtInt(skippedRunRecords)} unreadable run record(s) (details on stderr)\n`);
     if (disagreements.length > 0) process.stdout.write(`disagree  ${disagreements.length} record(s) where reported and computed cost differ by >${COST_DISAGREEMENT_PCT}% (details on stderr)\n`);
     if (unmetered.runs > 0) {
@@ -1337,11 +1371,8 @@ async function cmdStats(rest: string[]): Promise<number> {
 
 function hintCcusage(): void {
   const probe = spawnSync("/bin/sh", ["-c", "command -v ccusage >/dev/null 2>&1"], { stdio: "ignore" });
-  if (probe.status === 0) {
-    process.stderr.write(
-      "hint: 'ccusage' is installed — run `ccusage` for richer batch usage reports (daily/monthly/session breakdowns).\n",
-    );
-  }
+  // #25: offer `ach import` first; ccusage stays the alternative.
+  if (probe.status === 0) process.stderr.write(ccusageHintText());
 }
 
 // ---------------------------------------------------------------- emit
@@ -1500,7 +1531,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
  *  Each accepts -h/--help (#101), answered from the shared USAGE text. */
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "status", "statusline",
-  "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents",
+  "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
 ]);
 
 /**
@@ -1556,6 +1587,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdStats(rest);
     case "audit":
       return cmdAudit(rest);
+    case "import":
+      return cmdImport(rest);
     case "status":
       return cmdStatus(rest);
     case "statusline":

@@ -2,6 +2,18 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## Unreleased
+
+### Added
+
+- `ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <stateDir>] [--dry-run] [--json]` records existing Claude Code sessions as RunRecords with the new `source: "imported"` value, so dash/web/compare show history from day one. Re-imports are idempotent (deterministic run id, no wall-clock fields), a session already owned by a native run is skipped and reported, sessions older than the window are reported as `skipped-outside-window`, and a corrupt transcript is an error line while the import continues with exit 0. `ach stats` totals are unchanged by import. Stats never sums RunRecord totals, so each session is still counted once from its transcript (#25).
+- `ach stats --origin all|native|imported|transcript` filters rows by provenance. Once imported sessions exist, text output shows `origin:` lines and `--json` shows `origin` and `origins` (#25).
+
+### Changed
+
+- The ccusage hint after `ach stats` now suggests `ach import` first and keeps ccusage as the alternative (#25).
+- Imported sessions have no task verdict. They show `?` in `ach dash` (`effectiveStatus: null` in `--json`), are left out of the `ach stats` run-outcome, repeat-group, and unmetered rollups and the `ach status` run counts, are never live, and have no PTY in `ach web` (#25).
+
 ## [0.11.2] - 2026-09-28
 
 ### Fixed
