@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createDriver } from '../src/core/driver.js';
 import { runToDirectory } from '../src/core/run-to-directory.js';
+import { stripChain } from '../src/core/hash-chain.js';
 import type { AgentAdapter, AgentEvent, AgentHandle, RunResult, RunSpec } from '../src/core/types.js';
 
 // ---------------------------------------------------------------------------
@@ -192,7 +193,10 @@ describe('run-to-directory: happy path', () => {
     assert.equal(status.eventCount, 2);
 
     // events.jsonl: one event per line, matching the collected events.
-    const lines = readFileSync(join(dir, 'events.jsonl'), 'utf8').trim().split('\n');
+    // #59: chained lines + a terminal ach.seal record; stripChain() recovers each event.
+    const chained = readFileSync(join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map(stripChain);
+    assert.equal(JSON.parse(chained.at(-1)!).type, 'ach.seal');
+    const lines = chained.slice(0, -1);
     assert.equal(lines.length, status.eventCount);
     assert.equal(lines.length, result.events.length);
     result.events.forEach((event, i) => assert.deepEqual(JSON.parse(lines[i]!), event));
@@ -241,7 +245,8 @@ describe('run-to-directory: terminal status on every exit path', () => {
     assert.equal(status.status, 'timeout');
     assert.equal(status.exitStatus, 'timeout');
     // eventCount stays consistent with events.jsonl even mid-kill.
-    const lines = readFileSync(join(dir, 'events.jsonl'), 'utf8').trim().split('\n');
+    // (the terminal ach.seal record (#59) is not an event)
+    const lines = readFileSync(join(dir, 'events.jsonl'), 'utf8').trim().split('\n').slice(0, -1);
     assert.equal(status.eventCount, lines.length);
     assert.ok(lines.length >= 2, `expected several heartbeats, got ${lines.length}`);
   });

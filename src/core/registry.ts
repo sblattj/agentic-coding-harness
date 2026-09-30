@@ -15,6 +15,7 @@ import {
 } from "./types.ts";
 import { VerifyResultSchema, type VerifyResult } from "./verify.ts";
 import { PROVENANCE_CLASSES, type ProvenanceMap } from "./provenance.ts";
+import type { RunSeal } from "./hash-chain.ts";
 
 // Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
 // record (source:"external") validates without inventing a local pid, cwd, or
@@ -73,6 +74,8 @@ export interface RunRecord {
   repeat?: RepeatMembership;
   /** Later `ach regrade` verdicts, oldest first; `verify` is never rewritten. */
   regrades?: VerifyResult[];
+  /** Terminal seal of the raw transcript's hash chain (#59); `ach verify-run` anchor. */
+  seal?: RunSeal;
 }
 
 export interface RepeatMembership {
@@ -167,6 +170,17 @@ export const RunRecordSchema = z.object({
     .object({ group: z.string().min(1), index: z.number().int().min(0), count: z.number().int().min(1) })
     .optional(),
   regrades: z.array(VerifyResultSchema).optional(),
+  seal: z
+    .object({
+      v: z.literal(1),
+      algo: z.literal("sha256"),
+      eventCount: z.number().int().min(0),
+      lastHash: z.string().regex(/^[0-9a-f]{64}$/),
+      sealHash: z.string().regex(/^[0-9a-f]{64}$/),
+      totalsHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+      at: z.number(),
+    })
+    .optional(),
 });
 
 export function registryDir(stateDir: string): string {

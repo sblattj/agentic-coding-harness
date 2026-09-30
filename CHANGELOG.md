@@ -2,6 +2,16 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## Unreleased
+
+### Added
+
+- Tamper-evident metering (#59). Every event line the driver writes to a run's raw transcript (`<stateDir>/raw/<agent>-<session>.jsonl`) and to run-to-directory `events.jsonl` now carries a per-run sha256 hash chain (`{"ach_chain":{v,run,seq,prev,hash}, ...event}`). Each run ends with an `ach.seal` record over the event count, the last hash, and the sealed metering totals. The seal is mirrored into the new optional `RunRecord.seal` and into `status.json`. The new `ach verify-run <runId|runDir> [--json] [--records]` recomputes the chain and exits 0 when intact, 2 when tampered (naming the first bad line), 3 for an unsealed legacy log, and 4 for an open, never-sealed chain. `ach audit` rows gain a `chain` verdict, and `ach report` gains a per-run `seal` column. `ach audit --fix` corrections are undone and disclosed, not reported as tampering. The README documents the chain format and threat model: tamper-evident, not tamper-proof. `stripChain`, `parseFramedLine`, and `verifyChainText` are exported from the library.
+
+### Changed
+
+- Readers of `events.jsonl` and raw transcripts: lines now start with an `ach_chain` key, and the file ends in an `ach.seal` record. Every other event field is unchanged, and `stripChain(line)` returns the exact pre-chain line.
+
 ## [0.11.2] - 2026-09-28
 
 ### Fixed
