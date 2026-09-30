@@ -19,7 +19,7 @@ import { WebSocketServer, type RawData, type WebSocket as WsSocket } from "ws";
 import type { AgentEvent } from "../core/types.ts";
 import { readRunRecord } from "../core/registry.ts";
 import { RunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
-import { COMPARE_GROUP_KEYS, computeCompareRows, resolveCompareGroupBy } from "./compare.ts";
+import { COMPARE_GROUP_ALIASES, COMPARE_GROUP_KEYS, computeCompareRows, isCompareGroupKey, resolveCompareGroupBy } from "./compare.ts";
 import type { RunSource } from "./run-source.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
 import { deriveRunObservability } from "./derive.ts";
@@ -476,11 +476,11 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         if (get && pathname === "/api/compare") {
           const rawBy = url.searchParams.get("by");
           const keys = rawBy === null ? [] : rawBy.split(",");
-          if (keys.some((k) => !(COMPARE_GROUP_KEYS as readonly string[]).includes(k))) {
+          if (keys.some((k) => !isCompareGroupKey(k))) {
             return jsonError(
               res,
               400,
-              `by must be a comma list of: ${COMPARE_GROUP_KEYS.join(", ")}`,
+              `by must be a comma list of: ${[...COMPARE_GROUP_KEYS, ...Object.keys(COMPARE_GROUP_ALIASES)].join(", ")}`,
             );
           }
           const groupBy = resolveCompareGroupBy(keys);
