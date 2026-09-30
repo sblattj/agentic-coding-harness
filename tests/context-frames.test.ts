@@ -118,6 +118,37 @@ describe('context frame annotator', () => {
     assert.equal(meter.snapshot()!.tokens, 167_538);
   });
 
+  it('#59 chain framing is ignored and the ach.seal record is never a frame', () => {
+    const chain = { v: 1, seq: 0, prev: 'p', hash: 'h' };
+    const framed = { ach_chain: chain, ...(msg('hi', usage(MODEL, 10, 0, 49_990)) as object) } as unknown as AgentEvent;
+    const seal = {
+      ach_chain: { ...chain, seq: 2 }, type: 'ach.seal', runId: 'r', eventCount: 2, lastHash: 'x',
+      totals: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheWriteTokens: 1, costUsd: 0 }, totalsHash: 'y',
+    } as unknown as AgentEvent;
+    const frames = run('claude', [framed, toolCall('t'), seal]);
+    assert.equal(frames[0]!.tokens, 50_000);
+    assert.equal('ach_chain' in frames[0]!, false);
+    assert.equal(frames[1]!.tokens, 50_000);
+    assert.equal(frames[2], undefined, 'no gauge on the seal');
+  });
+
+  it('model_call_end (#32) alongside the message of the same call does not double count', () => {
+    const call = usage(MODEL, 6, 18_398, 31_596); // 50,000
+    const frames = run('claude', [
+      { type: 'model_call_start', agent: 'claude' } as unknown as AgentEvent,
+      msg('text', call),
+      { type: 'model_call_end', agent: 'claude', model: MODEL, usage: { ...call } } as unknown as AgentEvent,
+      toolCall('t'),
+      { type: 'usage', agent: 'claude', usage: usage(MODEL, 50_000, 50_000, 50_000) } as unknown as AgentEvent,
+    ]);
+    assert.equal(frames[0], undefined);
+    assert.equal(frames[1]!.tokens, 50_000);
+    assert.equal(frames[2]!.tokens, 50_000, 'occupancy is the latest call, never a sum');
+    assert.equal(frames[2]!.seq, 1, 'same reading, no second +Δ');
+    assert.equal(frames[3]!.tokens, 50_000);
+    assert.equal(frames[4]!.tokens, 50_000, 'the run aggregate does not displace the per-call reading');
+  });
+
   it('a shrinking reading reports a negative delta', () => {
     const frames = run('claude', [msg('a', usage(MODEL, 0, 0, 150_000)), msg('b', usage(MODEL, 0, 0, 20_000))]);
     assert.equal(frames[1]!.delta, -130_000);

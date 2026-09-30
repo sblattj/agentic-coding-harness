@@ -377,6 +377,16 @@ describe('HarnessFeed context gauge', () => {
     assert.deepEqual(texts(container, 'hf-ctx-d'), ['+43.5k', '+3.9k']);
   });
 
+  it('tolerates #59 chain-framed rows and draws nothing for the ach.seal record', () => {
+    const { container, feed } = mount();
+    const chain = { v: 1, seq: 0, prev: 'p', hash: 'h' };
+    const framed: Record<string, unknown>[] = claudeRun().map((e, i) => ({ ach_chain: { ...chain, seq: i }, ...e }));
+    framed.push({ ach_chain: { ...chain, seq: 7 }, type: 'ach.seal', runId: 'r', eventCount: 7, lastHash: 'x', totals: null, totalsHash: null, timestamp: T0 + 600 });
+    feed.append(stamped('claude', framed));
+    assert.equal(withClass(container, 'hf-row').length, 4, 'same rows as unframed; the seal adds none');
+    assert.deepEqual(texts(container, 'hf-ctx-d'), ['+18.4k', '+107.6k']);
+  });
+
   it('no ctx (unmetered agent, older server) renders no gauge and no wrapper', () => {
     const { container, feed } = mount();
     const plain = claudeRun().map((e) => ({ ...e, agent: 'kiro' }));
