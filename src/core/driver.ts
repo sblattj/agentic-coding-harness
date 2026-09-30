@@ -26,6 +26,7 @@ import { NullAdapter } from '../adapters/null.js';
 import { takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
 import type { BudgetAlertEvent } from './types.js';
+import { deriveLatency, hasLatency } from '../web/derive.ts';
 
 /** Alert cooldown from AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H; a bad value warns and keeps the 24h default (#20). */
 function envCooldownMs(warn: (w: string) => void): number {
@@ -849,6 +850,13 @@ export function createDriver(options: DriverOptions): Driver {
         const unavailableReason = enforcedStatus === null ? classifyUnavailable({ adapterExit, events }) : null;
         if (unavailableReason !== null) warnings.push(`unavailable: ${unavailableReason}`);
         const exitStatus: ExitStatus = enforcedStatus ?? (unavailableReason !== null ? 'unavailable' : adapterExit);
+        // Latency (#32) once, at finalize: deriving per throttled write would be
+        // O(events) on every event, and the live trio view re-derives it from
+        // the transcript on each /observability fetch anyway.
+        if (rec) {
+          const latency = deriveLatency(events);
+          if (hasLatency(latency)) rec.latency = latency;
+        }
         finalizeRunRecord(exitStatus);
 
         // Read the sessionId late: bridged handles expose a getter that reports

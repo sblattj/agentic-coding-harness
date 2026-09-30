@@ -75,7 +75,12 @@ export interface RunRecord {
   repeat?: RepeatMembership;
   /** Later `ach regrade` verdicts, oldest first; `verify` is never rewritten. */
   regrades?: VerifyResult[];
+  /** Latency metrics (#32) derived at finalize from the run's events (deriveLatency). */
+  latency?: RunLatency;
 }
+
+/** Shape of src/web/derive.ts LatencyMetrics; null = not measurable from the log. */
+export type RunLatency = z.infer<typeof RunLatencySchema>;
 
 export interface RepeatMembership {
   group: string;
@@ -107,6 +112,23 @@ const RunCorrectionSchema = z.object({
   from: z.number(),
   to: z.number(),
   by: z.string().optional(),
+});
+
+const DurationStatsSchema = z.object({
+  count: z.number(),
+  totalMs: z.number(),
+  avgMs: z.number(),
+  p50Ms: z.number(),
+  p95Ms: z.number(),
+  maxMs: z.number(),
+});
+
+export const RunLatencySchema = z.object({
+  ttft: DurationStatsSchema.nullable(),
+  modelCalls: DurationStatsSchema.nullable(),
+  outputTokensPerSec: z.number().nullable(),
+  tpotMs: z.number().nullable(),
+  tools: z.array(DurationStatsSchema.extend({ name: z.string(), errors: z.number() })),
 });
 
 const TotalsSchema = z.object({
@@ -171,6 +193,7 @@ export const RunRecordSchema = z.object({
     .object({ group: z.string().min(1), index: z.number().int().min(0), count: z.number().int().min(1) })
     .optional(),
   regrades: z.array(VerifyResultSchema).optional(),
+  latency: RunLatencySchema.optional(),
 });
 
 export function registryDir(stateDir: string): string {

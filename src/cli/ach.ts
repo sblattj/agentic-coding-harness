@@ -61,7 +61,8 @@ import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer } from "../core/pricing.ts";
-import { aggregate, extraArgsFromValues, fmtInt, fmtUsd, formatEventLine, formatSummary, joinOptionValues, resolveDirFlag, wantsHelp } from "./lib.ts";
+import { aggregate, extraArgsFromValues, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, resolveDirFlag, wantsHelp } from "./lib.ts";
+import { deriveLatency } from "../web/derive.ts";
 import {
   aggregateDims,
   baseCacheRatios,
@@ -676,6 +677,8 @@ function runSummaryText(agent: string, result: RunResult, modelFlag: string | un
   });
   if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
   if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
+  // #32: ttft / throughput / per-tool durations, only the ones measured.
+  for (const l of formatLatencyLines(deriveLatency(result.events))) summary += `\n${l}`;
   if (verify !== undefined) summary += `\n${formatVerifyLine(verify)}`;
   return summary;
 }

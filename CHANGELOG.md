@@ -2,11 +2,12 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
-## Unreleased
+## [Unreleased]
 
 ### Added
 
 - Spend by git branch (#47): the driver records the git `branch` and short `commit` of the run's working directory on the RunRecord at run start (one `git rev-parse`, 1.5 s timeout, errors swallowed; a non-repo records nothing, a detached HEAD records `commit` only). `ach stats --by branch` adds a per-branch table and an additive `byBranch` key in `--json`; runs and transcript rows with no recorded branch fall into an explicit `(no branch)` bucket, detached runs into `(detached <sha>)`. Transcript rows are attributed only through their matching run record's session id; no git call per row.
+- Latency metrics (#32): `deriveLatency` in `src/web/derive.ts` derives time to first token (TTFT), end-to-end model-call latency, generation throughput (output tokens/s) and time per output token (TPOT), and a per-tool duration breakdown (count, avg, p50, p95, max, total, errors) from event timestamps. Shown as `ttft` / `tok/s` / `tpot` cards and a tool table in the `/trio` metrics pane (`latency` on `/api/runs/:runId/observability`), as `ttft` / `throughput` / `tools` lines in the `ach run` summary, recorded as an optional `latency` field on the RunRecord at finalize, and copied onto each `ach stats --json` `runs[]` row. Unmeasurable metrics are `null` / `n/a`, never 0 or NaN. TTFT and throughput need `model_call_start`/`model_call_end` events, which no built-in adapter emits yet; built-in runs with tool events get the per-tool breakdown.
 
 ## [0.11.2] - 2026-09-28
 
