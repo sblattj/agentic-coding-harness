@@ -57,7 +57,7 @@ export interface RunRecord {
   experiment?: string; // compare-view grouping label
   variant?: string; // compare-view variant within an experiment
   workflow?: string; // e.g. "implement" | "review" | "plan"
-  source?: "local" | "external"; // external records carry no local pid to probe
+  source?: "local" | "external" | "imported"; // external/imported records carry no local pid to probe; imported = `ach import` (#25)
   producer?: string; // e.g. "acme-feed/bridge@1"
   endedAt?: number; // ms epoch — explicit wall-clock end for external runs
   metadata?: Record<string, unknown>; // free-form provenance (request_id, region, ...)
@@ -169,7 +169,7 @@ export const RunRecordSchema = z.object({
   experiment: z.string().min(1).optional(),
   variant: z.string().min(1).optional(),
   workflow: z.string().min(1).optional(),
-  source: z.enum(["local", "external"]).default("local"),
+  source: z.enum(["local", "external", "imported"]).default("local"),
   producer: z.string().min(1).optional(),
   endedAt: z.number().int().optional(),
   metering: z.enum(["tap", "none"]).optional(),
@@ -326,7 +326,7 @@ export function listRunIds(stateDir: string): string[] {
 
 /** Live = still running, heartbeat fresh (<=15s), and the pid answers kill(pid, 0). */
 export function isLive(rec: RunRecord, now: number = Date.now()): boolean {
-  if (rec.source === "external") return false;
+  if (rec.source === "external" || rec.source === "imported") return false;
   if (rec.pid === undefined) return false;
   if (rec.status !== "running") return false;
   if (rec.updatedAt === undefined || now - rec.updatedAt > 15_000) return false;

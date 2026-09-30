@@ -298,6 +298,8 @@ export async function computeStatusSnapshot(opts: SnapshotOptions = {}): Promise
   const activeByAgent: Record<string, number> = {};
   let newest: { rec: RunRecord; status: z.infer<typeof RunStatusEnum> } | undefined;
   for (const rec of listRunRecords(dir)) {
+    // Imported (#25) sessions are history, not runs: no verdict to count.
+    if (rec.source === "imported") continue;
     const status = effectiveStatus(rec, now);
     if (rec.startedAt < since && status !== "running") continue;
     runs.total += 1;
