@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import type { LoadedRun, TrialSet } from "./model.ts";
 import { VERSION } from "../version.ts";
 import { repeatStats } from "../core/repeat-stats.ts";
+import { NO_BRANCH } from "../cli/stats-dims.ts";
 import { markerFor, PROVENANCE_LEGEND } from "../core/provenance.ts";
 
 const MESSAGE_CAP = 2000;
@@ -500,6 +501,48 @@ ${rows}
 `;
 }
 
+/** Spend by git branch (#47): runs, cost and tokens per branch label. Shown
+ *  only when some run carries a branch; runs without one fall in the same
+ *  `(no branch)` bucket as `ach stats --by branch`. */
+function renderBranchTable(runs: LoadedRun[]): string {
+  if (!runs.some((r) => r.branch !== undefined)) return "";
+  const groups = new Map<string, { runs: number; cost: number; unpriced: number; tokens: number }>();
+  for (const r of runs) {
+    const key = r.branch ?? NO_BRANCH;
+    const g = groups.get(key) ?? { runs: 0, cost: 0, unpriced: 0, tokens: 0 };
+    g.runs++;
+    if (r.usdUnavailable || r.costUsd === undefined) g.unpriced++;
+    else g.cost += r.costUsd;
+    if (!r.tokensUnavailable) g.tokens += r.inputTokens + r.outputTokens;
+    groups.set(key, g);
+  }
+  const rows = [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, g]) => {
+      const allUnpriced = g.unpriced === g.runs;
+      const cost = allUnpriced ? "n/a" : fmtCost(g.cost) + (g.unpriced > 0 ? ` + ${g.unpriced} unpriced` : "");
+      const cells = [
+        `<td data-v="${esc(key)}" class="agent-cell">${esc(key)}</td>`,
+        `<td data-v="${g.runs}" class="num">${g.runs}</td>`,
+        `<td data-v="${allUnpriced ? "" : g.cost}" class="num">${esc(cost)}</td>`,
+        `<td data-v="${g.tokens}" class="num">${fmtInt(g.tokens)}</td>`,
+      ];
+      return `      <tr>${cells.join("")}</tr>`;
+    })
+    .join("\n");
+  return `  <section>
+    <h3>spend by git branch</h3>
+    <p class="meta">Branch captured at run start; tokens = input + output. Runs with no recorded branch fall in ${esc(NO_BRANCH)}.</p>
+  <table class="cmp sortable" id="branch-spend">
+    <thead><tr><th data-k="branch" data-t="s">branch</th><th data-k="runs" data-t="n" class="num">runs</th><th data-k="cost" data-t="n" class="num">cost USD</th><th data-k="tokens" data-t="n" class="num">tokens</th></tr></thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>
+  </section>
+`;
+}
+
 // ---------------------------------------------------------------- sections
 
 function renderAgentSection(r: LoadedRun): string {
@@ -694,7 +737,7 @@ ${renderComparisonTable(runs, multiTrial)}
     <h3>availability</h3>
 ${renderAvailability(runs)}
   </section>
-${renderScoreHistory(runs)}${renderRepeatStats(runs)}${renderCharts(runs)}
+${renderScoreHistory(runs)}${renderRepeatStats(runs)}${renderBranchTable(runs)}${renderCharts(runs)}
   <section>
     <h3>per-agent detail</h3>
 ${runs.map(renderAgentSection).join("\n")}
