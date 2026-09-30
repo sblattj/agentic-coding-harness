@@ -240,6 +240,9 @@ ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--state-d
 ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <stateDir>]
             [--dry-run] [--json]
             # record existing Claude Code sessions as imported RunRecords
+ach verify-run <runId|runDir> [--json] [--records] [--state-dir <stateDir>]
+            # prove the run's hash-chained event log + sealed totals are untouched
+            # exit 0 intact, 2 tampered, 3 unsealed (legacy), 4 open (never sealed)
 ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
@@ -298,7 +301,54 @@ and a model the pricer does not know is reported as an `unpriceable` cost; neith
 `--fix` rewrites the drifted totals (and the `usage.usd.value` mirror) and appends one
 `corrections: [{at, field, from, to, by}]` entry per field to the RunRecord, so a patch is never
 silent. `--json` emits `{rows, summary, total}`; each row carries `recorded`, `recomputed`, and
-`delta` objects keyed by the same field names as `ach stats --json`.
+`delta` objects keyed by the same field names as `ach stats --json`. Each row also carries
+`chain`, the run's `ach verify-run` verdict (below), taken before any `--fix`.
+
+### Tamper-evident metering (`ach verify-run`)
+
+`ach audit` proves the totals follow from the event log; `ach verify-run <runId>` proves the log
+itself, and the totals recorded from it, were not edited after the run. Every line the driver
+writes to a run's raw transcript (`<stateDir>/raw/<agent>-<session>.jsonl`, the file `ach audit`
+reads) and, in run-to-directory mode, to `events.jsonl` carries a sha256 hash chain, and the run
+ends with an `ach.seal` record:
+
+```text
+{"ach_chain":{"v":1,"run":"<runId>","seq":N,"prev":"<hex>","hash":"<hex>"},<the event JSON as before>
+{"ach_chain":{...,"seq":E},"type":"ach.seal","timestamp":..,"runId":..,"eventCount":E,"lastHash":..,"totals":{..},"totalsHash":..}
+```
+
+- **What is hashed.** Stripping the fixed `{"ach_chain":{...},` prefix gives back, byte for byte,
+  the event line as it was written before chaining (`JSON.stringify(event)`, called BODY).
+  `hash = sha256("ach-chain/v1\n" + runId + "\n" + seq + "\n" + prev + "\n" + BODY)`, and seq 0's
+  `prev` is `sha256("ach-chain/v1\ngenesis\n" + runId)`. Verification recomputes over the exact bytes
+  on disk. Nothing is re-serialized, so reordering a record's keys counts as an edit.
+  `stripChain(line)` (exported) recovers the event.
+- **Per run, not per file.** A resumed session appends several runs to one transcript. Each run's
+  lines carry its own `run` id and chain, and older unchained lines are left alone.
+- **Seal.** The seal record covers the event count, the last hash, and the sealed metering totals
+  (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `costUsd`, `credits`;
+  derived fields such as `contextTokens` are not sealed). Its hash is mirrored into
+  `RunRecord.seal` (`{v, algo, eventCount, lastHash, sealHash, totalsHash, at}`) and, in
+  run-to-directory mode, into `status.json`. That anchor is what makes a truncated tail or a
+  deleted seal detectable.
+- **Verdicts.** `ok` (exit 0): the chain is intact, sealed, and the recorded totals match the seal.
+  `tampered` (exit 2): names the first bad line, whether a record was edited, deleted, inserted
+  (including an unchained line planted inside the run), or reordered, the tail was truncated, the
+  seal disagrees with `RunRecord.seal`, or the RunRecord totals differ from the sealed totals.
+  `unsealed` (exit 3): a legacy log from before chaining, never a failure. `open` (exit 4): the
+  chain is intact, but the run has no seal and no anchor, and its record still says `running`,
+  because it is still running or it crashed before sealing. The driver seals before it writes a
+  terminal status, so an unsealed chain on a finished run counts as `tampered`. A damaged anchor
+  (`status.json` or its seal failing to parse) is also `tampered`. Exit 1 is an unknown run id. `ach audit --fix` rewrites are undone through
+  `RunRecord.corrections` and reported, not failed. `--records` lists every verified record, and
+  `--json` emits the verdict object. A directory argument verifies a run-to-directory
+  `events.jsonl` against `status.json`. `ach report` adds a per-run `seal` column.
+- **Threat model.** This is tamper-evident, not tamper-proof. There are no keys and no signing. It
+  detects accidental or after-the-fact edits to the files on disk. It does not detect someone who
+  rewrites the whole chain, the seal, and `RunRecord.seal` consistently, because anyone can
+  recompute sha256. It is also no defense against a compromised harness process during the run. To
+  anchor a run outside the machine, copy the printed seal hash (`sha256 …` in the output) somewhere
+  else and compare it later.
 
 The binary is `ach` (the npm/PyPI package name is `agentic-coding-harness`). Budget flags (`--budget-usd`, `--max-turns`,
 `--wall-ms`, `--idle-ms`) take per-run values; `AGENTIC_CODING_HARNESS_BUDGET_USD`, `AGENTIC_CODING_HARNESS_MAX_TURNS`,
@@ -350,8 +400,8 @@ raw stdout tap (each chunk exactly as received) alongside the parsed canonical e
 ### Run-to-directory mode (durable status.json)
 
 Give a run an `outputDir` (or call the `runToDirectory()` helper) and the whole run is mirrored into
-that directory: `invocation.json` (resolved command/args/cwd/startedAt), `events.jsonl` (one event
-per line), `stdout.txt` / `stderr.txt`, `result.json`, and `status.json` — written atomically and
+that directory: `invocation.json` (resolved command/args/cwd/startedAt), `events.jsonl` (one
+hash-chained event per line, closed by an `ach.seal` record; see `ach verify-run`), `stdout.txt` / `stderr.txt`, `result.json`, and `status.json` — written atomically and
 guaranteed to reach a terminal state `success | error | timeout | idle-timeout | aborted` on every
 exit path, including watchdog kills and crashes:
 

@@ -60,6 +60,8 @@ export interface LoadedRun {
   /** Post-run checker verdict (`ach run --verify --json`, #29); absent = not scored. */
   verify?: VerifyResult;
   regrades?: VerifyResult[];
+  /** `ach verify-run` verdict of the run's hash-chained transcript (#59); absent when no RunRecord. */
+  seal?: { status: "ok" | "tampered" | "unsealed" | "open"; detail: string };
 }
 
 export interface TrialSet {

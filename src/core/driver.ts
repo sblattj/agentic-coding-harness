@@ -6,6 +6,7 @@ import { normalizeAuto } from './normalize.js';
 import { createPricer, pricedSources, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
+import { ChainWriter, canonicalTotals } from './hash-chain.ts';
 import { computeUsageAvailability } from './usage-availability.js';
 import { createContextMeter } from './context-meter.js';
 import { classifyLaunchError, classifyUnavailable } from './availability.ts';
@@ -387,6 +388,13 @@ export function createDriver(options: DriverOptions): Driver {
         await mkdir(rawDir, { recursive: true });
         const transcriptPath = join(rawDir, `${agentName}-${sessionId}.jsonl`);
         const transcript = createWriteStream(transcriptPath, { flags: 'a' });
+        // Tamper-evident metering (#59): every transcript line is chained to
+        // this run (per run, so a resumed session's second run appends its
+        // own chain to the same file) and the chain is sealed below.
+        const chain = new ChainWriter(runId);
+        const writeTranscript = (event: AgentEvent): void => {
+          transcript.write(`${chain.frame(JSON.stringify(event))}\n`);
+        };
 
         const events: AgentEvent[] = [];
         const tokens: CanonicalTokenRecord[] = [];
@@ -597,6 +605,22 @@ export function createDriver(options: DriverOptions): Driver {
           writeRunRecordThrottled(true);
         };
 
+        // Terminal seal (#59): closes the transcript chain (and events.jsonl's,
+        // with the identical line) over the final metering totals. Totals are
+        // final once the event loop ends: costUsd is taken from cumulativeCost
+        // directly (totals.costUsd is only synced on a registry write), and
+        // contextTokens/provenance/costSource are deliberately NOT sealed —
+        // they are derived later or rewritten on every record write.
+        const sealRun = (): void => {
+          const at = Date.now();
+          const sealTotals = rec ? canonicalTotals({ ...totals, costUsd: cumulativeCost }) : null;
+          const sealed = chain.seal(at, sealTotals);
+          if (sealed === null) return;
+          transcript.write(`${sealed.line}\n`);
+          artifacts?.seal(at, sealTotals);
+          if (rec) rec.seal = sealed.seal;
+        };
+
         emitAlert = (a: FiredAlert): void => {
           const alertEvent: BudgetAlertEvent = {
             type: 'budget.alert',
@@ -611,7 +635,7 @@ export function createDriver(options: DriverOptions): Driver {
             data: describeAlert(a),
           };
           events.push(alertEvent);
-          transcript.write(`${JSON.stringify(alertEvent)}\n`);
+          writeTranscript(alertEvent);
           artifacts?.event(alertEvent);
           onEvent?.(alertEvent);
           if (rec) {
@@ -625,7 +649,7 @@ export function createDriver(options: DriverOptions): Driver {
           for await (const event of handle.attach()) {
             armIdleTimer(); // every AgentEvent defers the idle deadline
             events.push(event);
-            transcript.write(`${JSON.stringify(event)}\n`);
+            writeTranscript(event);
             artifacts?.event(event);
             onEvent?.(event);
             contextMeter?.observe(event);
@@ -734,6 +758,8 @@ export function createDriver(options: DriverOptions): Driver {
             writeRunRecordThrottled(false);
           }
         } catch (err) {
+          sealRun();
+          transcript.end();
           finalizeRunRecord('error');
           throw err;
         } finally {
@@ -746,6 +772,7 @@ export function createDriver(options: DriverOptions): Driver {
           activeRuns.delete(runId);
         }
 
+        sealRun();
         // Await full flush so the NDJSON transcript is on disk when run() resolves.
         await new Promise<void>((resolve) => transcript.end(() => resolve()));
         drainPricerWarnings();

@@ -46,6 +46,8 @@ import {
   type RunRecord,
 } from "../core/registry.ts";
 import path from "node:path";
+import type { ChainStatus } from "../core/hash-chain.ts";
+import { verifyRunRecord } from "./verify-run.ts";
 
 export const AUDIT_FIELDS = [
   "inputTokens",
@@ -96,6 +98,10 @@ export interface AuditRow {
   /** --fix outcome: fields rewritten, or why the fix was skipped. */
   fixed?: AuditField[];
   fixSkipped?: string;
+  /** Hash-chain verdict of the transcript (#59, `ach verify-run`), checked before any --fix. */
+  chain?: ChainStatus;
+  /** First broken link when chain is "tampered". */
+  chainBreak?: string;
 }
 
 export interface AuditSummary {
@@ -485,6 +491,10 @@ export function auditRuns(opts: AuditOptions): AuditResult {
     }
     const drifted = AUDIT_FIELDS.filter((f) => fieldStatus[f] === "drift");
     if (fieldStatus.costUsd === "unpriceable") summary.costUnpriceable++;
+    // #59: audit proves the totals follow from the log; the chain proves the
+    // log (and the sealed totals) were not edited. One sha256 pass per run,
+    // taken BEFORE --fix so the verdict describes the record as found.
+    const chain = verifyRunRecord(opts.stateDir, rec);
     const row: AuditRow = {
       ...base,
       derivation: replay.derivation,
@@ -495,6 +505,8 @@ export function auditRuns(opts: AuditOptions): AuditResult {
       delta,
       deltaPct,
       fieldStatus,
+      chain: chain.status,
+      ...(chain.firstBad ? { chainBreak: `line ${chain.firstBad.line}: ${chain.firstBad.reason}` } : {}),
     };
     for (const f of AUDIT_FIELDS) {
       total.recorded[f] += recorded[f];
@@ -624,6 +636,7 @@ export function formatAuditText(res: AuditResult): string {
       r.fieldStatus?.costUsd === "unpriceable" ? "cost unpriceable" : "",
       r.fixed ? `fixed: ${r.fixed.join(",")}` : "",
       r.fixSkipped ? `fix skipped: ${r.fixSkipped}` : "",
+      r.chain ? `chain ${r.chain === "tampered" ? `TAMPERED (${r.chainBreak ?? "broken"})` : r.chain}` : "",
     ].filter(Boolean);
     out.push(`${head}  (${tags.join("; ")})`);
     for (const f of AUDIT_FIELDS) {

@@ -110,6 +110,7 @@ import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
 import { cmdAudit } from "./audit.ts";
 import { ccusageHintText, cmdImport, parseStatsOrigin, statsOriginIndex, type StatsOrigin } from "./import.ts";
+import { cmdVerifyRun } from "./verify-run.ts";
 import { EXIT_CODES, noDataExitCode, parseExitCodesMode, repeatExitCode, runExitCode } from "./exit-codes.ts";
 import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
 import { alertFlagsToBudget } from "./alerts.ts";
@@ -244,6 +245,10 @@ usage:
                  last activity is older than --days; a corrupt file is an error
                  line and the import continues (exit 0); \`ach stats\` totals
                  are unchanged by import; --dir is an alias of --state-dir here)
+  ach verify-run <runId|runDir> [--json] [--records] [--state-dir <stateDir>]
+                (recompute the run's sha256 hash-chained event log and check its
+                 terminal seal + sealed totals (#59); exit 0 intact, 2 tampered
+                 (names the first bad line), 3 unsealed legacy log, 4 open chain)
   ach status [--compact|--json] [--transcripts] [--budget-usd N] [--exit-codes ladder]
              [--once] [--write-state <path>] [--interval-ms MS=5000]
                 (runs, active runs, trailing-24h spend = \`stats --days 1\`,
@@ -1547,7 +1552,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 /** Every subcommand `main` dispatches to (keep in sync with the switch below).
  *  Each accepts -h/--help (#101), answered from the shared USAGE text. */
 const SUBCOMMANDS = new Set([
-  "run", "preflight", "doctor", "watch", "stats", "audit", "status", "statusline",
+  "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
 ]);
 
@@ -1606,6 +1611,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdAudit(rest);
     case "import":
       return cmdImport(rest);
+    case "verify-run":
+      return cmdVerifyRun(rest);
     case "status":
       return cmdStatus(rest);
     case "statusline":
