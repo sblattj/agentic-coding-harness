@@ -777,7 +777,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
   const sources = transcriptSources(transcriptDir ? scanOptionsForRoot(path.resolve(transcriptDir)) : {});
   const state = stateDir();
   const offsets = await loadOffsets();
-  type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
+  type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number };
   const seenByFile = new Map<string, Map<string, WatchTotals>>();
   const seenOpencode = new Set<string>();
   const pricer = createPricer();
@@ -807,6 +807,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
         output: number;
         cacheRead: number;
         cacheWrite: number;
+        cacheWrite1h?: number;
         reasoning: number;
       }>
     >;
@@ -859,9 +860,10 @@ async function cmdWatch(rest: string[]): Promise<number> {
       const recent = new Map<string, WatchTotals>();
       const collect = (map: Map<string, WatchTotals>, rec: Awaited<ReturnType<typeof w.parse>>[number]): void => {
         const key = `${rec.agent}\0${rec.sessionId}\0${rec.model}`;
-        const value = map.get(key) ?? { agent: rec.agent, sessionId: rec.sessionId ?? "unknown", model: rec.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+        const value = map.get(key) ?? { agent: rec.agent, sessionId: rec.sessionId ?? "unknown", model: rec.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 };
         value.input += rec.input; value.output += rec.output;
         value.cacheRead += rec.cacheRead; value.cacheWrite += rec.cacheWrite;
+        value.cacheWrite1h += rec.cacheWrite1h ?? 0;
         map.set(key, value);
       };
       for (const rec of await w.parse(w.file)) {
@@ -878,8 +880,9 @@ async function cmdWatch(rest: string[]): Promise<number> {
         const outputTokens = Math.max(0, value.output - (before?.output ?? 0));
         const cacheReadTokens = Math.max(0, value.cacheRead - (before?.cacheRead ?? 0));
         const cacheWriteTokens = Math.max(0, value.cacheWrite - (before?.cacheWrite ?? 0));
+        const cacheWrite1hTokens = Math.max(0, value.cacheWrite1h - (before?.cacheWrite1h ?? 0));
         if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) continue;
-        const priced = value.model ? pricer.price({ model: value.model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }) : NaN;
+        const priced = value.model ? pricer.price({ model: value.model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens }) : NaN;
         bump({ agent: value.agent, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
           ...(Number.isFinite(priced) ? { costUsd: priced } : {}) });
       }
@@ -1058,7 +1061,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   const probe = createPricer();
   const disagreements: string[] = [];
   const costFor = (
-    r: Pick<StatRecord, "agent" | "sessionId" | "model" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "extra">,
+    r: Pick<StatRecord, "agent" | "sessionId" | "model" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cacheWrite1hTokens" | "extra">,
     reported: number | undefined,
   ) => {
     const needComputed = costMode === "calculate" || (costMode === "auto" && reported === undefined);
@@ -1072,6 +1075,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           outputTokens: r.outputTokens,
           cacheReadTokens: r.cacheReadTokens,
           cacheWriteTokens: r.cacheWriteTokens,
+          ...(r.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: r.cacheWrite1hTokens } : {}),
           ...(r.extra !== undefined ? { extra: r.extra } : {}),
         },
         { computedOnly: true },
@@ -1140,6 +1144,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     outputTokens: r.outputTokens,
     cacheReadTokens: r.cacheReadTokens,
     cacheWriteTokens: r.cacheWriteTokens,
+    ...(r.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: r.cacheWrite1hTokens } : {}),
     reasoningTokens: r.reasoningTokens ?? 0,
     ...costFor(r, r.reportedCostUsd),
     ...(r.extra?.tokensAvailable === false ? { tokensAvailable: false } : {}),
@@ -1166,6 +1171,7 @@ async function cmdStats(rest: string[]): Promise<number> {
         outputTokens: rec.output,
         cacheReadTokens: rec.cacheRead,
         cacheWriteTokens: rec.cacheWrite,
+        ...(rec.cacheWrite1h !== undefined ? { cacheWrite1hTokens: rec.cacheWrite1h } : {}),
         reasoningTokens: rec.reasoning,
       };
       const key = dedupeKey(row);
