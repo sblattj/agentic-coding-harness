@@ -94,6 +94,35 @@ describe("chained transcripts through AgentEvent consumers (#59)", () => {
     assert.deepEqual(await createRunEventHub(dir).readTranscript("legacy-run-0001"), expected);
   });
 
+  it("live tail offsets (server.ts sendBacklogAndTail) line up as a chained log grows through its seal", async () => {
+    // sendBacklogAndTail keeps `sent = events.length` from readTranscript and
+    // each tick forwards `now.slice(sent)`. Both counts come from the same
+    // unchained view, so the seal line (dropped) must never shift the offset:
+    // replaying the log one line at a time must forward every event exactly
+    // once, in order, and appending the seal must add nothing.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chain-consumers-"));
+    const rec = await chainedRun(dir);
+    const framed = fs.readFileSync(rec.rawTranscript!, "utf8").split("\n").filter((l) => l !== "");
+    const expected = preChainLines(rec.rawTranscript!).map((l) => JSON.parse(l) as AgentEvent);
+    const hub = createRunEventHub(dir);
+    const live = rec.rawTranscript!;
+
+    fs.writeFileSync(live, "");
+    let sent = (await hub.readTranscript(rec.runId)).length;
+    assert.equal(sent, 0);
+    const forwarded: AgentEvent[] = [];
+    for (let k = 1; k <= framed.length; k++) {
+      fs.writeFileSync(live, framed.slice(0, k).join("\n") + "\n");
+      const now = await hub.readTranscript(rec.runId);
+      if (now.length > sent) {
+        forwarded.push(...now.slice(sent));
+        sent = now.length;
+      }
+      if (k === framed.length) assert.equal(now.length, framed.length - 1, "the seal line adds no event");
+    }
+    assert.deepEqual(forwarded, expected, "each event forwarded exactly once, no seal, no framing");
+  });
+
   it("harness_run_events: same events, cursor and total as the unchained log", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chain-consumers-"));
     const rec = await chainedRun(dir);
