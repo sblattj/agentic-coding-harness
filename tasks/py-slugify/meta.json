@@ -1,0 +1,16 @@
+{
+  "language": "python",
+  "kind": "implement",
+  "difficulty": "easy",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "implement"
+  ],
+  "description": "Implement slugify() with accent folding and word-boundary truncation.",
+  "broken": "accented letters are dropped instead of folded (Café becomes caf)",
+  "verifyTimeoutMs": 60000
+}

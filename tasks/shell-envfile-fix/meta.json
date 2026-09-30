@@ -1,0 +1,16 @@
+{
+  "language": "shell",
+  "kind": "bug-fix",
+  "difficulty": "easy",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "bug-fix"
+  ],
+  "description": "Fix a .env value lookup script that mangles values and matches the wrong keys.",
+  "broken": "key match is unanchored, so '#KEY=' comments and 'OTHER_KEY=' lines still match",
+  "verifyTimeoutMs": 60000
+}

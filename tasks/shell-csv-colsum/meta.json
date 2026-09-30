@@ -1,0 +1,16 @@
+{
+  "language": "shell",
+  "kind": "implement",
+  "difficulty": "easy",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "implement"
+  ],
+  "description": "Sum a CSV column selected by header name, with a usage error for unknown columns.",
+  "broken": "an unknown column prints 0.00 and exits 0 instead of exiting 2",
+  "verifyTimeoutMs": 60000
+}

@@ -176,6 +176,18 @@ only with `--retry-failed`; a verify failure is never retried. The plan schema, 
 directories (`task.md`, `setup.sh`, `verify.sh`), and ledger format are in
 [docs/TRIALS.md](docs/TRIALS.md#ach-trial---matrix-resumable-trial-grids).
 
+To compare agents without writing tasks, run the bundled suite: 12 self-verifying
+shell, JavaScript and Python tasks, with every installed agent by default.
+
+```sh
+ach trial --suite core --dry-run                      # agents x tasks, launch nothing
+ach trial --suite core --agent claude --task py-slugify --repeat 3
+```
+
+Agents whose CLI is not installed are skipped with a printed reason. The suite writes an
+HTML report next to its ledger in the state dir. See
+[docs/TRIALS.md](docs/TRIALS.md#ach-trial---suite-core-the-bundled-task-suite).
+
 ![Cross-agent comparison table showing token usage, cost, duration, and status for Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro run on the same task](docs/assets/cli-compare.png)
 
 ## Live dashboards: terminal (`ach dash`) and web (`ach web`)
@@ -235,6 +247,8 @@ ach run --agent <claude|opencode|kiro|codex|gemini|null|custom|descriptor> [--mo
 ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]
             # resumable agents x tasks x models x trials grid; re-run the same command
             # after an interruption and finalized cells are skipped (docs/TRIALS.md)
+ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--tasks-dir DIR] [--ledger PATH]
+            # bundled task suite; missing agent CLIs skipped; HTML report next to the ledger
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach watch [--transcript-dir <root>]           # live per-session token deltas
 ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--json] [--state-only]
