@@ -19,7 +19,27 @@ export async function cmdReport(rest: string[]): Promise<number> {
   if (roots.length === 0) {
     throw new HarnessError("report requires a trials directory (e.g. trials/20260910-091011)", "USAGE");
   }
+  const r = await writeComparisonReport(roots, args.values.out);
+  process.stdout.write(
+    `wrote ${r.out} (${r.runs} runs · ${r.trials} trial${r.trials === 1 ? "" : "s"})\n`,
+  );
+  return 0;
+}
 
+export interface WrittenReport {
+  out: string;
+  runs: number;
+  trials: number;
+}
+
+/**
+ * The whole of `ach report` minus argument parsing and printing: load every
+ * root, join registry verdicts by run id, render, write. `out` defaults to
+ * `<root>/report.html` for one root, else `./report.html`. Also used by
+ * `ach trial --suite` (#51) for its end-of-grid report.
+ */
+export async function writeComparisonReport(roots: readonly string[], outPath?: string): Promise<WrittenReport> {
+  if (roots.length === 0) throw new HarnessError("report requires at least one trials directory", "USAGE");
   // One positional may expand to many trials (a `trials/` root scans its
   // subdirectories); several positionals are reported side by side.
   let runs: Awaited<ReturnType<typeof loadTrials>>["runs"] = [];
@@ -42,16 +62,12 @@ export async function cmdReport(rest: string[]): Promise<number> {
   const root = rootDir ?? path.resolve(roots[0] ?? ".");
 
   const out =
-    args.values.out ??
-    (roots.length === 1 ? path.join(root, "report.html") : path.resolve("report.html"));
+    outPath ?? (roots.length === 1 ? path.join(root, "report.html") : path.resolve("report.html"));
   const html = renderReport(
     { rootDir: root, labels: [...labels].sort(), runs },
     { version: await readVersion(), generatedAt: new Date() },
   );
   await fs.mkdir(path.dirname(path.resolve(out)), { recursive: true });
   await fs.writeFile(out, html);
-  process.stdout.write(
-    `wrote ${out} (${runs.length} runs · ${labels.size} trial${labels.size === 1 ? "" : "s"})\n`,
-  );
-  return 0;
+  return { out, runs: runs.length, trials: labels.size };
 }

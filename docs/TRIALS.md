@@ -365,3 +365,106 @@ variables `ACH_CELL_ID`, `ACH_EXPERIMENT`, `ACH_VARIANT`, `ACH_AGENT`,
 | `createMatrixDriver` | build the driver for the plan's agents |
 
 For example, a suite is a plan whose `tasks` are `{dir}` entries.
+`ach trial --suite` (below) is exactly that.
+
+## `ach trial --suite core`: the bundled task suite
+
+```sh
+ach trial --suite core --dry-run                      # every installed agent x 12 tasks, launch nothing
+ach trial --suite core                                # run it; Ctrl-C and re-run to resume
+ach trial --suite core --agent claude --agent codex --task py-slugify --task js-lru-cache --repeat 3
+ach trial --suite core --agent null                   # offline plumbing check, $0
+```
+
+The package ships `tasks/`: twelve small, self-verifying tasks in shell,
+JavaScript and Python. The kinds are implement, bug-fix and refactor, and two of
+the tasks are multi-file. `--suite <name>` builds a
+[matrix plan](#ach-trial---matrix-resumable-trial-grids) from every task whose
+`meta.json` `suites` array contains `<name>`, then runs it with the same runner.
+Resume, the ledger, cell outcomes, `--retry-failed`, `--dry-run`, `--json`
+and the exit code all behave as described above.
+
+| Flag | Meaning |
+|---|---|
+| `--suite NAME` | the suite to run (`core`); cannot be combined with `--matrix` |
+| `--agent A` (repeatable) | agents to run. The default is every built-in agent whose CLI is installed, excluding `null` |
+| `--task T` (repeatable) | only these tasks. An unknown name is an error that lists the suite's tasks |
+| `--model M` (repeatable) | model axis; the default is the agent's own default model |
+| `--repeat N` | the plan's `trials`: N fresh cells per agent x task x model |
+| `--tasks-dir DIR` | use another task tree with the same layout instead of the bundled one |
+| `--ledger PATH` | ledger path; the default is `<stateDir>/suites/<suite>.ledger.jsonl` |
+
+`--task`, `--repeat` and `--tasks-dir` apply to `--suite` only; with `--matrix`
+the plan carries them. There is no run-level `--effort` flag; the kiro-only
+`--kiro-effort` is not a suite axis.
+
+**Agents that are not installed are skipped, not failed.** The suite checks for
+each requested built-in agent's CLI on `PATH` (the same probe as the
+`harness_agents` MCP tool, which honours `KIRO_CLI_BIN`). It prints
+`skipped: <agent> (<command> not found on PATH)` to stderr and leaves the agent
+out of the plan. A skipped agent therefore has no cells, adds nothing to
+`error`, and does not affect the exit code. `--json` lists it under
+`skippedAgents`. If no requested agent is installed, the run is a usage error
+that suggests `--agent null`.
+
+**Labels.** Each cell is one registry record with experiment `suite/<name>`,
+variant `{agent}:{model}` (`default` when no `--model` is given) and cellId
+`agent:task:model:trialN`, and it carries the task's `verify` outcome. The
+variant deliberately leaves the task out. `/compare` and `ach stats` then roll one
+agent/model pairing up across the whole suite, which is the comparison a
+suite exists for, while the per-task split is still available from the cellId
+and from the report, which groups by task.
+
+**Where the output goes.** Next to the ledger:
+
+| Path | Contents |
+|---|---|
+| `<stateDir>/suites/core.ledger.jsonl` | the resume ledger |
+| `<stateDir>/suites/core.work/<cellId>-<hash>/` | each cell's fresh workspace |
+| `<stateDir>/suites/core.runs/<task>/<agent>~<model>~trialN.json` | one `ach report`-loadable result per launched cell (a retry overwrites it) |
+| `<stateDir>/suites/core.report.html` | the HTML comparison, rendered after the grid, over this run's tasks, one trial per task |
+
+The last line of output is `report     <path> (N runs · M tasks)`. `--ledger
+PATH` moves all four: `foo.ledger.jsonl` gives `foo.work/`, `foo.runs/` and
+`foo.report.html`.
+
+### Task layout
+
+```
+tasks/<name>/
+  task.md      the prompt given to the agent
+  meta.json    {language, kind, difficulty, license, provenance, suites, tags,
+                description, broken, verifyTimeoutMs}
+  setup.sh     copies starter/ into $ACH_WORKSPACE
+  verify.sh    runs hidden/ tests against $ACH_WORKSPACE; exit 0 = pass
+  starter/     what the agent starts from
+  hidden/      the tests verify.sh runs (never copied into the workspace)
+  reference/   a known-good solution
+  broken/      a plausible wrong solution, described by meta.json "broken"
+```
+
+`scripts/verify-tasks.sh [--tasks-dir DIR] [task...]` checks every task in both
+directions: `verify.sh` must fail on the untouched starter, pass on `reference/`
+and fail on `broken/`, and setup must not leak `reference/`, `broken/` or
+`hidden/` into the workspace. CI runs it on Linux and macOS. Set
+`VERIFY_TASKS_VERBOSE=1` to see why each broken variant fails. The tasks need
+`sh`, `node` and `python3`.
+
+`reference/` and `hidden/` ship in the npm package. An agent run through the
+harness only sees its workspace. However, an agent that searches the
+filesystem can find the installed package, so do not treat these tasks as a
+held-out benchmark.
+
+### How `tasks/` is found
+
+The suite resolves the task tree relative to the running module at
+`<module dir>/../../tasks`:
+
+- **Checkout:** `src/cli/` gives `<repo>/tasks`.
+- **npm install or Homebrew:** `dist/cli/` or `dist/bun/` gives
+  `<package>/tasks`. `tasks` is in the package `files`, and the Homebrew formula
+  installs the npm tarball.
+- **Compiled single binary and pip wheel:** neither carries the tree. The
+  compiled binary's module URL is inside bun's virtual filesystem, and the
+  wheel vendors only the JS bundle. Both fail with a usage error that asks for
+  `--tasks-dir <checkout>/tasks`.

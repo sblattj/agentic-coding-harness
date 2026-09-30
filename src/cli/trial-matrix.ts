@@ -590,6 +590,12 @@ export interface RunMatrixOptions {
   onCell?: (report: CellReport, cell: MatrixCell) => void;
   /** Called right before a cell launches (setup included). */
   onCellStart?: (cell: MatrixCell) => void;
+  /**
+   * Called with the settled run (RunResult + verdict) of every cell that
+   * launched an agent, before its ledger row is appended. The suite runner
+   * writes report artifacts from it.
+   */
+  onOutcome?: (cell: MatrixCell, outcome: TrialOutcome) => void;
 }
 
 class Interrupted extends Error {}
@@ -722,6 +728,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
     };
   }
   const result = outcome.result!;
+  opts.onOutcome?.(cell, outcome);
   return {
     ...base,
     status: classifyCell({
@@ -873,12 +880,25 @@ export function formatMatrixSummary(s: MatrixSummary): string {
   );
 }
 
-/** `ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]`. */
+/** Flags only `--suite` accepts (#51); rejected with `--matrix`. */
+const SUITE_ONLY_FLAGS = ["task", "agent", "model", "repeat", "tasks-dir"] as const;
+
+/**
+ * `ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]`
+ * or `ach trial --suite NAME [--task T]... [--agent A]... [--model M]...
+ * [--repeat N] [--tasks-dir DIR] [...same flags]` (src/cli/trial-suite.ts).
+ */
 export async function cmdTrial(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
     options: {
       matrix: { type: "string" },
+      suite: { type: "string" },
+      task: { type: "string", multiple: true },
+      agent: { type: "string", multiple: true },
+      model: { type: "string", multiple: true },
+      repeat: { type: "string" },
+      "tasks-dir": { type: "string" },
       "dry-run": { type: "boolean", default: false },
       "retry-failed": { type: "boolean", default: false },
       ledger: { type: "string" },
@@ -887,8 +907,30 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     allowPositionals: false,
   });
   const planFile = args.values.matrix;
+  const suite = args.values.suite;
+  if (planFile !== undefined && suite !== undefined) {
+    throw new HarnessError("trial: --matrix and --suite are mutually exclusive", "USAGE");
+  }
+  if (suite !== undefined) {
+    const { runSuiteCli } = await import("./trial-suite.ts");
+    return runSuiteCli({
+      suite,
+      tasks: args.values.task ?? [],
+      agents: args.values.agent ?? [],
+      models: args.values.model ?? [],
+      ...(args.values.repeat !== undefined ? { repeat: args.values.repeat } : {}),
+      ...(args.values["tasks-dir"] !== undefined ? { tasksDir: args.values["tasks-dir"] } : {}),
+      ...(args.values.ledger !== undefined ? { ledger: args.values.ledger } : {}),
+      dryRun: args.values["dry-run"],
+      retryFailed: args.values["retry-failed"],
+      json: args.values.json,
+    });
+  }
   if (planFile === undefined || planFile.trim() === "") {
-    throw new HarnessError("trial requires --matrix <plan.json>", "USAGE");
+    throw new HarnessError("trial requires --matrix <plan.json> or --suite <name>", "USAGE");
+  }
+  for (const flag of SUITE_ONLY_FLAGS) {
+    if (args.values[flag] !== undefined) throw new HarnessError(`trial: --${flag} applies to --suite only`, "USAGE");
   }
   return executeMatrixCli({
     plan: loadMatrixPlan(planFile),
@@ -909,6 +951,16 @@ export interface ExecuteMatrixCliOptions {
   dryRun: boolean;
   retryFailed: boolean;
   json: boolean;
+  /** Merged into the `--json` output (dry-run and real run). */
+  jsonExtra?: Record<string, unknown>;
+  /** Passed to runMatrix (see RunMatrixOptions.onOutcome). */
+  onOutcome?: RunMatrixOptions["onOutcome"];
+  /**
+   * Runs after the grid, before the summary is printed; its result is merged
+   * into the `--json` output. Text-mode output of its own goes to stdout
+   * after the summary via the returned `lines`.
+   */
+  after?: (summary: MatrixSummary) => Promise<{ json?: Record<string, unknown>; lines?: string[] }>;
 }
 
 /**
@@ -935,6 +987,7 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
             dryRun: true,
             experiment: plan.experiment,
             ledger: ledgerPath,
+            ...o.jsonExtra,
             cells: entries.map((e) => ({
               cellId: e.cell.cellId,
               action: e.action,
@@ -994,12 +1047,21 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
       if (!json) process.stdout.write(cellLine(r, i, cells.length) + "\n");
       i++;
     },
+    ...(o.onOutcome !== undefined ? { onOutcome: o.onOutcome } : {}),
   });
+  const extra = o.after !== undefined ? await o.after(summary) : {};
   if (json) {
     const { cells: reports, ...counts } = summary;
-    process.stdout.write(JSON.stringify({ experiment: plan.experiment, ledger: ledgerPath, cells: reports, summary: counts }, null, 2) + "\n");
+    process.stdout.write(
+      JSON.stringify(
+        { experiment: plan.experiment, ledger: ledgerPath, ...o.jsonExtra, ...extra.json, cells: reports, summary: counts },
+        null,
+        2,
+      ) + "\n",
+    );
   } else {
     process.stdout.write(formatMatrixSummary(summary) + `\nledger     ${ledgerPath}\n`);
+    for (const line of extra.lines ?? []) process.stdout.write(line + "\n");
   }
   return matrixExitCode(summary);
 }

@@ -1,0 +1,16 @@
+{
+  "language": "python",
+  "kind": "implement",
+  "difficulty": "medium",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "implement"
+  ],
+  "description": "Implement closed-interval merging (overlapping and touching), without mutating input.",
+  "broken": "touching intervals (end == next start) are not merged",
+  "verifyTimeoutMs": 60000
+}

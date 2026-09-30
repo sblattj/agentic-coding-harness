@@ -40,6 +40,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Bundled task suite (#51): every task's verify.sh must FAIL on the
+      # untouched starter, PASS on reference/ and FAIL on broken/. A checker
+      # that cannot tell a right answer from a wrong one fails here.
+      - name: Verify bundled tasks (both directions)
+        run: sh scripts/verify-tasks.sh
+
       # Run once before Bun is on PATH, and once after, so both code paths in
       # tests/*.test.ts get exercised every time:
       #   - before: `isBun` is false, so the Node+tsx fallback runs (this is

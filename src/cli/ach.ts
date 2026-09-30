@@ -185,6 +185,12 @@ usage:
                  command skips cells with a verdict (passed / verify-failed); error
                  cells re-run only with --retry-failed; exit 1 only on errors or
                  interruption; see docs/TRIALS.md)
+  ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N]
+                [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json]
+                (bundled self-verifying tasks as a matrix; default agents = every
+                 installed CLI, missing ones skipped with a reason; experiment
+                 suite/core, variant agent:model; HTML report next to the ledger in
+                 <stateDir>/suites/)
   ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
                 (--since/--last: print history newer than the bound on startup;
                  --dir is an alias of --transcript-dir here)

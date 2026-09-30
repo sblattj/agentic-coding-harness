@@ -1,0 +1,16 @@
+{
+  "language": "javascript",
+  "kind": "implement",
+  "difficulty": "medium",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "implement"
+  ],
+  "description": "Implement an LRU cache class with get/set/has/delete/size.",
+  "broken": "get() does not refresh recency, so eviction order is FIFO",
+  "verifyTimeoutMs": 60000
+}

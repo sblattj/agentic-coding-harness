@@ -1,0 +1,16 @@
+{
+  "language": "python",
+  "kind": "bug-fix",
+  "difficulty": "easy",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "bug-fix"
+  ],
+  "description": "Fix Roman numeral conversion in both directions (subtractive forms, validation).",
+  "broken": "to_roman fixed, from_roman still additive-only (IV reads as 6)",
+  "verifyTimeoutMs": 60000
+}
