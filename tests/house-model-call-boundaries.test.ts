@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { CodexAdapter, createCodexLineParser, parseCodexLine } from '../src/adapters/codex.ts';
 import { GeminiAdapter } from '../src/adapters/gemini.ts';
+import { KiroAdapter } from '../src/adapters/kiro.ts';
 import { deriveLatency } from '../src/core/latency.ts';
 import type { AgentEvent } from '../src/core/types.ts';
-import { FakeChild, fakeSpawnFn } from './helpers/fake-child.ts';
+import { FakeChild, fakeSpawnFn, versionProbeSpawnFn } from './helpers/fake-child.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const lines = (f: string) => readFileSync(join(here, 'fixtures', f), 'utf8').trim().split('\n');
@@ -41,6 +42,33 @@ async function drain(adapter: { launch(spec: { prompt: string }): Promise<{ atta
 }
 
 const bounds = (evs: Ev[]) => evs.filter((e) => e.type.startsWith('model_call_')).map((e) => `${e.type}:${String(e.callId)}`);
+
+describe('deriveLatency inputs added for built-in adapters (#32)', () => {
+  const T = 1_700_000_000_000;
+  it('model_call_end.outputTokens feeds throughput; usage on the end still wins', () => {
+    const evs = (end: Record<string, unknown>) =>
+      [
+        { type: 'model_call_start', callId: 'c', timestamp: T },
+        { type: 'message', source: 'agent', content: 'a', timestamp: T + 100 },
+        { type: 'model_call_end', callId: 'c', timestamp: T + 1_100, ...end },
+      ] as AgentEvent[];
+    assert.equal(deriveLatency(evs({ outputTokens: 50 })).outputTokensPerSec, 50);
+    assert.equal(deriveLatency(evs({})).outputTokensPerSec, null, 'control: no count, no throughput');
+    const u = { inputTokens: 0, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    assert.equal(deriveLatency(evs({ outputTokens: 50, usage: u })).outputTokensPerSec, 200);
+  });
+
+  it('a kiro chunk step is a first output; other steps are not', () => {
+    const evs = (kind: string) =>
+      [
+        { type: 'model_call_start', callId: 'k', timestamp: T },
+        { type: 'step', data: { kind }, timestamp: T + 300 },
+        { type: 'model_call_end', callId: 'k', timestamp: T + 500 },
+      ] as AgentEvent[];
+    assert.equal(deriveLatency(evs('chunk')).ttft?.avgMs, 300);
+    assert.equal(deriveLatency(evs('metadata')).ttft, null);
+  });
+});
 
 describe('codex model-call boundaries (#32)', () => {
   it('parser: brackets the first request of the turn, ending after the first tool start', () => {
@@ -86,6 +114,41 @@ describe('codex model-call boundaries (#32)', () => {
     assert.equal(lat.outputTokensPerSec, null, 'codex throughput stays null');
     assert.equal(evs.filter((e) => e.type === 'usage').length, 1);
     assert.ok(evs.filter((e) => e.type.startsWith('model_call_')).every((e) => e.usage === undefined));
+  });
+});
+
+describe('kiro (headless) model-call boundaries (#32)', () => {
+  const KIRO = lines('kiro/headless-stream-json-2.21.2.jsonl');
+
+  it('launch(): start at runStarted, end at the last streamed chunk before runFinished; TTFT from the first chunk', async () => {
+    const child = new FakeChild();
+    const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn: versionProbeSpawnFn(child, []) });
+    const launched = adapter.launch({ prompt: 'ping' });
+    void (async () => {
+      for (const l of KIRO) {
+        await new Promise((r) => setTimeout(r, GAP_MS));
+        child.writeStdout(l + '\n');
+      }
+      child.close(0);
+    })();
+    const handle = await launched;
+    const evs: Ev[] = [];
+    for await (const e of handle.attach()) evs.push(e as Ev);
+    await handle.wait();
+    assert.deepEqual(bounds(evs), ['model_call_start:turn-1', 'model_call_end:turn-1']);
+    const kinds = evs.map((e) => (e.type === 'step' ? `step:${String((e.data as { kind?: string }).kind)}` : e.type));
+    const iStart = kinds.indexOf('model_call_start');
+    const iEnd = kinds.indexOf('model_call_end');
+    assert.equal(kinds[iStart - 1], 'step:runStarted');
+    assert.ok(iEnd < kinds.indexOf('step:runFinished'), 'the end is emitted before the terminator');
+    const chunks = evs.filter((e) => e.type === 'step' && (e.data as { kind?: string }).kind === 'chunk');
+    assert.equal(chunks.length, 2);
+    assert.equal(evs[iEnd]!.timestamp, chunks[1]!.timestamp, 'end = last chunk arrival');
+    const lat = deriveLatency(evs);
+    assert.equal(lat.ttft?.count, 1);
+    assert.equal(lat.ttft!.p50Ms, (chunks[0]!.timestamp as number) - (evs[iStart]!.timestamp as number));
+    assert.ok(lat.ttft!.p50Ms >= 2 * GAP_MS - 5, 'runStarted -> metadata -> first chunk');
+    assert.equal(lat.outputTokensPerSec, null, 'kiro reports no token counts');
   });
 });
 

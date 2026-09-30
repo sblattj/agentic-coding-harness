@@ -450,6 +450,66 @@ export function kiroEventToCore(event: KiroLaneEvent): CoreAgentEvent | null {
   return houseEventToCore('kiro', event as HouseEventLike);
 }
 
+function stepKind(ev: CoreAgentEvent): unknown {
+  if (ev.type !== 'step') return undefined;
+  const d = (ev as { data?: unknown }).data;
+  return typeof d === 'object' && d !== null ? (d as { kind?: unknown }).kind : undefined;
+}
+
+/**
+ * Model-call boundaries (#32) for the HEADLESS kiro stream, over bridged core
+ * events. `runStarted` is the prompt going out; `agent_message_chunk` /
+ * `agent_thought_chunk` updates (steps with kind 'chunk', which deriveLatency
+ * counts as output) stream token by token. Like codex, only the FIRST request
+ * of the run is bracketed: the stream has no request ids, so a follow-up
+ * request cannot be told from a second tool call of the same response.
+ * - start = runStarted;
+ * - end = right after the first tool start, else at the last output before
+ *   the turn terminator (runFinished).
+ * No token counts exist (kiro reports credits only), so kiro throughput stays
+ * null. The ACP transport emits no runStarted, so it gets no boundaries.
+ */
+export class KiroModelCallTracker {
+  #open: { id: string; lastAt: number | null } | null = null;
+  #turns = 0;
+
+  map(ev: CoreAgentEvent): CoreAgentEvent[] {
+    const kind = stepKind(ev);
+    const ts = typeof ev.timestamp === 'number' ? ev.timestamp : Date.now();
+    if (kind === 'runStarted') {
+      this.#turns += 1;
+      const id = `turn-${this.#turns}`;
+      this.#open = { id, lastAt: null };
+      return [ev, { type: 'model_call_start', agent: 'kiro', callId: id, timestamp: ts }];
+    }
+    if (this.#open === null) return [ev];
+    if (ev.type === 'tool_call') {
+      const end = this.#end(ts);
+      return [ev, end];
+    }
+    // Only streamed chunks: the buffered `message` is flushed at the terminator.
+    if (kind === 'chunk') {
+      this.#open.lastAt = ts;
+      return [ev];
+    }
+    if (kind === 'runFinished') {
+      const call = this.#open;
+      if (call.lastAt === null) {
+        this.#open = null; // no output observed: nothing to bracket
+        return [ev];
+      }
+      return [this.#end(call.lastAt), ev];
+    }
+    return [ev];
+  }
+
+  #end(at: number): CoreAgentEvent {
+    const id = this.#open!.id;
+    this.#open = null;
+    return { type: 'model_call_end', agent: 'kiro', callId: id, timestamp: at };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
@@ -741,14 +801,15 @@ export class KiroAdapter implements CoreAgentAdapter {
   #mapWithNativeSession(
     handle: KiroRunHandle,
     map: (event: KiroLaneEvent) => CoreAgentEvent | null,
-  ): (event: KiroLaneEvent) => CoreAgentEvent | null {
+  ): (event: KiroLaneEvent) => CoreAgentEvent[] | null {
+    const calls = new KiroModelCallTracker();
     return (event) => {
       const core = map(event);
       const native = handle.nativeSessionId();
       if (core?.type === 'usage' && native) {
         core.usage.extra = { ...core.usage.extra, kiroSessionId: native };
       }
-      return core;
+      return core === null ? null : calls.map(core);
     };
   }
 
