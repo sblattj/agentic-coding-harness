@@ -17,12 +17,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo, Socket } from "node:net";
 import { WebSocketServer, type RawData, type WebSocket as WsSocket } from "ws";
 import type { AgentEvent } from "../core/types.ts";
-import { readRunRecord } from "../core/registry.ts";
+import { readRunRecord, type RunRecord } from "../core/registry.ts";
 import { RunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
 import { COMPARE_GROUP_KEYS, computeCompareRows, resolveCompareGroupBy } from "./compare.ts";
 import type { RunSource } from "./run-source.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
 import { deriveRunObservability } from "./derive.ts";
+import { createFrameAnnotator, type ContextFrame, type FrameAnnotator } from "./context-frames.ts";
 import { PtyManager } from "./pty-manager.ts";
 
 export interface WebServerOptions {
@@ -153,10 +154,17 @@ function vendorContentType(name: string): string {
   return "text/plain; charset=utf-8";
 }
 
-/** Full raw AgentEvent with the rendered text attached (client reads .text). */
-function backlogEvent(ev: AgentEvent): AgentEvent {
+/** Full raw AgentEvent with the rendered text attached (client reads .text)
+ *  and, for metered agents, the per-frame context reading (`ctx`, see
+ *  ./context-frames.ts). Both fields are additive and optional. */
+function backlogEvent(
+  ev: AgentEvent,
+  annotator?: FrameAnnotator | null,
+): AgentEvent & { text?: string; ctx?: ContextFrame } {
   const text = eventToText(ev);
-  return text === null ? ev : { ...ev, text };
+  const ctx = annotator?.annotate(ev);
+  if (text === null && ctx === undefined) return ev;
+  return { ...ev, ...(text === null ? {} : { text }), ...(ctx === undefined ? {} : { ctx }) };
 }
 
 function safeSend(ws: WsSocket, payload: string): void {
@@ -289,12 +297,21 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
     safeSend(ms.ws, JSON.stringify({ type: "end" }));
   }
 
-  async function sendBacklogAndTail(ms: DashSocket): Promise<void> {
+  async function sendBacklogAndTail(ms: DashSocket, rec: RunRecord | null): Promise<void> {
     const data = ms.data as RunSocketData;
     const runId = data.runId;
     const events = await hub.readTranscript(runId);
     let sent = events.length;
-    safeSend(ms.ws, JSON.stringify({ type: "backlog", events: events.map(backlogEvent) }));
+    // One stateful context meter per socket, fed every event exactly once in
+    // transcript order: the backlog first, then each tick's new tail.
+    const annotator = createFrameAnnotator({
+      agent: rec?.agent,
+      ...(rec?.usage?.context?.model !== undefined ? { requestedModel: rec.usage.context.model } : {}),
+    });
+    safeSend(
+      ms.ws,
+      JSON.stringify({ type: "backlog", events: events.map((ev) => backlogEvent(ev, annotator)) }),
+    );
     if (!isRunLive(opts.stateDir, runId)) {
       sendEnd(ms);
       return;
@@ -307,10 +324,10 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           // feed client renders from structure and decides what is visible.
           // `text` stays on the envelope for the legacy text-only consumers
           // (grid/trio) until they migrate to HarnessFeed.
-          const text = eventToText(ev);
+          const event = backlogEvent(ev, annotator);
           safeSend(
             ms.ws,
-            JSON.stringify({ type: "event", ...(text === null ? {} : { text }), event: backlogEvent(ev) }),
+            JSON.stringify({ type: "event", ...(event.text === undefined ? {} : { text: event.text }), event }),
           );
         }
         sent = now.length;
@@ -338,7 +355,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
     if (rec !== null) {
       safeSend(ms.ws, JSON.stringify({ type: "record", record: rec }));
     }
-    void sendBacklogAndTail(ms);
+    void sendBacklogAndTail(ms, rec);
   }
 
   function onSocketClose(ms: DashSocket): void {

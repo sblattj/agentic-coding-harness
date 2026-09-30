@@ -350,6 +350,20 @@ step/message event → the RunSpec `model`.
     toolOutputShare?: number            // omitted when no tool events
   }
   ```
+- **Claude `<synthetic>` messages** (text the CLI writes itself, e.g. "Credit
+  balance is too low", with all-zero usage) are not model calls: the meter
+  skips their usage and never adopts `<synthetic>` as the model.
+- **Per-frame readings in `ach web`:** the server runs one meter per run
+  socket over the transcript in order and stamps each event it sends with an
+  additive `ctx` field (`src/web/context-frames.ts`): `tokens`, `basis`,
+  `fresh` (this event fed the reading; tool rows carry it forward with
+  `fresh:false`), `seq` (ordinal of the distinct reading), `delta` against the
+  previous distinct reading plus the `input`/`cacheRead`/`cacheWrite`
+  breakdown on fresh frames, and `window`/`pct`/`warnAt` when the window is
+  known. No meter (kiro, custom agents) or no usage yet → no field. The feed
+  only renders it. Compaction is not marked: no adapter bridges a compaction
+  event (claude's `system` lines other than `init` are dropped in
+  `adapters/claude.ts`), and the feed does not guess one from a drop.
 
 ---
 
