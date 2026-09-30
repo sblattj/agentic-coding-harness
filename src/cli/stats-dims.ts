@@ -25,14 +25,19 @@ import { emptyBucket, fmtInt, fmtUsd, type AggregatableRecord, type UsageBucket 
 
 export const UNATTRIBUTED = "unattributed";
 export const UNKNOWN_PROJECT = "unknown";
+export const NO_BRANCH = "(no branch)";
 
 /** A stats row plus the optional fields the extra dimensions read. */
 export interface DimRecord extends AggregatableRecord {
   sessionId?: string | null;
   model?: string | null;
   extra?: Record<string, unknown>;
+  /** 1h-TTL subset of cacheWriteTokens (issue #105), when the producer split it. */
+  cacheWrite1hTokens?: number;
   /** Working directory of the run, when known (run registry / transcript). */
   cwd?: string | null;
+  /** Git branch label of the run (#47): a branch name, `(detached <sha>)`, or absent. */
+  branch?: string | null;
 }
 
 /** Per-model row: cost is null when any contribution could not be priced. */
@@ -59,6 +64,8 @@ export interface DimOptions {
   byModelDay?: boolean;
   /** Build the byProject rollup. */
   byProject?: boolean;
+  /** Build the byBranch rollup (#47). */
+  byBranch?: boolean;
   /** absolute path -> friendly project name. */
   projectAliases?: Record<string, string>;
 }
@@ -69,6 +76,7 @@ export interface DimAggregates {
   unpricedModels: string[];
   byModelDay?: Record<string, Record<string, ModelBucket>>;
   byProject?: Record<string, RatioBucket>;
+  byBranch?: Record<string, RatioBucket>;
 }
 
 // ---------------------------------------------------------------- per-model
@@ -79,6 +87,8 @@ interface Slice {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** 1h-TTL subset of cacheWrite, when the slice itself carries a split. */
+  cacheWrite1h?: number;
   reasoning: number;
   costUsd?: number;
 }
@@ -100,6 +110,7 @@ function usageSlices(extra: Record<string, unknown> | undefined): Slice[] | null
       output: num(e.output),
       cacheRead: num(e.cacheRead),
       cacheWrite: num(e.cacheWrite),
+      ...(typeof e.cacheWrite1h === "number" && Number.isFinite(e.cacheWrite1h) ? { cacheWrite1h: e.cacheWrite1h } : {}),
       reasoning: num(e.reasoning),
       ...(typeof e.costUsd === "number" && Number.isFinite(e.costUsd) ? { costUsd: e.costUsd } : {}),
     });
@@ -122,7 +133,7 @@ interface Contribution {
   costUsd: number | null;
 }
 
-function priceSlice(pricer: Pricer | undefined, s: Slice): number | null {
+function priceSlice(pricer: Pricer | undefined, s: Slice, oneHourShare: number): number | null {
   if (!pricer) return null;
   const cost = pricer.price({
     model: s.model,
@@ -130,6 +141,7 @@ function priceSlice(pricer: Pricer | undefined, s: Slice): number | null {
     outputTokens: s.output,
     cacheReadTokens: s.cacheRead,
     cacheWriteTokens: s.cacheWrite,
+    cacheWrite1hTokens: s.cacheWrite1h ?? s.cacheWrite * oneHourShare,
   });
   pricer.drainWarnings(); // surfaced once as unpricedModels, not per slice
   return Number.isFinite(cost) ? cost : null;
@@ -138,6 +150,11 @@ function priceSlice(pricer: Pricer | undefined, s: Slice): number | null {
 function contributions(r: DimRecord, pricer: Pricer | undefined, mode: CostMode = "auto"): Contribution[] {
   const slices = usageSlices(r.extra);
   if (slices) {
+    // Same TTL rule as Pricer.price (issue #105): claude's per-model slices
+    // carry no TTL split, so the record-level 1h share applies to each.
+    const writes = slices.reduce((a, s) => a + s.cacheWrite, 0);
+    const share =
+      typeof r.cacheWrite1hTokens === "number" && writes > 0 ? Math.min(1, Math.max(0, r.cacheWrite1hTokens / writes)) : 0;
     return slices.map((s) => ({
       model: s.model,
       inputTokens: s.input,
@@ -148,7 +165,7 @@ function contributions(r: DimRecord, pricer: Pricer | undefined, mode: CostMode 
       // CLI-reported slice cost first; a lone slice IS the record, so the
       // record's cost is its cost; otherwise price the slice at its own rates.
       costUsd:
-        (slices.length === 1 && r.costUsd !== undefined ? r.costUsd : selectCost(mode, s.costUsd, priceSlice(pricer, s) ?? undefined).costUsd ?? null),
+        (slices.length === 1 && r.costUsd !== undefined ? r.costUsd : selectCost(mode, s.costUsd, priceSlice(pricer, s, share) ?? undefined).costUsd ?? null),
     }));
   }
   return [
@@ -336,12 +353,46 @@ export function cwdIndex(runs: Pick<RunRecord, "agent" | "sessionId" | "cwd">[])
   };
 }
 
+/** Branch label of a run record: the branch, `(detached <sha>)`, or undefined. */
+export function branchLabel(run: { branch?: string | null; commit?: string | null }): string | undefined {
+  if (run.branch) return run.branch;
+  return run.commit ? `(detached ${run.commit})` : undefined;
+}
+
+/** Index a run record's branch label by agent+session (session alone as fallback). */
+export function branchIndex(runs: { agent: string; sessionId?: string | null; branch?: string | null; commit?: string | null }[]): (agent: string, sessionId: string | null | undefined) => string | undefined {
+  const exact = new Map<string, string>();
+  const bySession = new Map<string, string>();
+  for (const run of runs) {
+    const label = branchLabel(run);
+    if (!run.sessionId || !label) continue;
+    exact.set(`${run.agent}\u0000${run.sessionId}`, label);
+    bySession.set(run.sessionId, label);
+  }
+  return (agent, sessionId) => {
+    if (!sessionId) return undefined;
+    return exact.get(`${agent}\u0000${sessionId}`) ?? bySession.get(sessionId);
+  };
+}
+
 // ---------------------------------------------------------------- aggregate
+
+function addRatio(b: RatioBucket, r: DimRecord): void {
+  b.records += 1;
+  b.inputTokens += r.inputTokens;
+  b.outputTokens += r.outputTokens;
+  b.cacheReadTokens += r.cacheReadTokens;
+  b.cacheWriteTokens += r.cacheWriteTokens;
+  b.reasoningTokens += r.reasoningTokens;
+  b.costUsd = b.costUsd === null || r.costUsd === undefined ? null : b.costUsd + r.costUsd;
+  if (r.costUsd === undefined) b.unpricedRecords += 1;
+}
 
 export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimAggregates {
   const byModel: Record<string, ModelBucket> = {};
   const byModelDay: Record<string, Record<string, ModelBucket>> = {};
   const byProject: Record<string, RatioBucket> = {};
+  const byBranch: Record<string, RatioBucket> = {};
   for (const r of records) {
     const day = opts.timeZone ? bucketKey(r.ts, "day", opts.timeZone) : r.ts ? r.ts.slice(0, 10) : "unknown";
     for (const c of contributions(r, opts.pricer, opts.costMode)) {
@@ -351,20 +402,13 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
     }
     if (opts.byProject) {
       const name = projectOf(r.cwd, opts.projectAliases).name;
-      const b = (byProject[name] ??= { ...emptyBucket(), cacheHitRatio: null });
-      b.records += 1;
-      b.inputTokens += r.inputTokens;
-      b.outputTokens += r.outputTokens;
-      b.cacheReadTokens += r.cacheReadTokens;
-      b.cacheWriteTokens += r.cacheWriteTokens;
-      b.reasoningTokens += r.reasoningTokens;
-      b.costUsd = b.costUsd === null || r.costUsd === undefined ? null : b.costUsd + r.costUsd;
-      if (r.costUsd === undefined) b.unpricedRecords += 1;
+      addRatio((byProject[name] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
     }
+    if (opts.byBranch) addRatio((byBranch[r.branch || NO_BRANCH] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
   }
   for (const b of Object.values(byModel)) finishModel(b);
   for (const cells of Object.values(byModelDay)) for (const b of Object.values(cells)) finishModel(b);
-  for (const b of Object.values(byProject)) {
+  for (const b of [...Object.values(byProject), ...Object.values(byBranch)]) {
     if (b.costUsd !== null) b.costUsd = Math.round(b.costUsd * 1e6) / 1e6;
     b.cacheHitRatio = cacheHitRatio(b);
   }
@@ -377,6 +421,7 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
   };
   if (opts.byModelDay) out.byModelDay = byModelDay;
   if (opts.byProject) out.byProject = byProject;
+  if (opts.byBranch) out.byBranch = byBranch;
   return out;
 }
 
@@ -386,8 +431,8 @@ function isUnattributedKey(k: string): boolean {
 
 // ---------------------------------------------------------------- CLI glue
 
-export type ByDim = "model" | "project";
-export const BY_DIMS: readonly ByDim[] = ["model", "project"];
+export type ByDim = "model" | "project" | "branch";
+export const BY_DIMS: readonly ByDim[] = ["model", "project", "branch"];
 
 /** --by values (repeatable and/or comma-joined) -> the set of extra dimensions. */
 export function parseByDims(values: string[] | undefined): Set<ByDim> {
@@ -422,7 +467,7 @@ export function statsLine(label: string, b: Omit<UsageBucket, "costUsd"> & { cos
 }
 
 /** Text sections for the extra dimensions. byModel prints only with --by model. */
-export function renderDimsText(dims: DimAggregates, show: { model: boolean; project: boolean }): string[] {
+export function renderDimsText(dims: DimAggregates, show: { model: boolean; project: boolean; branch?: boolean }): string[] {
   const lines: string[] = [];
   const sorted = <T>(m: Record<string, T>) => Object.entries(m).sort(([a], [b]) => a.localeCompare(b));
   if (show.model) {
@@ -438,6 +483,10 @@ export function renderDimsText(dims: DimAggregates, show: { model: boolean; proj
   if (show.project && dims.byProject) {
     lines.push("-- by project");
     for (const [k, b] of sorted(dims.byProject)) lines.push(statsLine(k, b));
+  }
+  if (show.branch && dims.byBranch) {
+    lines.push("-- by branch");
+    for (const [k, b] of sorted(dims.byBranch)) lines.push(statsLine(k, b));
   }
   return lines;
 }

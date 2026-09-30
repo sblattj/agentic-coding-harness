@@ -70,6 +70,8 @@ export interface ModelTokenUsage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** 1h-TTL subset of cacheWrite, when the usage record split it (issue #105). */
+  cacheWrite1h?: number;
   /** Subset of output spent on extended thinking. */
   reasoning: number;
   costUsd?: number;
@@ -80,6 +82,11 @@ export interface CanonicalTokenRecord {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /**
+   * 1h-TTL subset of cacheWrite (usage.cache_creation.ephemeral_1h_input_tokens,
+   * issue #105). Omitted when the usage record carries no TTL split.
+   */
+  cacheWrite1h?: number;
   /** Subset of output spent on extended thinking. */
   reasoning: number;
   /** result.total_cost_usd (whole run). Omitted for per-message usage. */
@@ -160,12 +167,30 @@ const safeNum = z.preprocess(
   z.number(),
 );
 
+/**
+ * Cache-write TTL split (issue #105): `usage.cache_creation` =
+ * {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}. Claude Code writes
+ * its prompt cache with the 1h TTL, billed at 2x input vs 1.25x for 5m.
+ * Anything that is not an object (absent, null, older CLIs) parses to
+ * undefined so the line still parses and pricing falls back to the 5m rate.
+ */
+const CacheCreationSplitSchema = z.preprocess(
+  (v) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : undefined),
+  z
+    .object({
+      ephemeral_5m_input_tokens: safeNum,
+      ephemeral_1h_input_tokens: safeNum,
+    })
+    .optional(),
+);
+
 const ClaudeUsageSchema = z.object({
   input_tokens: safeNum,
   output_tokens: safeNum,
   cache_creation_input_tokens: safeNum,
   cache_read_input_tokens: safeNum,
   reasoning_tokens: safeNum,
+  cache_creation: CacheCreationSplitSchema,
 });
 
 const InitLineSchema = z.object({
@@ -297,15 +322,23 @@ function toolResultsFromContent(
   return out;
 }
 
+/** `{cacheWrite1h}` from a usage block's TTL split, or `{}` when it has none. */
+function oneHourSplit(u: z.infer<typeof ClaudeUsageSchema> | undefined): { cacheWrite1h?: number } {
+  const split = u?.cache_creation;
+  return split ? { cacheWrite1h: split.ephemeral_1h_input_tokens } : {};
+}
+
 function canonicalFromMessageUsage(
   u: z.infer<typeof ClaudeUsageSchema>,
   model?: string,
 ): CanonicalTokenRecord {
+  const ttl = oneHourSplit(u);
   return {
     input: u.input_tokens,
     output: u.output_tokens,
     cacheRead: u.cache_read_input_tokens,
     cacheWrite: u.cache_creation_input_tokens,
+    ...ttl,
     reasoning: u.reasoning_tokens,
     models: model
       ? [
@@ -315,6 +348,7 @@ function canonicalFromMessageUsage(
             output: u.output_tokens,
             cacheRead: u.cache_read_input_tokens,
             cacheWrite: u.cache_creation_input_tokens,
+            ...ttl,
             reasoning: u.reasoning_tokens,
           },
         ]
@@ -326,10 +360,16 @@ function canonicalFromMessageUsage(
  * Build the CanonicalTokenRecord from `result.modelUsage`, preferring it over
  * the aggregate `result.usage` (modelUsage carries the cache read/write and
  * reasoning splits per model plus per-model cost).
+ *
+ * modelUsage has no cache-write TTL split; only the aggregate `result.usage`
+ * carries `cache_creation` (observed on CLI 2.x). Its 1h count rides the
+ * record-level cacheWrite1h, never invented per model; the pricer apportions
+ * it across slices (see Pricer.price).
  */
 function canonicalFromModelUsage(
   mu: z.infer<typeof ResultLineSchema>['modelUsage'],
   totalCostUsd: number | undefined,
+  aggregateUsage?: z.infer<typeof ClaudeUsageSchema>,
 ): CanonicalTokenRecord | undefined {
   if (!mu) return undefined;
   const models: ModelTokenUsage[] = Object.entries(mu).map(([model, v]) => ({
@@ -347,6 +387,7 @@ function canonicalFromModelUsage(
     output: sum((m) => m.output),
     cacheRead: sum((m) => m.cacheRead),
     cacheWrite: sum((m) => m.cacheWrite),
+    ...oneHourSplit(aggregateUsage),
     reasoning: sum((m) => m.reasoning),
     models,
     ...(totalCostUsd !== undefined ? { costUsd: totalCostUsd } : {}),
@@ -390,6 +431,7 @@ function claudeUsageToCore(record: CanonicalTokenRecord): CoreTokenRecord {
     inputTokens: record.input,
     cacheReadTokens: record.cacheRead,
     cacheWriteTokens: record.cacheWrite,
+    ...(record.cacheWrite1h !== undefined ? { cacheWrite1hTokens: record.cacheWrite1h } : {}),
     outputTokens: record.output,
     reasoningTokens: record.reasoning,
     totalTokens: null,
@@ -843,7 +885,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       if (this.seenResultKeys.has(key)) return;
       this.seenResultKeys.add(key);
       const record =
-        canonicalFromModelUsage(parsed.data.modelUsage, parsed.data.total_cost_usd) ??
+        canonicalFromModelUsage(parsed.data.modelUsage, parsed.data.total_cost_usd, parsed.data.usage) ??
         (parsed.data.usage
           ? canonicalFromMessageUsage(parsed.data.usage)
           : undefined);

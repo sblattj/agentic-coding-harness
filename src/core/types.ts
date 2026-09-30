@@ -104,6 +104,13 @@ export interface CanonicalTokenRecord {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /**
+   * Subset of cacheWriteTokens written with the 1-hour cache TTL (Anthropic
+   * `usage.cache_creation.ephemeral_1h_input_tokens`, issue #105). The rest of
+   * cacheWriteTokens is 5-minute writes. Absent = the producer reported no TTL
+   * split; the pricer then bills every write at the 5m rate.
+   */
+  cacheWrite1hTokens?: number;
   reasoningTokens?: number;
   costUsd?: number;
   /** @deprecated Legacy alias: prompt = uncached input + cache slices. */
@@ -127,6 +134,7 @@ export const CanonicalTokenRecordSchema = z
     outputTokens: z.number(),
     cacheReadTokens: z.number().default(0),
     cacheWriteTokens: z.number().default(0),
+    cacheWrite1hTokens: z.number().optional(),
     reasoningTokens: z.number().optional(),
     costUsd: z.number().optional(),
     promptTokens: z.number().optional(),

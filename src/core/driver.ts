@@ -6,9 +6,11 @@ import { normalizeAuto } from './normalize.js';
 import { createPricer, pricedSources, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
+import { ChainWriter, canonicalTotals } from './hash-chain.ts';
 import { computeUsageAvailability } from './usage-availability.js';
 import { createContextMeter } from './context-meter.js';
 import { classifyLaunchError, classifyUnavailable } from './availability.ts';
+import { gitBranchInfo } from './git-branch.ts';
 import { runTotalsProvenance } from './provenance.ts';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
@@ -25,6 +27,7 @@ import { NullAdapter } from '../adapters/null.js';
 import { takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
 import type { BudgetAlertEvent } from './types.js';
+import { deriveLatency, hasLatency } from './latency.ts';
 
 /** Alert cooldown from AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H; a bad value warns and keeps the 24h default (#20). */
 function envCooldownMs(warn: (w: string) => void): number {
@@ -70,6 +73,7 @@ function fromPreNormalized(agent: string, u: CanonicalTokenRecord, timestamp: nu
     outputTokens: u.outputTokens ?? u.completionTokens ?? 0,
     cacheReadTokens: u.cacheReadTokens ?? u.cachedTokens ?? 0,
     cacheWriteTokens: u.cacheWriteTokens ?? 0,
+    ...(u.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: u.cacheWrite1hTokens } : {}),
     ...(u.reasoningTokens !== undefined ? { reasoningTokens: u.reasoningTokens } : {}),
     ...(u.costUsd !== undefined ? { costUsd: u.costUsd } : {}),
     // Producer extras ride through untouched: the kiro MITM tap carries its
@@ -384,6 +388,13 @@ export function createDriver(options: DriverOptions): Driver {
         await mkdir(rawDir, { recursive: true });
         const transcriptPath = join(rawDir, `${agentName}-${sessionId}.jsonl`);
         const transcript = createWriteStream(transcriptPath, { flags: 'a' });
+        // Tamper-evident metering (#59): every transcript line is chained to
+        // this run (per run, so a resumed session's second run appends its
+        // own chain to the same file) and the chain is sealed below.
+        const chain = new ChainWriter(runId);
+        const writeTranscript = (event: AgentEvent): void => {
+          transcript.write(`${chain.frame(JSON.stringify(event))}\n`);
+        };
 
         const events: AgentEvent[] = [];
         const tokens: CanonicalTokenRecord[] = [];
@@ -524,12 +535,14 @@ export function createDriver(options: DriverOptions): Driver {
           }
         };
         if (registryStateDir) {
+          const runCwd = typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd();
           rec = {
             runId,
             agent: agentName,
             sessionId,
             pid: process.pid,
-            cwd: typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd(),
+            cwd: runCwd,
+            ...gitBranchInfo(runCwd),
             promptPreview: parsed.prompt.slice(0, 120),
             startedAt: start,
             updatedAt: Date.now(),
@@ -592,6 +605,22 @@ export function createDriver(options: DriverOptions): Driver {
           writeRunRecordThrottled(true);
         };
 
+        // Terminal seal (#59): closes the transcript chain (and events.jsonl's,
+        // with the identical line) over the final metering totals. Totals are
+        // final once the event loop ends: costUsd is taken from cumulativeCost
+        // directly (totals.costUsd is only synced on a registry write), and
+        // contextTokens/provenance/costSource are deliberately NOT sealed —
+        // they are derived later or rewritten on every record write.
+        const sealRun = (): void => {
+          const at = Date.now();
+          const sealTotals = rec ? canonicalTotals({ ...totals, costUsd: cumulativeCost }) : null;
+          const sealed = chain.seal(at, sealTotals);
+          if (sealed === null) return;
+          transcript.write(`${sealed.line}\n`);
+          artifacts?.seal(at, sealTotals);
+          if (rec) rec.seal = sealed.seal;
+        };
+
         emitAlert = (a: FiredAlert): void => {
           const alertEvent: BudgetAlertEvent = {
             type: 'budget.alert',
@@ -606,7 +635,7 @@ export function createDriver(options: DriverOptions): Driver {
             data: describeAlert(a),
           };
           events.push(alertEvent);
-          transcript.write(`${JSON.stringify(alertEvent)}\n`);
+          writeTranscript(alertEvent);
           artifacts?.event(alertEvent);
           onEvent?.(alertEvent);
           if (rec) {
@@ -620,7 +649,7 @@ export function createDriver(options: DriverOptions): Driver {
           for await (const event of handle.attach()) {
             armIdleTimer(); // every AgentEvent defers the idle deadline
             events.push(event);
-            transcript.write(`${JSON.stringify(event)}\n`);
+            writeTranscript(event);
             artifacts?.event(event);
             onEvent?.(event);
             contextMeter?.observe(event);
@@ -729,6 +758,8 @@ export function createDriver(options: DriverOptions): Driver {
             writeRunRecordThrottled(false);
           }
         } catch (err) {
+          sealRun();
+          transcript.end();
           finalizeRunRecord('error');
           throw err;
         } finally {
@@ -741,6 +772,7 @@ export function createDriver(options: DriverOptions): Driver {
           activeRuns.delete(runId);
         }
 
+        sealRun();
         // Await full flush so the NDJSON transcript is on disk when run() resolves.
         await new Promise<void>((resolve) => transcript.end(() => resolve()));
         drainPricerWarnings();
@@ -846,6 +878,13 @@ export function createDriver(options: DriverOptions): Driver {
         const unavailableReason = enforcedStatus === null ? classifyUnavailable({ adapterExit, events }) : null;
         if (unavailableReason !== null) warnings.push(`unavailable: ${unavailableReason}`);
         const exitStatus: ExitStatus = enforcedStatus ?? (unavailableReason !== null ? 'unavailable' : adapterExit);
+        // Latency (#32) once, at finalize: deriving per throttled write would be
+        // O(events) on every event, and the live trio view re-derives it from
+        // the transcript on each /observability fetch anyway.
+        if (rec) {
+          const latency = deriveLatency(events);
+          if (hasLatency(latency)) rec.latency = latency;
+        }
         finalizeRunRecord(exitStatus);
 
         // Read the sessionId late: bridged handles expose a getter that reports

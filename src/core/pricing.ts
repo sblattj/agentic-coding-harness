@@ -8,7 +8,14 @@ export interface ModelPrice {
   input: number;
   output: number;
   cache_read: number;
+  /** Cache write at the 5-minute TTL (Anthropic: 1.25x input). */
   cache_creation: number;
+  /**
+   * Cache write at the 1-hour TTL (Anthropic: 2x input), issue #105. Billed
+   * for a record's cacheWrite1hTokens; absent = the model has no 1h tier and
+   * every write is billed at cache_creation.
+   */
+  cache_creation_1h?: number;
 }
 
 /** Options for {@link Pricer.price}. */
@@ -38,22 +45,26 @@ export interface Pricer {
 
 // Embedded fallback: LiteLLM-verified (flagships) plus plausible per-1M USD
 // prices for the newer entries, all subject to override by the bundled
-// pricing-data.json extract and any external map. cache_creation for Claude
-// is the 5m-TTL blended default (1.25x base).
+// pricing-data.json extract and any external map. Claude cache writes carry
+// both TTL tiers: cache_creation is the 5m rate (1.25x input) and
+// cache_creation_1h the 1h rate (2x input) that Claude Code actually uses
+// (issue #105).
 const FALLBACK_PRICES: Record<string, ModelPrice> = {
-  'claude-sonnet-4': { input: 3, output: 15, cache_read: 0.3, cache_creation: 3.75 },
-  'claude-sonnet-4-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5 },
-  'claude-sonnet-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5 },
-  // claude-sonnet-5-5 / claude-opus-5-5 (issue #103): mirror the -5 family
-  // rates — the LiteLLM extract predates them; pricing-data.json marks its
-  // copies with the estimated provenance.
-  'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5 },
-  'claude-haiku-4-5': { input: 1, output: 5, cache_read: 0.1, cache_creation: 1.25 },
-  'claude-opus-4': { input: 15, output: 75, cache_read: 1.5, cache_creation: 18.75 },
-  'claude-opus-4-8': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
-  'claude-opus-5': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
-  'claude-opus-5-5': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25 },
-  'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_creation: 12.5 },
+  'claude-sonnet-4': { input: 3, output: 15, cache_read: 0.3, cache_creation: 3.75, cache_creation_1h: 6 },
+  'claude-sonnet-4-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5, cache_creation_1h: 4 },
+  'claude-sonnet-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5, cache_creation_1h: 4 },
+  // claude-sonnet-5-5 (issue #103): mirrors the -5 family rates — the LiteLLM
+  // extract predates it; pricing-data.json marks its copy with the estimated
+  // provenance.
+  'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_creation: 2.5, cache_creation_1h: 4 },
+  'claude-haiku-4-5': { input: 1, output: 5, cache_read: 0.1, cache_creation: 1.25, cache_creation_1h: 2 },
+  'claude-opus-4': { input: 15, output: 75, cache_read: 1.5, cache_creation: 18.75, cache_creation_1h: 30 },
+  'claude-opus-4-8': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25, cache_creation_1h: 10 },
+  'claude-opus-5': { input: 5, output: 25, cache_read: 0.5, cache_creation: 6.25, cache_creation_1h: 10 },
+  // claude-opus-5-5: actual Anthropic list rates (issue #105), not the -5
+  // mirror #103 shipped — it reproduces CLI-reported costs to the micro-dollar.
+  'claude-opus-5-5': { input: 4, output: 20, cache_read: 0.2, cache_creation: 5, cache_creation_1h: 8 },
+  'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_creation: 12.5, cache_creation_1h: 20 },
   'gpt-5': { input: 1.25, output: 10, cache_read: 0.125, cache_creation: 0 },
   'gpt-5.6': { input: 4, output: 20, cache_read: 0.4, cache_creation: 5 },
   'gemini-2.5-pro': { input: 1.25, output: 10, cache_read: 0.125, cache_creation: 0 },
@@ -77,10 +88,12 @@ const ExternalPrice = z
     output: z.number().nonnegative().optional(),
     cache_read: z.number().nonnegative().optional(),
     cache_creation: z.number().nonnegative().optional(),
+    cache_creation_1h: z.number().nonnegative().optional(),
     input_cost_per_token: z.number().nonnegative().optional(),
     output_cost_per_token: z.number().nonnegative().optional(),
     cache_read_input_token_cost: z.number().nonnegative().optional(),
     cache_creation_input_token_cost: z.number().nonnegative().optional(),
+    cache_creation_input_token_cost_above_1hr: z.number().nonnegative().optional(),
   })
   .passthrough();
 
@@ -123,6 +136,8 @@ function parsePriceMap(raw: unknown): Record<string, ModelPrice> {
       cache_read: entry.cache_read ?? per1m(entry.cache_read_input_token_cost) ?? 0,
       cache_creation: entry.cache_creation ?? per1m(entry.cache_creation_input_token_cost) ?? 0,
     };
+    const oneHour = entry.cache_creation_1h ?? per1m(entry.cache_creation_input_token_cost_above_1hr);
+    if (oneHour !== undefined) price.cache_creation_1h = oneHour;
     map[key.toLowerCase()] = price;
     map[resolveAlias(key)] = price;
   }
@@ -144,7 +159,21 @@ interface ModelUsageSlice {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** 1h-TTL subset of cacheWrite, when the producer split it per slice. */
+  cacheWrite1h?: number;
   costUsd?: number;
+}
+
+/**
+ * USD-per-1M cost of `total` cache-write tokens of which `oneHour` were
+ * written with the 1h TTL (issue #105). Each TTL bucket is billed at its own
+ * rate; the 1h count is clamped to [0, total] so a malformed split never
+ * bills more tokens than were written. A model with no 1h rate bills every
+ * write at the 5m rate.
+ */
+function cacheWriteCost(total: number, oneHour: number | undefined, p: ModelPrice): number {
+  const oneH = Math.min(Math.max(0, oneHour ?? 0), Math.max(0, total));
+  return (total - oneH) * p.cache_creation + oneH * (p.cache_creation_1h ?? p.cache_creation);
 }
 
 /**
@@ -168,6 +197,9 @@ function modelSlices(rec: CanonicalTokenRecord): ModelUsageSlice[] | null {
       output: num(e.output),
       cacheRead: num(e.cacheRead),
       cacheWrite: num(e.cacheWrite),
+      ...(typeof e.cacheWrite1h === 'number' && Number.isFinite(e.cacheWrite1h)
+        ? { cacheWrite1h: e.cacheWrite1h }
+        : {}),
       ...(typeof e.costUsd === 'number' && Number.isFinite(e.costUsd)
         ? { costUsd: e.costUsd }
         : {}),
@@ -259,6 +291,18 @@ export function createPricer(costMapPath?: string): Pricer {
     // silent partial sum.
     const slices = modelSlices(rec);
     if (slices) {
+      // TTL split for slices (issue #105): claude's result.modelUsage carries
+      // no per-model split, only result.usage does (aggregate). A slice with
+      // its own cacheWrite1h uses it; otherwise the record-level 1h share
+      // (cacheWrite1hTokens / sum of slice writes, clamped to [0,1]) is
+      // applied to each slice's writes proportionally. `auto` cost mode
+      // prefers a slice's CLI-reported costUsd, so the apportionment only
+      // matters for computed (`calculate` / audit) costs.
+      const sliceWrites = slices.reduce((a, s) => a + s.cacheWrite, 0);
+      const share =
+        typeof rec.cacheWrite1hTokens === 'number' && sliceWrites > 0
+          ? Math.min(1, Math.max(0, rec.cacheWrite1hTokens / sliceWrites))
+          : 0;
       let total = 0;
       for (const s of slices) {
         if (s.costUsd !== undefined && !computedOnly) {
@@ -275,7 +319,7 @@ export function createPricer(costMapPath?: string): Pricer {
         total +=
           (s.input * p.input +
             s.cacheRead * p.cache_read +
-            s.cacheWrite * p.cache_creation +
+            cacheWriteCost(s.cacheWrite, s.cacheWrite1h ?? s.cacheWrite * share, p) +
             s.output * p.output) /
           1_000_000;
       }
@@ -307,11 +351,13 @@ export function createPricer(costMapPath?: string): Pricer {
     }
     // Cache-aware, per 1M: each token class billed exactly once at its own
     // rate. inputTokens is uncached-only by canonical convention, so fresh
-    // input is never double-billed against cache reads/writes.
+    // input is never double-billed against cache reads/writes. Cache writes
+    // bill per TTL bucket when the record carries the 1h split (issue #105);
+    // with no split every write is billed at the 5m rate.
     return (
       ((rec.inputTokens ?? 0) * p.input +
         (rec.cacheReadTokens ?? 0) * p.cache_read +
-        (rec.cacheWriteTokens ?? 0) * p.cache_creation +
+        cacheWriteCost(rec.cacheWriteTokens ?? 0, rec.cacheWrite1hTokens, p) +
         (rec.outputTokens ?? 0) * p.output) /
       1_000_000
     );

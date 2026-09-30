@@ -35,7 +35,22 @@ const ClaudeUsageBlock = z.object({
   cache_creation_input_tokens: z.number().nonnegative().optional(),
   cache_read_input_tokens: z.number().nonnegative().optional(),
   reasoning_tokens: z.number().nonnegative().optional(),
+  // Cache-write TTL split (issue #105). A non-object parses as absent.
+  cache_creation: z.preprocess(
+    (v) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : undefined),
+    z.object({ ephemeral_1h_input_tokens: z.number().nonnegative().optional() }).optional(),
+  ),
 });
+
+function withTtl(ttl: { cacheWrite1hTokens?: number }, rec: CanonicalTokenRecord): CanonicalTokenRecord {
+  return { ...rec, ...ttl };
+}
+
+/** `{cacheWrite1hTokens}` from a claude usage block's TTL split, else `{}`. */
+function claudeOneHour(u: z.infer<typeof ClaudeUsageBlock>): { cacheWrite1hTokens?: number } {
+  const n = u.cache_creation?.ephemeral_1h_input_tokens;
+  return n !== undefined ? { cacheWrite1hTokens: n } : {};
+}
 
 /** {model?, usage} — assistant message wrapper and result.usage fallback. */
 const ClaudeUsageWrapper = z.object({
@@ -213,9 +228,12 @@ export function normalizeClaude(agent: string, raw: unknown, timestamp = Date.no
   if (result.success) {
     const entries = Object.entries(result.data.modelUsage);
     if (entries.length === 0) return null;
+    // modelUsage has no TTL split; the result line's aggregate usage does.
+    const agg = ClaudeUsageBlock.safeParse((raw as { usage?: unknown }).usage);
+    const ttl = agg.success ? claudeOneHour(agg.data) : {};
     if (entries.length === 1) {
       const [model, u] = entries[0]!;
-      return record(
+      return withTtl(ttl, record(
         agent,
         model,
         u.inputTokens,
@@ -225,10 +243,10 @@ export function normalizeClaude(agent: string, raw: unknown, timestamp = Date.no
         timestamp,
         u.reasoningTokens,
         u.costUSD,
-      );
+      ));
     }
     const s = sumClaudeEntries(entries);
-    return record(
+    return withTtl(ttl, record(
       agent,
       entries.map(([m]) => m).join('+'),
       s.input,
@@ -238,7 +256,7 @@ export function normalizeClaude(agent: string, raw: unknown, timestamp = Date.no
       timestamp,
       s.reasoning,
       s.costUsd,
-    );
+    ));
   }
   // Assistant message usage (flattened {model, usage} or the raw stream-json
   // line {message: {model, usage}}) and the result.usage fallback.
@@ -248,16 +266,19 @@ export function normalizeClaude(agent: string, raw: unknown, timestamp = Date.no
   }
   if (wrapper.success) {
     const u = wrapper.data.usage;
-    return record(
-      agent,
-      wrapper.data.model ?? 'unknown',
-      u.input_tokens,
-      u.output_tokens,
-      u.cache_read_input_tokens ?? 0,
-      u.cache_creation_input_tokens ?? 0,
-      timestamp,
-      u.reasoning_tokens,
-    );
+    return {
+      ...record(
+        agent,
+        wrapper.data.model ?? 'unknown',
+        u.input_tokens,
+        u.output_tokens,
+        u.cache_read_input_tokens ?? 0,
+        u.cache_creation_input_tokens ?? 0,
+        timestamp,
+        u.reasoning_tokens,
+      ),
+      ...claudeOneHour(u),
+    };
   }
   // Bare snake_case result.usage block passed alone. Requires at least one
   // claude-distinctive cache/reasoning key so a bare codex-shaped
@@ -270,16 +291,19 @@ export function normalizeClaude(agent: string, raw: unknown, timestamp = Date.no
       const bare = ClaudeUsageBlock.safeParse(raw);
       if (bare.success) {
         const u = bare.data;
-        return record(
-          agent,
-          'unknown',
-          u.input_tokens,
-          u.output_tokens,
-          u.cache_read_input_tokens ?? 0,
-          u.cache_creation_input_tokens ?? 0,
-          timestamp,
-          u.reasoning_tokens,
-        );
+        return {
+          ...record(
+            agent,
+            'unknown',
+            u.input_tokens,
+            u.output_tokens,
+            u.cache_read_input_tokens ?? 0,
+            u.cache_creation_input_tokens ?? 0,
+            timestamp,
+            u.reasoning_tokens,
+          ),
+          ...claudeOneHour(u),
+        };
       }
     }
   }
@@ -415,7 +439,7 @@ export function normalizeAuto(agent: string, raw: unknown, timestamp: number = D
  *    uncached-only slice per the canonical convention — see
  *    CanonicalTokenRecord in core/types.ts; reasoningTokens is informational
  *    and already inside outputTokens for OpenAI/Gemini billing).
- *  - reasoningTokens and costUsd sum only over records that DEFINE them and
+ *  - reasoningTokens, cacheWrite1hTokens and costUsd sum only over records that DEFINE them and
  *    are omitted entirely when none does — a missing cost never silently
  *    becomes $0.
  *  - The aggregate's agent/model are the sentinel 'all'; timestamp is the
@@ -425,6 +449,7 @@ export function sumTokens(records: CanonicalTokenRecord[]): CanonicalTokenRecord
   const total = record('all', 'all', 0, 0, 0, 0, Date.now());
   let reasoning: number | undefined;
   let costUsd: number | undefined;
+  let cacheWrite1h: number | undefined;
   for (const r of records) {
     total.inputTokens = (total.inputTokens ?? 0) + (r.inputTokens ?? 0);
     total.outputTokens = (total.outputTokens ?? 0) + (r.outputTokens ?? 0);
@@ -436,8 +461,12 @@ export function sumTokens(records: CanonicalTokenRecord[]): CanonicalTokenRecord
     if (r.costUsd !== undefined) {
       costUsd = (costUsd ?? 0) + r.costUsd;
     }
+    if (r.cacheWrite1hTokens !== undefined) {
+      cacheWrite1h = (cacheWrite1h ?? 0) + r.cacheWrite1hTokens;
+    }
   }
   if (reasoning !== undefined) total.reasoningTokens = reasoning;
+  if (cacheWrite1h !== undefined) total.cacheWrite1hTokens = cacheWrite1h;
   if (costUsd !== undefined) total.costUsd = costUsd;
   return total;
 }

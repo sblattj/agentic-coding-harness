@@ -3,7 +3,7 @@
 // One row per registry RunRecord so scripts can catch context pressure
 // without a dashboard. A value the run could not know is `null` — never 0 —
 // and toolOutputShare is omitted (not zero) when the run had no tool events.
-import type { RunRecord } from "../core/registry.ts";
+import type { RunLatency, RunRecord } from "../core/registry.ts";
 
 export interface RunContextRow {
   runId: string;
@@ -21,6 +21,8 @@ export interface RunContextRow {
   /** True when derived from usage + the bundled window table. */
   estimated: boolean;
   toolOutputShare?: number;
+  /** Latency metrics (#32) the driver recorded at finalize; absent when none were measurable. */
+  latency?: RunLatency;
 }
 
 export function runContextRows(
@@ -46,6 +48,7 @@ export function runContextRows(
       basis: ctx?.basis ?? null,
       estimated: ctx?.estimated === true,
       ...(known && ctx.toolOutputShare !== undefined ? { toolOutputShare: ctx.toolOutputShare } : {}),
+      ...(rec.latency !== undefined ? { latency: rec.latency } : {}),
     });
   }
   return rows.sort((a, b) => a.startedAt - b.startedAt);
