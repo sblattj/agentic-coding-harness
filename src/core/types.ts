@@ -494,6 +494,12 @@ export type CanonicalEvent =
     }
   | { type: "step"; payload?: unknown }
   | { type: "usage"; tokens: AdapterTokenRecord; cost?: number }
+  /**
+   * A model request boundary (#32), bridged to model_call_start /
+   * model_call_end. `outputTokens` (end only) is that call's output, for
+   * latency; it is never summed into totals.
+   */
+  | { type: "model_call"; phase: "start" | "end"; callId: string; model?: string; outputTokens?: number }
   /** Human-readable stderr progress emitted by the CLI while running. */
   | { type: "progress"; text: string }
   | { type: "error"; message: string };

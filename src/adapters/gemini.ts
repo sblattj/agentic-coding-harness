@@ -3,6 +3,7 @@ import type { AdapterCapabilities, AgentAdapter, CanonicalEvent, RunHandle, RunO
 import type {
   AdapterProfileCheck,
   AgentAdapter as CoreAgentAdapter,
+  AgentEvent as CoreAgentEvent,
   AgentHandle as CoreAgentHandle,
   RunSpec as CoreRunSpec,
 } from '../core/types.js';
@@ -195,6 +196,73 @@ export function parseGeminiLine(line: string): CanonicalEvent[] {
 }
 
 // ---------------------------------------------------------------------------
+// Model-call boundaries (#32)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derives model_call_start / model_call_end for a gemini driver run from the
+ * core events (all stamped on arrival by the same bridge, so one clock).
+ *
+ * gemini stream-json has no request ids, but the loop is visible: the prompt
+ * is sent after `init` (and its echoed user message), and every follow-up
+ * request after the tool_result(s) of the previous response. So:
+ * - start = the latest session / user message / tool_result event;
+ * - first output = the next assistant message (a streamed chunk when the CLI
+ *   streams deltas) or tool_use;
+ * - end = the last assistant output before the next tool_result or the
+ *   result line (emitted when that line arrives, stamped at the last output).
+ * Output with no pending start is left unbracketed. No outputTokens: the
+ * result line's stats cover the whole run (every request, plus any internal
+ * helper calls), so gemini throughput stays null.
+ */
+export class GeminiModelCallTracker {
+  #pending: number | null = null;
+  #open: { id: string; lastAt: number } | null = null;
+  #calls = 0;
+
+  /** Core events to emit for `ev`; `fromResult` marks the result line's events. */
+  map(ev: CoreAgentEvent, fromResult: boolean): CoreAgentEvent[] {
+    const ts = typeof ev.timestamp === 'number' ? ev.timestamp : Date.now();
+    if (fromResult) {
+      // The run is over: close before the result line's first event (its
+      // `response` echo is not a new output).
+      const out = this.#open !== null ? [this.#end()] : [];
+      this.#pending = null;
+      return [...out, ev];
+    }
+    const isUser = ev.type === 'message' && ev.source === 'user';
+    const isOutput = (ev.type === 'message' && ev.source === 'agent') || ev.type === 'tool_call';
+    if (ev.type === 'session' || isUser) {
+      this.#pending = ts;
+      return [ev];
+    }
+    if (ev.type === 'tool_result') {
+      const out = this.#open !== null ? [this.#end()] : [];
+      this.#pending = ts;
+      return [...out, ev];
+    }
+    if (!isOutput) return [ev];
+    if (this.#open !== null) {
+      this.#open.lastAt = ts;
+      return [ev];
+    }
+    if (this.#pending === null) return [ev];
+    this.#calls += 1;
+    const id = `call-${this.#calls}`;
+    const start: CoreAgentEvent = { type: 'model_call_start', agent: 'gemini', callId: id, timestamp: this.#pending };
+    this.#open = { id, lastAt: ts };
+    this.#pending = null;
+    return [start, ev];
+  }
+
+  #end(): CoreAgentEvent {
+    const call = this.#open!;
+    this.#open = null;
+    return { type: 'model_call_end', agent: 'gemini', callId: call.id, timestamp: call.lastAt };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
 
@@ -319,11 +387,24 @@ export class GeminiAdapter implements AgentAdapter, CoreAgentAdapter {
       env: spec.env,
       scrubEnv: spec.sandbox?.scrubEnv,
     };
-    const handle = this.#run(jsonlSpec, takeOnOutput(spec));
+    // Events parsed from the terminal result line (#32 boundary tracking).
+    const fromResult = new WeakSet<CanonicalEvent>();
+    const parseLine = (line: string): CanonicalEvent[] => {
+      const events = parseGeminiLine(line);
+      if (events.length > 0 && (JSON.parse(line) as { type?: unknown }).type === 'result') {
+        for (const e of events) fromResult.add(e);
+      }
+      return events;
+    };
+    const handle = this.#run(jsonlSpec, takeOnOutput(spec), parseLine);
+    const calls = new GeminiModelCallTracker();
     return launchDriverHandle({
       agent: 'gemini',
       events: handle.events,
-      mapEvent: (event) => houseEventToCore('gemini', event),
+      mapEvent: (event) => {
+        const core = houseEventToCore('gemini', event);
+        return core === null ? null : calls.map(core, fromResult.has(event));
+      },
       exit: handle.wait(),
       abort: () => handle.abort(),
       fallbackSessionId: spec.resume,
@@ -335,8 +416,12 @@ export class GeminiAdapter implements AgentAdapter, CoreAgentAdapter {
     this.#current?.abort();
   }
 
-  #run(spec: JsonlRunSpec, onOutput?: (chunk: string) => void): RunHandle {
-    const handle = runJsonlCli({ spec, parseLine: parseGeminiLine, spawnFn: this.#spawnFn, onOutput });
+  #run(
+    spec: JsonlRunSpec,
+    onOutput?: (chunk: string) => void,
+    parseLine: (line: string) => CanonicalEvent[] = parseGeminiLine,
+  ): RunHandle {
+    const handle = runJsonlCli({ spec, parseLine, spawnFn: this.#spawnFn, onOutput });
     this.#current = handle;
     void handle.wait().finally(() => {
       if (this.#current === handle) this.#current = null;

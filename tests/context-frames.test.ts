@@ -149,6 +149,26 @@ describe('context frame annotator', () => {
     assert.equal(frames[4]!.tokens, 50_000, 'the run aggregate does not displace the per-call reading');
   });
 
+  it('adapter-emitted boundaries (#32: outputTokens, no usage) are carried-forward frames with no +Δ', () => {
+    const a = usage(MODEL, 6, 18_398, 31_596); // 50,000
+    const b = usage(MODEL, 2, 60, 51_938); // 52,000
+    const start = (id: string) => ({ type: 'model_call_start', agent: 'claude', callId: id, model: MODEL }) as unknown as AgentEvent;
+    const end = (id: string, out: number) =>
+      ({ type: 'model_call_end', agent: 'claude', callId: id, model: MODEL, outputTokens: out }) as unknown as AgentEvent;
+    const withBounds = run('claude', [start('A'), msg('a1', a), msg('a2', a), end('A', 40), start('B'), msg('b', b), end('B', 90)]);
+    const without = run('claude', [msg('a1', a), msg('a2', a), msg('b', b)]);
+    assert.equal(withBounds[0], undefined, 'no reading before the first usage');
+    for (const i of [3, 4, 6]) {
+      assert.equal(withBounds[i]!.fresh, false, `boundary frame ${i} never feeds a reading`);
+    }
+    assert.equal(withBounds[3]!.seq, 1);
+    assert.equal(withBounds[4]!.seq, 1, 'the next call start shows the previous reading, no new seq');
+    assert.equal(withBounds[6]!.seq, 2);
+    assert.equal(withBounds[6]!.delta, 2_000, 'the +Δ rides the reading, not a second one for the end');
+    // The message frames are identical with and without the boundaries.
+    assert.deepEqual([withBounds[1], withBounds[2], withBounds[5]], without);
+  });
+
   it('a shrinking reading reports a negative delta', () => {
     const frames = run('claude', [msg('a', usage(MODEL, 0, 0, 150_000)), msg('b', usage(MODEL, 0, 0, 20_000))]);
     assert.equal(frames[1]!.delta, -130_000);
