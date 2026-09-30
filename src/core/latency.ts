@@ -98,6 +98,11 @@ interface OpenToolCall {
 
 function isOutputEvent(ev: AgentEvent): boolean {
   if (ev.type === "tool_call") return true;
+  if (ev.type === "step") {
+    // kiro streams tokens as `step` chunks (kind 'chunk', src/adapters/kiro-events.ts).
+    const d = (ev as { data?: unknown }).data;
+    return typeof d === "object" && d !== null && (d as { kind?: unknown }).kind === "chunk";
+  }
   if (ev.type !== "message") return false;
   const src = (ev as { source?: unknown }).source;
   return src === "agent" || src === "assistant";
