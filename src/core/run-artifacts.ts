@@ -5,7 +5,9 @@
 // helper, src/core/run-to-directory.ts):
 //   invocation.json — resolved command/args/cwd/startedAt, written at open
 //   status.json     — lifecycle file, ALWAYS left in a terminal state
-//   events.jsonl    — one canonical AgentEvent per line (streamed)
+//   events.jsonl    — one canonical AgentEvent per line (streamed), hash-
+//                     chained and closed by an `ach.seal` record (#59,
+//                     src/core/hash-chain.ts); stripChain() recovers the event
 //   stdout.txt      — raw agent stdout chunks exactly as received
 //   stderr.txt      — harness-observed stderr (progress event lines)
 //   result.json     — the final RunResult object
@@ -20,6 +22,7 @@
 import { createWriteStream, renameSync, writeFileSync, type WriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { ChainWriter, type RunSeal, type SealTotals } from './hash-chain.ts';
 import type { AgentEvent, ExitStatus, RunResult } from './types.ts';
 
 /** Lifecycle states of status.json: 'running' until exactly one terminal state. */
@@ -35,6 +38,8 @@ export interface RunStatusFile {
   exitStatus?: ExitStatus;
   /** Adapter session id once known. */
   sessionId?: string;
+  /** Terminal seal of events.jsonl's hash chain (#59); the verify-run anchor. */
+  seal?: RunSeal;
 }
 
 /** The invocation.json shape: what was launched, where, and when. */
@@ -106,10 +111,13 @@ export class RunArtifacts {
   #stdout: WriteStream | null = null;
   #stderr: WriteStream | null = null;
   #events: WriteStream | null = null;
+  readonly #chain: ChainWriter;
+  #seal: RunSeal | undefined;
 
   private constructor(dir: string, runId: string) {
     this.dir = dir;
     this.#runId = runId;
+    this.#chain = new ChainWriter(runId);
   }
 
   static async open(dir: string, invocation: RunInvocation): Promise<RunArtifacts> {
@@ -135,7 +143,8 @@ export class RunArtifacts {
    * faithful line-per-line record of what the agent wrote to stderr.
    */
   event(event: AgentEvent): void {
-    this.#events?.write(`${JSON.stringify(event)}\n`);
+    if (this.#seal !== undefined) return; // chain closed: nothing may follow the seal
+    this.#events?.write(`${this.#chain.frame(JSON.stringify(event))}\n`);
     this.#eventCount++;
     if (event.type === 'progress' && typeof event.text === 'string' && event.text !== '') {
       this.#stderr?.write(`${event.text}\n`);
@@ -145,7 +154,22 @@ export class RunArtifacts {
   }
 
   /**
-   * Terminal settle: flush the streams, persist result.json (when the run
+   * Close events.jsonl's hash chain with the terminal seal record (#59). The
+   * driver calls this with the same `at` and totals it seals the raw
+   * transcript with, so both logs end in the identical seal line. Idempotent.
+   */
+  seal(at: number, totals: SealTotals | null): RunSeal | undefined {
+    const sealed = this.#chain.seal(at, totals);
+    if (sealed !== null) {
+      this.#events?.write(`${sealed.line}\n`);
+      this.#seal = sealed.seal;
+    }
+    return this.#seal;
+  }
+
+  /**
+   * Terminal settle: seal the chain (totals null when the driver did not seal
+   * it first — a launch failure or crash), flush the streams, persist result.json (when the run
    * produced one), then write the terminal status.json LAST so a terminal
    * status implies every other artifact is already on disk.
    */
@@ -154,6 +178,7 @@ export class RunArtifacts {
     if (result !== undefined && typeof result.sessionId === 'string' && result.sessionId) {
       this.#sessionId = result.sessionId;
     }
+    this.seal(Date.now(), null);
     await Promise.all([endStream(this.#events), endStream(this.#stdout), endStream(this.#stderr)]);
     if (result !== undefined) {
       writeJsonAtomic(join(this.dir, 'result.json'), result);
@@ -175,6 +200,7 @@ export class RunArtifacts {
       eventCount: this.#eventCount,
       ...(this.#exitStatus !== undefined ? { exitStatus: this.#exitStatus } : {}),
       ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
+      ...(this.#seal !== undefined ? { seal: this.#seal } : {}),
     };
     writeJsonAtomic(join(this.dir, 'status.json'), file);
   }

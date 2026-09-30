@@ -48,6 +48,16 @@ export {
 } from './core/attachments.ts';
 export { runToDirectory, type RunToDirectoryOptions, type RunToDirectoryOutcome } from './core/run-to-directory.ts';
 export type { RunDirStatus, RunInvocation, RunStatusFile } from './core/run-artifacts.ts';
+// Tamper-evident metering (#59): chained event lines, seal, verification.
+export {
+  parseFramedLine,
+  stripChain,
+  verifyChainText,
+  type ChainStatus,
+  type ChainVerification,
+  type RunSeal,
+  type SealTotals,
+} from './core/hash-chain.ts';
 export { parseRunSpec, type RunSpecValidationOptions } from './core/validate.ts';
 export {
   WorkspaceEscapeError,

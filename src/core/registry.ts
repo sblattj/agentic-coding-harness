@@ -15,6 +15,7 @@ import {
 } from "./types.ts";
 import { VerifyResultSchema, type VerifyResult } from "./verify.ts";
 import { PROVENANCE_CLASSES, type ProvenanceMap } from "./provenance.ts";
+import type { RunSeal } from "./hash-chain.ts";
 
 // Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
 // record (source:"external") validates without inventing a local pid, cwd, or
@@ -77,6 +78,8 @@ export interface RunRecord {
   regrades?: VerifyResult[];
   /** Latency metrics (#32) derived at finalize from the run's events (deriveLatency). */
   latency?: RunLatency;
+  /** Terminal seal of the raw transcript's hash chain (#59); `ach verify-run` anchor. */
+  seal?: RunSeal;
 }
 
 /** Shape of src/web/derive.ts LatencyMetrics; null = not measurable from the log. */
@@ -194,6 +197,17 @@ export const RunRecordSchema = z.object({
     .optional(),
   regrades: z.array(VerifyResultSchema).optional(),
   latency: RunLatencySchema.optional(),
+  seal: z
+    .object({
+      v: z.literal(1),
+      algo: z.literal("sha256"),
+      eventCount: z.number().int().min(0),
+      lastHash: z.string().regex(/^[0-9a-f]{64}$/),
+      sealHash: z.string().regex(/^[0-9a-f]{64}$/),
+      totalsHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+      at: z.number(),
+    })
+    .optional(),
 });
 
 export function registryDir(stateDir: string): string {
