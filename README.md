@@ -180,6 +180,15 @@ drawer: the span waterfall, cumulative token/cost charts, and the leveled event 
 **Terminal** — `ach dash` is a live TUI over the run registry (redraws 2×/s, ANSI status
 glyphs, totals footer); `--json` dumps RunRecords for tools.
 
+## Spend by git branch
+
+`ach run` records the git branch (and short commit) of the run's working directory on
+its run record at start. `ach stats --by branch` (composable with `--by model,project`)
+prints a per-branch table and adds `byBranch` to `--json`. Runs with no recorded branch
+(older records, non-git directories, transcript-only rows) show as `(no branch)`;
+a detached HEAD shows as `(detached <sha>)`. Attribution is by start branch: a
+mid-run `git checkout` is not re-attributed.
+
 ## New in 0.11.0
 
 ```sh

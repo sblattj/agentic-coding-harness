@@ -2,6 +2,12 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## Unreleased
+
+### Added
+
+- Spend by git branch (#47): the driver records the git `branch` and short `commit` of the run's working directory on the RunRecord at run start (one `git rev-parse`, 1.5 s timeout, errors swallowed; a non-repo records nothing, a detached HEAD records `commit` only). `ach stats --by branch` adds a per-branch table and an additive `byBranch` key in `--json`; runs and transcript rows with no recorded branch fall into an explicit `(no branch)` bucket, detached runs into `(detached <sha>)`. Transcript rows are attributed only through their matching run record's session id; no git call per row.
+
 ## [0.11.2] - 2026-09-28
 
 ### Fixed
