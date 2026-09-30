@@ -32,6 +32,8 @@ export interface DimRecord extends AggregatableRecord {
   sessionId?: string | null;
   model?: string | null;
   extra?: Record<string, unknown>;
+  /** 1h-TTL subset of cacheWriteTokens (issue #105), when the producer split it. */
+  cacheWrite1hTokens?: number;
   /** Working directory of the run, when known (run registry / transcript). */
   cwd?: string | null;
   /** Git branch label of the run (#47): a branch name, `(detached <sha>)`, or absent. */
@@ -85,6 +87,8 @@ interface Slice {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** 1h-TTL subset of cacheWrite, when the slice itself carries a split. */
+  cacheWrite1h?: number;
   reasoning: number;
   costUsd?: number;
 }
@@ -106,6 +110,7 @@ function usageSlices(extra: Record<string, unknown> | undefined): Slice[] | null
       output: num(e.output),
       cacheRead: num(e.cacheRead),
       cacheWrite: num(e.cacheWrite),
+      ...(typeof e.cacheWrite1h === "number" && Number.isFinite(e.cacheWrite1h) ? { cacheWrite1h: e.cacheWrite1h } : {}),
       reasoning: num(e.reasoning),
       ...(typeof e.costUsd === "number" && Number.isFinite(e.costUsd) ? { costUsd: e.costUsd } : {}),
     });
@@ -128,7 +133,7 @@ interface Contribution {
   costUsd: number | null;
 }
 
-function priceSlice(pricer: Pricer | undefined, s: Slice): number | null {
+function priceSlice(pricer: Pricer | undefined, s: Slice, oneHourShare: number): number | null {
   if (!pricer) return null;
   const cost = pricer.price({
     model: s.model,
@@ -136,6 +141,7 @@ function priceSlice(pricer: Pricer | undefined, s: Slice): number | null {
     outputTokens: s.output,
     cacheReadTokens: s.cacheRead,
     cacheWriteTokens: s.cacheWrite,
+    cacheWrite1hTokens: s.cacheWrite1h ?? s.cacheWrite * oneHourShare,
   });
   pricer.drainWarnings(); // surfaced once as unpricedModels, not per slice
   return Number.isFinite(cost) ? cost : null;
@@ -144,6 +150,11 @@ function priceSlice(pricer: Pricer | undefined, s: Slice): number | null {
 function contributions(r: DimRecord, pricer: Pricer | undefined, mode: CostMode = "auto"): Contribution[] {
   const slices = usageSlices(r.extra);
   if (slices) {
+    // Same TTL rule as Pricer.price (issue #105): claude's per-model slices
+    // carry no TTL split, so the record-level 1h share applies to each.
+    const writes = slices.reduce((a, s) => a + s.cacheWrite, 0);
+    const share =
+      typeof r.cacheWrite1hTokens === "number" && writes > 0 ? Math.min(1, Math.max(0, r.cacheWrite1hTokens / writes)) : 0;
     return slices.map((s) => ({
       model: s.model,
       inputTokens: s.input,
@@ -154,7 +165,7 @@ function contributions(r: DimRecord, pricer: Pricer | undefined, mode: CostMode 
       // CLI-reported slice cost first; a lone slice IS the record, so the
       // record's cost is its cost; otherwise price the slice at its own rates.
       costUsd:
-        (slices.length === 1 && r.costUsd !== undefined ? r.costUsd : selectCost(mode, s.costUsd, priceSlice(pricer, s) ?? undefined).costUsd ?? null),
+        (slices.length === 1 && r.costUsd !== undefined ? r.costUsd : selectCost(mode, s.costUsd, priceSlice(pricer, s, share) ?? undefined).costUsd ?? null),
     }));
   }
   return [

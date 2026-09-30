@@ -72,6 +72,7 @@ function fromPreNormalized(agent: string, u: CanonicalTokenRecord, timestamp: nu
     outputTokens: u.outputTokens ?? u.completionTokens ?? 0,
     cacheReadTokens: u.cacheReadTokens ?? u.cachedTokens ?? 0,
     cacheWriteTokens: u.cacheWriteTokens ?? 0,
+    ...(u.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: u.cacheWrite1hTokens } : {}),
     ...(u.reasoningTokens !== undefined ? { reasoningTokens: u.reasoningTokens } : {}),
     ...(u.costUsd !== undefined ? { costUsd: u.costUsd } : {}),
     // Producer extras ride through untouched: the kiro MITM tap carries its
