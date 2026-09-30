@@ -507,17 +507,20 @@ describe('ClaudeCodeAdapter.launch (driver contract)', () => {
     captured.child.end(0);
     const handle = await launchPromise;
 
-    const events: { type: string; [key: string]: unknown }[] = [];
+    const all: { type: string; [key: string]: unknown }[] = [];
     for await (const event of handle.attach()) {
-      events.push(event as { type: string; [key: string]: unknown });
+      all.push(event as { type: string; [key: string]: unknown });
     }
     assert.equal(await handle.wait(), 'success');
 
     assert.equal(handle.sessionId, '8f4c2a6e-1111-4e2a-9b3c-000000000001');
+    // #32: the init line opens the first request; the assistant message id
+    // brackets it; the result line closes it before the run-total usage.
     assert.deepEqual(
-      events.map((e) => e.type),
-      ['step', 'message', 'usage'],
+      all.map((e) => e.type),
+      ['step', 'model_call_start', 'message', 'model_call_end', 'usage'],
     );
+    const events = all.filter((e) => !e.type.startsWith('model_call_'));
 
     assert.equal(events[0]!.type, 'step');
     assert.equal(events[0]!.sessionId, '8f4c2a6e-1111-4e2a-9b3c-000000000001');
@@ -547,7 +550,7 @@ describe('ClaudeCodeAdapter.launch (driver contract)', () => {
     const handle = await launchPromise;
     const types: string[] = [];
     for await (const event of handle.attach()) types.push((event as { type: string }).type);
-    assert.deepEqual(types, ['step', 'message', 'usage']);
+    assert.deepEqual(types, ['step', 'model_call_start', 'message', 'model_call_end', 'usage']);
     cleanup(stateDir);
   });
 

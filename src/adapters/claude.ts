@@ -203,10 +203,14 @@ const InitLineSchema = z.object({
 const AssistantLineSchema = z.object({
   type: z.literal('assistant'),
   message: z.object({
+    /** API message id; every content-block line of one model response shares it. */
+    id: z.string().optional(),
     model: z.string().optional(),
     content: z.array(z.any()).optional(),
     usage: ClaudeUsageSchema.optional(),
   }),
+  /** Set on a sub-agent's lines (the parent Task tool_use id); null on the main loop. */
+  parent_tool_use_id: z.string().nullish(),
   session_id: z.string().optional(),
 });
 
@@ -215,6 +219,7 @@ const UserLineSchema = z.object({
   message: z.object({
     content: z.array(z.any()).optional(),
   }),
+  parent_tool_use_id: z.string().nullish(),
   session_id: z.string().optional(),
 });
 
@@ -446,8 +451,7 @@ function claudeUsageToCore(record: CanonicalTokenRecord): CoreTokenRecord {
 }
 
 /** Claude-local AgentEvent → core AgentEvent (driver lane). */
-function claudeEventToCore(event: AgentEvent): CoreAgentEvent {
-  const timestamp = Date.now();
+function claudeEventToCore(event: AgentEvent, timestamp: number = Date.now()): CoreAgentEvent {
   switch (event.type) {
     case 'step':
       return {
@@ -511,6 +515,135 @@ function claudeEventToCore(event: AgentEvent): CoreAgentEvent {
         data: event.payload,
         timestamp,
       };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Model-call boundaries (#32)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-line facts the stream parser records beside each claude-lane event
+ * (kept off the event payloads, which are an exported, test-pinned shape).
+ */
+export interface ClaudeLineMeta {
+  /** Arrival time (epoch ms) of the stdout line the event came from. */
+  at: number;
+  /** Conversation lane: the sub-agent's parent_tool_use_id, or 'main'. */
+  lane: string;
+  /** Assistant lines: the API message id shared by every block of one response. */
+  messageId?: string;
+}
+
+interface OpenClaudeCall {
+  id: string;
+  /** false when the call's request start was never observed (no boundaries). */
+  tracked: boolean;
+  startAt: number;
+  lastAt: number;
+  model?: string;
+  outputTokens?: number;
+}
+
+/**
+ * Derives model_call_start / model_call_end from claude stream-json (#32).
+ *
+ * The CLI (without --include-partial-messages, which ach does not pass) emits
+ * one `assistant` line per completed content block, every line of one API
+ * response sharing `message.id` and carrying that response's usage. A request
+ * is SENT at the init line (the prompt) or at a `user` line returning
+ * tool_result(s) — the last such line before the response, since the CLI sends
+ * all results in one request. So, per lane (main loop, or one sub-agent keyed
+ * by parent_tool_use_id):
+ * - start = arrival of the init line / the latest tool_result line;
+ * - first output = arrival of the first line with a new message.id
+ *   (first COMPLETED content block, not first token);
+ * - end = arrival of the last line with that id, emitted once the call is
+ *   known to be over (a tool_result line in the lane, or the result line).
+ *
+ * A response with no observed request start (a sub-agent's first call: its
+ * prompt line yields no event) gets no boundaries rather than an invented
+ * one. The end carries `outputTokens`, never `usage`: the result line's
+ * `usage` event already carries the run's totals.
+ */
+export class ClaudeModelCallTracker {
+  private readonly pending = new Map<string, number>();
+  private readonly open = new Map<string, OpenClaudeCall>();
+
+  /** Boundary events to emit BEFORE the given claude-lane event. */
+  before(event: AgentEvent, meta: ClaudeLineMeta | undefined): CoreAgentEvent[] {
+    if (meta === undefined) return [];
+    const out: CoreAgentEvent[] = [];
+    switch (event.type) {
+      case 'step':
+        this.pending.set('main', meta.at);
+        break;
+      case 'message': {
+        if (meta.messageId === undefined) break;
+        const outputTokens = event.payload.usage?.output;
+        const cur = this.open.get(meta.lane);
+        if (cur !== undefined && cur.id === meta.messageId) {
+          cur.lastAt = meta.at;
+          if (outputTokens !== undefined) cur.outputTokens = Math.max(cur.outputTokens ?? 0, outputTokens);
+          if (cur.model === undefined) cur.model = event.payload.model;
+          break;
+        }
+        if (cur !== undefined) out.push(...this.close(meta.lane));
+        const startAt = this.pending.get(meta.lane);
+        this.pending.delete(meta.lane);
+        const call: OpenClaudeCall = {
+          id: meta.messageId,
+          tracked: startAt !== undefined && startAt <= meta.at,
+          startAt: startAt ?? meta.at,
+          lastAt: meta.at,
+          ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
+          ...(outputTokens !== undefined ? { outputTokens } : {}),
+        };
+        this.open.set(meta.lane, call);
+        if (call.tracked) {
+          out.push({
+            type: 'model_call_start',
+            agent: 'claude',
+            callId: call.id,
+            ...(call.model !== undefined ? { model: call.model } : {}),
+            timestamp: call.startAt,
+          });
+        }
+        break;
+      }
+      case 'tool':
+        if (event.payload.phase === 'result') {
+          out.push(...this.close(meta.lane));
+          this.pending.set(meta.lane, meta.at);
+        }
+        break;
+      case 'usage':
+        // The result line: every response has finished.
+        for (const lane of [...this.open.keys()]) out.push(...this.close(lane));
+        this.pending.clear();
+        break;
+      default:
+        // aborted/error: an interrupted call has no observed end; leave it open.
+        break;
+    }
+    return out;
+  }
+
+  private close(lane: string): CoreAgentEvent[] {
+    const call = this.open.get(lane);
+    if (call === undefined) return [];
+    this.open.delete(lane);
+    if (!call.tracked) return [];
+    return [
+      {
+        type: 'model_call_end',
+        agent: 'claude',
+        callId: call.id,
+        ...(call.model !== undefined ? { model: call.model } : {}),
+        ...(call.outputTokens !== undefined ? { outputTokens: call.outputTokens } : {}),
+        timestamp: call.lastAt,
+      },
+    ];
   }
 }
 
@@ -590,6 +723,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
   private readonly opts: Required<Pick<ClaudeAdapterOptions, 'stateDir' | 'command'>> &
     ClaudeAdapterOptions;
   private readonly events: AgentEvent[] = [];
+  private readonly meta = new WeakMap<AgentEvent, ClaudeLineMeta>();
   private readonly waiters = new Set<() => void>();
   private child: HarnessChildProcess | null = null;
   private done = false;
@@ -652,10 +786,16 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     });
     this.launchedRunners.add(runner);
     void runner.waitExit().finally(() => this.launchedRunners.delete(runner));
+    const calls = new ClaudeModelCallTracker();
     return launchDriverHandle({
       agent: 'claude',
       events: runner.attach(),
-      mapEvent: (event) => claudeEventToCore(event),
+      mapEvent: (event) => {
+        const meta = runner.lineMeta(event);
+        // Stamp with the line's arrival time so boundaries and the events
+        // they bracket share one clock (#32).
+        return [...calls.before(event, meta), claudeEventToCore(event, meta?.at)];
+      },
       exit: runner
         .waitExit()
         .then((r) => r.code ?? (r.signal !== null ? -1 : 1)),
@@ -664,6 +804,11 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       liveSessionId: () => runner.sessionId ?? undefined,
       fallbackSessionId: spec.resume,
     });
+  }
+
+  /** Arrival/lane facts recorded for an event this runner parsed (#32). */
+  lineMeta(event: AgentEvent): ClaudeLineMeta | undefined {
+    return this.meta.get(event);
   }
 
   /** True once abort() was requested on this run. */
@@ -818,6 +963,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       return;
     }
     const kind = (raw as { type: unknown }).type;
+    const at = Date.now();
     if (kind === 'system') {
       const parsed = InitLineSchema.safeParse(raw);
       if (!parsed.success) {
@@ -826,10 +972,13 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       }
       if (parsed.data.subtype !== 'init') return;
       if (parsed.data.session_id) this.sessionId = parsed.data.session_id;
-      this.push({
-        type: 'step',
-        payload: { sessionId: parsed.data.session_id, model: parsed.data.model },
-      });
+      this.push(
+        {
+          type: 'step',
+          payload: { sessionId: parsed.data.session_id, model: parsed.data.model },
+        },
+        { at, lane: 'main' },
+      );
       return;
     }
     if (kind === 'assistant') {
@@ -839,6 +988,11 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
         return;
       }
       const { message } = parsed.data;
+      const lineMeta: ClaudeLineMeta = {
+        at,
+        lane: parsed.data.parent_tool_use_id ?? 'main',
+        ...(message.id !== undefined ? { messageId: message.id } : {}),
+      };
       this.push({
         type: 'message',
         payload: {
@@ -849,10 +1003,10 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
             ? canonicalFromMessageUsage(message.usage, message.model)
             : undefined,
         },
-      });
+      }, lineMeta);
       // Tools come AFTER the message so the transcript reads text-then-tools.
       for (const use of toolUsesFromContent(message.content)) {
-        this.push({ type: 'tool', payload: { phase: 'start', ...use } });
+        this.push({ type: 'tool', payload: { phase: 'start', ...use } }, lineMeta);
       }
       return;
     }
@@ -863,8 +1017,9 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       // (system/assistant/result) and user lines are a permissive passthrough.
       const parsed = UserLineSchema.safeParse(raw);
       if (!parsed.success) return;
+      const lane = parsed.data.parent_tool_use_id ?? 'main';
       for (const result of toolResultsFromContent(parsed.data.message.content)) {
-        this.push({ type: 'tool', payload: { phase: 'result', ...result } });
+        this.push({ type: 'tool', payload: { phase: 'result', ...result } }, { at, lane });
       }
       return;
     }
@@ -889,7 +1044,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
         (parsed.data.usage
           ? canonicalFromMessageUsage(parsed.data.usage)
           : undefined);
-      if (record) this.push({ type: 'usage', payload: record });
+      if (record) this.push({ type: 'usage', payload: record }, { at, lane: 'main' });
       return;
     }
     // stream_event / other lines: ignored (forward compatible).
@@ -920,7 +1075,8 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     this.finish();
   }
 
-  private push(event: AgentEvent): void {
+  private push(event: AgentEvent, meta?: ClaudeLineMeta): void {
+    if (meta !== undefined) this.meta.set(event, meta);
     this.events.push(event);
     this.notify();
   }

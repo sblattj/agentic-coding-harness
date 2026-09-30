@@ -47,6 +47,9 @@ export interface ToolLatencyRow extends DurationStats {
  * - modelCalls: end-to-end latency of closed model calls (start -> end).
  * - outputTokensPerSec / tpotMs: output tokens of each call over its
  *   post-TTFT window (first output -> model_call_end), pooled across calls.
+ *   A call's output tokens come from model_call_end.usage, else
+ *   model_call_end.outputTokens (the non-summed field built-in adapters use),
+ *   else usage events tagged with the call's id.
  * - tools: tool_call -> tool_result per tool name (a call whose result never
  *   arrived is not measured).
  *
@@ -123,7 +126,7 @@ export function deriveLatency(events: AgentEvent[]): LatencyMetrics {
         const idx = findModel(ev.callId);
         if (idx === -1) break;
         const call = openModels.splice(idx, 1)[0]!;
-        const out = finiteNum(ev.usage?.outputTokens) ?? call.outputTokens;
+        const out = finiteNum(ev.usage?.outputTokens) ?? finiteNum(ev.outputTokens) ?? call.outputTokens;
         if (call.startMs === null || ms === null || ms < call.startMs) break;
         e2es.push(ms - call.startMs);
         if (call.firstOutputMs === null || call.firstOutputMs > ms) break;
