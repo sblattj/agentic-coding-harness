@@ -234,6 +234,7 @@ async function collectTodayRecords(sinceTs: number, includeTranscripts: boolean)
           outputTokens: r.outputTokens,
           cacheReadTokens: r.cacheReadTokens,
           cacheWriteTokens: r.cacheWriteTokens,
+          ...(r.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: r.cacheWrite1hTokens } : {}),
           ...(r.extra !== undefined ? { extra: r.extra } : {}),
         },
         { computedOnly: true },
@@ -259,6 +260,7 @@ async function collectTodayRecords(sinceTs: number, includeTranscripts: boolean)
       outputTokens: rec.output,
       cacheReadTokens: rec.cacheRead,
       cacheWriteTokens: rec.cacheWrite,
+      ...(rec.cacheWrite1h !== undefined ? { cacheWrite1hTokens: rec.cacheWrite1h } : {}),
       reasoningTokens: rec.reasoning,
     };
     const key = dedupeKey(row);
@@ -272,6 +274,7 @@ async function collectTodayRecords(sinceTs: number, includeTranscripts: boolean)
         outputTokens: row.outputTokens,
         cacheReadTokens: row.cacheReadTokens,
         cacheWriteTokens: row.cacheWriteTokens,
+        ...(row.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: row.cacheWrite1hTokens } : {}),
       });
       if (!Number.isNaN(cost)) costUsd = cost;
     }
@@ -298,6 +301,8 @@ export async function computeStatusSnapshot(opts: SnapshotOptions = {}): Promise
   const activeByAgent: Record<string, number> = {};
   let newest: { rec: RunRecord; status: z.infer<typeof RunStatusEnum> } | undefined;
   for (const rec of listRunRecords(dir)) {
+    // Imported (#25) sessions are history, not runs: no verdict to count.
+    if (rec.source === "imported") continue;
     const status = effectiveStatus(rec, now);
     if (rec.startedAt < since && status !== "running") continue;
     runs.total += 1;

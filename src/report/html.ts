@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import type { LoadedRun, TrialSet } from "./model.ts";
 import { VERSION } from "../version.ts";
 import { repeatStats } from "../core/repeat-stats.ts";
+import { NO_BRANCH } from "../cli/stats-dims.ts";
 import { markerFor, PROVENANCE_LEGEND } from "../core/provenance.ts";
 
 const MESSAGE_CAP = 2000;
@@ -306,6 +307,11 @@ ${labels.join("\n")}
 
 // ---------------------------------------------------------------- table
 
+/** Seal verdict cell text (#59): ✓ only for an intact, sealed chain. */
+function sealText(s: "ok" | "tampered" | "unsealed" | "open"): string {
+  return s === "ok" ? "✓ sealed" : s === "tampered" ? "✗ TAMPERED" : s === "open" ? "open (no seal)" : "unsealed (legacy)";
+}
+
 function statusBadge(s: string): string {
   return `<span class="badge st-${esc(s)}">${esc(s)}</span>`;
 }
@@ -328,6 +334,7 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
   const showCredits = runs.some((r) => r.credits !== null);
   const showContext = runs.some((r) => r.usage?.context?.available === true);
   const showVerify = runs.some((r) => r.verify !== undefined);
+  const showSeal = runs.some((r) => r.seal !== undefined);
   // Identity column (spec §6.3): when ANY run carries a variant label the
   // comparison groups by variant (matching the live /compare view's default
   // experiment×variant rollup); otherwise the historical by-agent column.
@@ -349,6 +356,7 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
     `<th data-k="dur" data-t="n" class="num">duration</th>`,
     `<th data-k="exit" data-t="s">exit status</th>`,
     ...(showVerify ? [`<th data-k="verify" data-t="s">verify</th>`] : []),
+    ...(showSeal ? [`<th data-k="seal" data-t="s">seal</th>`] : []),
   ].join("");
   const rows = runs
     .map((r) => {
@@ -387,6 +395,13 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
               r.verify === undefined
                 ? `<td data-v="" class="na">n/a</td>`
                 : `<td data-v="${esc(r.verify.status)}" title="${esc(r.verify.command)}">${statusBadge(r.verify.status)}</td>`,
+            ]
+          : []),
+        ...(showSeal
+          ? [
+              r.seal === undefined
+                ? `<td data-v="" class="na">n/a</td>`
+                : `<td data-v="${esc(r.seal.status)}" title="${esc(r.seal.detail)}">${esc(sealText(r.seal.status))}</td>`,
             ]
           : []),
       ];
@@ -478,6 +493,48 @@ function renderRepeatStats(runs: LoadedRun[]): string {
     <p class="meta">k = verified runs per ${groupKey}; pass@1 with a Wilson 95% interval; pass^k = all k passed; any-pass@k = at least one passed. Verifier errors count as not passed.</p>
   <table class="cmp sortable" id="repeat-stats">
     <thead><tr><th data-k="${groupKey}" data-t="s">${groupKey}</th><th data-k="k" data-t="n" class="num">k</th><th data-k="passes" data-t="n" class="num">passes</th><th data-k="p1" data-t="n" class="num">pass@1</th><th data-k="ci" data-t="n" class="num">Wilson 95% CI</th><th data-k="phk" data-t="n" class="num">pass^k</th><th data-k="apk" data-t="n" class="num">any-pass@k</th></tr></thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>
+  </section>
+`;
+}
+
+/** Spend by git branch (#47): runs, cost and tokens per branch label. Shown
+ *  only when some run carries a branch; runs without one fall in the same
+ *  `(no branch)` bucket as `ach stats --by branch`. */
+function renderBranchTable(runs: LoadedRun[]): string {
+  if (!runs.some((r) => r.branch !== undefined)) return "";
+  const groups = new Map<string, { runs: number; cost: number; unpriced: number; tokens: number }>();
+  for (const r of runs) {
+    const key = r.branch ?? NO_BRANCH;
+    const g = groups.get(key) ?? { runs: 0, cost: 0, unpriced: 0, tokens: 0 };
+    g.runs++;
+    if (r.usdUnavailable || r.costUsd === undefined) g.unpriced++;
+    else g.cost += r.costUsd;
+    if (!r.tokensUnavailable) g.tokens += r.inputTokens + r.outputTokens;
+    groups.set(key, g);
+  }
+  const rows = [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, g]) => {
+      const allUnpriced = g.unpriced === g.runs;
+      const cost = allUnpriced ? "n/a" : fmtCost(g.cost) + (g.unpriced > 0 ? ` + ${g.unpriced} unpriced` : "");
+      const cells = [
+        `<td data-v="${esc(key)}" class="agent-cell">${esc(key)}</td>`,
+        `<td data-v="${g.runs}" class="num">${g.runs}</td>`,
+        `<td data-v="${allUnpriced ? "" : g.cost}" class="num">${esc(cost)}</td>`,
+        `<td data-v="${g.tokens}" class="num">${fmtInt(g.tokens)}</td>`,
+      ];
+      return `      <tr>${cells.join("")}</tr>`;
+    })
+    .join("\n");
+  return `  <section>
+    <h3>spend by git branch</h3>
+    <p class="meta">Branch captured at run start; tokens = input + output. Runs with no recorded branch fall in ${esc(NO_BRANCH)}.</p>
+  <table class="cmp sortable" id="branch-spend">
+    <thead><tr><th data-k="branch" data-t="s">branch</th><th data-k="runs" data-t="n" class="num">runs</th><th data-k="cost" data-t="n" class="num">cost USD</th><th data-k="tokens" data-t="n" class="num">tokens</th></tr></thead>
     <tbody>
 ${rows}
     </tbody>
@@ -680,7 +737,7 @@ ${renderComparisonTable(runs, multiTrial)}
     <h3>availability</h3>
 ${renderAvailability(runs)}
   </section>
-${renderScoreHistory(runs)}${renderRepeatStats(runs)}${renderCharts(runs)}
+${renderScoreHistory(runs)}${renderRepeatStats(runs)}${renderBranchTable(runs)}${renderCharts(runs)}
   <section>
     <h3>per-agent detail</h3>
 ${runs.map(renderAgentSection).join("\n")}

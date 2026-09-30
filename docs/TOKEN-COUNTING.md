@@ -19,14 +19,16 @@ informational. No stored grand total — derive at render time.
 |---|---|---|
 | `message.usage.input_tokens` | each transcript/assistant line | uncached input (Claude convention: cache separate) |
 | `message.usage.cache_read_input_tokens` | same | prompt-cache hits |
-| `message.usage.cache_creation_input_tokens` | same | prompt-cache writes |
+| `message.usage.cache_creation_input_tokens` | same | prompt-cache writes (both TTLs) |
+| `message.usage.cache_creation.{ephemeral_5m_input_tokens,ephemeral_1h_input_tokens}` | same, and `result.usage` | cache writes split by TTL (#105); Claude Code writes with the **1h** TTL |
 | `message.usage.output_tokens` | same | completions |
 | `message.costUSD` / `obj.costUSD` | same | provider-computed cost, when present |
 | `result.modelUsage["<model>"].{inputTokens,outputTokens,cacheCreationInputTokens,cacheReadInputTokens}` | final result payload | per-model turn totals (camelCase) |
 
 **→ canonical:**
-- Transcript tap (`cli/lib.ts extractClaudeRecordFromLine`): use fields as-is (input already
+- Transcript tap (`monitors/transcripts.ts parseClaudeTranscript`): use fields as-is (input already
   uncached), `costUSD` preferred, else priced through the shared `Pricer` (`core/pricing.ts`).
+  `usage.cache_creation.ephemeral_1h_input_tokens` becomes `cacheWrite1hTokens` (#105).
 - Stream tap (`normalizeClaude`): accepts three shapes — a flattened `ClaudeModelUsage` entry
   (`model` + camelCase fields), a snake_case assistant-usage block, or the whole `result.modelUsage`
   map (entries summed into one record; model degrades to `"a+b"` when multiple models ran).
@@ -190,16 +192,39 @@ a tap must not "correct" it by keeping only the last step.
 `core/pricing.ts` (`Pricer.price`), per model record:
 
 ```
-cost_usd = ( inputTokens        × price.input
-           + cacheReadTokens    × price.cache_read
-           + cacheWriteTokens   × price.cache_creation
-           + outputTokens       × price.output ) / 1_000_000
+write1h  = clamp(cacheWrite1hTokens ?? 0, 0, cacheWriteTokens)
+cost_usd = ( inputTokens                   × price.input
+           + cacheReadTokens               × price.cache_read
+           + (cacheWriteTokens − write1h)  × price.cache_creation
+           + write1h                       × (price.cache_creation_1h ?? price.cache_creation)
+           + outputTokens                  × price.output ) / 1_000_000
 ```
 
-- Embedded fallback table (LiteLLM-verified per-1M USD): `claude-sonnet-4` 3/15/0.3/3.75,
-  `claude-opus-4` 15/75/1.5/18.75, `gpt-5` 1.25/10/0.125/0, `gemini-2.5-pro` 1.25/10/0.31/0
-  (fields: input/output/cache_read/cache_creation). Claude cache-creation is the 5m-TTL blended
-  1.25× base.
+- Embedded fallback table (LiteLLM-verified per-1M USD): `claude-sonnet-4` 3/15/0.3/3.75/6,
+  `claude-opus-4` 15/75/1.5/18.75/30, `claude-opus-5-5` 4/20/0.2/5/8, `gpt-5` 1.25/10/0.125/0,
+  `gemini-2.5-pro` 1.25/10/0.31/0 (fields: input/output/cache_read/cache_creation/cache_creation_1h).
+- **Cache writes are billed per TTL (#105).** Anthropic bills a 5-minute cache write at 1.25×
+  input (`cache_creation`) and a 1-hour write at 2× input (`cache_creation_1h`; LiteLLM field
+  `cache_creation_input_token_cost_above_1hr`). Claude Code writes its prompt cache with the 1h
+  TTL, and its usage records split writes in `usage.cache_creation`. Every Claude parser (stream
+  adapter, transcript monitor, normalizer, `ach audit`) carries the 1h count as
+  `CanonicalTokenRecord.cacheWrite1hTokens`. `cacheWriteTokens` stays the total (5m + 1h), so
+  every token counter is unchanged. When a record has no split (older CLIs, other agents), every
+  write bills at the 5m rate. That fallback under-prices real Claude Code runs by 0.75× input per
+  written token. A model with no 1h rate bills a 1h split at `cache_creation`. An override-file
+  entry replaces the whole bundled entry, so an override without `cache_creation_1h` bills every
+  write at its `cache_creation`.
+- **Multi-model records and the TTL split.** `result.modelUsage` slices carry no TTL split. Only
+  the aggregate `result.usage` does. The pricer applies the record-level 1h share
+  (`cacheWrite1hTokens / Σ slice cacheWrite`, clamped to [0, 1]) to each slice's writes, unless a
+  slice carries its own `cacheWrite1h`. This apportionment is an estimate. It only affects
+  computed costs (`--cost-mode calculate`, `ach audit`), because `auto` prefers each slice's
+  CLI-reported `costUsd`.
+- **Old runs under `ach audit`.** Driver transcripts written before #105 kept no split in their raw
+  usage payload, so audit reprices them with every write at 5m, the same rule their recorded cost
+  used. Both sit below the CLI-reported cost. A `claude-opus-5-5` run recorded before #105 still
+  shows cost drift, because audit reprices it with the corrected rates (any pricing-table change
+  surfaces that way).
 - External LiteLLM-style cost maps are accepted via `createPricer(costMapPath)`, in per-1M fields
   or per-token fields (auto-scaled ×1e6); `resolveAlias` strips provider prefixes, date stamps,
   and `-latest/-preview` so `anthropic/claude-sonnet-4-20250514` matches `claude-sonnet-4`.
@@ -350,6 +375,22 @@ step/message event → the RunSpec `model`.
     toolOutputShare?: number            // omitted when no tool events
   }
   ```
+- **Claude `<synthetic>` messages** (text the CLI writes itself, e.g. "Credit
+  balance is too low", with all-zero usage) are not model calls: the meter
+  skips their usage and never adopts `<synthetic>` as the model.
+- **Per-frame readings in `ach web`:** the server runs one meter per run
+  socket over the transcript in order and stamps each event it sends with an
+  additive `ctx` field (`src/web/context-frames.ts`): `tokens`, `basis`,
+  `fresh` (this event fed the reading; tool rows carry it forward with
+  `fresh:false`), `seq` (ordinal of the distinct reading), `delta` of that
+  reading against the previous distinct one (on every frame of the reading;
+  the feed draws `+Δ` once per `seq`, on the first drawn row), the
+  `input`/`cacheRead`/`cacheWrite` breakdown on fresh frames, and
+  `window`/`pct`/`warnAt` when the window is known. No meter (kiro, custom
+  agents), no usage yet, or the #59 `ach.seal` record → no field. The feed
+  only renders it. Compaction is not marked: no adapter bridges a compaction
+  event (claude's `system` lines other than `init` are dropped in
+  `adapters/claude.ts`), and the feed does not guess one from a drop.
 
 ---
 

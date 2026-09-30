@@ -201,12 +201,30 @@ terminal you can type into.
 ![Web dashboard terminal grid showing live agent run tiles with token and cost readouts and interactive terminal panes](docs/assets/web-grid.png)
 
 **Observability trio** — traces, metrics, and logs for a single run, with a live terminal
-drawer: the span waterfall, cumulative token/cost charts, and the leveled event log.
+drawer: the span waterfall, cumulative token/cost charts, and the leveled event log. The
+metrics pane also shows latency — time to first token, output tokens/s, time per output token,
+and a per-tool duration table (calls, avg, p95, total); a metric the event log cannot support
+reads `n/a`. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) ("Latency metrics") for definitions and
+which agents emit what.
 
 ![Observability view showing the traces waterfall, token and cost metric cards with charts, and the event log stream for a single coding agent run](docs/assets/web-trio.png)
 
 **Terminal** — `ach dash` is a live TUI over the run registry (redraws 2×/s, ANSI status
 glyphs, totals footer); `--json` dumps RunRecords for tools.
+
+## Spend by git branch
+
+`ach run` records the git branch (and short commit) of the run's working directory on
+its run record at start. `ach stats --by branch` (composable with `--by model,project`)
+prints a per-branch table and adds `byBranch` to `--json`. Runs with no recorded branch
+(older records, non-git directories, transcript-only rows) show as `(no branch)`;
+a detached HEAD shows as `(detached <sha>)`. Attribution is by start branch: a
+mid-run `git checkout` is not re-attributed.
+
+The same labels drive two more views. `/api/compare?by=branch` (alias `by=git.branch`,
+composable with the other keys, e.g. `by=branch,agent`) groups the web rollup by branch.
+`ach report` adds a "spend by git branch" table (branch, runs, cost, tokens) whenever a
+trial's run records carry a branch; runs without one fall in `(no branch)`.
 
 ## New in 0.11.0
 
@@ -252,11 +270,17 @@ ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] 
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach watch [--transcript-dir <root>]           # live per-session token deltas
 ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--json] [--state-only]
-            [--transcript-dir <root>]
+            [--transcript-dir <root>] [--origin all|native|imported|transcript]
             # window is [--since, --until): since inclusive, until EXCLUSIVE (a record
             # stamped exactly at --until is not counted); --until alone = everything before it
 ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--state-dir <stateDir>]
             # re-derive RunRecord totals from raw transcripts; exit 1 on drift
+ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <stateDir>]
+            [--dry-run] [--json]
+            # record existing Claude Code sessions as imported RunRecords
+ach verify-run <runId|runDir> [--json] [--records] [--state-dir <stateDir>]
+            # prove the run's hash-chained event log + sealed totals are untouched
+            # exit 0 intact, 2 tampered, 3 unsealed (legacy), 4 open (never sealed)
 ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
@@ -275,8 +299,33 @@ ach web [trials-dir] [--port N=8399] [--host H] [--token T] [--state-dir <stateD
 
 `--dir` is kept as an alias with a per-command meaning: for `watch` and `stats` it is
 `--transcript-dir` (a home-shaped root holding `.claude/projects` etc.); for `archive`, `audit`,
-`dash` and `web` it is `--state-dir`. Passing both spellings with different values is a usage
+`import`, `dash` and `web` it is `--state-dir`. Passing both spellings with different values is a usage
 error.
+
+`ach import --agent claude` gives a new install its history on day one. It reads the existing
+Claude Code transcripts (`~/.claude/projects`, or `<root>/.claude/projects` with
+`--transcript-dir <root>`) and writes one RunRecord per session into the same registry native runs
+use (`<stateDir>/runs/`), marked `source: "imported"` and carrying the native `sessionId`, the
+session's token totals, a computed cost, its `cwd`, and the transcript paths in `metadata`. `ach dash`,
+`ach web`, and the compare view then list those sessions next to native runs. The import is
+idempotent: the run id is derived from the session id, so a second import rewrites nothing and
+reports each session `unchanged` (a session that grew since is `updated`). A session a native
+`ach run` already recorded is skipped and reported, never duplicated. Sessions whose last activity
+is older than `--days` (default 30) are reported as `skipped-outside-window`. A corrupt transcript
+file is an `error` line; the import continues and still exits 0. `--dry-run` reports without
+writing; `--json` emits `{summary, sessions, errors, ...}`. Only claude is importable so far.
+
+Import never changes an `ach stats` total. Stats already counts machine transcripts directly, and
+it sums tokens only from those transcripts and from harness state under `<stateDir>/raw/`, never
+from RunRecord totals, so an imported session is counted once, from its transcript, before and
+after import. What import adds is provenance: once the registry holds imported sessions,
+`ach stats` prints an `origin:` line per origin (`--json`: `origins`), and `--origin` counts only
+one of them. `native` means ach runs, `imported` means sessions `ach import` recorded, and
+`transcript` means machine transcripts that are not in the registry. The default is `all`. The flag
+is `--origin` rather than `--source` because `ach web --source` names an external run feed. Imported
+sessions carry no task verdict, so they are excluded from the stats run-outcome rollup and from
+`ach status` run counts. To keep history after Claude Code prunes old transcripts, snapshot them
+with `ach archive` and read them back with `ach stats --with-warehouse`.
 
 `ach audit` is the self-check on the numbers themselves. For every RunRecord under
 `<stateDir>/runs/` it replays the run's raw transcript (`<stateDir>/raw/<agent>-<session>.jsonl`),
@@ -290,7 +339,54 @@ and a model the pricer does not know is reported as an `unpriceable` cost; neith
 `--fix` rewrites the drifted totals (and the `usage.usd.value` mirror) and appends one
 `corrections: [{at, field, from, to, by}]` entry per field to the RunRecord, so a patch is never
 silent. `--json` emits `{rows, summary, total}`; each row carries `recorded`, `recomputed`, and
-`delta` objects keyed by the same field names as `ach stats --json`.
+`delta` objects keyed by the same field names as `ach stats --json`. Each row also carries
+`chain`, the run's `ach verify-run` verdict (below), taken before any `--fix`.
+
+### Tamper-evident metering (`ach verify-run`)
+
+`ach audit` proves the totals follow from the event log; `ach verify-run <runId>` proves the log
+itself, and the totals recorded from it, were not edited after the run. Every line the driver
+writes to a run's raw transcript (`<stateDir>/raw/<agent>-<session>.jsonl`, the file `ach audit`
+reads) and, in run-to-directory mode, to `events.jsonl` carries a sha256 hash chain, and the run
+ends with an `ach.seal` record:
+
+```text
+{"ach_chain":{"v":1,"run":"<runId>","seq":N,"prev":"<hex>","hash":"<hex>"},<the event JSON as before>
+{"ach_chain":{...,"seq":E},"type":"ach.seal","timestamp":..,"runId":..,"eventCount":E,"lastHash":..,"totals":{..},"totalsHash":..}
+```
+
+- **What is hashed.** Stripping the fixed `{"ach_chain":{...},` prefix gives back, byte for byte,
+  the event line as it was written before chaining (`JSON.stringify(event)`, called BODY).
+  `hash = sha256("ach-chain/v1\n" + runId + "\n" + seq + "\n" + prev + "\n" + BODY)`, and seq 0's
+  `prev` is `sha256("ach-chain/v1\ngenesis\n" + runId)`. Verification recomputes over the exact bytes
+  on disk. Nothing is re-serialized, so reordering a record's keys counts as an edit.
+  `stripChain(line)` (exported) recovers the event.
+- **Per run, not per file.** A resumed session appends several runs to one transcript. Each run's
+  lines carry its own `run` id and chain, and older unchained lines are left alone.
+- **Seal.** The seal record covers the event count, the last hash, and the sealed metering totals
+  (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `costUsd`, `credits`;
+  derived fields such as `contextTokens` are not sealed). Its hash is mirrored into
+  `RunRecord.seal` (`{v, algo, eventCount, lastHash, sealHash, totalsHash, at}`) and, in
+  run-to-directory mode, into `status.json`. That anchor is what makes a truncated tail or a
+  deleted seal detectable.
+- **Verdicts.** `ok` (exit 0): the chain is intact, sealed, and the recorded totals match the seal.
+  `tampered` (exit 2): names the first bad line, whether a record was edited, deleted, inserted
+  (including an unchained line planted inside the run), or reordered, the tail was truncated, the
+  seal disagrees with `RunRecord.seal`, or the RunRecord totals differ from the sealed totals.
+  `unsealed` (exit 3): a legacy log from before chaining, never a failure. `open` (exit 4): the
+  chain is intact, but the run has no seal and no anchor, and its record still says `running`,
+  because it is still running or it crashed before sealing. The driver seals before it writes a
+  terminal status, so an unsealed chain on a finished run counts as `tampered`. A damaged anchor
+  (`status.json` or its seal failing to parse) is also `tampered`. Exit 1 is an unknown run id. `ach audit --fix` rewrites are undone through
+  `RunRecord.corrections` and reported, not failed. `--records` lists every verified record, and
+  `--json` emits the verdict object. A directory argument verifies a run-to-directory
+  `events.jsonl` against `status.json`. `ach report` adds a per-run `seal` column.
+- **Threat model.** This is tamper-evident, not tamper-proof. There are no keys and no signing. It
+  detects accidental or after-the-fact edits to the files on disk. It does not detect someone who
+  rewrites the whole chain, the seal, and `RunRecord.seal` consistently, because anyone can
+  recompute sha256. It is also no defense against a compromised harness process during the run. To
+  anchor a run outside the machine, copy the printed seal hash (`sha256 …` in the output) somewhere
+  else and compare it later.
 
 The binary is `ach` (the npm/PyPI package name is `agentic-coding-harness`). Budget flags (`--budget-usd`, `--max-turns`,
 `--wall-ms`, `--idle-ms`) take per-run values; `AGENTIC_CODING_HARNESS_BUDGET_USD`, `AGENTIC_CODING_HARNESS_MAX_TURNS`,
@@ -342,8 +438,8 @@ raw stdout tap (each chunk exactly as received) alongside the parsed canonical e
 ### Run-to-directory mode (durable status.json)
 
 Give a run an `outputDir` (or call the `runToDirectory()` helper) and the whole run is mirrored into
-that directory: `invocation.json` (resolved command/args/cwd/startedAt), `events.jsonl` (one event
-per line), `stdout.txt` / `stderr.txt`, `result.json`, and `status.json` — written atomically and
+that directory: `invocation.json` (resolved command/args/cwd/startedAt), `events.jsonl` (one
+hash-chained event per line, closed by an `ach.seal` record; see `ach verify-run`), `stdout.txt` / `stderr.txt`, `result.json`, and `status.json` — written atomically and
 guaranteed to reach a terminal state `success | error | timeout | idle-timeout | aborted` on every
 exit path, including watchdog kills and crashes:
 
@@ -365,6 +461,11 @@ const { result } = await runToDirectory({
 
 - **`/`** — one run in full: a structured live feed built from the persisted `AgentEvent` rows
   (text, expandable tool-call/result cards, warnings, usage, exit status), streamed over `/ws?runId=`.
+  For claude, codex, gemini and opencode runs every row ends in a context-window gauge
+  (`212.9k 21%`, teal / yellow ≥50% / red ≥80%, red tick at the 85% warn threshold). Tool rows show
+  the last model call's value dimmed; a yellow `+Δ` marks the call that grew it; hover for the
+  input · cache-read · cache-write breakdown. The server computes it with the same context meter as
+  `usage.context` (see [TOKEN-COUNTING.md §5](docs/TOKEN-COUNTING.md)); an unknown window shows tokens only.
 - **`/grid`** — every run as a tile, each tile body carrying that same feed. A green **LIVE** button
   on a tile spawns an interactive PTY for the run's agent (`claude`, `opencode`, `kiro-cli`,
   `codex`, `gemini`, else `bash -i`) and expands the tile to a full-width xterm.js pane you can type
