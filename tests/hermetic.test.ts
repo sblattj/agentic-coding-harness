@@ -273,10 +273,24 @@ describe("ach run: ancestor instructions + --hermetic (#106) — end to end", ()
     const leaky = path.join(home, "tmp");
     fs.mkdirSync(leaky);
     const r = runCli(["run", "--agent", "claude", "--hermetic", "hi"], envFor(home, path.join(root, `state-${++seq}`), { AGENTIC_CODING_HARNESS_HERMETIC_ROOT: leaky }), ws);
-    assert.notEqual(r.code, 0);
+    assert.equal(r.code, 1, r.stderr);
     assert.match(r.stderr, /refusing to run non-hermetically/);
     assert.equal(fs.existsSync(path.join(ws, "touched.txt")), false, "the agent never ran");
     assert.deepEqual(ls(leaky), []);
+  });
+
+  it("--hermetic --repeat 2 (sequential): every child runs in its own clean copy and is recorded as hermetic", () => {
+    const { home, ws } = homeWithWorkspace();
+    const state = path.join(root, `state-${++seq}`);
+    const r = runCli(["run", "--agent", "claude", "--hermetic", "--repeat", "2", "hi"], envFor(home, state), ws);
+    assert.equal(r.code, 0, r.stderr);
+    const recs = records(state);
+    assert.equal(recs.length, 2);
+    const temps = recs.map((rec) => (rec.hermetic as { tempDir: string }).tempDir);
+    for (const rec of recs) assert.equal(rec.cwd, ws);
+    assert.notEqual(temps[0], temps[1], "a fresh copy per child");
+    for (const t of temps) assert.ok(t.startsWith(cleanRoot + path.sep), t);
+    assert.ok(temps.includes(fs.readFileSync(path.join(ws, "touched.txt"), "utf8").trim()));
   });
 
   it("--hermetic refuses --resume and --parallel > 1", () => {
@@ -312,6 +326,51 @@ describe("--hermetic on the other launch paths (#106)", () => {
     }
     assert.ok(driver.cwds[0]!.startsWith(cleanRoot + path.sep), driver.cwds[0]);
     assert.equal(fs.existsSync(path.join(ws, "touched.txt")), true);
+  });
+
+  it("MCP harness_run_async { hermetic: true }: an unclean temp root REJECTS the tool call; a clean one runs and syncs back", async () => {
+    const { createMcpServer } = await import("../src/mcp/server.ts");
+    const { registerJobTools } = await import("../src/mcp/tools-jobs.ts");
+    const { home, ws } = homeWithWorkspace();
+    const shimDir = fakeClaude(path.join(root, `async-shim-${++seq}`));
+    const state = path.join(root, `async-state-${seq}`);
+    const leaky = path.join(home, "tmp");
+    fs.mkdirSync(leaky);
+    const saved = { PATH: process.env.PATH, ROOT: process.env.AGENTIC_CODING_HARNESS_HERMETIC_ROOT };
+    process.env.PATH = `${shimDir}:${saved.PATH ?? ""}`;
+    try {
+      const server = createMcpServer({ name: "t", version: "0" });
+      registerJobTools(server, { stateDir: state });
+      const call = (args: Record<string, unknown>) =>
+        server.dispatch({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "harness_run_async", arguments: args } });
+      process.env.AGENTIC_CODING_HARNESS_HERMETIC_ROOT = leaky;
+      const bad = await call({ agent: "claude", prompt: "hi", cwd: ws, hermetic: true });
+      const badText = JSON.stringify(bad);
+      assert.match(badText, /refusing to run non-hermetically/, badText);
+      assert.equal((bad!.result as { isError?: boolean } | undefined)?.isError ?? bad!.error !== undefined, true, badText);
+      assert.equal(fs.existsSync(path.join(ws, "touched.txt")), false, "never launched");
+      assert.deepEqual(ls(leaky), []);
+
+      process.env.AGENTIC_CODING_HARNESS_HERMETIC_ROOT = cleanRoot;
+      const ok = await call({ agent: "claude", prompt: "hi", cwd: ws, hermetic: true });
+      const started = JSON.parse((ok!.result as { content: Array<{ text: string }> }).content[0]!.text) as { runId: string };
+      const recFile = path.join(state, "runs", `${started.runId}.json`);
+      const deadline = Date.now() + 20_000;
+      let rec: Record<string, unknown> | undefined;
+      while (Date.now() < deadline) {
+        rec = fs.existsSync(recFile) ? (JSON.parse(fs.readFileSync(recFile, "utf8")) as Record<string, unknown>) : undefined;
+        if (rec?.hermetic !== undefined) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.ok(rec?.hermetic !== undefined, `record never got hermetic: ${JSON.stringify(rec)}`);
+      assert.equal(rec!.cwd, ws);
+      assert.equal(fs.existsSync(path.join(ws, "delete-me.txt")), false, "deletion synced back");
+      assert.ok(fs.readFileSync(path.join(ws, "touched.txt"), "utf8").startsWith(cleanRoot + path.sep));
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.ROOT === undefined) delete process.env.AGENTIC_CODING_HARNESS_HERMETIC_ROOT;
+      else process.env.AGENTIC_CODING_HARNESS_HERMETIC_ROOT = saved.ROOT;
+    }
   });
 
   it("MCP harness_run { hermetic: true } runs in a clean copy and syncs back; without it the result warns", async () => {
