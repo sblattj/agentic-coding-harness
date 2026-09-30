@@ -8,8 +8,10 @@ import path from "node:path";
 import { z } from "zod";
 import { findArchivedRaw } from "./warehouse-index.ts";
 import {
+  HermeticRunInfoSchema,
   KiroEffectiveSchema,
   UsageAvailabilitySchema,
+  type HermeticRunInfo,
   type KiroEffective,
   type UsageAvailability,
 } from "./types.ts";
@@ -82,6 +84,11 @@ export interface RunRecord {
   latency?: RunLatency;
   /** Terminal seal of the raw transcript's hash chain (#59); `ach verify-run` anchor. */
   seal?: RunSeal;
+  // --- ancestor instruction files + hermetic runs (#106) ---
+  /** Instruction files the agent would load from ANCESTOR dirs of `cwd`; absent when none. */
+  ancestorInstructions?: string[];
+  /** Set by `--hermetic`: the run executed in a temp copy, synced back to `cwd`. */
+  hermetic?: HermeticRunInfo;
 }
 
 /** Shape of src/core/latency.ts LatencyMetrics; null = not measurable from the log. */
@@ -211,6 +218,8 @@ export const RunRecordSchema = z.object({
       at: z.number(),
     })
     .optional(),
+  ancestorInstructions: z.array(z.string()).optional(),
+  hermetic: HermeticRunInfoSchema.optional(),
 });
 
 export function registryDir(stateDir: string): string {
@@ -225,6 +234,25 @@ export function writeRunRecord(stateDir: string, rec: RunRecord): void {
   const tmp = `${file}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(rec, null, 2));
   fs.renameSync(tmp, file);
+}
+
+/** Merge `patch` into the run's registry file, reading the RAW JSON (not the
+ *  schema-parsed view, which would inject defaults like source:"local").
+ *  Returns false when the record does not exist or cannot be rewritten. */
+export function patchRunRecord(stateDir: string, runId: string, patch: Partial<RunRecord>): boolean {
+  const file = path.join(registryDir(stateDir), `${runId}.json`);
+  let current: RunRecord;
+  try {
+    current = JSON.parse(fs.readFileSync(file, "utf8")) as RunRecord;
+  } catch {
+    return false;
+  }
+  try {
+    writeRunRecord(stateDir, { ...current, ...patch });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isErrnoException(e: unknown): e is NodeJS.ErrnoException {

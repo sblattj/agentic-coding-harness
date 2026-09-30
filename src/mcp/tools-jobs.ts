@@ -13,6 +13,7 @@ import type { RunSpec as CoreRunSpec } from "../core/types.ts";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { unchainedLines } from "../core/hash-chain.ts";
 import { createPricer } from "../core/pricing.ts";
+import { prepareHermeticWorkspace, runHermetic } from "../core/hermetic.ts";
 import {
   effectiveStatus,
   listRunRecords,
@@ -129,6 +130,11 @@ export function registerJobTools(
         idleMs: { type: "number", description: "Abort the run if no agent events arrive for this many milliseconds" },
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
         kiro: KIRO_INPUT_SCHEMA,
+        hermetic: {
+          type: "boolean",
+          description:
+            "Run in a fresh temp copy of cwd whose ancestor directories hold no CLAUDE.md/AGENTS.md/GEMINI.md, then sync the edits (and deletions) back; fails if the temp root is not clean (#106)",
+        },
       },
       required: ["agent", "prompt"],
     },
@@ -157,7 +163,16 @@ export function registerJobTools(
       // Fire-and-forget: the registry record (heartbeats + final status) is
       // written by the driver; this promise is only kept alive and drained so
       // a rejection can never surface as an unhandled rejection.
-      const promise = driver.run(a.agent, toSpec(a, runId, extra.allowed));
+      // #106: prepare the hermetic copy NOW so an unclean temp root fails the
+      // tool call loudly instead of a fire-and-forget promise.
+      const spec = toSpec(a, runId, extra.allowed);
+      const promise =
+        a.hermetic === true
+          ? runHermetic(driver, a.agent, spec, {
+              stateDir: opts.stateDir,
+              workspace: prepareHermeticWorkspace(a.agent, spec.cwd ?? process.cwd()),
+            })
+          : driver.run(a.agent, spec);
       inFlight.set(runId, { promise, abort: () => driver.abort(runId) });
       promise
         .catch((err) => {
