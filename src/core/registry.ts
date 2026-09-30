@@ -82,7 +82,7 @@ export interface RunRecord {
   seal?: RunSeal;
 }
 
-/** Shape of src/web/derive.ts LatencyMetrics; null = not measurable from the log. */
+/** Shape of src/core/latency.ts LatencyMetrics; null = not measurable from the log. */
 export type RunLatency = z.infer<typeof RunLatencySchema>;
 
 export interface RepeatMembership {
