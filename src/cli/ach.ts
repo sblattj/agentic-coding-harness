@@ -500,7 +500,11 @@ async function cmdRun(rest: string[]): Promise<number> {
   // flag travels as the env var the Claude adapter already honours.
   if (args.values["claude-default-config"]) process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
 
-  const onEvent = (e: AgentEvent) => process.stderr.write(formatEventLine(e) + "\n");
+  const callStarts = new Map<string, number>();
+  const onEvent = (e: AgentEvent) => {
+    const line = formatEventLine(e, callStarts);
+    if (line !== null) process.stderr.write(line + "\n");
+  };
   const basePricer = createPricer();
   const driver = createDriver({
     adapters: custom.adapter ? { ...(await defaultAdapters()), [agent]: custom.adapter } : await defaultAdapters(),
