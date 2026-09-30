@@ -1,0 +1,12 @@
+{
+  "experiment": "matrix-smoke",
+  "agents": ["null"],
+  "models": ["m1", "m2", "m3"],
+  "trials": 1,
+  "cwd": "..",
+  "tasks": [
+    { "id": "list-files", "prompt": "List the files in the current directory", "verify": "test -f package.json" },
+    { "id": "summarize", "prompt": "Summarize the project in 3 bullet points" },
+    { "id": "scratch", "prompt": "Create notes.txt", "workspace": "fresh", "setup": "echo \"$ACH_CELL_ID\" > cell.txt", "verify": "test -s cell.txt" }
+  ]
+}
