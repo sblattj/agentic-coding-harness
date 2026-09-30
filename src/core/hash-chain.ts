@@ -454,3 +454,25 @@ export function verifyChainText(text: string, opts: VerifyChainOptions): ChainVe
   }
   return out;
 }
+
+/**
+ * The event lines of a driver transcript / events.jsonl as they read BEFORE the
+ * chain (#59): blank lines dropped, the `ach_chain` framing stripped from each
+ * line, and the terminal `ach.seal` record removed. For consumers that parse
+ * lines as AgentEvents (web replay, MCP paging). `ach verify-run` and
+ * `ach audit` must keep reading the framed text instead. A legacy (unframed)
+ * line passes through unchanged; a torn line stays as-is so the caller's own
+ * JSON.parse skips it.
+ */
+export function unchainedLines(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split('\n')) {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    const body = stripChain(trimmed);
+    // The writer emits the seal body as `{"type":"ach.seal",...` (ChainWriter.seal).
+    if (body.startsWith(`{"type":"${SEAL_EVENT_TYPE}"`)) continue;
+    out.push(body);
+  }
+  return out;
+}

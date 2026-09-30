@@ -955,18 +955,6 @@ async function cmdWatch(rest: string[]): Promise<number> {
   return 0; // unreachable: the promise above never resolves
 }
 
-function safePrice(
-  pricer: ReturnType<typeof createPricer>,
-  t: { model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number },
-): number {
-  const cost = pricer.price({ model: t.model, inputTokens: t.inputTokens, outputTokens: t.outputTokens, cacheReadTokens: t.cacheReadTokens, cacheWriteTokens: t.cacheWriteTokens });
-  if (Number.isNaN(cost)) {
-    for (const w of pricer.drainWarnings()) process.stderr.write(`[warn] ${w}\n`);
-    return 0;
-  }
-  return Math.round(cost * 1e6) / 1e6;
-}
-
 async function listByExt(dir: string, ext: string): Promise<string[]> {
   const out: string[] = [];
   const walk = async (d: string): Promise<void> => {

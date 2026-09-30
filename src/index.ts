@@ -52,6 +52,7 @@ export type { RunDirStatus, RunInvocation, RunStatusFile } from './core/run-arti
 export {
   parseFramedLine,
   stripChain,
+  unchainedLines,
   verifyChainText,
   type ChainStatus,
   type ChainVerification,
