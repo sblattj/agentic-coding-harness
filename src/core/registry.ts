@@ -25,6 +25,8 @@ export interface RunRecord {
   sessionId?: string; // set once the adapter reports it
   pid?: number; // harness CLI process pid (LOCAL-PROCESS-ONLY)
   cwd?: string;
+  branch?: string; // git branch of cwd at run start (#47); absent when detached or not a repo
+  commit?: string; // short HEAD sha at run start (#47); the only marker of a detached HEAD
   promptPreview?: string; // first 120 chars of prompt
   startedAt: number; // ms epoch
   updatedAt?: number; // ms epoch — heartbeat
@@ -125,6 +127,8 @@ export const RunRecordSchema = z.object({
   sessionId: z.string().optional(),
   pid: z.number().int().optional(),
   cwd: z.string().optional(),
+  branch: z.string().optional(),
+  commit: z.string().optional(),
   promptPreview: z.string().optional(),
   startedAt: z.number(),
   updatedAt: z.number().optional(),

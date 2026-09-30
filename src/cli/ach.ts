@@ -66,6 +66,7 @@ import {
   aggregateDims,
   baseCacheRatios,
   cwdIndex,
+  branchIndex,
   loadProjectAliases,
   parseByDims,
   parseModelAliases,
@@ -194,11 +195,12 @@ usage:
                  boundaries and bare dates; --by week = ISO weeks (2026-W39),
                  month = 2026-09, comma lists allowed; run success rate
                  excludes 'unavailable' runs unless --include-unavailable)
-            [--by model|project]... [--merge-models] [--model-alias FROM=TO]...
+            [--by model|project|branch]... [--merge-models] [--model-alias FROM=TO]...
             [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
                 (--by takes time granularities and dimensions together, e.g.
                  --by week,model; --by model: agent/model rows + model x day table;
-                 --by project: repo-root rollup, aliases also via
+                 --by branch: per-git-branch rollup (branch recorded at run start;
+                 unattributed rows land in '(no branch)'); --by project: repo-root rollup, aliases also via
                  AGENTIC_CODING_HARNESS_PROJECT_ALIASES; every row shows
                  cacheHit = cacheRead/(input+cacheRead+cacheWrite))
             [--blocks] [--budget-usd N]
@@ -1128,10 +1130,12 @@ async function cmdStats(rest: string[]): Promise<number> {
   // that fail to parse are counted (skippedRunRecords), never dropped silently.
   const registryScan = scanRunRecords(stateDir());
   const runCwd = cwdIndex(registryScan.records);
+  const runBranch = branchIndex(registryScan.records);
   let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript" })[] = stateRecords.map((r) => ({
     source: "state",
     extra: r.extra,
     cwd: runCwd(r.agent, r.sessionId),
+    branch: runBranch(r.agent, r.sessionId),
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,
@@ -1172,7 +1176,9 @@ async function cmdStats(rest: string[]): Promise<number> {
       if (seen.has(key)) continue;
       seen.add(key);
       const cwd = rec.cwd ?? runCwd(rec.agent, rec.sessionId);
-      records.push({ ...row, ...costFor(row, undefined), ...(cwd ? { cwd } : {}), source: "transcript" });
+      // Branch only via the run registry (session match): no fixture proves transcripts carry gitBranch, and we never shell out per row.
+      const branch = runBranch(rec.agent, rec.sessionId);
+      records.push({ ...row, ...costFor(row, undefined), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), source: "transcript" });
     }
     // agents.d usage taps (#38): descriptor-declared transcript sources.
     const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs, costMode });
@@ -1203,6 +1209,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     modelAliases,
     byModelDay: dimsBy.has("model"),
     byProject: showProject,
+    byBranch: dimsBy.has("branch"),
     projectAliases,
   });
   if (dims.unpricedModels.length > 0) {
@@ -1278,6 +1285,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(dims.byModelDay ? { byModelDay: dims.byModelDay } : {}),
           ...(args.values["merge-models"] ? { mergedModels: true, modelAliases } : {}),
           ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
+          ...(dims.byBranch ? { byBranch: dims.byBranch } : {}),
           // #21: per-run context-window pressure from the run registry.
           runs: runContextRows(windowedRunRecords, { agent }),
           // #60: run-outcome rollup. Named runOutcomes (not `runs`) because
@@ -1320,7 +1328,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for (const m of Object.values(timeMaps)) {
       for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, view(b), prov.byDay[d] ?? prov.byWeek?.[d] ?? prov.byMonth?.[d]) + "\n");
     }
-    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject })) {
+    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject, branch: dimsBy.has("branch") })) {
       process.stdout.write(l + "\n");
     }
     if (outcomes !== undefined) {

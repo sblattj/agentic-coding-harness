@@ -9,6 +9,7 @@ import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-a
 import { computeUsageAvailability } from './usage-availability.js';
 import { createContextMeter } from './context-meter.js';
 import { classifyLaunchError, classifyUnavailable } from './availability.ts';
+import { gitBranchInfo } from './git-branch.ts';
 import { runTotalsProvenance } from './provenance.ts';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
@@ -524,12 +525,14 @@ export function createDriver(options: DriverOptions): Driver {
           }
         };
         if (registryStateDir) {
+          const runCwd = typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd();
           rec = {
             runId,
             agent: agentName,
             sessionId,
             pid: process.pid,
-            cwd: typeof parsed.cwd === 'string' && parsed.cwd ? parsed.cwd : process.cwd(),
+            cwd: runCwd,
+            ...gitBranchInfo(runCwd),
             promptPreview: parsed.prompt.slice(0, 120),
             startedAt: start,
             updatedAt: Date.now(),
