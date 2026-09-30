@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # trial-all.sh — trial every installed agent on the same small task and print a comparison table.
 #
+# For declared, resumable sweeps (agents x tasks x models x trials, a JSONL
+# ledger, skip-completed on re-run) use `ach trial --matrix <plan.json>`
+# instead — see examples/trial-matrix.json and docs/TRIALS.md. This script
+# stays as a zero-config "what's installed?" smoke comparison.
+#
 # Drives the harness CLI (src/cli/ach.ts). Resolution order: `harness` on PATH,
 # else `bun src/cli/ach.ts`, else `npx tsx src/cli/ach.ts`.
 # Output shape per `harness run --json` is the RunResult envelope; parsing below

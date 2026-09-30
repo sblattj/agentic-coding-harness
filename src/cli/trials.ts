@@ -21,11 +21,15 @@ export interface VerifyRequest {
   command: string;
   timeoutMs: number;
   cwd: string;
+  /** Checker env (default process.env); `ach trial --matrix` adds ACH_* cell vars. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface RunLabels {
   experiment?: string;
   variant?: string;
+  /** `ach trial --matrix` cell identity (#56): agent:task:model:trialN. */
+  cellId?: string;
 }
 
 /** Merge `patch` into the run's registry file, reading the RAW JSON (not the
@@ -97,13 +101,14 @@ export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
     outcome.verify = await runVerifier({
       command: opts.verify.command,
       cwd: opts.verify.cwd,
-      env: process.env,
+      env: opts.verify.env ?? process.env,
       timeoutMs: opts.verify.timeoutMs,
     });
   }
   const patch: Partial<RunRecord> = {
     ...(opts.labels?.experiment !== undefined ? { experiment: opts.labels.experiment } : {}),
     ...(opts.labels?.variant !== undefined ? { variant: opts.labels.variant } : {}),
+    ...(opts.labels?.cellId !== undefined ? { cellId: opts.labels.cellId } : {}),
     ...(opts.repeat !== undefined ? { repeat: opts.repeat } : {}),
     ...(outcome.verify !== undefined ? { verify: outcome.verify } : {}),
   };

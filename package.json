@@ -54,6 +54,7 @@
   "bugs": "https://github.com/sblattj/agentic-coding-harness/issues",
   "files": [
     "dist",
+    "tasks",
     "LICENSE",
     "README.md"
   ],

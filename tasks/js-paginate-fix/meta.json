@@ -1,0 +1,16 @@
+{
+  "language": "javascript",
+  "kind": "bug-fix",
+  "difficulty": "easy",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "bug-fix"
+  ],
+  "description": "Fix a 1-based pagination helper (wrong slice and page count).",
+  "broken": "slice fixed, but totalPages still rounds down",
+  "verifyTimeoutMs": 60000
+}

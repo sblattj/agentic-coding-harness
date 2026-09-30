@@ -76,6 +76,8 @@ export interface RunRecord {
   repeat?: RepeatMembership;
   /** Later `ach regrade` verdicts, oldest first; `verify` is never rewritten. */
   regrades?: VerifyResult[];
+  /** `ach trial --matrix` cell (#56): deterministic agent:task:model:trialN. */
+  cellId?: string;
   /** Latency metrics (#32) derived at finalize from the run's events (deriveLatency). */
   latency?: RunLatency;
   /** Terminal seal of the raw transcript's hash chain (#59); `ach verify-run` anchor. */
@@ -196,6 +198,7 @@ export const RunRecordSchema = z.object({
     .object({ group: z.string().min(1), index: z.number().int().min(0), count: z.number().int().min(1) })
     .optional(),
   regrades: z.array(VerifyResultSchema).optional(),
+  cellId: z.string().min(1).optional(),
   latency: RunLatencySchema.optional(),
   seal: z
     .object({

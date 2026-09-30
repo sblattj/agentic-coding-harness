@@ -1,0 +1,17 @@
+{
+  "language": "javascript",
+  "kind": "refactor",
+  "difficulty": "medium",
+  "license": "MIT",
+  "provenance": "original task written for agentic-coding-harness (#51)",
+  "suites": [
+    "core"
+  ],
+  "tags": [
+    "refactor",
+    "multi-file"
+  ],
+  "description": "Extract duplicated money logic from two modules into src/money.js without changing behaviour.",
+  "broken": "money.js exists, but src/invoice.js keeps its own inline copy of the formatting logic",
+  "verifyTimeoutMs": 60000
+}
