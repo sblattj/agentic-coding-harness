@@ -382,10 +382,12 @@ step/message event → the RunSpec `model`.
   socket over the transcript in order and stamps each event it sends with an
   additive `ctx` field (`src/web/context-frames.ts`): `tokens`, `basis`,
   `fresh` (this event fed the reading; tool rows carry it forward with
-  `fresh:false`), `seq` (ordinal of the distinct reading), `delta` against the
-  previous distinct reading plus the `input`/`cacheRead`/`cacheWrite`
-  breakdown on fresh frames, and `window`/`pct`/`warnAt` when the window is
-  known. No meter (kiro, custom agents) or no usage yet → no field. The feed
+  `fresh:false`), `seq` (ordinal of the distinct reading), `delta` of that
+  reading against the previous distinct one (on every frame of the reading;
+  the feed draws `+Δ` once per `seq`, on the first drawn row), the
+  `input`/`cacheRead`/`cacheWrite` breakdown on fresh frames, and
+  `window`/`pct`/`warnAt` when the window is known. No meter (kiro, custom
+  agents), no usage yet, or the #59 `ach.seal` record → no field. The feed
   only renders it. Compaction is not marked: no adapter bridges a compaction
   event (claude's `system` lines other than `init` are dropped in
   `adapters/claude.ts`), and the feed does not guess one from a drop.

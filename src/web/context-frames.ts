@@ -20,6 +20,7 @@
 //    An unknown window keeps `tokens` but omits `window`/`pct`.
 import type { AgentEvent, CanonicalTokenRecord } from "../core/types.ts";
 import { CONTEXT_WARN_FRACTION, createContextMeter } from "../core/context-meter.ts";
+import { SEAL_EVENT_TYPE } from "../core/hash-chain.ts";
 
 export interface ContextFrame {
   /** Occupancy: input + cache read + cache write of the reading's usage record. */
@@ -76,6 +77,10 @@ export function createFrameAnnotator(opts: FrameAnnotatorOptions): FrameAnnotato
 
   return {
     annotate(event: AgentEvent): ContextFrame | undefined {
+      // The #59 hash-chain seal is bookkeeping, not a frame. The chain framing
+      // key (`ach_chain`) on other rows is ignored: the meter reads only
+      // type/usage/model and the frame never copies event fields.
+      if ((event as { type?: unknown }).type === SEAL_EVENT_TYPE) return undefined;
       meter.observe(event);
       const reading = meter.reading();
       if (reading === undefined) return undefined;
