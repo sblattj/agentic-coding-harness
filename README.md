@@ -193,6 +193,11 @@ prints a per-branch table and adds `byBranch` to `--json`. Runs with no recorded
 a detached HEAD shows as `(detached <sha>)`. Attribution is by start branch: a
 mid-run `git checkout` is not re-attributed.
 
+The same labels drive two more views. `/api/compare?by=branch` (alias `by=git.branch`,
+composable with the other keys, e.g. `by=branch,agent`) groups the web rollup by branch.
+`ach report` adds a "spend by git branch" table (branch, runs, cost, tokens) whenever a
+trial's run records carry a branch; runs without one fall in `(no branch)`.
+
 ## New in 0.11.0
 
 ```sh

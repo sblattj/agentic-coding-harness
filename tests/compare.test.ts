@@ -138,6 +138,26 @@ describe('computeCompareRows (pure math)', () => {
 
 // ----------------------------------------------------------------- HTTP route
 
+describe('computeCompareRows by branch (#47)', () => {
+  const tot = (i: number, c: number) => ({ inputTokens: i, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: c });
+  const runs = [
+    base({ runId: 'a', branch: 'main', totals: tot(10, 1) }),
+    base({ runId: 'b', branch: 'main', totals: tot(30, 3) }),
+    base({ runId: 'c', commit: 'deadbee' }),
+    base({ runId: 'd' }),
+  ];
+  it('labels named, detached and missing branches like stats', () => {
+    const rows = computeCompareRows(runs, ['branch']);
+    assert.deepEqual(rows.map((r) => [r.branch, r.runs]), [['(detached deadbee)', 1], ['(no branch)', 1], ['main', 2]]);
+    const main = rows.find((r) => r.branch === 'main')!;
+    assert.equal(main.avgTotalTokens, 25);
+    assert.equal(main.avgCostUsd, 2);
+  });
+  it('git.branch alias resolves to branch, deduped', () => {
+    assert.deepEqual(computeCompareRows(runs, ['git.branch', 'branch']), computeCompareRows(runs, ['branch']));
+  });
+});
+
 describe('GET /api/compare (in-process server)', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'harness-compare-'));
   let handle: Awaited<ReturnType<typeof startWebServer>> | null = null;
@@ -184,8 +204,22 @@ describe('GET /api/compare (in-process server)', () => {
     const res = await fetch(url('/api/compare?by=foo'));
     assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), {
-      error: 'by must be a comma list of: experiment, variant, workflow, agent',
+      error: 'by must be a comma list of: experiment, variant, workflow, agent, branch, git.branch',
     });
+  });
+
+  it('by=branch and the git.branch alias group with the stats labels', async () => {
+    writeRunRecord(stateDir, base2({ runId: 'br-1', branch: 'feat/x', endedAt: T0 + 1000 }));
+    writeRunRecord(stateDir, base2({ runId: 'br-2', branch: 'feat/x', endedAt: T0 + 1000 }));
+    writeRunRecord(stateDir, base2({ runId: 'br-3', commit: 'abc1234', endedAt: T0 + 1000 }));
+    for (const by of ['branch', 'git.branch']) {
+      const res = await fetch(url(`/api/compare?by=${by}`));
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { groupBy: string[]; rows: Array<{ branch: string; runs: number }> };
+      assert.deepEqual(body.groupBy, ['branch']);
+      const got = Object.fromEntries(body.rows.map((r) => [r.branch, r.runs]));
+      assert.deepEqual(got, { 'feat/x': 2, '(detached abc1234)': 1, '(no branch)': 2 });
+    }
   });
 
   it('no token behaves exactly like /api/runs (JSON API is unauthenticated)', async () => {
