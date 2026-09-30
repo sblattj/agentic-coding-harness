@@ -102,7 +102,7 @@ and free-form `metadata`, plus `corrections` — the additive log `ach audit --f
 (`{at, field, from, to, by}` per rewritten aggregate) when it re-derives totals from the raw
 transcript (`cli/audit.ts`).
 
-**Latency metrics (#32).** `web/derive.ts` `deriveLatency(events)` is the one pure derivation of
+**Latency metrics (#32).** `core/latency.ts` `deriveLatency(events)` (re-exported by `web/derive.ts`) is the one pure derivation of
 run latency; the `/trio` metrics pane (via `/api/runs/:runId/observability` `latency`), the
 `ach run` summary, and `RunRecord.latency` all read it. The driver computes it once at finalize
 from the in-memory event list (not per heartbeat — that would re-walk every event on every write;

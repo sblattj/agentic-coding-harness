@@ -443,7 +443,11 @@ export function auditRuns(opts: AuditOptions): AuditResult {
     }
     const transcript = resolveRawTranscript(opts.stateDir, rec);
     if (!transcript) {
-      unverifiable("no raw transcript path (external record)");
+      unverifiable(
+        rec.source === "imported"
+          ? "imported record (transcript history, not an ach run)"
+          : "no raw transcript path (external record)",
+      );
       continue;
     }
     if (!lineCache.has(transcript)) lineCache.set(transcript, readLines(transcript));
