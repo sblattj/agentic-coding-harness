@@ -170,8 +170,9 @@ ach trial --matrix examples/trial-matrix.json             # run them; Ctrl-C and
 Each cell (`agent:task:model:trialN`) becomes one run labelled with the plan's
 `experiment` and a `variant`, so `/compare` groups the results with no extra setup.
 The runner appends one row to `examples/trial-matrix.ledger.jsonl` only after that
-cell's run has finalized. A re-run skips completed cells and runs the rest. Failed
-cells are reported and re-run only with `--retry-failed`. The plan schema, task
+cell's run has finalized. A re-run skips cells that already have a verdict (`passed` or
+`verify-failed`) and runs the rest. Infrastructure `error` cells are reported and re-run
+only with `--retry-failed`; a verify failure is never retried. The plan schema, task
 directories (`task.md`, `setup.sh`, `verify.sh`), and ledger format are in
 [docs/TRIALS.md](docs/TRIALS.md#ach-trial---matrix-resumable-trial-grids).
 

@@ -12,8 +12,10 @@
 // after runOnce has resolved — i.e. after driver.run()'s forced final registry
 // write and the label/verify annotation — so a process killed mid-cell leaves
 // that cell with no row, and re-invoking the same command runs it again. On
-// re-invocation the LAST row per cellId decides: `completed` → skipped,
-// `failed` → reported as failed and NOT re-run unless `--retry-failed`.
+// re-invocation the LAST row per cellId decides (see `classifyCell` and
+// `planStatus`): `passed` and `verify-failed` are verdicts → skipped;
+// `error` (infrastructure) → reported and NOT re-run unless `--retry-failed`;
+// `skipped-unavailable` (agent CLI missing, no verdict) → run again.
 //
 // The task model is shared with the bundled task suite (#51): a task is
 // either inline ({id, prompt, setup?, verify?}) or a task directory
@@ -33,7 +35,7 @@ import { HarnessError, isKnownAgent, type AgentAdapter, type RunSpec } from "../
 import { DEFAULT_VERIFY_TIMEOUT_MS, runVerifier, type VerifyStatus } from "../core/verify.ts";
 import { isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { loadCatalog, reportCatalogIssues, resolveRunAgent } from "./custom-agents.ts";
-import { outcomeOk, runOnce, type TrialOutcome } from "./trials.ts";
+import { runOnce, type TrialOutcome } from "./trials.ts";
 
 // ------------------------------------------------------------------ schema
 
@@ -335,7 +337,81 @@ export function expandMatrix(plan: MatrixPlan, baseDir: string): MatrixCell[] {
 
 // ------------------------------------------------------------------ ledger
 
-export type CellStatus = "completed" | "failed";
+/**
+ * A finalized cell attempt:
+ * - `passed`: the run finalized with exitStatus success and the checker
+ *   passed (or the task has no checker).
+ * - `verify-failed`: a legitimate negative verdict — the agent finished
+ *   (exitStatus success) and the checker failed, or the harness stopped the
+ *   agent at a plan budget cap (budget_exceeded / turn_limit). Recorded,
+ *   skipped on resume, NEVER retried: retrying it would inflate pass rates.
+ * - `error`: infrastructure failure — setup failed, the agent CLI crashed /
+ *   exited non-zero / timed out, the checker could not finish (verify
+ *   `error`, e.g. timed out), or the driver threw. Only these are retried,
+ *   and only under `--retry-failed`.
+ * - `skipped-unavailable`: the agent CLI is missing or could not start
+ *   (exitStatus `unavailable`, src/core/availability.ts, or a thrown
+ *   UNAVAILABLE). No verdict about the task; never counted as a failure;
+ *   run again on the next invocation.
+ */
+export type CellStatus = "passed" | "verify-failed" | "error" | "skipped-unavailable";
+
+/** Ledger statuses written before the outcome split (#56 v1). Read-only. */
+export type LegacyCellStatus = "completed" | "failed";
+
+/**
+ * Classify a settled attempt. `setupFailed` / `thrown` short-circuit;
+ * otherwise the agent exitStatus and the checker verdict decide.
+ */
+export function classifyCell(input: {
+  setupFailed?: boolean;
+  thrown?: unknown;
+  exitStatus?: string;
+  verify?: VerifyStatus;
+}): CellStatus {
+  if (input.setupFailed) return "error";
+  if (input.thrown !== undefined) {
+    return input.thrown instanceof HarnessError && input.thrown.code === "UNAVAILABLE" ? "skipped-unavailable" : "error";
+  }
+  switch (input.exitStatus) {
+    case "unavailable":
+      return "skipped-unavailable";
+    case "budget_exceeded":
+    case "turn_limit":
+      return "verify-failed";
+    case "success":
+      if (input.verify === undefined || input.verify === "pass") return "passed";
+      return input.verify === "fail" ? "verify-failed" : "error";
+    default:
+      // error, timeout, aborted, cancelled, or no status at all.
+      return "error";
+  }
+}
+
+/**
+ * Map a pre-split ledger status onto the current ones: `completed` →
+ * `passed`; `failed` with exitStatus success + verify fail (or a budget
+ * stop) → `verify-failed`; any other `failed` → `error` (the classifier
+ * applied to the row's recorded exitStatus / verify).
+ */
+export function normalizeLedgerStatus(row: { status: string; exitStatus?: string; verify?: VerifyStatus; runId?: string | null }): CellStatus {
+  switch (row.status) {
+    case "passed":
+    case "verify-failed":
+    case "error":
+    case "skipped-unavailable":
+      return row.status;
+    case "completed":
+      return "passed";
+    default: {
+      // Legacy "failed": no run → setup failure or a throw; otherwise
+      // reclassify from what the row recorded, never promoting to passed.
+      if (row.runId === null || row.exitStatus === undefined) return "error";
+      const c = classifyCell({ exitStatus: row.exitStatus, ...(row.verify !== undefined ? { verify: row.verify } : {}) });
+      return c === "passed" ? "error" : c;
+    }
+  }
+}
 
 /** One cell attempt. Appended only once the attempt has finalized. */
 export interface LedgerRow {
@@ -348,7 +424,7 @@ export interface LedgerRow {
   /** null = adapter default model. */
   model: string | null;
   trial: number;
-  /** completed = agent exitStatus success AND (no checker, or checker pass) — `outcomeOk`. */
+  /** See CellStatus. readLedger normalizes legacy `completed` / `failed` rows. */
   status: CellStatus;
   /** Registry run id; null when no run was launched (setup failed) or launch threw. */
   runId: string | null;
@@ -363,8 +439,10 @@ const LedgerRowSchema = z
   .object({
     v: z.literal(1),
     cellId: z.string().min(1),
-    status: z.enum(["completed", "failed"]),
+    status: z.enum(["passed", "verify-failed", "error", "skipped-unavailable", "completed", "failed"]),
     runId: z.string().nullable(),
+    exitStatus: z.string().optional(),
+    verify: z.enum(["pass", "fail", "error"]).optional(),
   })
   .passthrough();
 
@@ -400,8 +478,10 @@ export function readLedger(file: string): LedgerRead {
     if (line.trim() === "") continue;
     try {
       const parsed = LedgerRowSchema.safeParse(JSON.parse(line));
-      if (parsed.success) rows.push(parsed.data as unknown as LedgerRow);
-      else malformed++;
+      if (parsed.success) {
+        const status = normalizeLedgerStatus(parsed.data);
+        rows.push({ ...(parsed.data as unknown as LedgerRow), status });
+      } else malformed++;
     } catch {
       malformed++;
     }
@@ -421,11 +501,15 @@ export function appendLedgerRow(file: string, row: LedgerRow): void {
   }
 }
 
-export type CellAction = "run" | "skip" | "failed";
+/**
+ * run = no finalized attempt yet, a `skipped-unavailable` one (no verdict),
+ * or an `error` one under retryFailed; skip = a verdict is recorded
+ * (`passed` / `verify-failed`); error = an `error` attempt, not retried.
+ */
+export type CellAction = "run" | "skip" | "error";
 
 export interface CellPlanEntry {
   cell: MatrixCell;
-  /** run = no finalized attempt yet (or a failed one under retryFailed); skip = completed; failed = failed, not retried. */
   action: CellAction;
   /** Latest ledger row for the cell, if any. */
   last?: LedgerRow;
@@ -438,8 +522,10 @@ export function planStatus(cells: readonly MatrixCell[], rows: readonly LedgerRo
   return cells.map((cell) => {
     const row = last.get(cell.cellId);
     if (row === undefined) return { cell, action: "run" as const };
-    if (row.status === "completed") return { cell, action: "skip" as const, last: row };
-    return { cell, action: opts.retryFailed ? ("run" as const) : ("failed" as const), last: row };
+    const status = normalizeLedgerStatus(row);
+    if (status === "passed" || status === "verify-failed") return { cell, action: "skip" as const, last: row };
+    if (status === "skipped-unavailable") return { cell, action: "run" as const, last: row };
+    return { cell, action: opts.retryFailed ? ("run" as const) : ("error" as const), last: row };
   });
 }
 
@@ -447,26 +533,38 @@ export function planStatus(cells: readonly MatrixCell[], rows: readonly LedgerRo
 
 export interface CellReport {
   cellId: string;
-  /** What happened in THIS invocation. */
-  outcome: "completed" | "failed" | "skipped" | "failed-not-retried" | "pending";
+  /** The cell's status after this invocation; `pending` = not attempted (interrupted). */
+  outcome: CellStatus | "pending";
+  /** True when the status comes from an earlier invocation's ledger row (not run now). */
+  resumed?: boolean;
   runId?: string | null;
   exitStatus?: string;
   verify?: VerifyStatus;
   error?: string;
 }
 
+/** Counts are over every cell of the plan, whether run now or resumed from the ledger. */
 export interface MatrixSummary {
   total: number;
-  /** Cells run to completion by this invocation. */
-  completed: number;
-  /** Cells skipped because the ledger already had them completed. */
+  passed: number;
+  verifyFailed: number;
+  /** Infrastructure errors: this invocation's plus earlier ones not retried. */
+  error: number;
+  /** skipped-unavailable: agent CLI missing; never a failure. */
   skipped: number;
-  /** Cells that failed in this invocation plus earlier failures not retried. */
-  failed: number;
   /** Cells not attempted because the run was interrupted. */
   pending: number;
+  /** Cells attempted by this invocation. */
+  ran: number;
+  /** Cells whose status was taken from the ledger (verdict recorded earlier, or an error not retried). */
+  resumed: number;
   interrupted: boolean;
   cells: CellReport[];
+}
+
+/** Exit rule: non-zero only for infrastructure errors or interruption. Verify failures are data. */
+export function matrixExitCode(s: Pick<MatrixSummary, "error" | "interrupted">): number {
+  return s.error > 0 || s.interrupted ? 1 : 0;
 }
 
 export interface RunMatrixOptions {
@@ -577,7 +675,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
       const tail = setup.outputTail?.trim();
       return {
         ...base,
-        status: "failed",
+        status: classifyCell({ setupFailed: true }),
         runId: null,
         error: `setup failed (${detail})${tail ? `: ${tail.slice(-500)}` : ""}`,
         endedAt: Date.now(),
@@ -617,7 +715,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
     if (err instanceof Interrupted) throw err;
     return {
       ...base,
-      status: "failed",
+      status: classifyCell({ thrown: err }),
       runId: null,
       error: err instanceof Error ? err.message : String(err),
       endedAt: Date.now(),
@@ -626,7 +724,10 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
   const result = outcome.result!;
   return {
     ...base,
-    status: outcomeOk(outcome) ? "completed" : "failed",
+    status: classifyCell({
+      exitStatus: result.exitStatus,
+      ...(outcome.verify !== undefined ? { verify: outcome.verify.status } : {}),
+    }),
     runId: result.runId,
     exitStatus: result.exitStatus,
     ...(outcome.verify !== undefined ? { verify: outcome.verify.status } : {}),
@@ -646,36 +747,39 @@ export async function runMatrix(opts: RunMatrixOptions): Promise<MatrixSummary> 
   const entries = planStatus(opts.cells, rows, { retryFailed: opts.retryFailed ?? false });
   const summary: MatrixSummary = {
     total: entries.length,
-    completed: 0,
+    passed: 0,
+    verifyFailed: 0,
+    error: 0,
     skipped: 0,
-    failed: 0,
     pending: 0,
+    ran: 0,
+    resumed: 0,
     interrupted: false,
     cells: [],
+  };
+  const count = (status: CellStatus): void => {
+    if (status === "passed") summary.passed++;
+    else if (status === "verify-failed") summary.verifyFailed++;
+    else if (status === "error") summary.error++;
+    else summary.skipped++;
   };
   const report = (r: CellReport, cell: MatrixCell): void => {
     summary.cells.push(r);
     opts.onCell?.(r, cell);
   };
+  const fromRow = (row: LedgerRow): Omit<CellReport, "cellId" | "outcome"> => ({
+    runId: row.runId,
+    ...(row.exitStatus !== undefined ? { exitStatus: row.exitStatus } : {}),
+    ...(row.verify !== undefined ? { verify: row.verify } : {}),
+    ...(row.error !== undefined ? { error: row.error } : {}),
+  });
   for (const { cell, action, last } of entries) {
-    if (action === "skip") {
-      summary.skipped++;
-      report({ cellId: cell.cellId, outcome: "skipped", runId: last?.runId ?? null }, cell);
-      continue;
-    }
-    if (action === "failed") {
-      summary.failed++;
-      report(
-        {
-          cellId: cell.cellId,
-          outcome: "failed-not-retried",
-          runId: last?.runId ?? null,
-          ...(last?.exitStatus !== undefined ? { exitStatus: last.exitStatus } : {}),
-          ...(last?.verify !== undefined ? { verify: last.verify } : {}),
-          ...(last?.error !== undefined ? { error: last.error } : {}),
-        },
-        cell,
-      );
+    if (action === "skip" || action === "error") {
+      // A verdict recorded earlier, or an earlier error not retried.
+      const status = normalizeLedgerStatus(last!);
+      summary.resumed++;
+      count(status);
+      report({ cellId: cell.cellId, outcome: status, resumed: true, ...fromRow(last!) }, cell);
       continue;
     }
     if (summary.interrupted || opts.signal?.aborted) {
@@ -698,19 +802,9 @@ export async function runMatrix(opts: RunMatrixOptions): Promise<MatrixSummary> 
     // The run is finalized (registry record written + annotated): only now
     // does the cell count as attempted.
     appendLedgerRow(opts.ledgerPath, row);
-    if (row.status === "completed") summary.completed++;
-    else summary.failed++;
-    report(
-      {
-        cellId: cell.cellId,
-        outcome: row.status,
-        runId: row.runId,
-        ...(row.exitStatus !== undefined ? { exitStatus: row.exitStatus } : {}),
-        ...(row.verify !== undefined ? { verify: row.verify } : {}),
-        ...(row.error !== undefined ? { error: row.error } : {}),
-      },
-      cell,
-    );
+    summary.ran++;
+    count(row.status);
+    report({ cellId: cell.cellId, outcome: row.status, ...fromRow(row) }, cell);
   }
   return summary;
 }
@@ -749,15 +843,20 @@ export async function createMatrixDriver(agents: readonly string[], stateDir: st
 // ------------------------------------------------------------------ CLI
 
 const OUTCOME_LABEL: Record<CellReport["outcome"], string> = {
-  completed: "completed",
-  failed: "FAILED",
-  skipped: "skip (completed earlier)",
-  "failed-not-retried": "FAILED earlier (not retried; --retry-failed)",
+  passed: "passed",
+  "verify-failed": "verify-failed",
+  error: "ERROR",
+  "skipped-unavailable": "skipped (agent unavailable)",
   pending: "pending (interrupted)",
 };
 
+function outcomeLabel(r: CellReport): string {
+  if (!r.resumed) return OUTCOME_LABEL[r.outcome];
+  return r.outcome === "error" ? "ERROR earlier (not retried; --retry-failed)" : `${OUTCOME_LABEL[r.outcome]} earlier (skip)`;
+}
+
 function cellLine(r: CellReport, i: number, total: number): string {
-  const parts = [`[${i + 1}/${total}]`, r.cellId, OUTCOME_LABEL[r.outcome]];
+  const parts = [`[${i + 1}/${total}]`, r.cellId, outcomeLabel(r)];
   if (r.runId) parts.push(`run=${r.runId.slice(0, 8)}`);
   if (r.exitStatus !== undefined && r.exitStatus !== "success") parts.push(`exit=${r.exitStatus}`);
   if (r.verify !== undefined) parts.push(`verify=${r.verify}`);
@@ -767,8 +866,9 @@ function cellLine(r: CellReport, i: number, total: number): string {
 
 export function formatMatrixSummary(s: MatrixSummary): string {
   return (
-    `summary    ${s.total} cells · completed=${s.completed} skipped=${s.skipped} failed=${s.failed}` +
+    `summary    ${s.total} cells · passed=${s.passed} verify-failed=${s.verifyFailed} error=${s.error} skipped=${s.skipped}` +
     (s.pending > 0 ? ` pending=${s.pending}` : "") +
+    ` · ran=${s.ran} resumed=${s.resumed}` +
     (s.interrupted ? " (interrupted)" : "")
   );
 }
@@ -814,7 +914,9 @@ export interface ExecuteMatrixCliOptions {
 /**
  * Everything `ach trial --matrix` does after the plan is in hand: dry-run
  * listing, or driver + runMatrix + per-cell lines + summary. Returns the
- * exit code (1 when any cell is failed after this invocation, else 0).
+ * exit code (`matrixExitCode`: 1 when any cell is an infrastructure `error`
+ * after this invocation or the run was interrupted, else 0 — verify
+ * failures are data, not harness errors).
  * A plan built in code (e.g. a task suite) goes through here unchanged.
  */
 export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<number> {
@@ -825,7 +927,7 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
     const { rows, malformed } = readLedger(ledgerPath);
     const entries = planStatus(cells, rows, { retryFailed });
     const count = (a: CellAction): number => entries.filter((e) => e.action === a).length;
-    const summary = { total: entries.length, run: count("run"), skip: count("skip"), failed: count("failed") };
+    const summary = { total: entries.length, run: count("run"), skip: count("skip"), error: count("error") };
     if (json) {
       process.stdout.write(
         JSON.stringify(
@@ -851,12 +953,20 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
         ) + "\n",
       );
     } else {
-      const mark: Record<CellAction, string> = { run: "run ", skip: "skip", failed: "FAIL" };
+      const mark: Record<CellAction, string> = { run: "run ", skip: "skip", error: "ERR " };
       for (const e of entries) {
-        process.stdout.write(`${mark[e.action]}  ${e.cell.cellId}${e.action === "failed" ? "  (failed earlier; --retry-failed re-runs it)" : ""}\n`);
+        const note =
+          e.action === "error"
+            ? "  (error earlier; --retry-failed re-runs it)"
+            : e.action === "skip"
+              ? `  (${e.last!.status} earlier)`
+              : e.last !== undefined
+                ? `  (${e.last.status} earlier)`
+                : "";
+        process.stdout.write(`${mark[e.action]}  ${e.cell.cellId}${note}\n`);
       }
       process.stdout.write(
-        `dry-run    ${summary.total} cells · would run=${summary.run} skip=${summary.skip} failed(not retried)=${summary.failed} · ledger ${ledgerPath}\n`,
+        `dry-run    ${summary.total} cells · would run=${summary.run} skip=${summary.skip} error(not retried)=${summary.error} · ledger ${ledgerPath}\n`,
       );
       if (malformed > 0) process.stderr.write(`[warn] ledger: ${malformed} malformed line(s) ignored\n`);
     }
@@ -891,5 +1001,5 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
   } else {
     process.stdout.write(formatMatrixSummary(summary) + `\nledger     ${ledgerPath}\n`);
   }
-  return summary.failed > 0 || summary.interrupted ? 1 : 0;
+  return matrixExitCode(summary);
 }

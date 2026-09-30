@@ -12,11 +12,14 @@ import { after, before, describe, it } from "node:test";
 
 import {
   cellIdOf,
+  classifyCell,
   createMatrixDriver,
   defaultLedgerPath,
   expandMatrix,
   loadMatrixPlan,
   loadTaskDir,
+  matrixExitCode,
+  normalizeLedgerStatus,
   parseMatrixPlan,
   planStatus,
   readLedger,
@@ -144,34 +147,87 @@ describe("expandMatrix", () => {
 });
 
 describe("ledger", () => {
-  const row = (cellId: string, status: "completed" | "failed"): LedgerRow => ({
-    v: 1,
-    cellId,
-    experiment: "e",
-    variant: "v",
-    agent: "null",
-    task: "t",
-    model: null,
-    trial: 1,
-    status,
-    runId: null,
-    startedAt: 0,
-    endedAt: 0,
-  });
+  // Legacy (#56 v1) statuses are accepted on purpose: readLedger/planStatus normalize them.
+  const row = (cellId: string, status: string, extra: Partial<LedgerRow> = {}): LedgerRow =>
+    ({
+      v: 1,
+      cellId,
+      experiment: "e",
+      variant: "v",
+      agent: "null",
+      task: "t",
+      model: null,
+      trial: 1,
+      status,
+      runId: null,
+      startedAt: 0,
+      endedAt: 0,
+      ...extra,
+    }) as LedgerRow;
 
-  it("planStatus: last row per cell wins; failed is not re-run unless retryFailed", () => {
+  it("planStatus: last row per cell wins; an error is not re-run unless retryFailed", () => {
     const cells = expandMatrix(parseMatrixPlan(plan3x3()), root);
     const rows = [
-      row(cells[0]!.cellId, "failed"),
-      row(cells[0]!.cellId, "completed"),
-      row(cells[1]!.cellId, "completed"),
-      row(cells[1]!.cellId, "failed"),
-      row("not:in:plan:trial1", "completed"),
+      row(cells[0]!.cellId, "error"),
+      row(cells[0]!.cellId, "passed"),
+      row(cells[1]!.cellId, "passed"),
+      row(cells[1]!.cellId, "error"),
+      row("not:in:plan:trial1", "passed"),
     ];
     const plain = planStatus(cells, rows);
-    assert.deepEqual(plain.slice(0, 3).map((e) => e.action), ["skip", "failed", "run"]);
+    assert.deepEqual(plain.slice(0, 3).map((e) => e.action), ["skip", "error", "run"]);
     const retry = planStatus(cells, rows, { retryFailed: true });
     assert.deepEqual(retry.slice(0, 3).map((e) => e.action), ["skip", "run", "run"]);
+  });
+
+  it("planStatus: verify-failed is a verdict (skipped, never retried); skipped-unavailable runs again", () => {
+    const cells = expandMatrix(parseMatrixPlan(plan3x3()), root);
+    const rows = [row(cells[0]!.cellId, "verify-failed"), row(cells[1]!.cellId, "skipped-unavailable")];
+    assert.deepEqual(planStatus(cells, rows).slice(0, 2).map((e) => e.action), ["skip", "run"]);
+    assert.deepEqual(planStatus(cells, rows, { retryFailed: true }).slice(0, 2).map((e) => e.action), ["skip", "run"]);
+  });
+
+  it("legacy ledger rows map onto the split statuses", () => {
+    assert.equal(normalizeLedgerStatus({ status: "completed", runId: "r" }), "passed");
+    assert.equal(normalizeLedgerStatus({ status: "failed", runId: "r", exitStatus: "success", verify: "fail" }), "verify-failed");
+    assert.equal(normalizeLedgerStatus({ status: "failed", runId: "r", exitStatus: "budget_exceeded" }), "verify-failed");
+    assert.equal(normalizeLedgerStatus({ status: "failed", runId: "r", exitStatus: "success", verify: "error" }), "error");
+    assert.equal(normalizeLedgerStatus({ status: "failed", runId: "r", exitStatus: "error" }), "error");
+    assert.equal(normalizeLedgerStatus({ status: "failed", runId: "r", exitStatus: "unavailable" }), "skipped-unavailable");
+    assert.equal(normalizeLedgerStatus({ status: "failed", runId: null }), "error", "setup failure / throw");
+    // A legacy failed row never becomes passed, even if its fields look like a pass.
+    assert.equal(normalizeLedgerStatus({ status: "failed", runId: "r", exitStatus: "success", verify: "pass" }), "error");
+
+    const { dir } = scratch("legacy");
+    const file = path.join(dir, "old.ledger.jsonl");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      file,
+      [
+        row("a:t:default:trial1", "completed", { runId: "r1", exitStatus: "success" }),
+        row("a:t:default:trial2", "failed", { runId: "r2", exitStatus: "success", verify: "fail" }),
+        row("a:t:default:trial3", "failed", { runId: "r3", exitStatus: "error" }),
+      ]
+        .map((r) => JSON.stringify(r))
+        .join("\n") + "\n",
+    );
+    assert.deepEqual(readLedger(file).rows.map((r) => r.status), ["passed", "verify-failed", "error"]);
+  });
+
+  it("classifyCell and the exit rule", () => {
+    assert.equal(classifyCell({ exitStatus: "success" }), "passed");
+    assert.equal(classifyCell({ exitStatus: "success", verify: "pass" }), "passed");
+    assert.equal(classifyCell({ exitStatus: "success", verify: "fail" }), "verify-failed");
+    assert.equal(classifyCell({ exitStatus: "success", verify: "error" }), "error");
+    assert.equal(classifyCell({ exitStatus: "turn_limit", verify: "fail" }), "verify-failed");
+    assert.equal(classifyCell({ exitStatus: "error", verify: "fail" }), "error");
+    assert.equal(classifyCell({ exitStatus: "timeout" }), "error");
+    assert.equal(classifyCell({ exitStatus: "unavailable" }), "skipped-unavailable");
+    assert.equal(classifyCell({ setupFailed: true }), "error");
+    assert.equal(classifyCell({ thrown: new Error("x") }), "error");
+    assert.equal(matrixExitCode({ error: 0, interrupted: false }), 0);
+    assert.equal(matrixExitCode({ error: 1, interrupted: false }), 1);
+    assert.equal(matrixExitCode({ error: 0, interrupted: true }), 1);
   });
 
   it("readLedger: missing file is empty; a torn final line is skipped and counted", () => {
@@ -179,7 +235,7 @@ describe("ledger", () => {
     const file = path.join(dir, "x.ledger.jsonl");
     assert.deepEqual(readLedger(file), { rows: [], malformed: 0 });
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(row("a:b:c:trial1", "completed")) + "\n" + '{"v":1,"cellId":"a:b');
+    fs.writeFileSync(file, JSON.stringify(row("a:b:c:trial1", "passed")) + "\n" + '{"v":1,"cellId":"a:b');
     const r = readLedger(file);
     assert.equal(r.rows.length, 1);
     assert.equal(r.malformed, 1);
@@ -197,12 +253,12 @@ describe("runMatrix (null adapter, in-process)", () => {
     const cells = expandMatrix(parseMatrixPlan(plan3x3()), dir);
     const driver = await createMatrixDriver(["null"], state);
     const s = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
-    assert.deepEqual([s.completed, s.skipped, s.failed, s.pending, s.interrupted], [9, 0, 0, 0, false]);
+    assert.deepEqual([s.passed, s.resumed, s.error, s.pending, s.interrupted], [9, 0, 0, 0, false]);
 
     const { rows } = readLedger(ledgerPath);
     assert.equal(rows.length, 9);
     assert.deepEqual(rows.map((r) => r.cellId), cells.map((c) => c.cellId));
-    assert.ok(rows.every((r) => r.status === "completed" && typeof r.runId === "string"));
+    assert.ok(rows.every((r) => r.status === "passed" && typeof r.runId === "string"));
 
     // Read through the schema-parsed registry view (what /api/compare sees).
     const records = scanRunRecords(state).records;
@@ -244,14 +300,14 @@ describe("runMatrix (null adapter, in-process)", () => {
         if (++settled === 4) ac.abort();
       },
     });
-    assert.deepEqual([first.completed, first.pending, first.interrupted], [4, 5, true]);
+    assert.deepEqual([first.passed, first.pending, first.interrupted], [4, 5, true]);
     assert.equal(readLedger(ledgerPath).rows.length, 4);
 
     const second = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
-    assert.deepEqual([second.completed, second.skipped, second.failed, second.pending], [5, 4, 0, 0]);
+    assert.deepEqual([second.ran, second.resumed, second.passed, second.error, second.pending], [5, 4, 9, 0, 0]);
     assert.deepEqual(
-      second.cells.map((c) => c.outcome),
-      [...Array(4).fill("skipped"), ...Array(5).fill("completed")],
+      second.cells.map((c) => [c.outcome, c.resumed === true]),
+      [...Array(4).fill(["passed", true]), ...Array(5).fill(["passed", false])],
     );
     const rows = readLedger(ledgerPath).rows;
     assert.equal(rows.length, 9);
@@ -277,20 +333,20 @@ describe("runMatrix (null adapter, in-process)", () => {
       },
     };
     const first = await runMatrix({ cells, ledgerPath, driver: hanging, stateDir: state, signal: ac.signal });
-    assert.deepEqual([first.completed, first.pending, first.interrupted], [4, 5, true]);
+    assert.deepEqual([first.passed, first.pending, first.interrupted], [4, 5, true]);
     const rows = readLedger(ledgerPath).rows;
     assert.deepEqual(rows.map((r) => r.cellId), cells.slice(0, 4).map((c) => c.cellId));
     assert.equal(first.cells[4]!.cellId, cells[4]!.cellId);
     assert.equal(first.cells[4]!.outcome, "pending");
 
     const second = await runMatrix({ cells, ledgerPath, driver: real, stateDir: state });
-    assert.deepEqual([second.completed, second.skipped, second.failed], [5, 4, 0]);
-    assert.equal(second.cells[4]!.outcome, "completed");
+    assert.deepEqual([second.ran, second.resumed, second.error], [5, 4, 0]);
+    assert.equal(second.cells[4]!.outcome, "passed");
     assert.equal(readLedger(ledgerPath).rows.length, 9);
   });
 
-  it("a failed cell is reported, not re-run by default, and re-run with retryFailed", async () => {
-    const { dir, state } = scratch("retry");
+  it("a verify-failed cell is a recorded verdict: skipped on resume and NOT retried even with retryFailed", async () => {
+    const { dir, state } = scratch("verify-failed");
     const ledgerPath = path.join(dir, "plan.ledger.jsonl");
     const marker = path.join(dir, "pass-marker");
     const cells = expandMatrix(
@@ -307,25 +363,77 @@ describe("runMatrix (null adapter, in-process)", () => {
     );
     const driver = await createMatrixDriver(["null"], state);
     const first = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
-    assert.deepEqual([first.completed, first.failed], [6, 3]);
-    const failedRows = readLedger(ledgerPath).rows.filter((r) => r.status === "failed");
-    assert.deepEqual(failedRows.map((r) => r.task), ["t2", "t2", "t2"]);
-    assert.ok(failedRows.every((r) => r.verify === "fail" && r.exitStatus === "success" && r.runId !== null));
+    assert.deepEqual([first.passed, first.verifyFailed, first.error], [6, 3, 0]);
+    assert.equal(matrixExitCode(first), 0, "verify failures are data, not harness errors");
+    const vfRows = readLedger(ledgerPath).rows.filter((r) => r.status === "verify-failed");
+    assert.deepEqual(vfRows.map((r) => r.task), ["t2", "t2", "t2"]);
+    assert.ok(vfRows.every((r) => r.verify === "fail" && r.exitStatus === "success" && r.runId !== null));
+
+    // Even once the checker would pass, the recorded verdict stands: a retry
+    // would give a failing agent extra tries and inflate the pass rate.
+    fs.writeFileSync(marker, "");
+    for (const retryFailed of [false, true]) {
+      const again = await runMatrix({ cells, ledgerPath, driver, stateDir: state, retryFailed });
+      assert.deepEqual([again.ran, again.resumed, again.passed, again.verifyFailed], [0, 9, 6, 3]);
+      assert.deepEqual(
+        again.cells.filter((c) => c.outcome === "verify-failed").map((c) => c.cellId),
+        cells.filter((c) => c.task.id === "t2").map((c) => c.cellId),
+      );
+    }
+    assert.equal(readLedger(ledgerPath).rows.length, 9, "no new attempts");
+    assert.equal(scanRunRecords(state).records.length, 9);
+  });
+
+  it("an error cell is reported, not re-run by default, and re-run with retryFailed", async () => {
+    const { dir, state } = scratch("retry");
+    const ledgerPath = path.join(dir, "plan.ledger.jsonl");
+    const marker = path.join(dir, "setup-ok");
+    const cells = expandMatrix(
+      parseMatrixPlan(
+        plan3x3({
+          tasks: [
+            { id: "t1", prompt: "task one" },
+            { id: "t2", prompt: "task two", setup: `test -f '${marker}'` },
+            { id: "t3", prompt: "task three" },
+          ],
+        }),
+      ),
+      dir,
+    );
+    const driver = await createMatrixDriver(["null"], state);
+    const first = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
+    assert.deepEqual([first.passed, first.error], [6, 3]);
+    assert.equal(matrixExitCode(first), 1);
 
     fs.writeFileSync(marker, "");
     const second = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
-    assert.deepEqual([second.completed, second.skipped, second.failed], [0, 6, 3]);
+    assert.deepEqual([second.ran, second.resumed, second.error], [0, 9, 3]);
     assert.deepEqual(
-      second.cells.filter((c) => c.outcome === "failed-not-retried").map((c) => c.cellId),
+      second.cells.filter((c) => c.outcome === "error" && c.resumed).map((c) => c.cellId),
       cells.filter((c) => c.task.id === "t2").map((c) => c.cellId),
     );
     assert.equal(readLedger(ledgerPath).rows.length, 9, "no new attempts without retryFailed");
-    assert.equal(scanRunRecords(state).records.length, 9);
 
     const third = await runMatrix({ cells, ledgerPath, driver, stateDir: state, retryFailed: true });
-    assert.deepEqual([third.completed, third.skipped, third.failed], [3, 6, 0]);
+    assert.deepEqual([third.ran, third.resumed, third.passed, third.error], [3, 6, 9, 0]);
+    assert.equal(matrixExitCode(third), 0);
     assert.equal(readLedger(ledgerPath).rows.length, 12, "one row per attempt: 9 + 3 retries");
     assert.equal(planStatus(cells, readLedger(ledgerPath).rows).filter((e) => e.action === "skip").length, 9);
+  });
+
+  it("an unavailable agent run is skipped-unavailable: not a failure, runs again next time", async () => {
+    const { dir, state } = scratch("unavailable");
+    const ledgerPath = path.join(dir, "plan.ledger.jsonl");
+    const cells = expandMatrix(parseMatrixPlan({ experiment: "e", agents: ["null"], tasks: [{ id: "a", prompt: "p" }] }), dir);
+    const real = await createMatrixDriver(["null"], state);
+    const driver: Pick<Driver, "run"> = {
+      run: async (agent, spec) => ({ ...(await real.run(agent, spec)), exitStatus: "unavailable" }),
+    };
+    const s = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
+    assert.deepEqual([s.skipped, s.error, matrixExitCode(s)], [1, 0, 0]);
+    assert.deepEqual(planStatus(cells, readLedger(ledgerPath).rows).map((e) => e.action), ["run"]);
+    const again = await runMatrix({ cells, ledgerPath, driver: real, stateDir: state });
+    assert.deepEqual([again.ran, again.passed], [1, 1]);
   });
 
   it("driver throw and setup failure fail the cell with runId null and an error", async () => {
@@ -348,7 +456,7 @@ describe("runMatrix (null adapter, in-process)", () => {
       run: (agent, spec) => (calls++ === 0 ? Promise.reject(new Error("launch exploded")) : real.run(agent, spec)),
     };
     const s = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
-    assert.equal(s.failed, 2);
+    assert.equal(s.error, 2);
     const rows = readLedger(ledgerPath).rows;
     assert.equal(rows[0]!.runId, null);
     assert.match(rows[0]!.error ?? "", /launch exploded/);
@@ -378,7 +486,7 @@ describe("runMatrix (null adapter, in-process)", () => {
     const ledgerPath = path.join(dir, "plan.ledger.jsonl");
     const driver = await createMatrixDriver(["null"], state);
     const s = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
-    assert.deepEqual([s.completed, s.failed], [2, 0], JSON.stringify(s.cells));
+    assert.deepEqual([s.passed, s.error], [2, 0], JSON.stringify(s.cells));
     assert.ok(readLedger(ledgerPath).rows.every((r) => r.verify === "pass"));
     const work = fs.readdirSync(path.join(dir, "plan.work"));
     assert.equal(work.length, 2, "one fresh workspace per cell");
@@ -400,10 +508,10 @@ describe("ach trial --matrix (CLI)", () => {
     const env = { AGENTIC_CODING_HARNESS_STATE_DIR: state, HOME: home };
     const r = runCli(["trial", "--matrix", planFile, "--dry-run"], env);
     assert.equal(r.code, 0, r.stderr);
-    const cellLines = r.stdout.split("\n").filter((l) => /^(run |skip|FAIL) /.test(l));
+    const cellLines = r.stdout.split("\n").filter((l) => /^(run |skip|ERR ) /.test(l));
     assert.equal(cellLines.length, 9);
     assert.ok(cellLines.every((l) => l.startsWith("run ")));
-    assert.match(r.stdout, /dry-run {4}9 cells · would run=9 skip=0 failed\(not retried\)=0/);
+    assert.match(r.stdout, /dry-run {4}9 cells · would run=9 skip=0 error\(not retried\)=0/);
     assert.equal(fs.existsSync(defaultLedgerPath(planFile)), false, "dry run creates no ledger");
     assert.deepEqual(runFiles(state), [], "dry run launches no agent");
 
@@ -420,10 +528,11 @@ describe("ach trial --matrix (CLI)", () => {
     const j = runCli(["trial", "--matrix", planFile, "--dry-run", "--json"], env);
     assert.equal(j.code, 0, j.stderr);
     const out = JSON.parse(j.stdout) as { cells: { cellId: string; action: string }[]; summary: Record<string, number> };
-    assert.deepEqual(out.cells.slice(0, 3).map((c) => c.action), ["skip", "failed", "run"]);
-    assert.deepEqual(out.summary, { total: 9, run: 7, skip: 1, failed: 1 });
+    // Legacy rows: completed → passed (skip); failed with no run → error.
+    assert.deepEqual(out.cells.slice(0, 3).map((c) => c.action), ["skip", "error", "run"]);
+    assert.deepEqual(out.summary, { total: 9, run: 7, skip: 1, error: 1 });
     const retry = JSON.parse(runCli(["trial", "--matrix", planFile, "--dry-run", "--json", "--retry-failed"], env).stdout) as typeof out;
-    assert.deepEqual(retry.summary, { total: 9, run: 8, skip: 1, failed: 0 });
+    assert.deepEqual(retry.summary, { total: 9, run: 8, skip: 1, error: 0 });
     assert.deepEqual(runFiles(state), []);
   });
 
@@ -452,7 +561,7 @@ describe("ach trial --matrix (CLI)", () => {
 
     const second = runCli(["trial", "--matrix", planFile], env);
     assert.equal(second.code, 0, second.stderr);
-    assert.match(second.stdout, /summary {4}9 cells · completed=6 skipped=3 failed=0/);
+    assert.match(second.stdout, /summary {4}9 cells · passed=9 verify-failed=0 error=0 skipped=0 · ran=6 resumed=3/);
     const rows = readLedger(ledger).rows;
     assert.equal(rows.length, 9);
     assert.equal(new Set(rows.map((r) => r.cellId)).size, 9);
@@ -461,31 +570,55 @@ describe("ach trial --matrix (CLI)", () => {
     const third = runCli(["trial", "--matrix", planFile, "--json"], env);
     assert.equal(third.code, 0, third.stderr);
     const out = JSON.parse(third.stdout) as { summary: Record<string, unknown> };
-    assert.deepEqual(out.summary, { total: 9, completed: 0, skipped: 9, failed: 0, pending: 0, interrupted: false });
+    assert.deepEqual(out.summary, {
+      total: 9,
+      passed: 9,
+      verifyFailed: 0,
+      error: 0,
+      skipped: 0,
+      pending: 0,
+      ran: 0,
+      resumed: 9,
+      interrupted: false,
+    });
     assert.equal(runFiles(state).length, 9, "a fully completed matrix launches nothing");
   });
 
-  it("failed cells: exit 1 and reported; not re-run without --retry-failed; re-run with it", () => {
+  it("error cells (agent exited non-zero): exit 1 and reported; not re-run without --retry-failed; re-run with it", () => {
     const { dir, state, home } = scratch("cli-retry");
     const planFile = writePlan(dir, plan3x3());
     const env = { AGENTIC_CODING_HARNESS_STATE_DIR: state, HOME: home };
     const first = runCli(["trial", "--matrix", planFile], { ...env, AGENTIC_CODING_HARNESS_NULL_EXIT: "error" });
     assert.equal(first.code, 1, first.stderr);
-    assert.match(first.stdout, /completed=0 skipped=0 failed=9/);
+    assert.match(first.stdout, /passed=0 verify-failed=0 error=9 skipped=0/);
     assert.equal(runFiles(state).length, 9);
 
     const second = runCli(["trial", "--matrix", planFile], env);
     assert.equal(second.code, 1);
-    assert.match(second.stdout, /completed=0 skipped=0 failed=9/);
-    assert.match(second.stdout, /FAILED earlier \(not retried; --retry-failed\)/);
-    assert.equal(runFiles(state).length, 9, "failed cells are not silently retried");
+    assert.match(second.stdout, /passed=0 verify-failed=0 error=9 skipped=0 · ran=0 resumed=9/);
+    assert.match(second.stdout, /ERROR earlier \(not retried; --retry-failed\)/);
+    assert.equal(runFiles(state).length, 9, "error cells are not silently retried");
     assert.equal(readLedger(defaultLedgerPath(planFile)).rows.length, 9);
 
     const third = runCli(["trial", "--matrix", planFile, "--retry-failed"], env);
     assert.equal(third.code, 0, third.stderr);
-    assert.match(third.stdout, /completed=9 skipped=0 failed=0/);
+    assert.match(third.stdout, /passed=9 verify-failed=0 error=0 skipped=0 · ran=9 resumed=0/);
     assert.equal(runFiles(state).length, 18);
     assert.equal(readLedger(defaultLedgerPath(planFile)).rows.length, 18);
+  });
+
+  it("verify-failed cells: exit 0, skipped on re-run, and --retry-failed launches nothing", () => {
+    const { dir, state, home } = scratch("cli-verify-failed");
+    const planFile = writePlan(dir, plan3x3({ tasks: [{ id: "t1", prompt: "p", verify: "exit 1" }] }));
+    const env = { AGENTIC_CODING_HARNESS_STATE_DIR: state, HOME: home };
+    const first = runCli(["trial", "--matrix", planFile], env);
+    assert.equal(first.code, 0, first.stderr);
+    assert.match(first.stdout, /passed=0 verify-failed=3 error=0 skipped=0 · ran=3 resumed=0/);
+    const retry = runCli(["trial", "--matrix", planFile, "--retry-failed"], env);
+    assert.equal(retry.code, 0, retry.stderr);
+    assert.match(retry.stdout, /passed=0 verify-failed=3 error=0 skipped=0 · ran=0 resumed=3/);
+    assert.match(retry.stdout, /verify-failed earlier \(skip\)/);
+    assert.equal(runFiles(state).length, 3, "a verify failure is never retried");
   });
 
   it("usage errors: missing --matrix, bad plan, --help", () => {
