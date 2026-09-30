@@ -11,7 +11,7 @@
 //     outside $HOME), overridable with AGENTIC_CODING_HARNESS_HERMETIC_ROOT.
 //     The root is NOT trusted: after the copy, the detector runs on the copy
 //     itself, and any ancestor instruction file fails the run loudly
-//     (HERMETIC_UNSAFE, exit 2) before the agent launches. The copy path is
+//     (HarnessError HERMETIC_UNSAFE; `ach run` exits 1) before the agent launches. The copy path is
 //     realpath'd (/var -> /private/var) so the agent's cwd, the detector's
 //     walk and the recorded path all agree.
 //   * The copy keeps the workspace's basename (<tmp>/ach-hermetic-XXXX/<name>)
@@ -140,10 +140,10 @@ export function prepareHermeticWorkspace(agent: string, source: string, opts: Pr
   try {
     src = fs.realpathSync(source);
   } catch (err) {
-    throw new HarnessError(`hermetic: workspace '${source}' is not accessible: ${err instanceof Error ? err.message : String(err)}`, 'HERMETIC_UNSAFE', 2);
+    throw new HarnessError(`hermetic: workspace '${source}' is not accessible: ${err instanceof Error ? err.message : String(err)}`, 'HERMETIC_UNSAFE');
   }
   if (!fs.statSync(src).isDirectory()) {
-    throw new HarnessError(`hermetic: workspace '${source}' is not a directory`, 'HERMETIC_UNSAFE', 2);
+    throw new HarnessError(`hermetic: workspace '${source}' is not a directory`, 'HERMETIC_UNSAFE');
   }
   const root = fs.realpathSync(opts.tempRoot ?? defaultHermeticRoot());
   const base = fs.realpathSync(fs.mkdtempSync(path.join(root, 'ach-hermetic-')));
@@ -152,7 +152,7 @@ export function prepareHermeticWorkspace(agent: string, source: string, opts: Pr
     // The copy must never sit inside the source (a temp root under the
     // workspace would recurse into itself and would inherit its files).
     if (dir === src || dir.startsWith(src.endsWith(path.sep) ? src : src + path.sep)) {
-      throw new HarnessError(`hermetic: temp root '${root}' is inside the workspace '${src}'`, 'HERMETIC_UNSAFE', 2);
+      throw new HarnessError(`hermetic: temp root '${root}' is inside the workspace '${src}'`, 'HERMETIC_UNSAFE');
     }
     fs.cpSync(src, dir, {
       recursive: true,
@@ -171,7 +171,6 @@ export function prepareHermeticWorkspace(agent: string, source: string, opts: Pr
       throw new HarnessError(
         `hermetic: the temp copy ${dir} still has ${agent} instruction files in its ancestor directories: ${leaks.join(', ')} — refusing to run non-hermetically; point ${HERMETIC_ROOT_ENV} (or TMPDIR) at a directory without them`,
         'HERMETIC_UNSAFE',
-        2,
       );
     }
     return { source: src, base, dir, avoided: findAncestorInstructions(agent, src, opts.detect), manifest: scanTree(dir) };
