@@ -176,8 +176,10 @@ terminal you can type into.
 drawer: the span waterfall, cumulative token/cost charts, and the leveled event log. The
 metrics pane also shows latency — time to first token, output tokens/s, time per output token,
 and a per-tool duration table (calls, avg, p95, total); a metric the event log cannot support
-reads `n/a`. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) ("Latency metrics") for definitions and
-which agents emit what.
+reads `n/a`. Time to first token is measured for claude, gemini, codex (first request of each
+turn) and headless kiro (first request); output tokens/s and time per output token for claude
+only; opencode's stream carries no request timing. See [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+("Latency metrics") for definitions, precision and which agents emit what.
 
 ![Observability view showing the traces waterfall, token and cost metric cards with charts, and the event log stream for a single coding agent run](docs/assets/web-trio.png)
 
