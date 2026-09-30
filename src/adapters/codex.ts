@@ -174,6 +174,47 @@ export function parseCodexLine(line: string): CanonicalEvent[] {
   }
 }
 
+/**
+ * Stateful line parser for driver runs: parseCodexLine plus model-call
+ * boundaries (#32) for the FIRST model request of each turn.
+ *
+ * `codex exec --json` marks turns (turn.started / turn.completed), not model
+ * requests: one turn is the whole agent loop, tool executions included, and
+ * usage arrives once per turn. Inside a turn the stream cannot tell a new
+ * request from a second tool call of the same response, so only the first
+ * request is bracketed:
+ * - start = turn.started (the prompt is sent);
+ * - first output = the first item the parser surfaces (a completed
+ *   reasoning/agent_message item, or a tool's item.started);
+ * - end = right after the first tool start (the response that asked for it
+ *   is over), else turn.completed / turn.failed.
+ * No outputTokens: the turn's usage spans every request of the turn, so
+ * throughput stays null for codex.
+ */
+export function createCodexLineParser(): (line: string) => CanonicalEvent[] {
+  let turns = 0;
+  let open: string | null = null;
+  return (line: string): CanonicalEvent[] => {
+    const events = parseCodexLine(line);
+    const kind = (JSON.parse(line) as { type?: unknown }).type;
+    if (kind === 'turn.started') {
+      turns += 1;
+      open = `turn-${turns}`;
+      return [{ type: 'model_call', phase: 'start', callId: open }, ...events];
+    }
+    if (open === null) return events;
+    const end: CanonicalEvent = { type: 'model_call', phase: 'end', callId: open };
+    if (kind === 'turn.completed' || kind === 'turn.failed') {
+      open = null;
+      return [end, ...events];
+    }
+    const toolStart = events.findIndex((e) => e.type === 'tool' && e.phase === 'start');
+    if (toolStart === -1) return events;
+    open = null;
+    return [...events.slice(0, toolStart + 1), end, ...events.slice(toolStart + 1)];
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
@@ -297,7 +338,7 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
       env: spec.env,
       scrubEnv: spec.sandbox?.scrubEnv,
     };
-    const handle = this.#run(jsonlSpec, takeOnOutput(spec));
+    const handle = this.#run(jsonlSpec, takeOnOutput(spec), createCodexLineParser());
     return launchDriverHandle({
       agent: 'codex',
       events: handle.events,
@@ -313,8 +354,12 @@ export class CodexAdapter implements AgentAdapter, CoreAgentAdapter {
     this.#current?.abort();
   }
 
-  #run(spec: JsonlRunSpec, onOutput?: (chunk: string) => void): RunHandle {
-    const handle = runJsonlCli({ spec, parseLine: parseCodexLine, spawnFn: this.#spawnFn, onOutput });
+  #run(
+    spec: JsonlRunSpec,
+    onOutput?: (chunk: string) => void,
+    parseLine: (line: string) => CanonicalEvent[] = parseCodexLine,
+  ): RunHandle {
+    const handle = runJsonlCli({ spec, parseLine, spawnFn: this.#spawnFn, onOutput });
     this.#current = handle;
     void handle.wait().finally(() => {
       if (this.#current === handle) this.#current = null;

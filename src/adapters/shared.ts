@@ -529,6 +529,19 @@ export function houseEventToCore(agent: string, event: HouseEventLike): CoreAgen
         timestamp,
       };
     }
+    case 'model_call': {
+      const ext = event as { type: 'model_call'; phase: 'start' | 'end'; callId: string; model?: string; outputTokens?: number };
+      const model = ext.model !== undefined ? { model: ext.model } : {};
+      if (ext.phase === 'start') return { type: 'model_call_start', agent, callId: ext.callId, ...model, timestamp };
+      return {
+        type: 'model_call_end',
+        agent,
+        callId: ext.callId,
+        ...model,
+        ...(ext.outputTokens !== undefined ? { outputTokens: ext.outputTokens } : {}),
+        timestamp,
+      };
+    }
     case 'progress':
       return { type: 'progress', agent, text: event.text, timestamp };
     case 'error':
