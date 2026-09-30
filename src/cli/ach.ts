@@ -39,6 +39,7 @@ import {
   type VerifyRequest,
 } from "./trials.ts";
 import { cmdRegrade } from "./regrade.ts";
+import { cmdTrial } from "./trial-matrix.ts";
 import { z } from "zod";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { VERSION } from "../version.ts";
@@ -177,6 +178,12 @@ usage:
   ach regrade <run-id> --verify '<cmd>' [--verify-timeout-ms MS] [--json]
                 (re-run a checker against a saved run's cwd; appends to the record's
                  regrades[] — no agent launched, run-time verify never rewritten)
+  ach trial --matrix <plan.json> [--dry-run] [--retry-failed] [--ledger PATH] [--json]
+                (resumable agents x tasks x models x trials grid; every cell is one
+                 run labelled experiment/variant/cellId=agent:task:model:trialN;
+                 <plan>.ledger.jsonl records finalized cells, so re-running the same
+                 command skips completed cells; failed cells re-run only with
+                 --retry-failed; see docs/TRIALS.md)
   ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
                 (--since/--last: print history newer than the bound on startup;
                  --dir is an alias of --transcript-dir here)
@@ -1501,6 +1508,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents",
+  "trial",
 ]);
 
 /**
@@ -1566,6 +1574,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdEmit(rest);
     case "regrade":
       return cmdRegrade(rest);
+    case "trial":
+      return cmdTrial(rest);
     case "report":
       return cmdReport(rest);
     case "dash":

@@ -2,6 +2,19 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## Unreleased
+
+### Added
+
+- `ach trial --matrix plan.json`: a resumable grid of agents × tasks × models × trials (#56).
+  - Every cell is one run, labelled on its RunRecord with the plan's `experiment`, a `variant` (default `{agent}:{model}`), and a deterministic `cellId` of the form `agent:task:model:trialN`. `/api/compare` groups these runs with no extra setup.
+  - One append-only `<plan>.ledger.jsonl` holds one row per cell attempt. A row is written only after the cell's run has finalized, so a runner killed mid-cell leaves that cell pending.
+  - Re-running the same command skips completed cells. Failed cells are reported but re-run only with `--retry-failed`.
+  - `--dry-run` lists every cell as run, skip, or failed without launching anything.
+  - A task is either inline (a prompt plus optional `setup` and `verify` commands) or a task directory (`task.md`, `setup.sh`, `verify.sh`, `meta.json`).
+  - Documentation: plan schema in `docs/TRIALS.md`; example plan at `examples/trial-matrix.json`.
+- RunRecord gains an optional `cellId` field.
+
 ## [0.11.2] - 2026-09-28
 
 ### Fixed

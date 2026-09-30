@@ -73,6 +73,8 @@ export interface RunRecord {
   repeat?: RepeatMembership;
   /** Later `ach regrade` verdicts, oldest first; `verify` is never rewritten. */
   regrades?: VerifyResult[];
+  /** `ach trial --matrix` cell (#56): deterministic agent:task:model:trialN. */
+  cellId?: string;
 }
 
 export interface RepeatMembership {
@@ -167,6 +169,7 @@ export const RunRecordSchema = z.object({
     .object({ group: z.string().min(1), index: z.number().int().min(0), count: z.number().int().min(1) })
     .optional(),
   regrades: z.array(VerifyResultSchema).optional(),
+  cellId: z.string().min(1).optional(),
 });
 
 export function registryDir(stateDir: string): string {

@@ -9,6 +9,7 @@ whether it *worked*, and how confident you should be about that:
 | `ach run --repeat N [--parallel K]` | #57 | N fresh sessions of the same prompt, tagged with one shared `repeat.group` |
 | `/compare`, `ach report`, `ach stats` | #30 | pass@1 with a Wilson 95% interval, pass^k, and any-pass@k per group |
 | `ach regrade <run-id> --verify '<cmd>'` | #89 | re-runs a checker against a saved run without launching the agent |
+| `ach trial --matrix plan.json` | #56 | a resumable agents × tasks × models × trials grid; one run per cell, tagged `experiment`, `variant`, `cellId` |
 
 ## `--verify`: outcome scoring
 
@@ -193,3 +194,134 @@ an agent. Harness regrading itself consumes no model tokens, but a checker
 that calls a paid API can incur its own costs. JSON/LLM rubric execution is
 not built in: encode your evolved rubric in the verifier script. The checker
 reads the current workspace, not a restored historical snapshot.
+
+## `ach trial --matrix`: resumable trial grids
+
+```sh
+ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]
+```
+
+A plan declares agents × tasks × models × trials per cell. Every cell becomes
+one child run through the same path as `ach run --verify --experiment
+--variant`, and is labelled on its RunRecord with:
+
+- `experiment`: the plan's `experiment`
+- `variant`: the plan's `variant` template (default `{agent}:{model}`)
+- `cellId`: `agent:task:model:trialN`. The model is `default` when the plan
+  gives none, and `N` starts at 1.
+
+`/api/compare?by=experiment,variant` and `ach report` group matrix runs with
+no extra configuration.
+
+```json
+{
+  "experiment": "fix-bug-sweep",
+  "agents": ["claude", { "agent": "codex", "models": ["gpt-5-codex"] }],
+  "models": ["claude-sonnet-5-5", "claude-opus-5-5"],
+  "trials": 3,
+  "tasks": [
+    { "id": "fix-bug", "prompt": "Fix the failing test in src/math.ts", "cwd": "./repo", "verify": "npm test" },
+    { "dir": "tasks/add-endpoint" }
+  ],
+  "budget": { "usd": 2, "wallMs": 900000 }
+}
+```
+
+### The ledger and resume
+
+One append-only JSONL ledger sits next to the plan (`plan.json` →
+`plan.ledger.jsonl`; `--ledger` overrides it). It holds one row per cell
+attempt:
+
+```json
+{"v":1,"cellId":"claude:fix-bug:claude-sonnet-5-5:trial1","experiment":"fix-bug-sweep","variant":"claude:claude-sonnet-5-5","agent":"claude","task":"fix-bug","model":"claude-sonnet-5-5","trial":1,"status":"completed","runId":"0dbcb142-0c07-478f-b5b2-24cd851ca0b6","exitStatus":"success","verify":"pass","startedAt":1790000000000,"endedAt":1790000042000}
+```
+
+- A row is appended only after the cell's run is finalized, meaning the
+  driver's final registry write and the label and verify annotation are done.
+  If the runner is killed mid-cell, that cell has no row and stays pending.
+- Re-invoking the same command reads the ledger. The last row for each
+  `cellId` decides what happens:
+  - `completed` cells are skipped.
+  - Cells with no row run.
+  - `failed` cells are reported as failed. They are not re-run unless you pass
+    `--retry-failed`. A retry appends a new row, so the ledger keeps every
+    attempt.
+- A cell is `completed` when the agent's `exitStatus` is `success` and, if
+  the task has a checker, the checker passed. This is the same gate `ach run`
+  uses for its exit code.
+- Everything else is `failed`: an agent error or timeout, a checker failure,
+  a setup failure, or a launch that threw. Failed rows carry `exitStatus`,
+  `verify`, and `error` so you can tell these cases apart.
+  - `--retry-failed` re-runs all of them, including checker failures. Keep
+    that in mind before you quote pass rates from a retried sweep.
+- A torn final line from a crash mid-append is ignored with a warning.
+
+`--dry-run` prints every cell with `run`, `skip`, or `FAIL` (failed earlier,
+not retried). It reads the ledger but launches nothing and writes nothing.
+Each run ends with `completed=N skipped=N failed=N`. The exit code is 1 if
+any cell is failed after the run, and 0 otherwise.
+
+Cells run one at a time, in agent → task → model → trial order.
+
+### Plan schema
+
+The zod source of truth is `MatrixPlanSchema` in `src/cli/trial-matrix.ts`.
+Unknown keys are rejected.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `experiment` | string, required | compare-view experiment label on every run |
+| `agents` | `(string \| {agent, models?})[]`, ≥1 | built-in or agents.d names. A per-agent `models` list replaces the plan-level list for that agent. `custom` is rejected because it needs `--template`. |
+| `tasks` | task[], ≥1 | inline task or task directory (below) |
+| `models` | string[]? | crossed with every agent that has no own list. Omitted means the adapter default (`default` in the cellId). A literal `"default"` also means no `--model`. |
+| `trials` | int ≥1, default 1 | fresh sessions per cell |
+| `variant` | string, default `{agent}:{model}` | template; placeholders `{agent}` `{model}` `{task}` |
+| `budget` | `{usd?, maxTurns?, wallMs?, idleMs?}` | per-run caps, as the `ach run` flags |
+| `cwd` | string? | default agent cwd for shared-workspace tasks, relative to the plan's directory (default: that directory) |
+| `setupTimeoutMs` / `verifyTimeoutMs` | int? | plan-level defaults (300000 / 120000) |
+
+**Inline task:** `{id, prompt, cwd?, setup?, verify?, workspace?, setupTimeoutMs?, verifyTimeoutMs?}`.
+- `id` must match `[A-Za-z0-9._-]+`, with no `:` because `:` separates the
+  parts of a cellId.
+- `setup` and `verify` are shell commands (`/bin/sh -c`).
+- `workspace` defaults to `"shared"`: the agent runs in `cwd`.
+
+**Task directory:** `{dir, id?, workspace?, setupTimeoutMs?, verifyTimeoutMs?}`,
+with `dir` relative to the plan's directory:
+
+| File | Required | Use |
+|---|---|---|
+| `task.md` | yes | the prompt |
+| `setup.sh` | no | run as `sh <abs path>` before the agent |
+| `verify.sh` | no | the checker, run after the agent |
+| `meta.json` | no | `{id?, description?, workspace?, setupTimeoutMs?, verifyTimeoutMs?, ...}`; unknown keys such as `suites` or `tags` are kept |
+
+- The task id is the first one set among the plan's `id`, meta.json `id`, and
+  the directory name.
+- `workspace` defaults to `"fresh"`: each cell gets an emptied directory at
+  `<ledger name>.work/<cellId>-<hash>/`, which is `<plan>.work/…` with the
+  default ledger path.
+
+`setup` and `verify` run in the cell's workspace with the environment
+variables `ACH_CELL_ID`, `ACH_EXPERIMENT`, `ACH_VARIANT`, `ACH_AGENT`,
+`ACH_MODEL`, `ACH_TASK_ID`, `ACH_TRIAL`, `ACH_WORKSPACE`, and `ACH_TASK_DIR`
+(task directories only). If setup exits non-zero, the cell fails with
+`runId: null` and no agent is launched.
+
+### Building on it in code (task suites)
+
+`src/cli/trial-matrix.ts` exports the pieces a suite runner composes:
+
+| Export | Use |
+|---|---|
+| `loadTaskDir(dir)` | resolve one task directory into a `ResolvedTask` |
+| `parseMatrixPlan(obj)` | validate a plan built in code |
+| `expandMatrix(plan, baseDir)` | expand a plan into its `MatrixCell` list |
+| `executeMatrixCli({plan, baseDir, ledgerPath, dryRun, retryFailed, json})` | the whole CLI behaviour: dry-run, driver, per-cell lines, summary, exit code |
+| `runMatrix` | the programmatic runner; takes an injectable driver and an `AbortSignal` |
+| `readLedger` | read the ledger |
+| `planStatus` | decide each cell's action from the ledger |
+| `createMatrixDriver` | build the driver for the plan's agents |
+
+For example, a suite is a plan whose `tasks` are `{dir}` entries.
