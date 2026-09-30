@@ -11,6 +11,7 @@ import type { McpServer } from "./contract.ts";
 import { KIRO_INPUT_SCHEMA, RunArgsSchema } from "./tools-run.ts";
 import type { RunSpec as CoreRunSpec } from "../core/types.ts";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
+import { unchainedLines } from "../core/hash-chain.ts";
 import { createPricer } from "../core/pricing.ts";
 import {
   effectiveStatus,
@@ -230,7 +231,8 @@ export function registerJobTools(
       } catch {
         return { found: false, runId: a.runId };
       }
-      const lines = text.split("\n").filter((line) => line.trim().length > 0);
+      // Framing + seal (#59) stripped so cursor/total/bytes match the pre-chain log.
+      const lines = unchainedLines(text);
       const cursor = a.cursor ?? 0;
       let limit = a.limit ?? 100;
       const maxBytes = opts.gateway?.enabled ? opts.gateway.maxOutputBytes : undefined;
