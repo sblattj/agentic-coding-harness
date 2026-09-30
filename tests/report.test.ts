@@ -7,6 +7,7 @@ import path from "node:path";
 import { esc, renderReport } from "../src/report/html.ts";
 import { loadTrials, toLoadedRun } from "../src/report/model.ts";
 import type { LoadedRun } from "../src/report/model.ts";
+import { writeRunRecord } from "../src/core/registry.ts";
 
 const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
 const FIXTURES = path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures", "trials");
@@ -319,5 +320,62 @@ describe("report — truthful usage rendering", () => {
     assert.match(html, /1,234/);
     assert.match(html, /\$0\.5000/);
     assert.ok(!html.includes('data-k="context"'), "context column hidden when nothing derived it");
+  });
+  test("branch spend table totals runs, cost and tokens per branch label (#47)", () => {
+    const html = renderReport({
+      rootDir: "/tmp/t",
+      labels: ["t"],
+      runs: [
+        fakeRun({ branch: "feat/x", inputTokens: 100, outputTokens: 20, costUsd: 0.5 }),
+        fakeRun({ branch: "feat/x", inputTokens: 300, outputTokens: 80, costUsd: 1.25 }),
+        fakeRun({ branch: "(detached abc1234)", inputTokens: 10, outputTokens: 0, costUsd: 0.01 }),
+        fakeRun({ branch: '<img src=x onerror=alert(1)>', inputTokens: 1, outputTokens: 1, costUsd: 0 }),
+        fakeRun({ inputTokens: 7, outputTokens: 3, costUsd: 2 }),
+      ],
+    }, { version: "0.0.0-test", generatedAt: new Date(0) });
+    const table = /<table class="cmp sortable" id="branch-spend">[\s\S]*?<\/table>/.exec(html)?.[0] ?? "";
+    assert.ok(table, "branch table present");
+    const rowFor = (label: string): string => new RegExp(`<tr><td data-v="${label.replace(/[()]/g, "\\$&")}"[^\\n]*`).exec(table)?.[0] ?? "";
+    assert.match(rowFor("feat/x"), /class="num">2<\/td><td data-v="1.75" class="num">\$1\.75<\/td><td data-v="500" class="num">500</);
+    assert.match(rowFor("(detached abc1234)"), /class="num">1<\/td>.*\$0\.0100.*data-v="10"/);
+    assert.match(rowFor("(no branch)"), /class="num">1<\/td>.*\$2\.00.*data-v="10"/);
+    assert.ok(!html.includes("<img src=x"), "branch label escaped");
+    assert.ok(table.includes("&lt;img src=x onerror=alert(1)&gt;"));
+  });
+
+  test("no branch table when no run carries a branch", () => {
+    const html = renderReport({ rootDir: "/tmp/t", labels: ["t"], runs: [fakeRun({})] }, { version: "0.0.0-test", generatedAt: new Date(0) });
+    assert.ok(!html.includes("branch-spend"));
+  });
+
+  test("ach report joins the RunRecord branch into the table (#47)", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-report-branch-"));
+    const state = path.join(dir, "state");
+    const trial = path.join(dir, "20260910-000000");
+    await fs.mkdir(trial, { recursive: true });
+    const mk = (runId: string) => ({
+      runId, sessionId: runId, events: [{ type: "session", timestamp: 1 }],
+      tokens: [{ model: "m", inputTokens: 40, outputTokens: 2, costUsd: 0.3 }],
+      totalCost: 0.3, durationMs: 10, exitStatus: "success", warnings: [],
+    });
+    await fs.writeFile(path.join(trial, "a.json"), JSON.stringify(mk("rb-1")));
+    await fs.writeFile(path.join(trial, "b.json"), JSON.stringify(mk("rb-2")));
+    writeRunRecord(state, { runId: "rb-1", agent: "a", startedAt: 1, status: "success", branch: "feat/join" });
+    writeRunRecord(state, { runId: "rb-2", agent: "b", startedAt: 1, status: "success", commit: "abc1234" });
+    const outFile = path.join(dir, "r.html");
+    const prev = process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
+    process.env.AGENTIC_CODING_HARNESS_STATE_DIR = state;
+    try {
+      const r = runCli(["report", trial, "--out", outFile]);
+      assert.equal(r.code, 0, r.stderr);
+    } finally {
+      if (prev === undefined) delete process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
+      else process.env.AGENTIC_CODING_HARNESS_STATE_DIR = prev;
+    }
+    const html = await fs.readFile(outFile, "utf8");
+    assert.match(html, /id="branch-spend"/);
+    assert.match(html, /data-v="feat\/join"/);
+    assert.match(html, /data-v="\(detached abc1234\)"/);
+    await fs.rm(dir, { recursive: true, force: true });
   });
 });
