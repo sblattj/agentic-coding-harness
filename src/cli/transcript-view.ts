@@ -36,7 +36,7 @@ export async function transcriptView(dir: string, runs: RunRecord[], scan: ScanO
     if (cost !== undefined) r.totals!.costSource = !reported || r.totals!.costSource === 'computed' ? 'computed' : 'reported';
   };
   for await (const r of scanAll(scan)) {
-    const price = r.model ? pricer.price({ model: r.model, inputTokens: r.input, outputTokens: r.output, cacheReadTokens: r.cacheRead, cacheWriteTokens: r.cacheWrite }) : NaN;
+    const price = r.model ? pricer.price({ model: r.model, inputTokens: r.input, outputTokens: r.output, cacheReadTokens: r.cacheRead, cacheWriteTokens: r.cacheWrite, ...(r.cacheWrite1h !== undefined ? { cacheWrite1hTokens: r.cacheWrite1h } : {}) }) : NaN;
     add(r.agent, r.sessionId, r.sourcePath ?? '', r.timestamp, r.input, r.output, r.cacheRead, r.cacheWrite, Number.isFinite(price) ? price : undefined, false);
   }
   const catalog = loadAgentDescriptors({ dirs: descriptorDirs({ cwd: process.cwd(), stateDir: dir }) });

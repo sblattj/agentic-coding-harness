@@ -283,18 +283,19 @@ describe('external LiteLLM-style cost map', () => {
 });
 
 describe('issue #103: claude-opus-5-5 / claude-sonnet-5-5', () => {
-  it('prices both -5-5 flagships exactly (mirrored -5 family rates), no warnings', () => {
+  it('prices both -5-5 flagships exactly, no warnings', () => {
     const p = createPricer();
-    // Mirrored per 1M: sonnet-5-5 2/10/0.2/2.5; opus-5-5 5/25/0.5/6.25.
+    // Per 1M: sonnet-5-5 2/10/0.2/2.5 (mirrored -5 rates); opus-5-5 4/20/0.2/5
+    // (actual Anthropic rates since #105). No TTL split: writes bill at 5m.
     assert.equal(p.price(rec('claude-sonnet-5-5', 1_000_000, 1_000_000, 1_000_000, 1_000_000)), 2 + 10 + 0.2 + 2.5);
-    assert.equal(p.price(rec('claude-opus-5-5', 1_000_000, 1_000_000, 1_000_000, 1_000_000)), 5 + 25 + 0.5 + 6.25);
+    assert.ok(Math.abs(p.price(rec('claude-opus-5-5', 1_000_000, 1_000_000, 1_000_000, 1_000_000)) - (4 + 20 + 0.2 + 5)) < 1e-9);
     assert.deepEqual(p.drainWarnings(), []);
   });
 
   it('dated -5-5 variants resolve through resolveAlias to the exact entry (no estimate)', () => {
     const p = createPricer();
     assert.equal(resolveAlias('claude-sonnet-5-5-20261001'), 'claude-sonnet-5-5');
-    assert.equal(p.price(rec('anthropic/claude-opus-5-5-20261001', 1_000_000, 0)), 5);
+    assert.equal(p.price(rec('anthropic/claude-opus-5-5-20261001', 1_000_000, 0)), 4);
     assert.deepEqual(p.drainWarnings(), []);
   });
 
@@ -335,8 +336,8 @@ describe('issue #103: claude-opus-5-5 / claude-sonnet-5-5', () => {
         },
       },
     };
-    // sonnet-5-6 estimated at sonnet-5 rates ($2) + opus-5-5 exact ($5).
-    assert.equal(p.price(multiRec), 2 + 5);
+    // sonnet-5-6 estimated at sonnet-5 rates ($2) + opus-5-5 exact ($4).
+    assert.equal(p.price(multiRec), 2 + 4);
     assert.ok(p.drainWarnings().some((w) => /family fallback "claude-sonnet-5" \(provenance: estimated\)/.test(w)));
   });
 });

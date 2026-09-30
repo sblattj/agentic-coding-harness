@@ -47,6 +47,11 @@ export interface CanonicalTokenRecord {
   cacheRead: number;
   /** Prompt tokens written to cache. */
   cacheWrite: number;
+  /**
+   * 1h-TTL subset of cacheWrite (claude usage.cache_creation
+   * .ephemeral_1h_input_tokens, issue #105). Absent when the source has no split.
+   */
+  cacheWrite1h?: number;
   /** Thinking/reasoning tokens (subset of output). */
   reasoning: number;
   /** Working directory the session ran in, when the source records it (claude line `cwd`, codex session_meta). */
@@ -84,6 +89,12 @@ const ClaudeUsageSchema = z.object({
   cache_creation_input_tokens: z.number().nullish(),
   cache_read_input_tokens: z.number().nullish(),
   output_tokens: z.number().nullish(),
+  // Cache-write TTL split (issue #105); a non-object parses as absent so a
+  // malformed split never drops the record.
+  cache_creation: z.preprocess(
+    (v) => (typeof v === "object" && v !== null && !Array.isArray(v) ? v : undefined),
+    z.object({ ephemeral_1h_input_tokens: z.number().nullish() }).optional(),
+  ),
   // usage.iterations[] (if present) is deliberately NOT declared: reading it
   // would double-count tokens already covered by the top-level fields.
   output_tokens_details: z
@@ -136,6 +147,9 @@ export async function parseClaudeTranscript(
       output: usage.output_tokens ?? 0,
       cacheRead: usage.cache_read_input_tokens ?? 0,
       cacheWrite: usage.cache_creation_input_tokens ?? 0,
+      ...(typeof usage.cache_creation?.ephemeral_1h_input_tokens === "number"
+        ? { cacheWrite1h: usage.cache_creation.ephemeral_1h_input_tokens }
+        : {}),
       reasoning: usage.output_tokens_details?.thinking_tokens ?? 0,
       ...(rec.cwd ? { cwd: rec.cwd } : {}),
     });
@@ -502,6 +516,7 @@ export function toCanonicalTokenRecord(
     outputTokens: record.output,
     cacheReadTokens: record.cacheRead,
     cacheWriteTokens: record.cacheWrite,
+    ...(record.cacheWrite1h !== undefined ? { cacheWrite1hTokens: record.cacheWrite1h } : {}),
     reasoningTokens: record.reasoning,
     ...(Number.isFinite(ts) ? { timestamp: ts } : {}),
     extra: { timestampIso: record.timestamp },

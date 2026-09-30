@@ -141,14 +141,22 @@ function n0(v: unknown): number {
   return isNum(v) ? v : 0;
 }
 
-/** claude adapter usage payload {input, output, cacheRead, cacheWrite, models[]}
- *  (src/adapters/claude.ts): input is already uncached. Per-model slices are
- *  summed when every one is well-formed; otherwise the top-level aggregate. */
-function fromClaudeHouse(d: Record<string, unknown>): { tok: Tok; model?: string } | null {
+/** Raw extractor result. cacheWrite1h is the 1h-TTL subset of
+ *  tok.cacheWriteTokens (issue #105), priced at its own rate; absent when the
+ *  payload carries no split. */
+type RawTokens = { tok: Tok; model?: string; cacheWrite1h?: number };
+
+/** claude adapter usage payload {input, output, cacheRead, cacheWrite,
+ *  cacheWrite1h?, models[]} (src/adapters/claude.ts): input is already
+ *  uncached. Per-model slices are summed when every one is well-formed;
+ *  otherwise the top-level aggregate. The 1h split is record-level (claude's
+ *  modelUsage has none), so it is read from the top level either way. */
+function fromClaudeHouse(d: Record<string, unknown>): RawTokens | null {
   if (!isNum(d.input) || !isNum(d.output) || !("cacheRead" in d || Array.isArray(d.models))) return null;
   const models = Array.isArray(d.models) ? d.models : [];
   const wellFormed =
     models.length > 0 && models.every((m) => isObj(m) && isNum(m.input) && isNum(m.output));
+  const ttl = isNum(d.cacheWrite1h) ? { cacheWrite1h: d.cacheWrite1h } : {};
   if (wellFormed) {
     const tok: Tok = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
     for (const m of models as Record<string, unknown>[]) {
@@ -158,7 +166,7 @@ function fromClaudeHouse(d: Record<string, unknown>): { tok: Tok; model?: string
       tok.cacheWriteTokens += n0(m.cacheWrite);
     }
     const first = models[0] as Record<string, unknown>;
-    return { tok, ...(models.length === 1 && typeof first.model === "string" ? { model: first.model } : {}) };
+    return { tok, ...(models.length === 1 && typeof first.model === "string" ? { model: first.model } : {}), ...ttl };
   }
   return {
     tok: {
@@ -167,6 +175,7 @@ function fromClaudeHouse(d: Record<string, unknown>): { tok: Tok; model?: string
       cacheReadTokens: n0(d.cacheRead),
       cacheWriteTokens: n0(d.cacheWrite),
     },
+    ...ttl,
   };
 }
 
@@ -237,7 +246,7 @@ function fromCodex(d: Record<string, unknown>): { tok: Tok } | null {
   };
 }
 
-const RAW_EXTRACTORS: Record<string, (d: Record<string, unknown>) => { tok: Tok; model?: string } | null> = {
+const RAW_EXTRACTORS: Record<string, (d: Record<string, unknown>) => RawTokens | null> = {
   claude: fromClaudeHouse,
   opencode: fromOpencode,
   kiro: fromKiro,
@@ -246,7 +255,7 @@ const RAW_EXTRACTORS: Record<string, (d: Record<string, unknown>) => { tok: Tok;
 };
 
 /** The run's own agent first, then every other shape (mock/ACP agent names). */
-export function extractRawTokens(agent: string, data: unknown): { tok: Tok; model?: string } | null {
+export function extractRawTokens(agent: string, data: unknown): RawTokens | null {
   if (!isObj(data)) return null;
   const own = RAW_EXTRACTORS[agent];
   const hit = own?.(data);
@@ -285,11 +294,13 @@ function replayLines(agent: string, lines: Record<string, unknown>[], pricer: Pr
     const data = ev.data !== undefined ? ev.data : isObj(pre?.extra) ? (pre!.extra as Record<string, unknown>).raw : undefined;
     let t: Tok | null = null;
     let model: string | undefined;
+    let cacheWrite1h: number | undefined;
     let how: Derivation;
     const raw = extractRawTokens(agent, data);
     if (raw) {
       t = raw.tok;
       model = raw.model;
+      cacheWrite1h = raw.cacheWrite1h;
       how = "raw";
     } else {
       const norm = data !== undefined ? normalizeAuto(agent, data, 0) : null;
@@ -301,6 +312,7 @@ function replayLines(agent: string, lines: Record<string, unknown>[], pricer: Pr
           cacheWriteTokens: norm.cacheWriteTokens ?? 0,
         };
         model = norm.model;
+        cacheWrite1h = norm.cacheWrite1hTokens;
         how = "normalizer";
       } else if (pre) {
         const cached = n0(pre.cachedTokens ?? pre.cacheReadTokens);
@@ -310,6 +322,7 @@ function replayLines(agent: string, lines: Record<string, unknown>[], pricer: Pr
           cacheReadTokens: isNum(pre.cacheReadTokens) ? pre.cacheReadTokens : cached,
           cacheWriteTokens: n0(pre.cacheWriteTokens),
         };
+        if (isNum(pre.cacheWrite1hTokens)) cacheWrite1h = pre.cacheWrite1hTokens;
         how = "event";
       } else {
         continue; // nothing the driver would have counted either
@@ -326,6 +339,7 @@ function replayLines(agent: string, lines: Record<string, unknown>[], pricer: Pr
       agent,
       model: typeof pre?.model === "string" && pre.model !== "" ? pre.model : (model ?? "unknown"),
       ...t,
+      ...(cacheWrite1h !== undefined ? { cacheWrite1hTokens: cacheWrite1h } : {}),
       ...(extra !== undefined || data !== undefined ? { extra: { ...(extra ?? {}), ...(data !== undefined ? { raw: data } : {}) } } : {}),
     };
     const c = pricer.price(rec);

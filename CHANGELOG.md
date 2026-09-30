@@ -2,6 +2,14 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## Unreleased
+
+### Fixed
+
+- `claude-opus-5-5` is priced at Anthropic's list rates (input $4, output $20, cache read $0.20, 5m cache write $5, 1h cache write $8 per MTok) instead of the `estimated` copy of `claude-opus-5`, which overstated real runs by about 47% (#105).
+- Cache writes are billed per TTL. Claude usage records split writes in `usage.cache_creation` (`ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`), and Claude Code writes with the 1h TTL, which costs 2x input rather than the 1.25x 5m rate. The stream adapter, transcript monitor, normalizer, `ach stats` / `status` / `watch`, and `ach audit` now carry the 1h count as the new optional `CanonicalTokenRecord.cacheWrite1hTokens` (`cacheWriteTokens` stays the 5m + 1h total). The pricer bills each bucket at its own rate. Every Claude model has a 1h rate (`cache_creation_1h`, or the LiteLLM field `cache_creation_input_token_cost_above_1hr` in override files). When a record has no split, writes are billed at the 5m rate. Two real opus-5-5 runs now reproduce the CLI-reported cost to the micro-dollar (#105).
+- When a CLI-reported slice cost is not used, per-model slices of a multi-model claude run apportion the run-level 1h share by each slice's writes, because `result.modelUsage` carries no TTL split (#105).
+
 ## [0.11.2] - 2026-09-28
 
 ### Fixed
