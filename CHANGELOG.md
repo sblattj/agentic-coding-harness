@@ -2,6 +2,12 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## Unreleased
+
+### Added
+
+- Latency metrics (#32): `deriveLatency` in `src/web/derive.ts` derives time to first token (TTFT), end-to-end model-call latency, generation throughput (output tokens/s) and time per output token (TPOT), and a per-tool duration breakdown (count, avg, p50, p95, max, total, errors) from event timestamps. Shown as `ttft` / `tok/s` / `tpot` cards and a tool table in the `/trio` metrics pane (`latency` on `/api/runs/:runId/observability`), as `ttft` / `throughput` / `tools` lines in the `ach run` summary, recorded as an optional `latency` field on the RunRecord at finalize, and copied onto each `ach stats --json` `runs[]` row. Unmeasurable metrics are `null` / `n/a`, never 0 or NaN. TTFT and throughput need `model_call_start`/`model_call_end` events, which no built-in adapter emits yet; built-in runs with tool events get the per-tool breakdown.
+
 ## [0.11.2] - 2026-09-28
 
 ### Fixed
