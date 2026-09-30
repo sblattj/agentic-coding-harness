@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { createDriver, defaultAdapters } from '../src/core/driver.js';
 import { listRunRecords } from '../src/core/registry.js';
+import { stripChain } from '../src/core/hash-chain.js';
 import { AGENTS } from '../src/core/types.js';
 import type { AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, RunResult, RunSpec } from '../src/core/types.js';
 
@@ -150,8 +151,11 @@ describe('success path and transcripts', () => {
     assert.equal(result.tokens[1]?.model, 'unknown'); // kiro fixture lacks a model name
 
     const rawPath = join(stateDir, 'raw', `mock-${result.sessionId}.jsonl`);
-    const lines = readFileSync(rawPath, 'utf8').trim().split('\n');
-    assert.equal(lines.length, result.events.length);
+    // #59: every line is hash-chained and the run ends in an ach.seal record;
+    // stripChain() gives back the exact pre-chain event JSON.
+    const lines = readFileSync(rawPath, 'utf8').trim().split('\n').map(stripChain);
+    assert.equal(lines.length, result.events.length + 1);
+    assert.equal(JSON.parse(lines.at(-1)!).type, 'ach.seal');
     result.events.forEach((event, i) => assert.deepEqual(JSON.parse(lines[i]!), event));
   });
 
