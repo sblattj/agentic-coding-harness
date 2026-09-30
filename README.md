@@ -173,7 +173,11 @@ terminal you can type into.
 ![Web dashboard terminal grid showing live agent run tiles with token and cost readouts and interactive terminal panes](docs/assets/web-grid.png)
 
 **Observability trio** — traces, metrics, and logs for a single run, with a live terminal
-drawer: the span waterfall, cumulative token/cost charts, and the leveled event log.
+drawer: the span waterfall, cumulative token/cost charts, and the leveled event log. The
+metrics pane also shows latency — time to first token, output tokens/s, time per output token,
+and a per-tool duration table (calls, avg, p95, total); a metric the event log cannot support
+reads `n/a`. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) ("Latency metrics") for definitions and
+which agents emit what.
 
 ![Observability view showing the traces waterfall, token and cost metric cards with charts, and the event log stream for a single coding agent run](docs/assets/web-trio.png)
 
