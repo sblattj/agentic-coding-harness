@@ -254,6 +254,14 @@ export interface ModelCallEndEvent extends BaseEvent {
   callId?: string;
   model?: string;
   usage?: CanonicalTokenRecord;
+  /**
+   * Output tokens of THIS call, for latency (throughput/TPOT) only (#32).
+   * Built-in adapters set this instead of `usage` because their run totals
+   * already arrive on `usage` events, and the web metrics and the
+   * otel/langfuse/atif emitters sum `model_call_end.usage` alongside them —
+   * a usage-bearing boundary would double those series. Nothing sums this.
+   */
+  outputTokens?: number;
 }
 
 export interface ToolCallEvent extends BaseEvent {
