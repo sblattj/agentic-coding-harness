@@ -67,6 +67,7 @@
   },
   "claude-4-opus-20250514": {
     "cache_creation_input_token_cost": 0.00001875,
+    "cache_creation_input_token_cost_above_1hr": 0.00003,
     "cache_read_input_token_cost": 0.0000015,
     "deprecation_date": "2026-06-15",
     "input_cost_per_token": 0.000015,
@@ -94,6 +95,7 @@
   },
   "claude-4-sonnet-20250514": {
     "cache_creation_input_token_cost": 0.00000375,
+    "cache_creation_input_token_cost_above_1hr": 0.000006,
     "cache_creation_input_token_cost_above_200k_tokens": 0.0000075,
     "cache_read_input_token_cost": 3e-7,
     "cache_read_input_token_cost_above_200k_tokens": 6e-7,
@@ -749,16 +751,16 @@
     "source": "https://docs.anthropic.com/en/docs/about-claude/models/overview"
   },
   "claude-opus-5-5": {
-    "cache_creation_input_token_cost": 0.00000625,
-    "cache_creation_input_token_cost_above_1hr": 0.00001,
-    "cache_read_input_token_cost": 5e-7,
-    "input_cost_per_token": 0.000005,
+    "cache_creation_input_token_cost": 0.000005,
+    "cache_creation_input_token_cost_above_1hr": 0.000008,
+    "cache_read_input_token_cost": 2e-7,
+    "input_cost_per_token": 0.000004,
     "litellm_provider": "anthropic",
     "max_input_tokens": 1000000,
     "max_output_tokens": 128000,
     "max_tokens": 128000,
     "mode": "chat",
-    "output_cost_per_token": 0.000025,
+    "output_cost_per_token": 0.00002,
     "search_context_cost_per_query": {
       "search_context_size_high": 0.01,
       "search_context_size_low": 0.01,
@@ -786,7 +788,7 @@
     "supports_output_config": true,
     "supports_speed": true,
     "prompt_cache_min_tokens": 512,
-    "source": "estimated: mirrored from claude-opus-5 (issue #103; the LiteLLM extract predates claude-opus-5-5)"
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing (issue #105: Anthropic list rates; reproduce CLI-reported costUSD to the micro-dollar)"
   },
   "claude-sonnet-4-20250514": {
     "deprecation_date": "2026-06-15",

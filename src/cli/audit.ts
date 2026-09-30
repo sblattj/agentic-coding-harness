@@ -46,6 +46,8 @@ import {
   type RunRecord,
 } from "../core/registry.ts";
 import path from "node:path";
+import type { ChainStatus } from "../core/hash-chain.ts";
+import { verifyRunRecord } from "./verify-run.ts";
 
 export const AUDIT_FIELDS = [
   "inputTokens",
@@ -96,6 +98,10 @@ export interface AuditRow {
   /** --fix outcome: fields rewritten, or why the fix was skipped. */
   fixed?: AuditField[];
   fixSkipped?: string;
+  /** Hash-chain verdict of the transcript (#59, `ach verify-run`), checked before any --fix. */
+  chain?: ChainStatus;
+  /** First broken link when chain is "tampered". */
+  chainBreak?: string;
 }
 
 export interface AuditSummary {
@@ -141,14 +147,22 @@ function n0(v: unknown): number {
   return isNum(v) ? v : 0;
 }
 
-/** claude adapter usage payload {input, output, cacheRead, cacheWrite, models[]}
- *  (src/adapters/claude.ts): input is already uncached. Per-model slices are
- *  summed when every one is well-formed; otherwise the top-level aggregate. */
-function fromClaudeHouse(d: Record<string, unknown>): { tok: Tok; model?: string } | null {
+/** Raw extractor result. cacheWrite1h is the 1h-TTL subset of
+ *  tok.cacheWriteTokens (issue #105), priced at its own rate; absent when the
+ *  payload carries no split. */
+type RawTokens = { tok: Tok; model?: string; cacheWrite1h?: number };
+
+/** claude adapter usage payload {input, output, cacheRead, cacheWrite,
+ *  cacheWrite1h?, models[]} (src/adapters/claude.ts): input is already
+ *  uncached. Per-model slices are summed when every one is well-formed;
+ *  otherwise the top-level aggregate. The 1h split is record-level (claude's
+ *  modelUsage has none), so it is read from the top level either way. */
+function fromClaudeHouse(d: Record<string, unknown>): RawTokens | null {
   if (!isNum(d.input) || !isNum(d.output) || !("cacheRead" in d || Array.isArray(d.models))) return null;
   const models = Array.isArray(d.models) ? d.models : [];
   const wellFormed =
     models.length > 0 && models.every((m) => isObj(m) && isNum(m.input) && isNum(m.output));
+  const ttl = isNum(d.cacheWrite1h) ? { cacheWrite1h: d.cacheWrite1h } : {};
   if (wellFormed) {
     const tok: Tok = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
     for (const m of models as Record<string, unknown>[]) {
@@ -158,7 +172,7 @@ function fromClaudeHouse(d: Record<string, unknown>): { tok: Tok; model?: string
       tok.cacheWriteTokens += n0(m.cacheWrite);
     }
     const first = models[0] as Record<string, unknown>;
-    return { tok, ...(models.length === 1 && typeof first.model === "string" ? { model: first.model } : {}) };
+    return { tok, ...(models.length === 1 && typeof first.model === "string" ? { model: first.model } : {}), ...ttl };
   }
   return {
     tok: {
@@ -167,6 +181,7 @@ function fromClaudeHouse(d: Record<string, unknown>): { tok: Tok; model?: string
       cacheReadTokens: n0(d.cacheRead),
       cacheWriteTokens: n0(d.cacheWrite),
     },
+    ...ttl,
   };
 }
 
@@ -237,7 +252,7 @@ function fromCodex(d: Record<string, unknown>): { tok: Tok } | null {
   };
 }
 
-const RAW_EXTRACTORS: Record<string, (d: Record<string, unknown>) => { tok: Tok; model?: string } | null> = {
+const RAW_EXTRACTORS: Record<string, (d: Record<string, unknown>) => RawTokens | null> = {
   claude: fromClaudeHouse,
   opencode: fromOpencode,
   kiro: fromKiro,
@@ -246,7 +261,7 @@ const RAW_EXTRACTORS: Record<string, (d: Record<string, unknown>) => { tok: Tok;
 };
 
 /** The run's own agent first, then every other shape (mock/ACP agent names). */
-export function extractRawTokens(agent: string, data: unknown): { tok: Tok; model?: string } | null {
+export function extractRawTokens(agent: string, data: unknown): RawTokens | null {
   if (!isObj(data)) return null;
   const own = RAW_EXTRACTORS[agent];
   const hit = own?.(data);
@@ -285,11 +300,13 @@ function replayLines(agent: string, lines: Record<string, unknown>[], pricer: Pr
     const data = ev.data !== undefined ? ev.data : isObj(pre?.extra) ? (pre!.extra as Record<string, unknown>).raw : undefined;
     let t: Tok | null = null;
     let model: string | undefined;
+    let cacheWrite1h: number | undefined;
     let how: Derivation;
     const raw = extractRawTokens(agent, data);
     if (raw) {
       t = raw.tok;
       model = raw.model;
+      cacheWrite1h = raw.cacheWrite1h;
       how = "raw";
     } else {
       const norm = data !== undefined ? normalizeAuto(agent, data, 0) : null;
@@ -301,6 +318,7 @@ function replayLines(agent: string, lines: Record<string, unknown>[], pricer: Pr
           cacheWriteTokens: norm.cacheWriteTokens ?? 0,
         };
         model = norm.model;
+        cacheWrite1h = norm.cacheWrite1hTokens;
         how = "normalizer";
       } else if (pre) {
         const cached = n0(pre.cachedTokens ?? pre.cacheReadTokens);
@@ -310,6 +328,7 @@ function replayLines(agent: string, lines: Record<string, unknown>[], pricer: Pr
           cacheReadTokens: isNum(pre.cacheReadTokens) ? pre.cacheReadTokens : cached,
           cacheWriteTokens: n0(pre.cacheWriteTokens),
         };
+        if (isNum(pre.cacheWrite1hTokens)) cacheWrite1h = pre.cacheWrite1hTokens;
         how = "event";
       } else {
         continue; // nothing the driver would have counted either
@@ -326,6 +345,7 @@ function replayLines(agent: string, lines: Record<string, unknown>[], pricer: Pr
       agent,
       model: typeof pre?.model === "string" && pre.model !== "" ? pre.model : (model ?? "unknown"),
       ...t,
+      ...(cacheWrite1h !== undefined ? { cacheWrite1hTokens: cacheWrite1h } : {}),
       ...(extra !== undefined || data !== undefined ? { extra: { ...(extra ?? {}), ...(data !== undefined ? { raw: data } : {}) } } : {}),
     };
     const c = pricer.price(rec);
@@ -423,7 +443,11 @@ export function auditRuns(opts: AuditOptions): AuditResult {
     }
     const transcript = resolveRawTranscript(opts.stateDir, rec);
     if (!transcript) {
-      unverifiable("no raw transcript path (external record)");
+      unverifiable(
+        rec.source === "imported"
+          ? "imported record (transcript history, not an ach run)"
+          : "no raw transcript path (external record)",
+      );
       continue;
     }
     if (!lineCache.has(transcript)) lineCache.set(transcript, readLines(transcript));
@@ -471,6 +495,10 @@ export function auditRuns(opts: AuditOptions): AuditResult {
     }
     const drifted = AUDIT_FIELDS.filter((f) => fieldStatus[f] === "drift");
     if (fieldStatus.costUsd === "unpriceable") summary.costUnpriceable++;
+    // #59: audit proves the totals follow from the log; the chain proves the
+    // log (and the sealed totals) were not edited. One sha256 pass per run,
+    // taken BEFORE --fix so the verdict describes the record as found.
+    const chain = verifyRunRecord(opts.stateDir, rec);
     const row: AuditRow = {
       ...base,
       derivation: replay.derivation,
@@ -481,6 +509,8 @@ export function auditRuns(opts: AuditOptions): AuditResult {
       delta,
       deltaPct,
       fieldStatus,
+      chain: chain.status,
+      ...(chain.firstBad ? { chainBreak: `line ${chain.firstBad.line}: ${chain.firstBad.reason}` } : {}),
     };
     for (const f of AUDIT_FIELDS) {
       total.recorded[f] += recorded[f];
@@ -610,6 +640,7 @@ export function formatAuditText(res: AuditResult): string {
       r.fieldStatus?.costUsd === "unpriceable" ? "cost unpriceable" : "",
       r.fixed ? `fixed: ${r.fixed.join(",")}` : "",
       r.fixSkipped ? `fix skipped: ${r.fixSkipped}` : "",
+      r.chain ? `chain ${r.chain === "tampered" ? `TAMPERED (${r.chainBreak ?? "broken"})` : r.chain}` : "",
     ].filter(Boolean);
     out.push(`${head}  (${tags.join("; ")})`);
     for (const f of AUDIT_FIELDS) {

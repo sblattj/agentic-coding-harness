@@ -101,7 +101,8 @@ const VERIFY_PLAIN = { pass: "p", fail: "f", error: "e" } as const;
 const VERIFY_ANSI = { pass: "\x1b[32m✓\x1b[0m", fail: "\x1b[31m✗\x1b[0m", error: "\x1b[33m?\x1b[0m" } as const;
 
 function statusCell(rec: RunRecord, ansi: boolean, w: number): string {
-  if (rec.metadata?.source === "transcript") return padR("?", w);
+  // Transcript rows and imported (#25) sessions carry no task verdict.
+  if (rec.metadata?.source === "transcript" || rec.source === "imported") return padR("?", w);
   const status = effectiveStatus(rec);
   const v = rec.verify?.status;
   const plain = padR(GLYPHS[status] + (v !== undefined ? VERIFY_PLAIN[v] : ""), w);
@@ -480,7 +481,7 @@ export async function cmdDash(rest: string[]): Promise<number> {
       ...r,
       source: r.metadata?.source === "transcript" ? "transcript" : r.source ?? "local",
       live: isLive(r),
-      effectiveStatus: r.metadata?.source === "transcript" ? null : effectiveStatus(r),
+      effectiveStatus: r.metadata?.source === "transcript" || r.source === "imported" ? null : effectiveStatus(r),
     }));
     process.stdout.write(JSON.stringify(recs, null, 2) + "\n");
     return 0;

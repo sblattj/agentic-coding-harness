@@ -18,6 +18,13 @@
  * block, so an interleaved heartbeat can no longer shred one message into a row
  * per delta; only a message, a tool card or a terminal row ends the stream.
  *
+ * Context gauge: when the server stamps an event with `ctx` (the context-window
+ * reading at that frame, src/web/context-frames.ts), the row gets a gauge at its
+ * right end — after the duration on tool cards, right-aligned on every other
+ * row. Rows whose event did not feed the reading are dimmed (`stale`); the
+ * first drawn row of a model call that grew the context shows a yellow `+Δ`.
+ * No `ctx` means no gauge and today's layout.
+ *
  * All event-derived text goes through textContent; nothing is ever parsed as
  * HTML or markdown.
  */
@@ -90,6 +97,23 @@
     "font:inherit;cursor:pointer;padding:3px 10px;box-shadow:0 2px 8px rgba(0,0,0,.45)}",
     ".hf-pill[hidden]{display:none}",
     ".hf-pill:hover{border-color:var(--feed-green,#4cc38a);color:var(--feed-green,#4cc38a)}",
+    // Per-frame context gauge: [+Δ] [bar with warn tick] [tokens pct], right-aligned.
+    // Non-card rows pad by the card's border+padding so every gauge ends on one line.
+    ".hf-body-ctx{display:flex;align-items:baseline;gap:8px;padding-right:9px}",
+    ".hf-body-ctx>:first-child{flex:1 1 auto;min-width:0}",
+    ".hf-ctx{display:inline-flex;flex:none;align-items:center;gap:6px;white-space:nowrap;",
+    "font-variant-numeric:tabular-nums;cursor:default}",
+    ".hf-ctx-g{position:relative;flex:none;width:38px;height:6px;border-radius:3px;",
+    "background:var(--feed-line,#1d2534);overflow:hidden}",
+    ".hf-ctx-g i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}",
+    ".hf-ctx-g b{position:absolute;top:-1px;bottom:-1px;width:1px;background:var(--feed-red,#e06c75);opacity:.7}",
+    ".hf-ctx-t{color:var(--feed-dim,#5d6b82);min-width:11ch;text-align:right}",
+    ".hf-ctx-d{font-size:10px;color:var(--feed-yellow,#e5c07b)}",
+    ".hf-ctx.stale .hf-ctx-t{opacity:.55}",
+    ".hf-ctx.stale .hf-ctx-g{opacity:.7}",
+    ".hf-lv0 .hf-ctx-g i{background:var(--feed-teal,#2ec4b6)}",
+    ".hf-lv1 .hf-ctx-g i{background:var(--feed-yellow,#e5c07b)}",
+    ".hf-lv2 .hf-ctx-g i{background:var(--feed-red,#e06c75)}",
   ].join("");
 
   function injectCss() {
@@ -224,6 +248,78 @@
     return "usage " + parts.join(" · ");
   }
 
+  /* ------------------------------------------------------ context gauge */
+
+  /*
+   * The server stamps each event with `ctx`, the context-window reading at that
+   * frame (src/web/context-frames.ts, computed by the core context meter). The
+   * feed only renders it: no occupancy math and no window table live here.
+   * Absent `ctx` (unmetered agent, older server, no usage yet) = no gauge.
+   */
+  function frameOf(ev) {
+    var c = ev && ev.ctx;
+    return c != null && typeof c === "object" && isFiniteNum(c.tokens) ? c : null;
+  }
+
+  function ctxHasWindow(c) {
+    return isFiniteNum(c.window) && c.window > 0 && isFiniteNum(c.pct);
+  }
+
+  function ctxLevel(pct) {
+    return pct >= 80 ? 2 : pct >= 50 ? 1 : 0;
+  }
+
+  function ctxTitle(c) {
+    var ub = c.basis === "turn-total" ? "≤ " : "";
+    var out = [];
+    if (ctxHasWindow(c)) {
+      out.push("context " + ub + fmtTok(c.tokens) + " / " + fmtTok(c.window) + " (" + c.pct.toFixed(1) + "%)");
+    } else {
+      out.push("context " + ub + fmtTok(c.tokens) + " (window unknown)");
+    }
+    if (ub) out.push("upper bound: usage summed over a turn's model calls");
+    if (c.fresh === true && isFiniteNum(c.input)) {
+      out.push("input " + fmtTok(c.input) + " · cache-read " + fmtTok(c.cacheRead) + " · cache-write " + fmtTok(c.cacheWrite));
+    } else if (c.fresh !== true) {
+      out.push("carried from last model call");
+    }
+    if (c.fresh === true && isFiniteNum(c.delta) && c.delta !== 0) {
+      out.push("Δ " + (c.delta > 0 ? "+" : "−") + fmtTok(Math.abs(c.delta)) + " this call");
+    }
+    if (ctxHasWindow(c) && isFiniteNum(c.warnAt)) {
+      out.push(fmtTok(Math.max(0, Math.round(c.window * c.warnAt - c.tokens))) +
+        " until the " + Math.round(c.warnAt * 100) + "% threshold");
+    }
+    if (typeof c.model === "string" && c.model !== "") out.push(c.model);
+    return out.join("\n");
+  }
+
+  /** `[+Δ] [bar|tick] 212.9k 21%`; tokens only when the window is unknown. */
+  function ctxGauge(c, showDelta) {
+    var win = ctxHasWindow(c);
+    var cls = "hf-ctx" + (win ? " hf-lv" + ctxLevel(c.pct) : "") + (c.fresh === true ? "" : " stale");
+    var box = el("span", cls);
+    box.setAttribute("title", ctxTitle(c));
+    if (showDelta) box.appendChild(el("span", "hf-ctx-d", "+" + fmtTok(c.delta)));
+    var ub = c.basis === "turn-total" ? "≤" : "";
+    if (win) {
+      var g = el("span", "hf-ctx-g");
+      var fill = el("i");
+      fill.style.width = Math.min(100, Math.max(c.pct, 1.5)) + "%";
+      g.appendChild(fill);
+      if (isFiniteNum(c.warnAt)) {
+        var tick = el("b");
+        tick.style.left = (c.warnAt * 100) + "%";
+        g.appendChild(tick);
+      }
+      box.appendChild(g);
+      box.appendChild(el("span", "hf-ctx-t", ub + fmtTok(c.tokens) + " " + Math.round(c.pct) + "%"));
+    } else {
+      box.appendChild(el("span", "hf-ctx-t", ub + fmtTok(c.tokens)));
+    }
+    return box;
+  }
+
   /* --------------------------------------------------------------- feed */
 
   function create(container, opts) {
@@ -256,8 +352,30 @@
       byId: Object.create(null),   // toolCallId -> card
       unresolved: [],              // cards awaiting a result, oldest first
       pending: [],                 // cards with a live spinner chip
-      stream: null,                // { pre, text, kind } chunk block; kind "message" | "reasoning"
+      stream: null,                // { pre, text, kind, body, gauge, ctx } chunk block; kind "message" | "reasoning"
+      deltaSeq: 0,                 // ctx.seq whose +Δ has been drawn (one +Δ per model call)
     };
+
+    /** Gauge for a frame, drawing the +Δ on the first visible row of its reading. */
+    function gaugeFor(c) {
+      if (c === null) return null;
+      // Any row of the reading may carry it: a tool-only call's text block is
+      // empty (never drawn), so its tool card is the first row to show +Δ.
+      var showDelta = c.basis !== "turn-total" &&
+        isFiniteNum(c.delta) && c.delta > 0 && c.seq !== state.deltaSeq;
+      if (showDelta) state.deltaSeq = c.seq;
+      return ctxGauge(c, showDelta);
+    }
+
+    /** (Re)place the right-aligned gauge in a row body; no ctx leaves the layout untouched. */
+    function mountCtx(body, c, prev) {
+      if (prev && prev.parentNode === body) body.removeChild(prev);
+      var g = gaugeFor(c);
+      if (g === null) return prev && prev.parentNode === body ? prev : null;
+      body.classList.add("hf-body-ctx");
+      body.appendChild(g);
+      return g;
+    }
 
     function atBottom() {
       return container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX;
@@ -267,7 +385,7 @@
       if (atBottom()) pill.hidden = true;
     });
 
-    function addRow(ts, bodyNode) {
+    function addRow(ts, bodyNode, ctx) {
       var near = atBottom();
       var row = el("div", "hf-row");
       if (state.first === null && ts !== null) state.first = ts;
@@ -275,6 +393,8 @@
       row.appendChild(el("span", "hf-gutter", rel));
       var body = el("div", "hf-body");
       body.appendChild(bodyNode);
+      row.hfBody = body;
+      row.hfGauge = ctx ? mountCtx(body, ctx, null) : null;
       row.appendChild(body);
       rows.appendChild(row);
       state.count += 1;
@@ -290,8 +410,8 @@
       return row;
     }
 
-    function line(ts, cls, text) {
-      return addRow(ts, el("div", "hf-text " + cls, text));
+    function line(ts, cls, text, ctx) {
+      return addRow(ts, el("div", "hf-text " + cls, text), ctx || null);
     }
 
     function endStream() {
@@ -300,7 +420,7 @@
 
     /* ---- tool cards ---- */
 
-    function makeCard(ts, name, args, hasArgs) {
+    function makeCard(ts, name, args, hasArgs, ctx) {
       var card = el("div", "hf-card");
       var head = el("div", "hf-head");
       head.tabIndex = 0;
@@ -316,6 +436,8 @@
       head.appendChild(summary);
       head.appendChild(chip);
       head.appendChild(ms);
+      var gauge = gaugeFor(ctx || null);
+      if (gauge !== null) head.appendChild(gauge);
       card.appendChild(head);
 
       var detail = el("div", "hf-detail");
@@ -392,7 +514,7 @@
     function openCall(ev, id, name, args, hasArgs) {
       endStream();
       var ts = tsOf(ev);
-      var rec = makeCard(ts, name, args, hasArgs);
+      var rec = makeCard(ts, name, args, hasArgs, frameOf(ev));
       if (typeof id === "string" && id.length > 0) state.byId[id] = rec;
       state.unresolved.push(rec);
       addRow(ts, rec.card);
@@ -402,7 +524,7 @@
     function orphanResult(ev, name, content, isError) {
       endStream();
       var ts = tsOf(ev);
-      var rec = makeCard(ts, name || "result", null, false);
+      var rec = makeCard(ts, name || "result", null, false, frameOf(ev));
       resolveCard(rec, ev, content, isError);
       addRow(ts, rec.card);
     }
@@ -426,6 +548,13 @@
         // row below it.
         if (state.stream.text.trim() === content.trim() && content.trim() !== "") {
           state.stream.pre.textContent = content;
+          // The confirming message carries the model call's usage: move the
+          // streamed row's gauge onto the new reading.
+          var c = frameOf(ev);
+          if (c !== null && (state.stream.ctx === null || state.stream.ctx.seq !== c.seq ||
+              state.stream.ctx.fresh !== c.fresh)) {
+            state.stream.gauge = mountCtx(state.stream.body, c, state.stream.gauge);
+          }
           endStream();
           return;
         }
@@ -437,7 +566,7 @@
         var cls = source === "user" ? "hf-msg-user" : source === "system" ? "hf-msg-system" : "hf-msg-agent";
         box.appendChild(el("div", "hf-text " + cls, content));
       }
-      addRow(tsOf(ev), box);
+      addRow(tsOf(ev), box, frameOf(ev));
     }
 
     /** `kind` is "reasoning" (agent thoughts) or "message" (the answer). */
@@ -450,8 +579,9 @@
       if (state.stream === null) {
         var cls = want === "reasoning" ? "hf-text hf-reason" : "hf-text hf-msg-agent";
         var pre = el("div", cls, text);
-        addRow(tsOf(ev), pre);
-        state.stream = { pre: pre, text: text, kind: want };
+        var ctx = frameOf(ev);
+        var row = addRow(tsOf(ev), pre, ctx);
+        state.stream = { pre: pre, text: text, kind: want, body: row.hfBody, gauge: row.hfGauge, ctx: ctx };
         return;
       }
       state.stream.text += text;
@@ -473,12 +603,12 @@
       if (kind === "modelAck") {
         // Dim advisory rows print below the live block without closing it.
         var ack = typeof d.raw === "string" ? d.raw : typeof d.warning === "string" ? d.warning : compact(d);
-        line(tsOf(ev), "hf-warn", ack);
+        line(tsOf(ev), "hf-warn", ack, frameOf(ev));
         return;
       }
       if (kind === "stderrNotice") {
         var warn = typeof d.warning === "string" ? d.warning : typeof d.raw === "string" ? d.raw : compact(d);
-        line(tsOf(ev), "hf-warn", warn);
+        line(tsOf(ev), "hf-warn", warn, frameOf(ev));
         return;
       }
       if (kind === "runFinished") {
@@ -540,15 +670,15 @@
           // the agent's text into one row per delta.
           var text = typeof ev.text === "string" ? ev.text : "";
           if (text.trim() === "") return;
-          line(tsOf(ev), /warn|fail|retry/i.test(text) ? "hf-warn" : "hf-dim", text);
+          line(tsOf(ev), /warn|fail|retry/i.test(text) ? "hf-warn" : "hf-dim", text, frameOf(ev));
           return;
         }
         case "error":
           endStream();
-          line(tsOf(ev), "hf-err", typeof ev.message === "string" && ev.message !== "" ? ev.message : "error");
+          line(tsOf(ev), "hf-err", typeof ev.message === "string" && ev.message !== "" ? ev.message : "error", frameOf(ev));
           return;
         case "usage":
-          if (!usageIsEmpty(ev)) line(tsOf(ev), "hf-dim", usageLine(ev));
+          if (!usageIsEmpty(ev)) line(tsOf(ev), "hf-dim", usageLine(ev), frameOf(ev));
           return;
         case "done": {
           endStream();
@@ -587,6 +717,7 @@
         state.unresolved = [];
         state.pending = [];
         state.stream = null;
+        state.deltaSeq = 0;
         pill.hidden = true;
         return handle;
       },

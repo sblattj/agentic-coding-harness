@@ -6,7 +6,9 @@ import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { loadTrials } from "../report/model.ts";
 import { readRunRecord } from "../core/registry.ts";
+import { verdictLabel, verifyRunRecord } from "./verify-run.ts";
 import { stateDir } from "../core/store.ts";
+import { branchLabel } from "./stats-dims.ts";
 import { readVersion, renderReport } from "../report/html.ts";
 
 export async function cmdReport(rest: string[]): Promise<number> {
@@ -58,6 +60,13 @@ export async function writeComparisonReport(roots: readonly string[], outPath?: 
     const record = readRunRecord(stateDir(), run.result.runId);
     if (run.verify === undefined && record?.verify !== undefined) run.verify = record.verify;
     if (record?.regrades !== undefined) run.regrades = record.regrades;
+    const branch = record === null ? undefined : branchLabel(record);
+    if (branch !== undefined) run.branch = branch;
+    // #59: per-run seal verdict, so readers know the numbers are intact.
+    if (record !== null) {
+      const v = verifyRunRecord(stateDir(), record);
+      run.seal = { status: v.status, detail: `${verdictLabel(v)}${v.sealHash ? ` · seal ${v.sealHash}` : ""}` };
+    }
   }
   const root = rootDir ?? path.resolve(roots[0] ?? ".");
 

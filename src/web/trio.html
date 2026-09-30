@@ -146,6 +146,13 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3f
 .v.c-in { color: var(--blue); } .v.c-out { color: var(--purple); }
 .v.c-cr, .v.c-cw { color: var(--teal); }
 .v.c-cost { color: var(--amber); } .v.c-el { color: var(--fg); }
+.v.c-lat { color: var(--cyan); }
+.toollat { padding: 6px 10px 0; flex: none; font: 10.5px var(--mono); color: var(--dim); max-height: 7.5em; overflow-y: auto; }
+.toollat:empty { display: none; }
+.toollat .tl { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 10px; padding: 1px 0; }
+.toollat .tl b { color: var(--fg); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toollat .tl.hd { color: var(--faint); text-transform: uppercase; letter-spacing: .1em; font-size: 9px; }
+.toollat .err { color: var(--red); }
 .chartwrap { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto; padding: 8px 10px 10px; gap: 4px; }
 .chartbox { position: relative; min-height: 0; }
 #chart { width: 100%; height: 100%; display: block; }
@@ -351,6 +358,7 @@ footer.min .tbody { display: none; }
   <section class="panel" aria-label="metrics">
     <div class="ph"><span>Metrics</span><span class="pmeta" id="chartMeta"></span></div>
     <div class="stats" id="stats"></div>
+    <div class="toollat" id="toolLat" aria-label="per-tool execution durations"></div>
     <div class="chartwrap">
       <div class="chartbox" id="chartbox">
         <span class="axl" id="ax2" style="top:100%">0</span>
@@ -636,10 +644,22 @@ function renderMetrics() {
     ["cost", obs ? USD(observedCost()) : "\u2013", "c-cost"],
     ["duration", obs ? S(obs.durationMs) : "\u2013", "c-el"],
   ];
+  // latency (#32): n/a when the log cannot support the metric (no model_call_*
+  // timestamps), "\u2013" before any data; never NaN.
+  var lat = obs && obs.latency ? obs.latency : null;
+  var noLat = obs ? "n/a" : "\u2013";
+  var fin = function (n) { return typeof n === "number" && isFinite(n); };
+  cards.push(
+    ["ttft", lat && lat.ttft && fin(lat.ttft.avgMs) ? fmtDurMs(lat.ttft.avgMs) : noLat, "c-lat",
+      lat && lat.ttft ? "time to first token \u00b7 avg over " + lat.ttft.count + " model calls \u00b7 p50 " + fmtDurMs(lat.ttft.p50Ms) + " \u00b7 p95 " + fmtDurMs(lat.ttft.p95Ms) : "time to first token: needs model_call_start timestamps"],
+    ["tok/s", lat && fin(lat.outputTokensPerSec) ? lat.outputTokensPerSec.toFixed(1) : noLat, "c-lat", "output tokens per second over post-TTFT generation time"],
+    ["tpot", lat && fin(lat.tpotMs) ? lat.tpotMs.toFixed(1) + "ms" : noLat, "c-lat", "time per output token"]
+  );
   var box = $("stats");
   box.textContent = "";
   cards.forEach(function (c) {
     var d = el("div", "stat");
+    if (c[3]) d.title = c[3];
     d.appendChild(el("div", "k", c[0]));
     d.appendChild(el("div", "v " + c[2], c[1]));
     box.appendChild(d);
@@ -652,6 +672,25 @@ function renderMetrics() {
     d.appendChild(el("div", "v c-cr", m.cacheHitRatio != null ? (m.cacheHitRatio * 100).toFixed(1) + "%" : "n/a"));
     box.appendChild(d);
   });
+  // per-tool execution durations (#32): count, avg, p95, total
+  var tl = $("toolLat");
+  tl.textContent = "";
+  var toolRows = lat && lat.tools ? lat.tools : [];
+  if (toolRows.length) {
+    var hd = el("div", "tl hd");
+    ["tool", "calls", "avg", "p95", "total"].forEach(function (h) { hd.appendChild(el("span", null, h)); });
+    tl.appendChild(hd);
+    toolRows.forEach(function (r) {
+      var row = el("div", "tl");
+      row.title = r.name + " \u00b7 max " + fmtDurMs(r.maxMs) + (r.errors ? " \u00b7 " + r.errors + " error(s)" : "");
+      row.appendChild(el("b", null, r.name));
+      row.appendChild(el("span", r.errors ? "err" : null, r.count + "\u00d7"));
+      row.appendChild(el("span", null, "avg " + fmtDurMs(r.avgMs)));
+      row.appendChild(el("span", null, "p95 " + fmtDurMs(r.p95Ms)));
+      row.appendChild(el("span", null, "\u03a3 " + fmtDurMs(r.totalMs)));
+      tl.appendChild(row);
+    });
+  }
   var nPts = obs && obs.metrics ? obs.metrics.length : 0;
   $("chartMeta").textContent = nPts ? nPts + " usage points" : "";
   drawChart();
@@ -1082,6 +1121,7 @@ function fetchObs() {
         totalCredits: data && data.totalCredits,
         cacheHitRatio: data && data.cacheHitRatio,
         byModel: data && data.byModel,
+        latency: (data && data.latency) || null,
         durationMs: (data && data.durationMs) || 0,
       };
     });

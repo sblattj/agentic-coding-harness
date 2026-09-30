@@ -82,10 +82,17 @@ export function lookupContextWindow(model: string | undefined, table: Map<string
   return table.get(m) ?? table.get(resolveAlias(m));
 }
 
+/**
+ * Claude Code's model id for messages the CLI writes itself (e.g. "Credit
+ * balance is too low"): no model call happened, and the all-zero usage it
+ * carries is not an occupancy reading.
+ */
+const CLAUDE_SYNTHETIC_MODEL = '<synthetic>';
+
 function usableModel(model: unknown): string | undefined {
   if (typeof model !== 'string') return undefined;
   const m = model.trim();
-  if (m === '' || m === 'unknown' || m === 'multi' || m.includes('+')) return undefined;
+  if (m === '' || m === 'unknown' || m === 'multi' || m === CLAUDE_SYNTHETIC_MODEL || m.includes('+')) return undefined;
   return m;
 }
 
@@ -104,6 +111,20 @@ export interface ContextMeter {
   observe(event: AgentEvent): string | undefined;
   /** Current occupancy verdict; undefined when no usage has been observed. */
   snapshot(): ContextSnapshot | undefined;
+  /**
+   * The usage record the verdict is read from and its occupancy, known even
+   * when the window is not (`snapshot()` is then `available: false` with no
+   * tokens). `record` keeps its identity until a newer usage replaces it, so a
+   * caller can tell which event fed the reading. Undefined before any usage.
+   */
+  reading(): ContextReading | undefined;
+}
+
+export interface ContextReading {
+  record: CanonicalTokenRecord;
+  /** input + cache read + cache write of `record`. */
+  tokens: number;
+  basis: 'last-call' | 'turn-total';
 }
 
 export interface ContextMeterOptions {
@@ -179,6 +200,7 @@ export function createContextMeter(opts: ContextMeterOptions): ContextMeter | nu
       const usage = e.usage as CanonicalTokenRecord | undefined;
       if (usage === undefined || typeof usage !== 'object') return undefined;
       if ((usage.extra as Record<string, unknown> | undefined)?.tokensAvailable === false) return undefined;
+      if (usage.model === CLAUDE_SYNTHETIC_MODEL) return undefined;
       if (event.type === 'message' || event.type === 'model_call_end') {
         lastCall = usage;
       } else if (event.type === 'usage') {
@@ -199,5 +221,10 @@ export function createContextMeter(opts: ContextMeterOptions): ContextMeter | nu
       );
     },
     snapshot,
+    reading(): ContextReading | undefined {
+      if (lastCall) return { record: lastCall, tokens: occupancy(lastCall), basis: 'last-call' };
+      if (lastTurn) return { record: lastTurn, tokens: occupancy(lastTurn), basis: 'turn-total' };
+      return undefined;
+    },
   };
 }

@@ -102,6 +102,32 @@ and free-form `metadata`, plus `corrections` — the additive log `ach audit --f
 (`{at, field, from, to, by}` per rewritten aggregate) when it re-derives totals from the raw
 transcript (`cli/audit.ts`).
 
+**Latency metrics (#32).** `core/latency.ts` `deriveLatency(events)` (re-exported by `web/derive.ts`) is the one pure derivation of
+run latency; the `/trio` metrics pane (via `/api/runs/:runId/observability` `latency`), the
+`ach run` summary, and `RunRecord.latency` all read it. The driver computes it once at finalize
+from the in-memory event list (not per heartbeat — that would re-walk every event on every write;
+live views re-derive from the transcript on each fetch instead) and stores it only when something
+was measurable. `ach stats --json` copies it onto each `runs[]` row. Fields:
+
+- `ttft` — `model_call_start` → first output event (agent message or `tool_call`) inside that
+  call, as `{count, totalMs, avgMs, p50Ms, p95Ms, maxMs}` (p95 nearest-rank).
+- `modelCalls` — end-to-end latency of closed model calls (start → `model_call_end`).
+- `outputTokensPerSec` / `tpotMs` — output tokens (`model_call_end.usage`, or `usage` events
+  tagged with the call's `callId`) over the post-TTFT window (first output → end), pooled across
+  calls. When tool execution falls inside a model call this window includes it, so throughput is
+  a lower bound.
+- `tools[]` — per tool name: `count`, `avgMs`, `totalMs`, `p50Ms`, `p95Ms`, `maxMs`, `errors`
+  (`tool_call` → last `tool_result` with the same id, so codex's `item.updated` + `item.completed`
+  pair measures to completion). A call whose result never arrived is not measured.
+
+Only real timestamps count: unlike the span view, missing timestamps are never carried forward,
+negative deltas and unclosed calls are skipped, and an unmeasurable metric is `null` (`n/a` in
+the UI), never `0` or `NaN`. Built-in adapters stamp events with harness arrival time
+(`Date.now()`), so durations include stream buffering. No built-in adapter emits
+`model_call_start`/`model_call_end` today, so TTFT, throughput and TPOT appear only for event
+logs that carry them (external producers, imported transcripts); claude, codex, gemini and kiro
+runs get the per-tool breakdown; opencode emits no tool events, so it gets neither.
+
 `core/warehouse.ts` (`ach archive`, #79) snapshots machine transcripts (the same sources
 `scanAll` walks), `<stateDir>/raw` transcripts and `<stateDir>/runs` records into
 `<stateDir>/warehouse/<batch>/` with a per-batch `manifest.jsonl`; it never deletes and skips

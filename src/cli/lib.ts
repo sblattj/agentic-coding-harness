@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { HarnessError, type AgentEvent, type UsageAvailability } from "../core/types.ts";
 import { bucketKey, type TimeGranularity } from "./time-window.ts";
+import type { LatencyMetrics } from "../web/derive.ts";
 
 /**
  * `--dir` is a transcript root for `stats`/`watch` but a state dir for
@@ -177,6 +178,33 @@ export function formatContextCell(ctx: NonNullable<UsageAvailability["context"]>
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
   // #21: a turn-total basis is an upper bound on occupancy.
   return `ctx ${ctx.basis === "turn-total" ? "<=" : "~="} ${fmtInt(ctx.tokens)} tok${pct}`;
+}
+
+function fmtLatMs(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
+}
+
+/**
+ * Latency lines for the `ach run` summary (#32). Each line appears only when
+ * its metric was measured; a run whose log cannot support a metric prints
+ * nothing for it (never `0ms`, never NaN). Tools: top 5 by total time.
+ */
+export function formatLatencyLines(l: LatencyMetrics | undefined): string[] {
+  if (l === undefined) return [];
+  const lines: string[] = [];
+  if (l.ttft !== null) {
+    const t = l.ttft;
+    lines.push(`ttft       avg ${fmtLatMs(t.avgMs)} · p50 ${fmtLatMs(t.p50Ms)} · p95 ${fmtLatMs(t.p95Ms)} (${t.count} call${t.count === 1 ? "" : "s"})`);
+  }
+  if (l.outputTokensPerSec !== null && l.tpotMs !== null) {
+    lines.push(`throughput ${l.outputTokensPerSec.toFixed(1)} tok/s · tpot ${l.tpotMs.toFixed(1)}ms`);
+  }
+  if (l.tools.length > 0) {
+    const cells = l.tools.slice(0, 5).map((r) => `${r.name} ${r.count}× avg ${fmtLatMs(r.avgMs)} max ${fmtLatMs(r.maxMs)}`);
+    const more = l.tools.length > 5 ? ` · +${l.tools.length - 5} more` : "";
+    lines.push(`tools      ${cells.join(" · ")}${more}`);
+  }
+  return lines;
 }
 
 // ---------- Aggregation ----------

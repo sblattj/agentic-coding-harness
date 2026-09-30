@@ -2,18 +2,32 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
-## Unreleased
+## [Unreleased]
 
 ### Added
 
-- `ach trial --matrix plan.json`: a resumable grid of agents × tasks × models × trials (#56).
-  - Every cell is one run, labelled on its RunRecord with the plan's `experiment`, a `variant` (default `{agent}:{model}`), and a deterministic `cellId` of the form `agent:task:model:trialN`. `/api/compare` groups these runs with no extra setup.
-  - One append-only `<plan>.ledger.jsonl` holds one row per cell attempt. A row is written only after the cell's run has finalized, so a runner killed mid-cell leaves that cell pending.
-  - Re-running the same command skips completed cells. Failed cells are reported but re-run only with `--retry-failed`.
-  - `--dry-run` lists every cell as run, skip, or failed without launching anything.
-  - A task is either inline (a prompt plus optional `setup` and `verify` commands) or a task directory (`task.md`, `setup.sh`, `verify.sh`, `meta.json`).
-  - Documentation: plan schema in `docs/TRIALS.md`; example plan at `examples/trial-matrix.json`.
-- RunRecord gains an optional `cellId` field.
+- Spend by git branch (#47): the driver records the git `branch` and short `commit` of the run's working directory on the RunRecord at run start (one `git rev-parse`, 1.5 s timeout, errors swallowed; a non-repo records nothing, a detached HEAD records `commit` only). `ach stats --by branch` adds a per-branch table and an additive `byBranch` key in `--json`; runs and transcript rows with no recorded branch fall into an explicit `(no branch)` bucket, detached runs into `(detached <sha>)`. Transcript rows are attributed only through their matching run record's session id; no git call per row.
+- Latency metrics (#32): `deriveLatency` in `src/core/latency.ts` (re-exported from `src/web/derive.ts`) derives time to first token (TTFT), end-to-end model-call latency, generation throughput (output tokens/s) and time per output token (TPOT), and a per-tool duration breakdown (count, avg, p50, p95, max, total, errors) from event timestamps. Shown as `ttft` / `tok/s` / `tpot` cards and a tool table in the `/trio` metrics pane (`latency` on `/api/runs/:runId/observability`), as `ttft` / `throughput` / `tools` lines in the `ach run` summary, recorded as an optional `latency` field on the RunRecord at finalize, and copied onto each `ach stats --json` `runs[]` row. Unmeasurable metrics are `null` / `n/a`, never 0 or NaN. TTFT and throughput need `model_call_start`/`model_call_end` events, which no built-in adapter emits yet; built-in runs with tool events get the per-tool breakdown.
+- `ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <stateDir>] [--dry-run] [--json]` records existing Claude Code sessions as RunRecords with the new `source: "imported"` value, so dash/web/compare show history from day one. Re-imports are idempotent (deterministic run id, no wall-clock fields), a session already owned by a native run is skipped and reported, sessions older than the window are reported as `skipped-outside-window`, and a corrupt transcript is an error line while the import continues with exit 0. `ach stats` totals are unchanged by import. Stats never sums RunRecord totals, so each session is still counted once from its transcript (#25).
+- `ach stats --origin all|native|imported|transcript` filters rows by provenance. Once imported sessions exist, text output shows `origin:` lines and `--json` shows `origin` and `origins` (#25).
+- Tamper-evident metering (#59). Every event line the driver writes to a run's raw transcript (`<stateDir>/raw/<agent>-<session>.jsonl`) and to run-to-directory `events.jsonl` now carries a per-run sha256 hash chain (`{"ach_chain":{v,run,seq,prev,hash}, ...event}`). Each run ends with an `ach.seal` record over the event count, the last hash, and the sealed metering totals. The seal is mirrored into the new optional `RunRecord.seal` and into `status.json`. The new `ach verify-run <runId|runDir> [--json] [--records]` recomputes the chain and exits 0 when intact, 2 when tampered (naming the first bad line), 3 for an unsealed legacy log, and 4 for an open, never-sealed chain. `ach audit` rows gain a `chain` verdict, and `ach report` gains a per-run `seal` column. `ach audit --fix` corrections are undone and disclosed, not reported as tampering. The README documents the chain format and threat model: tamper-evident, not tamper-proof. `stripChain`, `parseFramedLine`, and `verifyChainText` are exported from the library.
+- `/api/compare?by=branch` (alias `by=git.branch`) groups the rollup by git branch, and the `ach report` HTML gains a "spend by git branch" table (branch, runs, cost, tokens). Runs with no branch fall in `(no branch)` and detached HEADs in `(detached <sha>)`, matching `ach stats --by branch` (#47).
+- `ach web` feed rows now end in a context-window gauge. It shows tokens and % of the model's window, with a tick at the 85% warn threshold and teal/yellow/red at 50%/80%. Tool rows carry the last model call's value dimmed. A yellow `+Δ` marks the call that grew the context. Hovering shows the input · cache-read · cache-write breakdown. The value comes from the same server-side context meter as `usage.context` and travels as an optional per-event `ctx` field. Unmetered agents show no gauge, and an unknown window shows tokens only.
+
+### Changed
+
+- The ccusage hint after `ach stats` now suggests `ach import` first and keeps ccusage as the alternative (#25).
+- Imported sessions have no task verdict. They show `?` in `ach dash` (`effectiveStatus: null` in `--json`), are left out of the `ach stats` run-outcome, repeat-group, and unmetered rollups and the `ach status` run counts, are never live, and have no PTY in `ach web` (#25).
+- Readers of `events.jsonl` and raw transcripts: lines now start with an `ach_chain` key, and the file ends in an `ach.seal` record. Every other event field is unchanged, and `stripChain(line)` returns the exact pre-chain line.
+- Removed the unused `safePrice` helper. Added a regression test confirming `ach watch` bills 1h cache writes at the 1h rate (#105).
+
+### Fixed
+
+- `claude-opus-5-5` is priced at Anthropic's list rates (input $4, output $20, cache read $0.20, 5m cache write $5, 1h cache write $8 per MTok) instead of the `estimated` copy of `claude-opus-5`, which overstated real runs by about 47% (#105).
+- Cache writes are billed per TTL. Claude usage records split writes in `usage.cache_creation` (`ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`), and Claude Code writes with the 1h TTL, which costs 2x input rather than the 1.25x 5m rate. The stream adapter, transcript monitor, normalizer, `ach stats` / `status` / `watch`, and `ach audit` now carry the 1h count as the new optional `CanonicalTokenRecord.cacheWrite1hTokens` (`cacheWriteTokens` stays the 5m + 1h total). The pricer bills each bucket at its own rate. Every Claude model has a 1h rate (`cache_creation_1h`, or the LiteLLM field `cache_creation_input_token_cost_above_1hr` in override files). When a record has no split, writes are billed at the 5m rate. Two real opus-5-5 runs now reproduce the CLI-reported cost to the micro-dollar (#105).
+- When a CLI-reported slice cost is not used, per-model slices of a multi-model claude run apportion the run-level 1h share by each slice's writes, because `result.modelUsage` carries no TTL split (#105).
+- The context meter no longer treats claude `<synthetic>` messages (CLI-written, zero usage) as model calls. Previously they reset occupancy to 0 and reported the run's context as n/a.
+- Web run replay (`RunEventHub.readTranscript`) and MCP `harness_run_events` no longer expose the `ach_chain` framing or the `ach.seal` record, so their output matches the pre-#59 view (#59). New export `unchainedLines`.
 
 ## [0.11.2] - 2026-09-28
 

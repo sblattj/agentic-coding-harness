@@ -80,7 +80,7 @@ export function runTotalsProvenance(totals: RunTotalsLike, usage?: UsageAvailabi
 
 /** Structural view of a RunRecord for {@link provenanceOf}. */
 export interface RunRecordLike {
-  source?: "local" | "external";
+  source?: "local" | "external" | "imported";
   totals?: RunTotalsLike;
   usage?: UsageAvailability;
 }

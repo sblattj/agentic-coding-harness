@@ -9,6 +9,7 @@
 // Run-record sourcing goes through the RunSource seam (default FsRunSource);
 // the hub never reads the registry dir itself.
 import fs from "node:fs";
+import { unchainedLines } from "../core/hash-chain.ts";
 import type { AgentEvent } from "../core/types.ts";
 import {
   type RunRecord,
@@ -82,11 +83,10 @@ export class RunEventHub {
       return [];
     }
     const events: AgentEvent[] = [];
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
+    // Hash-chain framing + terminal seal (#59) are not AgentEvents: strip them.
+    for (const line of unchainedLines(text)) {
       try {
-        events.push(JSON.parse(trimmed) as AgentEvent);
+        events.push(JSON.parse(line) as AgentEvent);
       } catch {
         // partial/underway line from a live writer — skip, never throw
       }

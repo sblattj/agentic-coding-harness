@@ -1,21 +1,14 @@
-import type { AgentEvent, CanonicalTokenRecord, EventTimestamp } from "../core/types.ts";
+import type { AgentEvent, CanonicalTokenRecord } from "../core/types.ts";
 import { cacheHitRatio } from "../core/cache-ratio.ts";
+import { deriveLatency, toEventMs, type LatencyMetrics } from "../core/latency.ts";
+
+export { toEventMs };
 
 /**
  * Pure derivations of the dashboard's three observability views (spans,
  * metrics, logs) from a run's AgentEvent[]. No I/O: USD comes from canonical
  * recorded costs. Missing prices remain unknown; no substitute model rates.
  */
-
-export function toEventMs(t: EventTimestamp): number | null {
-  if (t instanceof Date && Number.isFinite(t.getTime())) return t.getTime();
-  if (typeof t === "number" && Number.isFinite(t)) return t;
-  if (typeof t === "string") {
-    const p = Date.parse(t);
-    if (Number.isFinite(p)) return p;
-  }
-  return null;
-}
 
 interface TimedEvent {
   ev: AgentEvent;
@@ -362,6 +355,13 @@ export function deriveLogs(events: AgentEvent[]): LogLine[] {
   return logs;
 }
 
+// ------------------------------------------------------------------ latency
+
+// Latency (#32) lives in src/core/latency.ts so the driver can use it
+// without a core->web import; re-exported here for existing callers.
+export { deriveLatency, hasLatency } from "../core/latency.ts";
+export type { DurationStats, LatencyMetrics, ToolLatencyRow } from "../core/latency.ts";
+
 // ------------------------------------------------------- run observability
 
 export interface RunObservability {
@@ -377,6 +377,8 @@ export interface RunObservability {
   cacheHitRatio?: number | null;
   /** Per-model token split with cache-hit ratio (#69). Present only when usage exists. */
   byModel?: ModelCacheRow[];
+  /** TTFT, throughput/TPOT, per-tool durations (#32). Present whenever the run has events. */
+  latency?: LatencyMetrics;
 }
 
 export interface ModelCacheRow {
@@ -448,5 +450,6 @@ export function deriveRunObservability(events: AgentEvent[]): RunObservability {
     });
     out.byModel = deriveModelCache(events);
   }
+  if (events.length > 0) out.latency = deriveLatency(events);
   return out;
 }

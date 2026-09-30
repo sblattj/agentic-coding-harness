@@ -15,6 +15,7 @@ import {
 } from "./types.ts";
 import { VerifyResultSchema, type VerifyResult } from "./verify.ts";
 import { PROVENANCE_CLASSES, type ProvenanceMap } from "./provenance.ts";
+import type { RunSeal } from "./hash-chain.ts";
 
 // Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
 // record (source:"external") validates without inventing a local pid, cwd, or
@@ -25,6 +26,8 @@ export interface RunRecord {
   sessionId?: string; // set once the adapter reports it
   pid?: number; // harness CLI process pid (LOCAL-PROCESS-ONLY)
   cwd?: string;
+  branch?: string; // git branch of cwd at run start (#47); absent when detached or not a repo
+  commit?: string; // short HEAD sha at run start (#47); the only marker of a detached HEAD
   promptPreview?: string; // first 120 chars of prompt
   startedAt: number; // ms epoch
   updatedAt?: number; // ms epoch — heartbeat
@@ -55,7 +58,7 @@ export interface RunRecord {
   experiment?: string; // compare-view grouping label
   variant?: string; // compare-view variant within an experiment
   workflow?: string; // e.g. "implement" | "review" | "plan"
-  source?: "local" | "external"; // external records carry no local pid to probe
+  source?: "local" | "external" | "imported"; // external/imported records carry no local pid to probe; imported = `ach import` (#25)
   producer?: string; // e.g. "acme-feed/bridge@1"
   endedAt?: number; // ms epoch — explicit wall-clock end for external runs
   metadata?: Record<string, unknown>; // free-form provenance (request_id, region, ...)
@@ -75,7 +78,14 @@ export interface RunRecord {
   regrades?: VerifyResult[];
   /** `ach trial --matrix` cell (#56): deterministic agent:task:model:trialN. */
   cellId?: string;
+  /** Latency metrics (#32) derived at finalize from the run's events (deriveLatency). */
+  latency?: RunLatency;
+  /** Terminal seal of the raw transcript's hash chain (#59); `ach verify-run` anchor. */
+  seal?: RunSeal;
 }
+
+/** Shape of src/core/latency.ts LatencyMetrics; null = not measurable from the log. */
+export type RunLatency = z.infer<typeof RunLatencySchema>;
 
 export interface RepeatMembership {
   group: string;
@@ -109,6 +119,23 @@ const RunCorrectionSchema = z.object({
   by: z.string().optional(),
 });
 
+const DurationStatsSchema = z.object({
+  count: z.number(),
+  totalMs: z.number(),
+  avgMs: z.number(),
+  p50Ms: z.number(),
+  p95Ms: z.number(),
+  maxMs: z.number(),
+});
+
+export const RunLatencySchema = z.object({
+  ttft: DurationStatsSchema.nullable(),
+  modelCalls: DurationStatsSchema.nullable(),
+  outputTokensPerSec: z.number().nullable(),
+  tpotMs: z.number().nullable(),
+  tools: z.array(DurationStatsSchema.extend({ name: z.string(), errors: z.number() })),
+});
+
 const TotalsSchema = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
@@ -127,6 +154,8 @@ export const RunRecordSchema = z.object({
   sessionId: z.string().optional(),
   pid: z.number().int().optional(),
   cwd: z.string().optional(),
+  branch: z.string().optional(),
+  commit: z.string().optional(),
   promptPreview: z.string().optional(),
   startedAt: z.number(),
   updatedAt: z.number().optional(),
@@ -145,7 +174,7 @@ export const RunRecordSchema = z.object({
   experiment: z.string().min(1).optional(),
   variant: z.string().min(1).optional(),
   workflow: z.string().min(1).optional(),
-  source: z.enum(["local", "external"]).default("local"),
+  source: z.enum(["local", "external", "imported"]).default("local"),
   producer: z.string().min(1).optional(),
   endedAt: z.number().int().optional(),
   metering: z.enum(["tap", "none"]).optional(),
@@ -170,6 +199,18 @@ export const RunRecordSchema = z.object({
     .optional(),
   regrades: z.array(VerifyResultSchema).optional(),
   cellId: z.string().min(1).optional(),
+  latency: RunLatencySchema.optional(),
+  seal: z
+    .object({
+      v: z.literal(1),
+      algo: z.literal("sha256"),
+      eventCount: z.number().int().min(0),
+      lastHash: z.string().regex(/^[0-9a-f]{64}$/),
+      sealHash: z.string().regex(/^[0-9a-f]{64}$/),
+      totalsHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+      at: z.number(),
+    })
+    .optional(),
 });
 
 export function registryDir(stateDir: string): string {
@@ -302,7 +343,7 @@ export function listRunIds(stateDir: string): string[] {
 
 /** Live = still running, heartbeat fresh (<=15s), and the pid answers kill(pid, 0). */
 export function isLive(rec: RunRecord, now: number = Date.now()): boolean {
-  if (rec.source === "external") return false;
+  if (rec.source === "external" || rec.source === "imported") return false;
   if (rec.pid === undefined) return false;
   if (rec.status !== "running") return false;
   if (rec.updatedAt === undefined || now - rec.updatedAt > 15_000) return false;

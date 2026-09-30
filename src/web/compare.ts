@@ -5,8 +5,17 @@
 // tree's RunRecord (totals/endedAt/status), not the spec's older names.
 import type { RunRecord } from "../core/registry.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
+import { branchLabel, NO_BRANCH } from "../cli/stats-dims.ts";
 
-export const COMPARE_GROUP_KEYS = ["experiment", "variant", "workflow", "agent"] as const;
+export const COMPARE_GROUP_KEYS = ["experiment", "variant", "workflow", "agent", "branch"] as const;
+
+/** Alternate spellings accepted for a group key (#47: the issue names `git.branch`). */
+export const COMPARE_GROUP_ALIASES: Readonly<Record<string, CompareGroupKey>> = { "git.branch": "branch" };
+
+/** True when `k` is a canonical group key or a known alias. */
+export function isCompareGroupKey(k: string): boolean {
+  return (COMPARE_GROUP_KEYS as readonly string[]).includes(k) || k in COMPARE_GROUP_ALIASES;
+}
 
 export type CompareGroupKey = (typeof COMPARE_GROUP_KEYS)[number];
 
@@ -37,9 +46,13 @@ export interface CompareRow {
  *  here unknown keys are dropped rather than thrown — tolerant, like every
  *  other read path in the registry. */
 export function resolveCompareGroupBy(groupBy: string[]): CompareGroupKey[] {
-  const keys = groupBy.filter((k): k is CompareGroupKey =>
-    (COMPARE_GROUP_KEYS as readonly string[]).includes(k),
-  );
+  const keys: CompareGroupKey[] = [];
+  for (const raw of groupBy) {
+    const k = COMPARE_GROUP_ALIASES[raw] ?? raw;
+    if ((COMPARE_GROUP_KEYS as readonly string[]).includes(k) && !keys.includes(k as CompareGroupKey)) {
+      keys.push(k as CompareGroupKey);
+    }
+  }
   return keys.length > 0 ? keys : DEFAULT_GROUP_BY;
 }
 
@@ -48,6 +61,8 @@ export function resolveCompareGroupBy(groupBy: string[]): CompareGroupKey[] {
  *  possibly undefined. */
 function groupValue(rec: RunRecord, key: CompareGroupKey): string | undefined {
   if (key === "experiment") return rec.experiment ?? rec.agent;
+  // Same labels as `ach stats --by branch` (#47): name, `(detached <sha>)`, `(no branch)`.
+  if (key === "branch") return branchLabel(rec) ?? NO_BRANCH;
   return rec[key];
 }
 
