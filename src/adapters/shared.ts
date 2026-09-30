@@ -415,6 +415,8 @@ export interface HouseTokens {
   inputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** 1h-TTL subset of cacheWriteTokens, when the producer split it (issue #105). */
+  cacheWrite1hTokens?: number;
   outputTokens: number;
   reasoningTokens: number | null;
   totalTokens: number | null;
@@ -448,6 +450,7 @@ export function toCoreTokenRecord(
     outputTokens: tokens.outputTokens,
     cacheReadTokens: tokens.cacheReadTokens ?? 0,
     cacheWriteTokens: tokens.cacheWriteTokens ?? 0,
+    ...(tokens.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: tokens.cacheWrite1hTokens } : {}),
     ...(tokens.reasoningTokens !== null && tokens.reasoningTokens !== undefined
       ? { reasoningTokens: tokens.reasoningTokens }
       : {}),
