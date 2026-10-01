@@ -260,6 +260,7 @@ estimates; quota output uses provider-reported values when available.
 ach run --agent <claude|opencode|kiro|codex|gemini|null|custom|descriptor> [--model M] [--resume SID]
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
+            [--extra-args 'a b']... [--extra-arg TOKEN]...   # see "Passing extra CLI args"
             kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                        [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                        [--kiro-startup-ms N] [--kiro-require-model-ack] [--kiro-mcp-server '<json>']...
@@ -343,6 +344,25 @@ and a model the pricer does not know is reported as an `unpriceable` cost; neith
 silent. `--json` emits `{rows, summary, total}`; each row carries `recorded`, `recomputed`, and
 `delta` objects keyed by the same field names as `ach stats --json`. Each row also carries
 `chain`, the run's `ach verify-run` verdict (below), taken before any `--fix`.
+
+### Passing extra CLI args to the agent: `--extra-args` / `--extra-arg`
+
+Both flags work on `ach run` and `ach preflight`, for every launchable agent, and are
+repeatable. Tokens reach the agent in command-line order, even when the flags are mixed.
+
+- `--extra-args '<a b>'` splits each value on spaces (`--extra-args "-c x=1"` passes `-c`, `x=1`).
+- `--extra-arg <token>` passes exactly ONE verbatim argv token and never splits it, so a
+  value containing spaces survives. A dash-leading value is fine in the space form.
+
+```sh
+# route codex to a custom provider and pass a config value with spaces as one token
+ach run --agent codex \
+  --extra-arg -c --extra-arg 'model_provider=ferry' \
+  --extra-arg -c --extra-arg 'developer_instructions="FERRY ROUTING: use tier names heavy, medium, light"' \
+  "prompt"
+```
+
+The MCP tools take `extraArgs` as an array, which is already verbatim.
 
 ### Ancestor instruction files and `--hermetic`
 
