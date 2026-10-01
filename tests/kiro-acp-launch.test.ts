@@ -225,6 +225,10 @@ describe('launchKiroAcp — failure artifacts (no prompt is ever sent)', () => {
     const { events, status } = await run('crash-mid-prompt', { kiro: { transport: 'acp' } });
     assert.equal(status, 'error');
     assert.equal(errors(events).length, 1);
+    // The server dies right after the id-only tool_call_chunk, so the start
+    // is still deferred (#107): the end-of-stream flush must emit it once.
+    const starts = events.filter((e) => e.type === 'tool_call');
+    assert.equal(starts.length, 1, `expected the deferred start to be flushed once, got ${starts.length}`);
   });
 });
 

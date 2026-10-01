@@ -5,7 +5,9 @@ import { createContext, runInContext } from 'node:vm';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createFrameAnnotator } from '../src/web/context-frames.ts';
-import type { AgentEvent } from '../src/core/types.ts';
+import type { AgentEvent, CanonicalEvent } from '../src/core/types.ts';
+import { createKiroNormalizer } from '../src/adapters/kiro-events.ts';
+import { houseEventToCore } from '../src/adapters/shared.ts';
 
 /*
  * src/web/feed.js is a browser IIFE with no module system, so it is loaded into
@@ -422,5 +424,43 @@ describe('HarnessFeed context gauge', () => {
     const g = withClass(container, 'hf-ctx')[0]!;
     assert.match(texts(g, 'hf-ctx-t')[0]!, /^≤30\.0k /);
     assert.equal(withClass(g, 'hf-ctx-d').length, 0);
+  });
+});
+
+/*
+ * Kiro ACP end to end: the synthesized 2.26.1 fixture (see the note in
+ * tests/kiro-events.test.ts) goes through the REAL normalizer and the REAL
+ * houseEventToCore bridge, then into the feed, in stream order.
+ */
+function kiroAcpCoreEvents(name: string): Record<string, unknown>[] {
+  const raw = readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures/kiro', name), 'utf8');
+  const norm = createKiroNormalizer({ transport: 'acp' });
+  const house: CanonicalEvent[] = [];
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '' || line.startsWith('>>')) continue;
+    const msg = JSON.parse(line) as Record<string, unknown>;
+    const result = msg.result as Record<string, unknown> | undefined;
+    if (result && typeof result.stopReason === 'string') house.push(...norm.pushAcpMessage({ kind: 'promptResult', result }));
+    else house.push(...norm.pushAcpMessage(msg));
+  }
+  house.push(...norm.flush());
+  const out: Record<string, unknown>[] = [];
+  let t = T0;
+  for (const h of house) {
+    const core = houseEventToCore('kiro', h);
+    if (core) out.push({ ...core, timestamp: t++ });
+  }
+  return out;
+}
+
+describe('HarnessFeed kiro ACP pipeline', () => {
+  it('tool cards show the kiro title and keep the full input in the detail (#107)', () => {
+    const { container, feed } = mount();
+    feed.append(kiroAcpCoreEvents('acp-interleaved-synth-2.26.1.jsonl'));
+    assert.equal(withClass(container, 'hf-card').length, 2);
+    assert.deepEqual(texts(container, 'hf-args'), ['Reading notes.md:1', 'Running: ls -1']);
+    const inputs = texts(container, 'hf-pre');
+    assert.ok(inputs.some((t) => t.includes('/tmp/ws/notes.md')), `read input missing: ${inputs.join(' | ')}`);
+    assert.ok(inputs.some((t) => t.includes('ls -1')), `shell input missing: ${inputs.join(' | ')}`);
   });
 });

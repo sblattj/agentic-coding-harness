@@ -420,7 +420,7 @@
 
     /* ---- tool cards ---- */
 
-    function makeCard(ts, name, args, hasArgs, ctx) {
+    function makeCard(ts, name, args, hasArgs, ctx, title) {
       var card = el("div", "hf-card");
       var head = el("div", "hf-head");
       head.tabIndex = 0;
@@ -428,7 +428,10 @@
       head.setAttribute("aria-expanded", "false");
       var tri = el("span", "hf-tri", "▸");
       var fn = el("span", "hf-fn", name || "tool");
-      var summary = el("span", "hf-args", argsSummary(args));
+      // A producer title (kiro ACP: "Reading foo.md:1", #107) reads better
+      // than a JSON digest of the input; the full input stays in the detail.
+      var label = typeof title === "string" && title.trim() !== "" ? argsSummary(title) : argsSummary(args);
+      var summary = el("span", "hf-args", label);
       var chip = el("span", "hf-chip hf-chip-pending", "…");
       var ms = el("span", "hf-ms", "");
       head.appendChild(tri);
@@ -514,7 +517,7 @@
     function openCall(ev, id, name, args, hasArgs) {
       endStream();
       var ts = tsOf(ev);
-      var rec = makeCard(ts, name, args, hasArgs, frameOf(ev));
+      var rec = makeCard(ts, name, args, hasArgs, frameOf(ev), ev.title);
       if (typeof id === "string" && id.length > 0) state.byId[id] = rec;
       state.unresolved.push(rec);
       addRow(ts, rec.card);

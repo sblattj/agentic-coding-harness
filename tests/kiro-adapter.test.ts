@@ -613,6 +613,25 @@ describe('kiro launch (driver contract)', () => {
     assert.equal(handle.kiro?.()?.nativeSessionId, NATIVE);
     assert.equal(handle.kiro?.()?.modelAck, 'not-requested');
   });
+
+  it('a deferred tool start still reaches the driver when stdout ends before its input (#107)', async () => {
+    // An id-only tool_call is held back waiting for its rich follow-up. If the
+    // stream ends first, the end-of-stdout hook must flush it — never drop it.
+    const child = new FakeChild();
+    const adapter = new KiroAdapter({ command: 'kiro-cli', spawnFn: versionProbeSpawnFn(child, []) });
+    const launchPromise = adapter.launch({ prompt: 'ping' });
+    child.writeStdout(
+      '{"type":"sessionUpdate","data":{"sessionId":"s-eos","update":{"sessionUpdate":"tool_call","toolCallId":"t-eos","kind":"read"}}}\n',
+    );
+    child.close(0);
+    const handle = await launchPromise;
+    const events: { type: string; [k: string]: unknown }[] = [];
+    for await (const event of handle.attach()) events.push(event as { type: string; [k: string]: unknown });
+    const starts = events.filter((e) => e.type === 'tool_call');
+    assert.equal(starts.length, 1, `expected exactly one tool_call, got ${starts.length}`);
+    assert.equal(starts[0]!.toolCallId, 't-eos');
+    assert.equal(starts[0]!.functionName, 'read');
+  });
 });
 
 describe('kiro tap token honesty', () => {

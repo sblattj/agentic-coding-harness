@@ -9,7 +9,11 @@ import {
   sumMeteringUsage,
   type KiroUsageExtra,
 } from '../src/adapters/kiro-events.js';
-import type { CanonicalEvent } from '../src/core/types.js';
+import type { AgentEvent, CanonicalEvent } from '../src/core/types.js';
+import { houseEventToCore } from '../src/adapters/shared.ts';
+import { deriveLatency } from '../src/core/latency.ts';
+import { deriveSpans as deriveWebSpans } from '../src/web/derive.ts';
+import { deriveSpans as deriveOtelSpans } from '../src/emitters/otel.ts';
 
 const fixture = (name: string): string =>
   readFileSync(fileURLToPath(new URL(`./fixtures/kiro/${name}`, import.meta.url)), 'utf8');
@@ -173,8 +177,11 @@ describe('kiro-events: ACP prompt fixture', () => {
         'step:vendor',
         'step:metadata',
         'step:vendor',
-        'tool',
+        // #107: the id-only tool_call_chunk defers the start; the rich
+        // tool_call emits it (with rawInput) and stays as raw evidence.
+        'step:toolCallPending',
         'step:metadata',
+        'tool',
         'step:toolCallDuplicate',
         'tool',
         'step:chunk',
@@ -434,5 +441,176 @@ describe('kiro-events: stderr notice helper', () => {
     assert.equal(parseKiroStderrNotice("[warn] failed to set model 'x': Method not found"), null);
     assert.equal(parseKiroStderrNotice('just some unrelated stderr output'), null);
     assert.equal(parseKiroStderrNotice(''), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #107 / #108 fixture. acp-interleaved-synth-2.26.1.jsonl is SYNTHESIZED (not a
+// capture) from the owner's description of a kiro-cli 2.26.1 ACP run: every
+// tool call is announced twice (an id-only `tool_call`, then the rich one with
+// title/kind/locations/rawInput/_meta.kiro.toolName), a non-metering
+// `_kiro.dev/metadata` frame sits between the two announcements (as in the real
+// 2.21.2 capture), and assistant text interleaves with tools:
+// thought -> text -> tool -> text -> tool -> text.
+
+type ToolEv = Extract<CanonicalEvent, { type: 'tool' }>;
+
+function replayAcp(name: string): { events: CanonicalEvent[]; norm: ReturnType<typeof createKiroNormalizer> } {
+  const norm = createKiroNormalizer({ transport: 'acp' });
+  const events: CanonicalEvent[] = [];
+  for (const line of serverLines(name)) {
+    const msg = JSON.parse(line) as Record<string, unknown>;
+    const result = msg.result as Record<string, unknown> | undefined;
+    if (result && typeof result.stopReason === 'string') {
+      events.push(...norm.pushAcpMessage({ kind: 'promptResult', result }));
+    } else {
+      events.push(...norm.pushAcpMessage(msg));
+    }
+  }
+  events.push(...norm.flush());
+  return { events, norm };
+}
+
+const SYNTH = 'acp-interleaved-synth-2.26.1.jsonl';
+
+/** The rich (rawInput-bearing) tool_call update for an id, straight from the fixture. */
+function richUpdate(name: string, id: string): Record<string, unknown> {
+  for (const line of serverLines(name)) {
+    const update = (JSON.parse(line) as { params?: { update?: Record<string, unknown> } }).params?.update;
+    if (update?.sessionUpdate === 'tool_call' && update.toolCallId === id && update.rawInput !== undefined) return update;
+  }
+  throw new Error(`no rich tool_call for ${id}`);
+}
+
+function acpUpdate(update: Record<string, unknown>): Record<string, unknown> {
+  return { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1', update } };
+}
+
+describe('kiro-events: two-message ACP tool_call (#107)', () => {
+  it('emits ONE tool start per toolCallId, with the rich rawInput, title and locations', () => {
+    const { events } = replayAcp(SYNTH);
+    const starts = events.filter((e): e is ToolEv => e.type === 'tool' && e.phase === 'start');
+    assert.deepEqual(
+      starts.map((s) => s.toolCallId),
+      ['tooluse_synthRead01', 'tooluse_synthShell02'],
+    );
+    const read = richUpdate(SYNTH, 'tooluse_synthRead01');
+    assert.equal(starts[0]!.toolName, 'read');
+    assert.deepEqual(starts[0]!.input, read.rawInput);
+    assert.equal(starts[0]!.title, 'Reading notes.md:1');
+    assert.deepEqual(starts[0]!.locations, [{ path: '/tmp/ws/notes.md', line: 1 }]);
+    const shell = richUpdate(SYNTH, 'tooluse_synthShell02');
+    assert.equal(starts[1]!.toolName, 'shell');
+    assert.deepEqual(starts[1]!.input, shell.rawInput);
+    assert.equal(starts[1]!.title, 'Running: ls -1');
+    for (const s of starts) {
+      assert.ok(s.input !== null && typeof s.input === 'object' && Object.keys(s.input).length > 0, 'input must be non-empty');
+    }
+  });
+
+  it('keeps both raw announcements as steps (provenance)', () => {
+    const { events } = replayAcp(SYNTH);
+    const pending = events.filter((e) => e.type === 'step' && stepKind(e) === 'toolCallPending');
+    const dupes = events.filter((e) => e.type === 'step' && stepKind(e) === 'toolCallDuplicate');
+    assert.equal(pending.length, 2);
+    assert.equal(dupes.length, 2);
+    for (const d of dupes) {
+      const raw = ((d as Extract<CanonicalEvent, { type: 'step' }>).payload as { raw: Record<string, unknown> }).raw;
+      assert.notEqual(raw.rawInput, undefined, 'the rich duplicate keeps its rawInput verbatim');
+    }
+  });
+
+  it('a metadata frame between the two announcements does not flush the start early', () => {
+    const norm = createKiroNormalizer({ transport: 'acp' });
+    const early = [
+      ...norm.pushAcpMessage(acpUpdate({ sessionUpdate: 'tool_call', toolCallId: 'm1' })),
+      ...norm.pushAcpMessage({ jsonrpc: '2.0', method: '_kiro.dev/metadata', params: { sessionId: 's1', contextUsagePercentage: 2 } }),
+    ];
+    assert.equal(early.filter((e) => e.type === 'tool').length, 0);
+    const rich = norm.pushAcpMessage(
+      acpUpdate({ sessionUpdate: 'tool_call', toolCallId: 'm1', kind: 'read', rawInput: { path: '/a' }, _meta: { kiro: { toolName: 'read' } } }),
+    );
+    const starts = rich.filter((e): e is ToolEv => e.type === 'tool');
+    assert.equal(starts.length, 1);
+    assert.deepEqual(starts[0]!.input, { path: '/a' });
+  });
+
+  it('the real 2.21.2 capture: the start carries the rich rawInput, not the tool_call_chunk stub', () => {
+    const { events } = replayAcp('acp-prompt-2.21.2.jsonl');
+    const starts = events.filter((e): e is ToolEv => e.type === 'tool' && e.phase === 'start');
+    assert.equal(starts.length, 1);
+    assert.deepEqual(starts[0]!.input, {
+      operations: [{ mode: 'Line', path: '/tmp/acp-probe/ws/probe.txt' }],
+      __tool_use_purpose: 'Reading the probe.txt file as requested',
+    });
+    assert.equal(starts[0]!.title, 'Reading probe.txt:1');
+  });
+
+  it('fallback: the first tool_call_update emits the deferred start (merging its input) before the result', () => {
+    const norm = createKiroNormalizer({ transport: 'acp' });
+    norm.pushAcpMessage(acpUpdate({ sessionUpdate: 'tool_call', toolCallId: 'u1' }));
+    const out = norm.pushAcpMessage(
+      acpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'u1',
+        kind: 'read',
+        status: 'completed',
+        title: 'Reading a:1',
+        rawInput: { path: '/a' },
+        rawOutput: { ok: true },
+      }),
+    );
+    const tools = out.filter((e): e is ToolEv => e.type === 'tool');
+    assert.deepEqual(tools.map((t) => t.phase), ['start', 'result']);
+    assert.deepEqual(tools[0]!.input, { path: '/a' });
+    assert.equal(tools[0]!.title, 'Reading a:1');
+    assert.equal(tools[0]!.toolName, 'read');
+    assert.equal(tools[1]!.toolName, 'read');
+  });
+
+  it('fallback: a chunk, the terminator, or flush() emits a still-deferred start exactly once (no timers)', () => {
+    const viaChunk = createKiroNormalizer({ transport: 'acp' });
+    viaChunk.pushAcpMessage(acpUpdate({ sessionUpdate: 'tool_call', toolCallId: 'c1', kind: 'execute' }));
+    const chunkOut = viaChunk.pushAcpMessage(
+      acpUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } }),
+    );
+    assert.equal(chunkOut.filter((e) => e.type === 'tool').length, 1);
+    assert.equal(chunkOut[0]!.type, 'tool', 'the start precedes the chunk');
+
+    const viaTerminal = createKiroNormalizer({ transport: 'acp' });
+    viaTerminal.pushAcpMessage(acpUpdate({ sessionUpdate: 'tool_call', toolCallId: 'c2' }));
+    const termOut = viaTerminal.pushAcpMessage({ kind: 'promptResult', result: { stopReason: 'end_turn' } });
+    assert.equal(termOut.filter((e) => e.type === 'tool').length, 1);
+    assert.deepEqual(viaTerminal.flush(), []);
+
+    const viaFlush = createKiroNormalizer({ transport: 'acp' });
+    viaFlush.pushAcpMessage(acpUpdate({ sessionUpdate: 'tool_call', toolCallId: 'c3', kind: 'read' }));
+    const flushed = viaFlush.flush();
+    assert.equal(flushed.filter((e) => e.type === 'tool').length, 1);
+    assert.deepEqual(viaFlush.flush(), [], 'flush is idempotent');
+    assert.equal(viaFlush.state().toolCalls.get('c3')!.startedSeen, true);
+  });
+
+  it('bridged to core events: one tool_call per id, so latency and span consumers count each tool once', () => {
+    const { events } = replayAcp(SYNTH);
+    const core = events.map((e) => houseEventToCore('kiro', e)).filter((e): e is AgentEvent => e !== null);
+    const calls = core.filter((e) => e.type === 'tool_call');
+    assert.equal(calls.length, 2);
+    for (const c of calls) {
+      assert.ok(typeof c.arguments === 'object' && Object.keys(c.arguments).length > 0, 'arguments must be non-empty');
+      assert.equal(typeof c.title, 'string');
+    }
+    const latency = deriveLatency(core);
+    assert.deepEqual(
+      latency.tools.map((t) => [t.name, t.count]).sort(),
+      [
+        ['read', 1],
+        ['shell', 1],
+      ],
+    );
+    const webTools = deriveWebSpans(core).filter((s) => s.kind === 'tool');
+    assert.equal(webTools.length, 2);
+    const otel = deriveOtelSpans(core, { agentName: 'kiro', model: 'unknown' } as Parameters<typeof deriveOtelSpans>[1]);
+    assert.equal(otel.children.filter((s) => s.role === 'tool').length, 2);
   });
 });

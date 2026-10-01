@@ -702,6 +702,9 @@ export class KiroAdapter implements CoreAgentAdapter {
         }
         return events;
       },
+      // End of stdout: emit anything the normalizer still buffers (a deferred
+      // tool start whose input never arrived, #107).
+      onStdoutEnd: (): CanonicalEvent[] => normalizer.flush(),
       onStderrLine: (line): CanonicalEvent[] | void => {
         const ack = parseKiroStderrLine(line);
         if (ack) {
