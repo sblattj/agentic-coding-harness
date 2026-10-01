@@ -247,6 +247,12 @@ export interface ModelCallStartEvent extends BaseEvent {
   type: "model_call_start";
   callId?: string;
   model?: string;
+  /**
+   * 'estimated' marks a DERIVED boundary (#108: kiro ACP, inferred from
+   * chunk/tool ordering because the stream has no request signal). Absent =
+   * a boundary the stream itself showed. deriveLatency skips estimated spans.
+   */
+  provenance?: "estimated";
 }
 
 export interface ModelCallEndEvent extends BaseEvent {
@@ -262,6 +268,8 @@ export interface ModelCallEndEvent extends BaseEvent {
    * a usage-bearing boundary would double those series. Nothing sums this.
    */
   outputTokens?: number;
+  /** See ModelCallStartEvent.provenance. An estimated end never carries usage. */
+  provenance?: "estimated";
 }
 
 export interface ToolCallEvent extends BaseEvent {
@@ -509,7 +517,15 @@ export type CanonicalEvent =
    * model_call_end. `outputTokens` (end only) is that call's output, for
    * latency; it is never summed into totals.
    */
-  | { type: "model_call"; phase: "start" | "end"; callId: string; model?: string; outputTokens?: number }
+  | {
+      type: "model_call";
+      phase: "start" | "end";
+      callId: string;
+      model?: string;
+      outputTokens?: number;
+      /** 'estimated': a boundary the adapter inferred, not one the stream marked (#108). */
+      provenance?: "estimated";
+    }
   /** Human-readable stderr progress emitted by the CLI while running. */
   | { type: "progress"; text: string }
   | { type: "error"; message: string };

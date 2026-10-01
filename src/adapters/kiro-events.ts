@@ -16,16 +16,37 @@
 // ---------------------------------------------------------------------------
 // Decided semantics (see PLAN-kiro-acp.md § Events)
 //
-// CHUNKS vs TURNS. `agent_message_chunk` updates are emitted immediately as
-// `step` events with `payload.kind:'chunk'` (so a live dashboard still ticks)
-// and are ALSO buffered; the buffer is flushed as exactly ONE `message` event
-// per turn when the turn ends — on `runFinished`, on a `session/prompt`
-// result, or on the turn's final `metadata` (the one carrying
-// `meteringUsage`), whichever arrives first. Every `step` this module emits
-// carries `payload.countsAsTurn === false`; `state().turns` increments ONLY on
-// a native turn terminator (`runFinished` / prompt result), never on a chunk,
-// a vendor notification or a metadata frame. Wave 2's driver must count turns
-// from that signal, not from `step`.
+// CHUNKS vs TURNS (revised for #108). `agent_message_chunk` and
+// `agent_thought_chunk` updates are emitted immediately as `step` events with
+// `payload.kind:'chunk'` (so a live dashboard still ticks, and the raw chunks
+// stay as provenance) and are ALSO buffered into a SEGMENT: a contiguous run
+// of one chunk kind. A segment is flushed as exactly ONE canonical `message`
+// (role assistant; `reasoning: true` for thought chunks, the spelling codex
+// already uses) on a change of chunk kind, on the first `tool_call` /
+// `tool_call_chunk` announcement, on the `metadata` frame carrying
+// `meteringUsage`, on `runFinished` / a `session/prompt` result, and on
+// `flush()`. So a turn yields one message per text segment, NOT one message
+// holding the whole response: the final message holds only the LAST segment,
+// and no text is ever emitted twice. The run's whole assistant text (message
+// chunks only) is `state().messageText`. A whitespace-only segment emits no
+// message. Every `step` this module emits carries
+// `payload.countsAsTurn === false`; `state().turns` increments ONLY on a native
+// turn terminator (`runFinished` / prompt result), never on a chunk, a message,
+// a vendor notification or a metadata frame. The driver must count turns from
+// that signal, not from `step` or `message`.
+//
+// DERIVED REQUEST SPANS (#108, ACP transport only). ACP carries no
+// request-start/end signal, so the normalizer brackets each model request
+// approximately: `model_call` start at the first non-empty chunk after a tool
+// announcement (or run start), end at the next tool announcement, the
+// metering `metadata` frame, the turn terminator or `flush()`. Both events
+// carry `provenance: 'estimated'` and NEVER `usage` or `outputTokens`, so
+// nothing bills or sums them; `deriveLatency` (src/core/latency.ts) excludes
+// them from TTFT and model-call latency because their start is the first
+// output, not the request. A request that streams no text (it goes straight
+// to a tool call) gets no span. The headless transport emits none: there
+// `KiroModelCallTracker` (src/adapters/kiro.ts) already brackets the first
+// request, and two producers would double the spans.
 //
 // USAGE. `metadata.meteringUsage` is CUMULATIVE across the run: one array
 // entry per model call so far, so credits = sum of the LATEST array — never a
@@ -114,9 +135,10 @@ export interface KiroNormalizer {
   pushHeadlessLine(line: string): CanonicalEvent[];
   pushAcpMessage(msg: unknown): CanonicalEvent[];
   /**
-   * End of stream: emit anything still buffered (deferred tool starts). Call
-   * once when the transport closes; a normal run has already flushed on its
-   * terminator, so this returns [] then.
+   * End of stream: emit anything still buffered (deferred tool starts, the
+   * open text segment, the open derived span). Call once when the transport
+   * closes; a normal run has already flushed on its terminator, so this
+   * returns [] then.
    */
   flush(): CanonicalEvent[];
   state(): KiroNormalizerState;
@@ -274,7 +296,12 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
   let contextUsagePercentage: number | undefined;
   let turns = 0;
   let messageText = '';
-  let pendingText = '';
+  /** The open coalescing segment (#108): one chunk kind, its text so far. */
+  let segKind: 'message' | 'reasoning' | null = null;
+  let segText = '';
+  /** The open derived request span (ACP only, #108). */
+  let openSpanId: string | null = null;
+  let spanCount = 0;
 
   function vendorStep(kind: string, raw: unknown, extra: Record<string, unknown> = {}): CanonicalEvent {
     return { type: 'step', payload: { kind, transport, countsAsTurn: false, ...extra, raw } };
@@ -289,11 +316,44 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
     }
   }
 
-  /** Flush the buffered chunk text as exactly one `message` event, if any. */
+  /**
+   * Flush the open segment as ONE canonical `message` (#108): assistant text,
+   * or `reasoning: true` for thought chunks (the codex spelling). A
+   * whitespace-only segment is dropped — the raw chunk steps still hold it.
+   */
   function flushMessage(out: CanonicalEvent[]): void {
-    if (pendingText === '') return;
-    out.push({ type: 'message', role: 'assistant', text: pendingText });
-    pendingText = '';
+    const kind = segKind;
+    const text = segText;
+    segKind = null;
+    segText = '';
+    if (kind === null || text.trim() === '') return;
+    out.push({
+      type: 'message',
+      role: 'assistant',
+      text,
+      ...(kind === 'reasoning' ? { reasoning: true } : {}),
+    });
+  }
+
+  /** Open a derived request span at the first chunk of a request (ACP only). */
+  function openSpan(out: CanonicalEvent[]): void {
+    if (transport !== 'acp' || openSpanId !== null) return;
+    spanCount += 1;
+    openSpanId = `kiro-acp-est-${spanCount}`;
+    out.push({ type: 'model_call', phase: 'start', callId: openSpanId, provenance: 'estimated' });
+  }
+
+  /** Close the open derived span. Never carries usage or outputTokens. */
+  function closeSpan(out: CanonicalEvent[]): void {
+    if (openSpanId === null) return;
+    out.push({ type: 'model_call', phase: 'end', callId: openSpanId, provenance: 'estimated' });
+    openSpanId = null;
+  }
+
+  /** End of a model request's output: segment first, then the span. */
+  function endRequest(out: CanonicalEvent[]): void {
+    flushMessage(out);
+    closeSpan(out);
   }
 
   function handleMetadata(params: Record<string, unknown>, out: CanonicalEvent[]): void {
@@ -306,9 +366,9 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
       out.push(vendorStep('metadata', params));
       return;
     }
-    // A metering-bearing metadata frame is the turn's final frame: flush the
-    // coalesced message BEFORE the usage event so consumers see text→usage.
-    flushMessage(out);
+    // A metering-bearing metadata frame closes the request: flush the open
+    // segment and span BEFORE the usage event so consumers see text→usage.
+    endRequest(out);
     const previous = creditsLatest ?? 0;
     if (creditsLatest !== null && sum === creditsLatest) {
       // Same cumulative snapshot re-delivered: no charge, no event.
@@ -353,15 +413,27 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
         // The model is talking again: no rich follow-up is coming for a
         // still-deferred tool start, so emit it now (event-driven fallback).
         flushPendingTools(out);
-        if (kind === 'agent_message_chunk') {
-          pendingText += text;
-          messageText += text;
+        if (text !== '') {
+          // First output of a request opens its derived span (ACP only).
+          openSpan(out);
+          const want = kind === 'agent_thought_chunk' ? 'reasoning' : 'message';
+          // A change of kind closes the segment: thoughts and answer never
+          // share a canonical message.
+          if (segKind !== null && segKind !== want) flushMessage(out);
+          segKind = want;
+          segText += text;
         }
+        if (kind === 'agent_message_chunk') messageText += text;
         out.push(vendorStep('chunk', update, { text, chunkKind: kind }));
         return;
       }
       case 'tool_call':
       case 'tool_call_chunk': {
+        // The model chose a tool: its output for this request is over. Flush
+        // the segment and close the span BEFORE anything tool-related, so the
+        // message precedes the tool start in every consumer (the feed's
+        // in-place confirm depends on that order).
+        endRequest(out);
         const id = typeof update.toolCallId === 'string' ? update.toolCallId : '';
         if (id === '') {
           // No id to merge on: emit as-is (nothing could ever refine it).
@@ -493,7 +565,7 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
   function handleTerminal(data: Record<string, unknown>, out: CanonicalEvent[]): void {
     captureSession(data.sessionId, out);
     flushPendingTools(out);
-    flushMessage(out);
+    endRequest(out);
     if (typeof data.status === 'string') status = data.status;
     if (typeof data.stopReason === 'string') stopReason = data.stopReason;
     turns += 1;
@@ -633,7 +705,7 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
   function flush(): CanonicalEvent[] {
     const out: CanonicalEvent[] = [];
     flushPendingTools(out);
-    flushMessage(out);
+    endRequest(out);
     return out;
   }
 

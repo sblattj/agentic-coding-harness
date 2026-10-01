@@ -547,15 +547,26 @@ export function houseEventToCore(agent: string, event: HouseEventLike): CoreAgen
       };
     }
     case 'model_call': {
-      const ext = event as { type: 'model_call'; phase: 'start' | 'end'; callId: string; model?: string; outputTokens?: number };
+      const ext = event as {
+        type: 'model_call';
+        phase: 'start' | 'end';
+        callId: string;
+        model?: string;
+        outputTokens?: number;
+        provenance?: 'estimated';
+      };
       const model = ext.model !== undefined ? { model: ext.model } : {};
-      if (ext.phase === 'start') return { type: 'model_call_start', agent, callId: ext.callId, ...model, timestamp };
+      const provenance = ext.provenance !== undefined ? { provenance: ext.provenance } : {};
+      if (ext.phase === 'start') {
+        return { type: 'model_call_start', agent, callId: ext.callId, ...model, ...provenance, timestamp };
+      }
       return {
         type: 'model_call_end',
         agent,
         callId: ext.callId,
         ...model,
         ...(ext.outputTokens !== undefined ? { outputTokens: ext.outputTokens } : {}),
+        ...provenance,
         timestamp,
       };
     }

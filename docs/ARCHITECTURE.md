@@ -58,11 +58,11 @@ canonical events; it never fires for childless transports (kiro ACP, opencode pr
 ### Canonical events
 
 `CanonicalEvent` (`adapters/types.ts`) is what adapters emit:
-`session | message(role,text,reasoning?) | tool(phase start|result, toolName, toolCallId, status?) | usage{tokens: CanonicalTokenRecord} | progress | error`.
+`session | message(role,text,reasoning?) | tool(phase start|result, toolName, toolCallId, status?, title?, locations?) | usage{tokens: CanonicalTokenRecord} | model_call(phase, callId, model?, outputTokens?, provenance?) | progress | error`.
 
 `AgentEvent` (`core/types.ts`) is the core/domain event model the emitters consume:
-`session_start | message{source,content,reasoningContent?} | model_call_start | model_call_end{usage?}
-| tool_call{toolCallId,functionName,arguments} | tool_result{toolCallId,content,isError?} | usage{usage} | session_end`.
+`session_start | message{source,content,reasoningContent?} | model_call_start{provenance?} | model_call_end{usage?,provenance?}
+| tool_call{toolCallId,functionName,arguments,title?,locations?} | tool_result{toolCallId,content,isError?} | usage{usage} | session_end`.
 Both vocabularies are members of the single `AgentEvent` union in `core/types.ts` (the former
 split is closed — see §9).
 
@@ -136,7 +136,7 @@ emitters sum `model_call_end.usage` alongside `usage` events, and the run totals
 | codex | first request of each turn | `turn.started` → first surfaced item (completed reasoning/message, or a tool's `item.started`); end after that tool start, else `turn.completed` | first completed item | no (usage is per turn, across requests) |
 | gemini | every call | `init`, user message or last `tool_result` → first assistant message / `tool_use`; end = last output before the next `tool_result` or `result` | first streamed chunk | no (`result.stats` is run-level) |
 | kiro (headless) | first request of the run | `runStarted` → first `agent_message_chunk`/`agent_thought_chunk` step (counted as output); end after the first tool start, else the last chunk | first streamed chunk | no (no token counts) |
-| kiro (ACP) | none | no request start on the stream | — | — |
+| kiro (ACP) | every request that streams text, **estimated** (`provenance: 'estimated'`, #108); excluded from latency | none on the stream. The adapter derives a span from the first chunk after a tool announcement (or run start) to the next tool announcement, metering frame or end of turn. The span starts AT the first output, so it would give a fake ~0 ms TTFT | — (excluded) | — |
 | opencode | none | `step_start` is emitted after its text has begun (recorded 1.18.30: text `time.start` 1789014419194 < `step_start` 1789014419196, 28 ms step window for a 67k-token call), so the stream holds no request timing | — | — |
 
 A response whose request start was never observed (a claude sub-agent's first call, gemini output
@@ -144,6 +144,17 @@ before any `init`) is left without boundaries rather than given an invented star
 kiro bracket only the first request because their streams cannot tell a follow-up request from
 a second tool call of the same response. Every agent except opencode also gets the per-tool
 breakdown; opencode emits no tool events, so it gets no latency at all.
+
+Kiro ACP's derived spans (#108) exist only to give the span view and turn structure. They carry
+`provenance: 'estimated'` on both `model_call_start` and `model_call_end` and never carry `usage`
+or `outputTokens`, so they reach no billing or token series. `deriveLatency` skips them outright,
+for TTFT, `modelCalls` and throughput alike. The web span view names them `llm call (estimated)`
+and the `ach run` live stream adds `estimated` to their `model` row. A request that goes straight
+to a tool call without streaming text gets no span. The kiro normalizer also coalesces each
+contiguous run of same-kind chunks into one canonical `message` (`reasoning: true` for thought
+chunks). This happens on both transports, so a kiro turn has one message per text segment
+between tools. `deriveLatency` uses output events only to set a call's FIRST output time, so a
+chunk step and its coalesced message never count twice.
 
 `core/warehouse.ts` (`ach archive`, #79) snapshots machine transcripts (the same sources
 `scanAll` walks), `<stateDir>/raw` transcripts and `<stateDir>/runs` records into

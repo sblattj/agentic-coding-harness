@@ -12,8 +12,10 @@ import {
 import type { AgentEvent, CanonicalEvent } from '../src/core/types.js';
 import { houseEventToCore } from '../src/adapters/shared.ts';
 import { deriveLatency } from '../src/core/latency.ts';
-import { deriveSpans as deriveWebSpans } from '../src/web/derive.ts';
+import { deriveMetrics, deriveSpans as deriveWebSpans } from '../src/web/derive.ts';
 import { deriveSpans as deriveOtelSpans } from '../src/emitters/otel.ts';
+import { AtifWriter } from '../src/emitters/atif.ts';
+import { formatEventLine } from '../src/cli/lib.ts';
 
 const fixture = (name: string): string =>
   readFileSync(fileURLToPath(new URL(`./fixtures/kiro/${name}`, import.meta.url)), 'utf8');
@@ -45,6 +47,13 @@ function stepKind(ev: CanonicalEvent): string {
   return payload.kind ?? '';
 }
 
+/** `step:<kind>`, `model_call:<phase>`, else the event type. */
+function seqLabel(e: CanonicalEvent): string {
+  if (e.type === 'step') return `step:${stepKind(e)}`;
+  if (e.type === 'model_call') return `model_call:${e.phase}`;
+  return e.type;
+}
+
 describe('kiro-events: headless stream-json fixture', () => {
   const replay = (): { events: CanonicalEvent[]; norm: ReturnType<typeof createKiroNormalizer> } => {
     const norm = createKiroNormalizer({ transport: 'headless' });
@@ -56,7 +65,7 @@ describe('kiro-events: headless stream-json fixture', () => {
   it('normalizes the whole fixture into the exact event sequence', () => {
     const { events } = replay();
     assert.deepEqual(
-      events.map((e) => (e.type === 'step' ? `step:${stepKind(e)}` : e.type)),
+      events.map(seqLabel),
       [
         'step:runStarted',
         'session',
@@ -166,7 +175,7 @@ describe('kiro-events: ACP prompt fixture', () => {
   it('normalizes the whole fixture into the exact event sequence', () => {
     const { events } = replay();
     assert.deepEqual(
-      events.map((e) => (e.type === 'step' ? `step:${stepKind(e)}` : e.type)),
+      events.map(seqLabel),
       [
         'step:vendor',
         'step:vendor',
@@ -184,9 +193,13 @@ describe('kiro-events: ACP prompt fixture', () => {
         'tool',
         'step:toolCallDuplicate',
         'tool',
+        // #108: the first chunk after the tool result opens a derived span;
+        // the metering frame flushes the segment, then closes the span.
+        'model_call:start',
         'step:chunk',
         'step:metadata',
         'message',
+        'model_call:end',
         'usage',
         'step:runFinished',
       ],
@@ -614,3 +627,176 @@ describe('kiro-events: two-message ACP tool_call (#107)', () => {
     assert.equal(otel.children.filter((s) => s.role === 'tool').length, 2);
   });
 });
+
+/** Bridge house events to core events with deterministic, increasing timestamps. */
+function toCore(events: CanonicalEvent[], t0 = 1_800_000_000_000): AgentEvent[] {
+  const out: AgentEvent[] = [];
+  let t = t0;
+  for (const e of events) {
+    const core = houseEventToCore('kiro', e);
+    if (core) out.push({ ...core, timestamp: (t += 10) } as AgentEvent);
+  }
+  return out;
+}
+
+type MsgEv = Extract<CanonicalEvent, { type: 'message' }>;
+type CallEv = Extract<CanonicalEvent, { type: 'model_call' }>;
+
+describe('kiro-events: chunk coalescing and derived request spans (#108)', () => {
+  it('text -> tool -> text -> tool -> text yields 3 assistant messages, one per segment', () => {
+    const { events, norm } = replayAcp(SYNTH);
+    const messages = events.filter((e): e is MsgEv => e.type === 'message');
+    const answers = messages.filter((m) => m.reasoning !== true);
+    assert.deepEqual(
+      answers.map((m) => m.text),
+      ["I'll read notes.md.", 'The notes say hello. Now listing the directory.', 'Done: one file.'],
+    );
+    for (const m of answers) assert.equal(m.role, 'assistant');
+    // No text is emitted twice: the final message holds ONLY the last segment,
+    // and the segments concatenate back to the run's whole text.
+    assert.equal(answers.map((m) => m.text).join(''), norm.state().messageText);
+    for (const seg of answers) {
+      assert.equal(answers.filter((m) => m.text.includes(seg.text)).length, 1, `"${seg.text}" appears twice`);
+    }
+  });
+
+  it('thought chunks coalesce into one reasoning message, separate from the answer', () => {
+    const { events } = replayAcp(SYNTH);
+    const reasoning = events.filter((e): e is MsgEv => e.type === 'message' && e.reasoning === true);
+    assert.deepEqual(reasoning.map((m) => m.text), ['Let me look at the file.']);
+    const firstAnswer = events.findIndex((e) => e.type === 'message' && e.reasoning !== true);
+    assert.ok(events.indexOf(reasoning[0]!) < firstAnswer, 'the kind change flushes the reasoning first');
+  });
+
+  it('keeps every raw chunk step', () => {
+    const { events } = replayAcp(SYNTH);
+    const chunks = events.filter((e) => e.type === 'step' && stepKind(e) === 'chunk');
+    const rawChunks = serverLines(SYNTH).filter((l) => /"sessionUpdate":"agent_(message|thought)_chunk"/.test(l));
+    assert.equal(rawChunks.length, 8);
+    assert.equal(chunks.length, rawChunks.length);
+  });
+
+  it('each segment message is emitted before the tool announcement that ends it', () => {
+    const { events } = replayAcp(SYNTH);
+    const labels = events.map(seqLabel);
+    const pendings = labels.flatMap((l, i) => (l === 'step:toolCallPending' ? [i] : []));
+    assert.equal(pendings.length, 2);
+    for (const at of pendings) {
+      assert.deepEqual(labels.slice(at - 2, at), ['message', 'model_call:end'], `before ${at}: ${labels.join(',')}`);
+    }
+  });
+
+  it('ACP: three derived spans, flagged estimated, with no usage and no outputTokens', () => {
+    const { events } = replayAcp(SYNTH);
+    const calls = events.filter((e): e is CallEv => e.type === 'model_call');
+    assert.deepEqual(
+      calls.map((c) => `${c.phase}:${c.callId}`),
+      [
+        'start:kiro-acp-est-1',
+        'end:kiro-acp-est-1',
+        'start:kiro-acp-est-2',
+        'end:kiro-acp-est-2',
+        'start:kiro-acp-est-3',
+        'end:kiro-acp-est-3',
+      ],
+    );
+    for (const c of calls) {
+      assert.equal(c.provenance, 'estimated');
+      assert.equal('outputTokens' in c, false);
+      assert.equal('usage' in c, false);
+    }
+    const core = toCore(events).filter((e) => e.type === 'model_call_start' || e.type === 'model_call_end');
+    assert.equal(core.length, 6);
+    for (const c of core) {
+      assert.equal(c.provenance, 'estimated', 'the flag survives the core bridge');
+      assert.equal(c.usage, undefined);
+    }
+  });
+
+  it('headless emits NO derived spans (KiroModelCallTracker owns headless boundaries)', () => {
+    const norm = createKiroNormalizer({ transport: 'headless' });
+    const events: CanonicalEvent[] = [];
+    for (const line of lines('headless-stream-json-2.21.2.jsonl')) events.push(...norm.pushHeadlessLine(line));
+    events.push(...norm.flush());
+    assert.equal(events.filter((e) => e.type === 'model_call').length, 0);
+  });
+
+  it('derived spans never feed billing: metrics, ATIF and otel are identical with and without them', () => {
+    const { events } = replayAcp(SYNTH);
+    const core = toCore(events);
+    const without = core.filter((e) => e.type !== 'model_call_start' && e.type !== 'model_call_end');
+    assert.equal(core.length - without.length, 6);
+    assert.deepEqual(deriveMetrics(core).map(stripT), deriveMetrics(without).map(stripT));
+    const atifWith = AtifWriter.fromEvents(core, { agent: 'kiro' }).toTrajectory().final_metrics;
+    const atifWithout = AtifWriter.fromEvents(without, { agent: 'kiro' }).toTrajectory().final_metrics;
+    assert.deepEqual(atifWith, atifWithout);
+    // #107: ATIF files exactly one tool call per toolCallId (2 in the fixture), never the announcement duplicate.
+    const atifSteps = AtifWriter.fromEvents(core, { agent: 'kiro' }).toTrajectory().steps;
+    const atifToolCalls = atifSteps.reduce((n, s) => n + ((s as { tool_calls?: unknown[] }).tool_calls?.length ?? 0), 0);
+    assert.equal(atifToolCalls, 2);
+    const otelOpts = { agentName: 'kiro', model: 'unknown' } as Parameters<typeof deriveOtelSpans>[1];
+    const chat = (evs: AgentEvent[]): number => deriveOtelSpans(evs, otelOpts).children.filter((s) => s.role === 'chat').length;
+    assert.equal(chat(core), 1, 'only the one native usage event becomes a chat span');
+    assert.equal(chat(core), chat(without));
+  });
+
+  it('latency: estimated spans are excluded from TTFT and model-call latency (control: unflagged spans are measured)', () => {
+    const { events } = replayAcp(SYNTH);
+    const core = toCore(events);
+    const latency = deriveLatency(core);
+    assert.equal(latency.ttft, null);
+    assert.equal(latency.modelCalls, null);
+    assert.equal(latency.outputTokensPerSec, null);
+    // Control: the same stream with the flag stripped IS measured, so the
+    // null above comes from the exclusion, not from missing data.
+    const unflagged = core.map((e) => {
+      if (e.type !== 'model_call_start' && e.type !== 'model_call_end') return e;
+      const { provenance: _drop, ...rest } = e as Record<string, unknown>;
+      return rest as AgentEvent;
+    });
+    const measured = deriveLatency(unflagged);
+    assert.equal(measured.ttft?.count, 3);
+    assert.equal(measured.modelCalls?.count, 3);
+  });
+
+  it('latency: chunk steps and the coalesced message never double a TTFT sample', () => {
+    // Native-style (unflagged) boundary around a chunk AND its coalesced message.
+    const base = 1_800_000_000_000;
+    const ev = (o: Record<string, unknown>): AgentEvent => ({ agent: 'kiro', ...o }) as AgentEvent;
+    const latency = deriveLatency([
+      ev({ type: 'model_call_start', callId: 'c', timestamp: base }),
+      ev({ type: 'step', data: { kind: 'chunk', text: 'hi' }, timestamp: base + 100 }),
+      ev({ type: 'message', source: 'agent', content: 'hi', timestamp: base + 150 }),
+      ev({ type: 'model_call_end', callId: 'c', timestamp: base + 200 }),
+    ]);
+    assert.equal(latency.ttft?.count, 1);
+    assert.equal(latency.ttft?.avgMs, 100, 'first output is the chunk, not the later message');
+  });
+
+  it('the CLI live stream and the web span view label derived spans as estimated', () => {
+    const { events } = replayAcp(SYNTH);
+    const core = toCore(events);
+    const starts = new Map<string, number>();
+    const lines = core.map((e) => formatEventLine(e, starts)).filter((l): l is string => l !== null);
+    const modelLines = lines.filter((l) => / model /.test(l));
+    assert.equal(modelLines.length, 3);
+    for (const l of modelLines) assert.match(l, /estimated/);
+    const spans = deriveWebSpans(core).filter((s) => s.kind === 'model');
+    assert.equal(spans.length, 3);
+    for (const s of spans) assert.equal(s.name, 'llm call (estimated)');
+  });
+
+  it('flush() at end of stream emits the open segment and closes the open span exactly once', () => {
+    const norm = createKiroNormalizer({ transport: 'acp' });
+    norm.pushAcpMessage(acpUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial' } }));
+    const tail = norm.flush();
+    assert.deepEqual(tail.map(seqLabel), ['message', 'model_call:end']);
+    assert.equal((tail[0] as MsgEv).text, 'partial');
+    assert.deepEqual(norm.flush(), []);
+  });
+});
+
+function stripT<T extends { tMs: number }>(p: T): Omit<T, 'tMs'> {
+  const { tMs: _t, ...rest } = p;
+  return rest;
+}

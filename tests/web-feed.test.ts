@@ -463,4 +463,49 @@ describe('HarnessFeed kiro ACP pipeline', () => {
     assert.ok(inputs.some((t) => t.includes('/tmp/ws/notes.md')), `read input missing: ${inputs.join(' | ')}`);
     assert.ok(inputs.some((t) => t.includes('ls -1')), `shell input missing: ${inputs.join(' | ')}`);
   });
+
+  it('coalesced messages confirm their streamed rows: every text segment is drawn exactly once (#108)', () => {
+    const { container, feed } = mount();
+    const events = kiroAcpCoreEvents('acp-interleaved-synth-2.26.1.jsonl');
+    // The canonical stream really does carry the text twice (chunks + message).
+    assert.equal(events.filter((e) => e.type === 'message').length, 4);
+    feed.append(events);
+    assert.deepEqual(texts(container, 'hf-reason'), ['Let me look at the file.']);
+    assert.deepEqual(texts(container, 'hf-msg-agent'), [
+      "I'll read notes.md.",
+      'The notes say hello. Now listing the directory.',
+      'Done: one file.',
+    ]);
+    // reasoning, text, card, text, card, text, credits usage line, terminal status
+    assert.equal(withClass(container, 'hf-card').length, 2);
+    assert.equal(withClass(container, 'hf-status').length, 1);
+    assert.equal(withClass(container, 'hf-row').length, 8);
+  });
+
+  it('a reasoning message confirming streamed thought chunks does not draw a second row (#108)', () => {
+    const { container, feed } = mount();
+    feed.append([
+      thoughtChunk('The user asks ', T0),
+      thoughtChunk('about Rayleigh scattering.', T0 + 1),
+      {
+        type: 'message',
+        agent: 'kiro',
+        source: 'agent',
+        content: 'The user asks about Rayleigh scattering.',
+        reasoning: true,
+        timestamp: T0 + 2,
+      },
+      msgChunk('Sunlight scatters.', T0 + 3),
+    ]);
+    assert.deepEqual(texts(container, 'hf-reason'), ['The user asks about Rayleigh scattering.']);
+    assert.deepEqual(texts(container, 'hf-msg-agent'), ['Sunlight scatters.']);
+    assert.equal(withClass(container, 'hf-row').length, 2);
+  });
+
+  it('a lone reasoning message (no live block) renders dim, never as the answer', () => {
+    const { container, feed } = mount();
+    feed.append([{ type: 'message', agent: 'codex', source: 'agent', content: 'thinking...', reasoning: true, timestamp: T0 }]);
+    assert.deepEqual(texts(container, 'hf-reason'), ['thinking...']);
+    assert.deepEqual(texts(container, 'hf-msg-agent'), []);
+  });
 });
