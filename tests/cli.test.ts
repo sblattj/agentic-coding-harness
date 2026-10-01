@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { extraArgsFromValues, formatSummary, joinOptionValues, wantsHelp } from "../src/cli/lib.ts";
+import { extraArgsFromValues, formatSummary, joinOptionValues, orderedExtraArgs, wantsHelp } from "../src/cli/lib.ts";
 
 const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
 
@@ -654,6 +654,43 @@ describe("harness cli: subcommand help + argv preprocessing (#101/#104)", () => 
     assert.deepEqual(argv, ["p", "--a", "1", "--b"]);
   });
 
+  test("--extra-arg passes a space-containing value as ONE verbatim token", async () => {
+    const argv = await runFakeEcho(["--extra-arg", "-c", "--extra-arg", 'developer_instructions="a b c"', "p"]);
+    assert.deepEqual(argv, ["p", "-c", 'developer_instructions="a b c"']);
+  });
+
+  test("--extra-arg space form accepts a dash-leading value; = form works too", async () => {
+    const argv = await runFakeEcho(["--extra-arg", "--effort high", "--extra-arg=--x y", "p"]);
+    assert.deepEqual(argv, ["p", "--effort high", "--x y"]);
+  });
+
+  test("--extra-arg and --extra-args reach the agent in command-line order", async () => {
+    const argv = await runFakeEcho(["--extra-arg", "-c", "--extra-arg", 'developer_instructions="a b"', "--extra-args", "-c x=1", "--extra-arg", "tail one", "p"]);
+    assert.deepEqual(argv, ["p", "-c", 'developer_instructions="a b"', "-c", "x=1", "tail one"]);
+  });
+
+  test("a trailing --extra-arg with no value is a one-line usage error", () => {
+    const r = runCli(["run", "--agent", "null", "--extra-arg"], {});
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /^harness: Option '--extra-arg <value>' argument missing/);
+    assert.ok(!r.stderr.includes("unexpected error"), r.stderr);
+  });
+
+  test("run --help documents --extra-args and --extra-arg", () => {
+    const r = runCli(["run", "--help"], {});
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /--extra-args /);
+    assert.match(r.stdout, /--extra-arg /);
+    assert.match(r.stdout, /verbatim/);
+  });
+
+  test("preflight --help documents both extra-arg flags", () => {
+    const r = runCli(["preflight", "--help"], {});
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /--extra-args/);
+    assert.match(r.stdout, /--extra-arg /);
+  });
+
   test("#104 a trailing --extra-args with no value is a one-line usage error", () => {
     const r = runCli(["run", "--agent", "null", "--extra-args"], {});
     assert.equal(r.code, 1);
@@ -689,6 +726,31 @@ describe("argv preprocessing helpers (lib.ts)", () => {
 
   test("joinOptionValues: a trailing flag with no value is left for parseArgs to reject", () => {
     assert.deepEqual(joinOptionValues(["--extra-args"], ["extra-args"]), ["--extra-args"]);
+  });
+
+  test("joinOptionValues: several flags; --help, -- and dash values as --extra-arg value", () => {
+    const f = ["extra-args", "extra-arg"];
+    assert.deepEqual(joinOptionValues(["--extra-arg", "--help", "p"], f), ["--extra-arg=--help", "p"]);
+    assert.deepEqual(joinOptionValues(["--extra-arg", "--", "p"], f), ["--extra-arg=--", "p"]);
+    assert.deepEqual(joinOptionValues(["--extra-arg", "-c", "--extra-args", "a b"], f), ["--extra-arg=-c", "--extra-args=a b"]);
+    assert.deepEqual(joinOptionValues(["p", "--", "--extra-arg", "x"], f), ["p", "--", "--extra-arg", "x"]);
+    assert.deepEqual(joinOptionValues(["--extra-arg"], f), ["--extra-arg"]);
+  });
+
+  test("orderedExtraArgs: command-line order, --extra-args split, --extra-arg verbatim", () => {
+    const opt = (name: string, value: string) => ({ kind: "option", name, value });
+    assert.deepEqual(
+      orderedExtraArgs([opt("extra-arg", "-c"), opt("extra-arg", 'k="a b"'), opt("extra-args", "-c x=1")]),
+      ["-c", 'k="a b"', "-c", "x=1"],
+    );
+    assert.deepEqual(orderedExtraArgs([opt("extra-args", "a  b"), opt("extra-arg", "c d")]), ["a", "b", "c d"]);
+  });
+
+  test("orderedExtraArgs: ignores other tokens; undefined when neither flag appeared", () => {
+    assert.equal(orderedExtraArgs(undefined), undefined);
+    assert.equal(orderedExtraArgs([]), undefined);
+    assert.equal(orderedExtraArgs([{ kind: "option", name: "agent", value: "null" }, { kind: "positional", value: "p" }]), undefined);
+    assert.deepEqual(orderedExtraArgs([{ kind: "positional", value: "x" }, { kind: "option", name: "extra-arg", value: "" }]), [""]);
   });
 
   test("wantsHelp: -h/--help before -- only", () => {
