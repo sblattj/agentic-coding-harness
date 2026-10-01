@@ -111,7 +111,7 @@ export function orderedExtraArgs(tokens: readonly ArgToken[] | undefined): strin
   return seen ? out : undefined;
 }
 
-const pad2 =(n: number) => String(n).padStart(2, "0");
+const pad2 = (n: number) => String(n).padStart(2, "0");
 
 function clock(ts: number): string {
   const d = new Date(ts);
