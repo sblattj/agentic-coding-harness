@@ -2,6 +2,12 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [Unreleased]
+
+### Fixed
+
+- Kiro ACP tool calls are no longer recorded with empty arguments (#107). kiro-cli announces each tool call twice for one `toolCallId`: first with the id only, then with `title`, `kind`, `locations[]`, `rawInput` and `_meta.kiro.toolName`. The normalizer now holds back the tool start until `rawInput` arrives and emits ONE `tool_call` per id whose `arguments` are the richest `rawInput` seen, with `title` and `locations` as optional display fields. If the input never arrives, the start is emitted on the first `tool_call_update` for that id (merging its input), on the next streamed chunk, at the end of the turn, or at end of stream. This fallback is driven by events, not timers. Metadata frames between the two announcements do not trigger it. Both raw announcements stay in the transcript as `toolCallPending` / `toolCallDuplicate` steps. The dashboard feed shows the kiro title (for example `Reading notes.md:1`) on the tool card, with the full input in the detail. Tool counts and durations are unchanged: there is still one `tool_call` per id.
+
 ## [0.12.0] - 2026-09-29
 
 ### Added

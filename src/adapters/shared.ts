@@ -155,6 +155,13 @@ export interface JsonlRunConfig {
    * `[warn] failed to set model ...` into a `step` with `payload.kind:'modelAck'`.
    */
   onStderrLine?: (line: string) => CanonicalEvent[] | void;
+  /**
+   * Optional end-of-stdout hook: called once after the last stdout line was
+   * parsed, before the queue closes. A stateful parser returns whatever it
+   * still buffers (kiro's deferred tool starts, #107). A throwing hook never
+   * breaks the run.
+   */
+  onStdoutEnd?: () => CanonicalEvent[] | void;
 }
 
 /**
@@ -333,6 +340,14 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
           queue.push({ type: 'error', message: 'unparseable trailing stdout line' });
         }
       }
+      if (config.onStdoutEnd) {
+        try {
+          const tail = config.onStdoutEnd();
+          if (tail) queue.push(...tail);
+        } catch {
+          /* an end hook must never break the run */
+        }
+      }
     });
 
     const stderrAsm = new LineAssembler();
@@ -506,6 +521,8 @@ export function houseEventToCore(agent: string, event: HouseEventLike): CoreAgen
           toolCallId: event.toolCallId ?? '',
           functionName: event.toolName,
           arguments: (event.input as Record<string, unknown> | string | undefined) ?? '',
+          ...(event.title !== undefined ? { title: event.title } : {}),
+          ...(event.locations !== undefined ? { locations: event.locations } : {}),
           timestamp,
         };
       }

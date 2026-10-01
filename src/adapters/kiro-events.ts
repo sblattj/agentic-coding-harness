@@ -43,6 +43,23 @@
 // `tokens.extra`. The `usage-truth` seat must merge `tokens.extra` through
 // that bridge or the credits never reach the registry.
 //
+// DEFERRED TOOL STARTS (#107). kiro-cli announces a tool call twice for one
+// `toolCallId`: first an id-only `tool_call` (2.26.x; 2.21.2 sends a
+// `tool_call_chunk` with just kind/title), then the rich `tool_call` with
+// `title`, `kind`, `locations[]`, `rawInput` and `_meta.kiro.toolName`. A
+// message WITHOUT `rawInput` therefore does not emit the canonical start: it is
+// kept as a `toolCallPending` step and its fields are buffered. The ONE `tool`
+// start goes out when `rawInput` arrives (the rich follow-up, whose raw object
+// stays as a `toolCallDuplicate` step) or, as fallbacks, on the first
+// `tool_call_update` for that id (whose own rawInput/title/locations are merged
+// first), on the next chunk, on the turn terminator, or on `flush()` at end of
+// stream. The fallback is event-driven — no timers — so it is deterministic.
+// Metadata frames and other tool calls do NOT flush: 2.21.2 puts a
+// `_kiro.dev/metadata` frame between the two announcements. The start carries
+// the richest `rawInput` seen as `input`, plus `title` / `locations` as display
+// metadata. A start whose first message already has `rawInput` is emitted
+// immediately, as before.
+//
 // RAW EVIDENCE. Every emitted `step` keeps the native object verbatim under
 // `payload.raw`, and every `usage` keeps the native `metadata` payload under
 // `tokens.raw`. Nothing is fabricated and nothing is discarded.
@@ -96,7 +113,24 @@ export interface KiroNormalizerState {
 export interface KiroNormalizer {
   pushHeadlessLine(line: string): CanonicalEvent[];
   pushAcpMessage(msg: unknown): CanonicalEvent[];
+  /**
+   * End of stream: emit anything still buffered (deferred tool starts). Call
+   * once when the transport closes; a normal run has already flushed on its
+   * terminator, so this returns [] then.
+   */
+  flush(): CanonicalEvent[];
   state(): KiroNormalizerState;
+}
+
+/** A tool start held back until its input arrives (#107). */
+interface PendingTool {
+  id: string;
+  name: string;
+  /** True once `_meta.kiro.toolName` named the tool (beats kind/title). */
+  nameFromMeta: boolean;
+  input: unknown;
+  title?: string;
+  locations?: unknown[];
 }
 
 export interface KiroStderrModelAck {
@@ -128,6 +162,34 @@ function str(o: Record<string, unknown>, keys: string[]): string | undefined {
     if (typeof v === 'string' && v !== '') return v;
   }
   return undefined;
+}
+
+function hasValue(v: unknown): boolean {
+  return v !== undefined && v !== null;
+}
+
+/** An input that carries nothing: absent, null, '' or {}. */
+function isEmptyInput(v: unknown): boolean {
+  return !hasValue(v) || v === '' || (isRecord(v) && Object.keys(v).length === 0);
+}
+
+/**
+ * The richer of two `rawInput` values seen for one toolCallId: a present value
+ * beats an absent one, a non-empty one beats an empty one, and between two
+ * non-empty values the larger serialization wins (ties: the later one).
+ */
+function richerInput(current: unknown, next: unknown): unknown {
+  if (!hasValue(next)) return current;
+  if (!hasValue(current) || isEmptyInput(current)) return next;
+  if (isEmptyInput(next)) return current;
+  const size = (v: unknown): number => {
+    try {
+      return JSON.stringify(v)?.length ?? 0;
+    } catch {
+      return 0;
+    }
+  };
+  return size(next) >= size(current) ? next : current;
 }
 
 function num(v: unknown): number {
@@ -201,6 +263,7 @@ export function parseKiroStderrNotice(line: string): KiroStderrNotice | null {
 export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): KiroNormalizer {
   const transport: KiroTransport = opts.transport ?? 'headless';
   const toolCalls = new Map<string, KiroToolCallState>();
+  const pendingTools = new Map<string, PendingTool>();
 
   let nativeSessionId: string | undefined;
   let sessionEmitted = false;
@@ -287,6 +350,9 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
       case 'agent_thought_chunk': {
         const content = isRecord(update.content) ? update.content : undefined;
         const text = content && typeof content.text === 'string' ? content.text : '';
+        // The model is talking again: no rich follow-up is coming for a
+        // still-deferred tool start, so emit it now (event-driven fallback).
+        flushPendingTools(out);
         if (kind === 'agent_message_chunk') {
           pendingText += text;
           messageText += text;
@@ -297,30 +363,51 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
       case 'tool_call':
       case 'tool_call_chunk': {
         const id = typeof update.toolCallId === 'string' ? update.toolCallId : '';
-        const name = toolName(update);
-        const existing = id !== '' ? toolCalls.get(id) : undefined;
-        if (existing) {
-          // Dedupe: one `tool` start per toolCallId. A later, richer start
-          // (the one carrying _meta.kiro.toolName) only refines the state.
+        if (id === '') {
+          // No id to merge on: emit as-is (nothing could ever refine it).
+          const p = newPendingTool('');
+          mergePendingTool(p, update);
+          out.push(toolStartEvent(p));
+          return;
+        }
+        const existing = toolCalls.get(id);
+        if (existing && existing.startedSeen) {
+          // The start already went out (it carried rawInput): a later message
+          // for the same id only refines the name and stays as raw evidence.
+          const name = toolName(update);
           if (name !== 'unknown') existing.name = name;
           out.push(vendorStep('toolCallDuplicate', update, { toolCallId: id }));
           return;
         }
-        if (id !== '') {
-          toolCalls.set(id, { name, status: 'started', startedSeen: true, resultSeen: false });
+        const pending = pendingTools.get(id);
+        const p = pending ?? newPendingTool(id);
+        mergePendingTool(p, update);
+        if (existing) existing.name = p.name;
+        else toolCalls.set(id, { name: p.name, status: 'started', startedSeen: false, resultSeen: false });
+        if (hasValue(p.input)) {
+          // Rich message (rawInput present): the ONE canonical start (#107).
+          emitToolStart(p, out);
+          if (pending) out.push(vendorStep('toolCallDuplicate', update, { toolCallId: id }));
+          return;
         }
-        out.push({
-          type: 'tool',
-          toolName: name,
-          phase: 'start',
-          ...(id !== '' ? { toolCallId: id } : {}),
-          input: update.rawInput ?? null,
-        });
+        // Id-only (or input-less) announcement: defer the start until the
+        // rich follow-up or the first tool_call_update (see DEFERRED TOOL
+        // STARTS in the header). The raw message is kept as a step.
+        pendingTools.set(id, p);
+        out.push(vendorStep(pending ? 'toolCallDuplicate' : 'toolCallPending', update, { toolCallId: id }));
         return;
       }
       case 'tool_call_update': {
         const id = typeof update.toolCallId === 'string' ? update.toolCallId : '';
         const st = typeof update.status === 'string' ? update.status : '';
+        const pending = id !== '' ? pendingTools.get(id) : undefined;
+        if (pending) {
+          // First update for a deferred start: it may carry the input too.
+          mergePendingTool(pending, update);
+          const known = toolCalls.get(id);
+          if (known) known.name = pending.name;
+          emitToolStart(pending, out);
+        }
         const entry = id !== '' ? toolCalls.get(id) : undefined;
         if (st !== 'completed' && st !== 'failed') {
           if (entry) entry.status = st === 'in_progress' ? 'in_progress' : entry.status;
@@ -348,16 +435,64 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
     }
   }
 
-  function toolName(update: Record<string, unknown>): string {
+  function metaToolName(update: Record<string, unknown>): string | undefined {
     const meta = isRecord(update._meta) ? update._meta : undefined;
     const kiro = meta && isRecord(meta.kiro) ? meta.kiro : undefined;
     if (kiro && typeof kiro.toolName === 'string' && kiro.toolName !== '') return kiro.toolName;
-    return str(update, ['kind', 'title']) ?? 'unknown';
+    return undefined;
+  }
+
+  function toolName(update: Record<string, unknown>): string {
+    return metaToolName(update) ?? str(update, ['kind', 'title']) ?? 'unknown';
+  }
+
+  function newPendingTool(id: string): PendingTool {
+    return { id, name: 'unknown', nameFromMeta: false, input: undefined };
+  }
+
+  /** Fold one tool_call / tool_call_chunk / tool_call_update into a pending start. */
+  function mergePendingTool(p: PendingTool, update: Record<string, unknown>): void {
+    const meta = metaToolName(update);
+    if (meta !== undefined) {
+      p.name = meta;
+      p.nameFromMeta = true;
+    } else if (!p.nameFromMeta) {
+      const fallback = str(update, ['kind', 'title']);
+      if (fallback !== undefined) p.name = fallback;
+    }
+    p.input = richerInput(p.input, update.rawInput);
+    if (typeof update.title === 'string' && update.title !== '') p.title = update.title;
+    if (Array.isArray(update.locations) && update.locations.length > 0) p.locations = update.locations;
+  }
+
+  function toolStartEvent(p: PendingTool): CanonicalEvent {
+    return {
+      type: 'tool',
+      toolName: p.name,
+      phase: 'start',
+      ...(p.id !== '' ? { toolCallId: p.id } : {}),
+      input: p.input ?? null,
+      ...(p.title !== undefined ? { title: p.title } : {}),
+      ...(p.locations !== undefined ? { locations: p.locations } : {}),
+    };
+  }
+
+  function emitToolStart(p: PendingTool, out: CanonicalEvent[]): void {
+    pendingTools.delete(p.id);
+    const entry = toolCalls.get(p.id);
+    if (entry) entry.startedSeen = true;
+    out.push(toolStartEvent(p));
+  }
+
+  /** Deterministic fallback: emit every still-deferred start, in arrival order. */
+  function flushPendingTools(out: CanonicalEvent[]): void {
+    for (const p of [...pendingTools.values()]) emitToolStart(p, out);
   }
 
   /** `runFinished` / `session/prompt` result: the ONLY native turn boundary. */
   function handleTerminal(data: Record<string, unknown>, out: CanonicalEvent[]): void {
     captureSession(data.sessionId, out);
+    flushPendingTools(out);
     flushMessage(out);
     if (typeof data.status === 'string') status = data.status;
     if (typeof data.stopReason === 'string') stopReason = data.stopReason;
@@ -495,6 +630,13 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
     return out;
   }
 
+  function flush(): CanonicalEvent[] {
+    const out: CanonicalEvent[] = [];
+    flushPendingTools(out);
+    flushMessage(out);
+    return out;
+  }
+
   function state(): KiroNormalizerState {
     return {
       ...(nativeSessionId !== undefined ? { nativeSessionId } : {}),
@@ -508,5 +650,5 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
     };
   }
 
-  return { pushHeadlessLine, pushAcpMessage, state };
+  return { pushHeadlessLine, pushAcpMessage, flush, state };
 }

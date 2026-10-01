@@ -255,6 +255,10 @@ export async function launchKiroAcp(
       effective = buildEffective({ kiro, spec, receipt, args, notices: allNotices, sessionId });
       await client.close();
       await pump;
+      // End of stream: anything the normalizer still buffers (a deferred tool
+      // start, #107) goes out before the queue closes. Empty after a normal
+      // prompt result, which already flushed.
+      for (const house of normalizer.flush()) emitHouse(house);
       queue.close();
       resolveExit(exitCode);
     }

@@ -269,6 +269,10 @@ export interface ToolCallEvent extends BaseEvent {
   toolCallId?: string;
   functionName?: string;
   arguments?: Record<string, unknown> | string;
+  /** Producer's human-readable label for the call (kiro ACP `title`, #107). Display only. */
+  title?: string;
+  /** Paths the call touches (kiro ACP `locations[]`, #107). Display only. */
+  locations?: unknown[];
 }
 
 export interface ToolResultEvent extends BaseEvent {
@@ -320,6 +324,8 @@ export interface ToolEvent extends OpenEvent {
   input?: unknown;
   output?: unknown;
   status?: "success" | "error";
+  title?: string;
+  locations?: unknown[];
 }
 
 /** Run went quiet with no terminal event (watchdog heartbeat). */
@@ -491,6 +497,10 @@ export type CanonicalEvent =
       input?: unknown;
       output?: unknown;
       status?: "success" | "error";
+      /** Producer's human-readable label for the call (kiro ACP `title`, #107). Display only. */
+      title?: string;
+      /** Paths the call touches (kiro ACP `locations[]`, #107). Display only. */
+      locations?: unknown[];
     }
   | { type: "step"; payload?: unknown }
   | { type: "usage"; tokens: AdapterTokenRecord; cost?: number }
