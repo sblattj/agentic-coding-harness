@@ -1,7 +1,7 @@
 /**
  * `ach doctor` (issue #35): diagnose every adapter's environment WITHOUT
  * spending a token. Generalizes `ach preflight --agent kiro`
- * (src/adapters/kiro-preflight.ts) to all five agents plus the harness's own
+ * (src/adapters/kiro-preflight.ts) to all six agents plus the harness's own
  * config.
  *
  * Per agent: binary on PATH (+ `--version`), auth material, the requested

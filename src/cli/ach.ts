@@ -184,7 +184,7 @@ usage:
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
   ach doctor [--agent A] [--model M] [--cwd DIR] [--claude-default-config] [--json]
-                 (all five agents by default: binary+version, auth material, model,
+                 (all six agents by default: binary+version, auth material, model,
                   MCP config, plus state dir / pricing table / env sanity; kiro runs
                   the preflight handshake. Sends NO prompt; exit 1 if any check failed)
   ach regrade <run-id> --verify '<cmd>' [--verify-timeout-ms MS] [--json]

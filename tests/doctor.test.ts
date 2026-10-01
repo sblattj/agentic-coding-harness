@@ -419,7 +419,7 @@ describe("ach doctor (CLI)", () => {
     assert.ok(report.checks.every((c) => c.agent === "claude" || c.agent === "harness"));
   });
 
-  it("no --agent: a table covering all five adapters with fix hints", async () => {
+  it("no --agent: a table covering every adapter with fix hints", async () => {
     const w = await world();
     await fakeAllVersions(w);
     const r = runCli(["doctor"], { ...w.env, AGENTIC_CODING_HARNESS_STATE_DIR: w.state }, w.cwd);
