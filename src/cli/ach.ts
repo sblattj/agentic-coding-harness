@@ -154,7 +154,7 @@ usage:
                            --extra-arg is ONE verbatim argv token, never split, so a value with
                            spaces works. e.g. route codex to a custom provider:
                            --extra-arg -c --extra-arg 'model_provider=ferry')
-              [--hermetic] (run in a temp copy of cwd whose ancestor dirs hold no
+              [--hermetic]  (run in a temp copy of cwd whose ancestor dirs hold no
                            CLAUDE.md/AGENTS.md/GEMINI.md, then sync edits (and deletions)
                            back before --verify; fails if the temp root is not clean.
                            Without it, ancestor instruction files are warned about and
