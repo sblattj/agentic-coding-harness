@@ -7,7 +7,7 @@
 > its flag — this doc describes the interfaces as they stand, not as they should be.
 
 agentic-coding-harness is a headless-first orchestration and observability layer over coding-agent CLIs
-(Claude Code, Codex CLI, OpenCode, Gemini CLI, Kiro). One harness, many agents: normalized events,
+(Claude Code, Codex CLI, OpenCode, Gemini CLI, Kiro, Prime Agent). One harness, many agents: normalized events,
 cache-aware token accounting, persisted trajectories, and live dashboards — without giving up each
 agent's native strength.
 
@@ -69,7 +69,7 @@ split is closed — see §9).
 ### Driver
 
 `core/driver.ts` (`createDriver`) is the run orchestrator: resolves the adapter from a registry
-(`defaultAdapters()` instantiates the bundled `adapters/{claude,opencode,kiro,codex,gemini}.js`
+(`defaultAdapters()` instantiates the bundled `adapters/{claude,opencode,kiro,codex,gemini,prime}.js`
 classes, skipping missing ones with a warning), attaches to the event stream, writes a raw NDJSON
 transcript to `<stateDir>/raw/<agent>-<sessionId>.jsonl`, normalizes usage (`normalizeAuto` /
 `fromPreNormalized`), prices each record via the `Pricer`, and enforces budgets inside the event
@@ -137,6 +137,7 @@ emitters sum `model_call_end.usage` alongside `usage` events, and the run totals
 | gemini | every call | `init`, user message or last `tool_result` → first assistant message / `tool_use`; end = last output before the next `tool_result` or `result` | first streamed chunk | no (`result.stats` is run-level) |
 | kiro (headless) | first request of the run | `runStarted` → first `agent_message_chunk`/`agent_thought_chunk` step (counted as output); end after the first tool start, else the last chunk | first streamed chunk | no (no token counts) |
 | kiro (ACP) | every request that streams text, **estimated** (`provenance: 'estimated'`, #108); excluded from latency | none on the stream. The adapter derives a span from the first chunk after a tool announcement (or run start) to the next tool announcement, metering frame or end of turn. The span starts AT the first output, so it would give a fake ~0 ms TTFT | — (excluded) | — |
+| prime | every call (one request per turn) | `turn_start` → first assistant `message_start`/`message_update` (a streamed delta); end = the assistant `message_end`, which carries that call's own output tokens | first streamed delta | yes (per-call usage) |
 | opencode | none | `step_start` is emitted after its text has begun (recorded 1.18.30: text `time.start` 1789014419194 < `step_start` 1789014419196, 28 ms step window for a 67k-token call), so the stream holds no request timing | — | — |
 
 A response whose request start was never observed (a claude sub-agent's first call, gemini output
@@ -366,7 +367,7 @@ The cross-file conflicts flagged ⚠ in earlier revisions of this doc are closed
   aliases, with `fromLegacy()` for legacy producers.
 - dual emitter trees → the `core/emitters.ts` envelope stub is deleted; the CLI routes straight
   to `emitters/{atif,otel,langfuse}.ts`.
-- driver `launch`-style vs adapter `spawn`-style contract → all five adapters implement
+- driver `launch`-style vs adapter `spawn`-style contract → all six adapters implement
   `launch()` natively (bridged via `launchDriverHandle`, `adapters/shared.ts`).
 - `cli/ach.ts` imports → `core/types.ts` exports `AGENTS`/`isKnownAgent`/`RunResult`/
   `HarnessError`, and the CLI transcript fallback prices through `core/pricing.ts`.

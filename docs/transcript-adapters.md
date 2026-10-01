@@ -1,8 +1,11 @@
 # Read-only transcript adapters
 
 ach meters coding agents it did not launch by reading the session files they
-leave on disk. Claude Code, Codex CLI and Gemini CLI are read by
-`src/monitors/transcripts.ts`. Cursor, Amp, Goose and Qwen Code are **read-only
+leave on disk. Claude Code, Codex CLI, Gemini CLI and Prime Agent are read by
+`src/monitors/transcripts.ts` (Prime Agent: `src/monitors/prime.ts`, sessions at
+`~/.prime/agent/sessions/<uuid>.jsonl` plus subagent sessions at
+`~/.prime/agent/session-artifacts/<parent>/sub-*/<uuid>.jsonl`; the parent's
+`child_usage_attributed` summary is ignored so children are not double counted). Cursor, Amp, Goose and Qwen Code are **read-only
 sources**, registered in `src/monitors/transcript-sources.ts`
 (`TRANSCRIPT_SOURCES`). ach reads their stores but cannot launch them.
 

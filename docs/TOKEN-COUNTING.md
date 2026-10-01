@@ -77,6 +77,10 @@ stream path alike.
 The session-cumulative counterpart (`info.total_token_usage` / `info.last_token_usage` in the
 protocol) is not yet handled — see Trap 2 for why it must stay delta-based when it lands.
 
+### Prime Agent (stream tap `prime`)
+
+Event: `prime-agent -p --mode json` → one `usage` block `{input, output, cacheRead, cacheWrite, cost}` per assistant `message_end`, counted once per message. `input` is taken as the uncached prompt slice (pi convention; unverified, because the observed sessions had `cacheRead` 0). A provider-reported `cost` of 0 is treated as unpriced (`n/a`), not $0. Subagent (`rlm.spawn`) usage is not in the stream, so at `agent_end` the adapter adds the child session files under `~/.prime/agent/session-artifacts/`.
+
 ### Gemini CLI (stream tap `gemini`)
 
 Event: `--output-format stream-json` → `result` event with `stats`.
@@ -171,6 +175,7 @@ Use the per-turn delta, or delta consecutive cumulative records. The current cod
 | Claude | **No** (separate `cache_*_input_tokens`) | as-is |
 | Codex/OpenAI | **Yes** (`cached_input_tokens ⊆ input_tokens`) | `input − cached` |
 | Gemini | **Yes** (`cached ⊆ input_tokens`) | `input` field if present, else `input_tokens − cached` |
+| Prime Agent | **No** (assumed; separate `cacheRead`/`cacheWrite`) | as-is |
 
 Adding cache reads on top of an input that already contains them double counts; forgetting to
 subtract for codex overcounts fresh input. The former live instance (`adapters/codex.ts` emitting

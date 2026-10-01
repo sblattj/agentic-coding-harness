@@ -1,6 +1,6 @@
-# agentic-coding-harness — cost tracking and observability for Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro
+# agentic-coding-harness — cost tracking and observability for Claude Code, Codex CLI, Gemini CLI, OpenCode, Kiro, and Prime Agent
 
-**Agents hide the burn. `ach` runs, watches, and meters Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro from one CLI — agent cost tracking whose numbers verify against each CLI's own records.**
+**Agents hide the burn. `ach` runs, watches, and meters Claude Code, Codex CLI, Gemini CLI, OpenCode, Kiro, and Prime Agent from one CLI — agent cost tracking whose numbers verify against each CLI's own records.**
 
 <p>
   <a href="https://www.npmjs.com/package/agentic-coding-harness"><img alt="npm version" src="https://img.shields.io/npm/v/agentic-coding-harness"></a>
@@ -13,7 +13,7 @@
 
 ## Highlights
 
-- **One CLI, five agents** — `claude`, `opencode`, `kiro`, `codex`, `gemini` adapters normalize five different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
+- **One CLI, six agents** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` adapters normalize six different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
 - **Cost math you can defend** — cache-aware accounting verified against each CLI's own ground truth (Claude session JSONL, Kiro session files, provider-reported `costUSD`); LiteLLM pricing, and unpriced models are marked unavailable rather than silently assigned a price.
 - **Live agent runs dashboard** — `ach dash` redraws 2×/s in the terminal; `ach web` (port 8399) grids every run with a browser terminal you can type into — PTY per run, vendored xterm.js, zero CDN.
 - **Terminal replay** — every run renders to an asciinema-format `.cast`, so you can scrub what the agent did and when.
@@ -28,14 +28,14 @@
 
 | Compared with | Runs and budgets | Events and cost | Registry and output |
 |---|---|---|---|
-| **usage CLIs** (ccusage etc.) | `ach` launches, aborts, and budget-caps the runs it meters | normalized token events across 5 agent CLIs | per-run registry keyed by runId + live web grid |
+| **usage CLIs** (ccusage etc.) | `ach` launches, aborts, and budget-caps the runs it meters | normalized token events across 6 agent CLIs | per-run registry keyed by runId + live web grid |
 | **observability platforms** (Langfuse etc.) | `ach` launches and meters the runs itself | local-first flat files — no account, no ingest step | exports to them via OTLP when you want their charts |
-| **tmux + grep** | one launcher for all five agents | normalized event schema + cost math | run registry + single-file HTML report |
+| **tmux + grep** | one launcher for all six agents | normalized event schema + cost math | run registry + single-file HTML report |
 
 ## Is this for you?
 
 - **For you if** you run coding agents locally and want per-run tokens, cost, and credits from one place — including opt-in budget enforcement that aborts a runaway run mid-flight.
-- **For you if** you A/B compare coding agents: same task, five agents, one comparison table, one local registry.
+- **For you if** you A/B compare coding agents: same task, six agents, one comparison table, one local registry.
 - **Not for you if** you need hosted team features (SSO, retention, org-wide dashboards). `ach` is local-first by design and exports to Langfuse and other OTLP backends when you outgrow it.
 
 ## Install
@@ -79,7 +79,7 @@ ach run --agent codex "fix the failing test"   # launch runs from any terminal
 # open http://localhost:8399 — the grid shows every run; LIVE opens a terminal pane
 ```
 
-## Demo: one task, five agents, one cost table
+## Demo: one task, six agents, one cost table
 
 Real token and cost accounting across every installed agent — output shapes are the real
 ones (`formatSummary` in `src/cli/lib.ts`, the table in `src/cli/dash.ts`); values from
@@ -116,7 +116,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   session, so any single blended price is wrong — real Claude Code cost needs per-(model,
   cache-tier) math. Each adapter taps usage at its source and prices it that way. Kiro credits
   stay on their own summary line — never merged into USD.
-- **Every CLI speaks a different format.** JSONL transcripts, NDJSON stdout, ACP, SQLite — five
+- **Every CLI speaks a different format.** JSONL transcripts, NDJSON stdout, ACP, SQLite — six
   adapters normalize all of it into one event model and one `CanonicalTokenRecord` (with
   cache-read/write/reasoning split), so dash, stats, emitters, and the MCP server are written once.
 - **Nothing correlated runs across agents — until now.** Runs land in a registry keyed by
@@ -125,9 +125,15 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 - **Numbers you can defend.** Token/cost columns are checked against ground truth: cache columns
   exact vs each CLI's own session JSONL; Kiro MITM credits bit-for-bit vs Kiro's session files.
 
-## What it does: token metering, verified cost tracking, and run artifacts for five agents
+## What it does: token metering, verified cost tracking, and run artifacts for six agents
 
-- **Five adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini` (headless / ACP lanes).
+- **Six adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes).
+- **Prime Agent** — `ach run --agent prime` drives `prime-agent -p --mode json`; `--model`
+  passes through verbatim (`<provider>/<model>`). Usage is counted per assistant message plus
+  the subagent (`rlm.spawn`) sessions read from `~/.prime/agent/session-artifacts/`; a
+  provider-reported cost of 0 is shown as `n/a`, not `$0`. `ach doctor --agent prime` checks the
+  binary and auth (`PRIME_API_KEY`, `~/.prime/agent/auth.json`, or a provider key in
+  `~/.prime/agent/models.json`). No vendor quota source.
 - **Unified events, cache-aware tokens** — one `AgentEvent` stream, one canonical token record;
   per-agent double-counting traps handled ([docs/TOKEN-COUNTING.md](docs/TOKEN-COUNTING.md)).
 - **LiteLLM multi-model pricing** — bundled LiteLLM extract, external cost-map override;
@@ -149,7 +155,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
 - **Emitters** — ATIF v1.7 trajectories (self-validating), OpenTelemetry `gen_ai` spans, Langfuse via OTLP.
 - **Single-file HTML reports** — charts + timelines comparing every agent in a trial dir.
-- **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini transcript
+- **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini/prime transcript
   dirs plus the opencode SQLite store; `stats` aggregates totals/byAgent/byDay over machine
   transcripts and harness state (`--state-only` to skip transcript scans).
 
@@ -257,7 +263,7 @@ estimates; quota output uses provider-reported values when available.
 ## CLI
 
 ```sh
-ach run --agent <claude|opencode|kiro|codex|gemini|null|custom|descriptor> [--model M] [--resume SID]
+ach run --agent <claude|opencode|kiro|codex|gemini|prime|null|custom|descriptor> [--model M] [--resume SID]
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
             kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
@@ -362,6 +368,7 @@ own project memory and are not listed.
 | claude | `CLAUDE.md`, `CLAUDE.local.md` | every ancestor, up to `/` |
 | codex | `AGENTS.override.md`, `AGENTS.md` | up to the git root (the nearest dir with `.git`); none without one |
 | gemini | `GEMINI.md` | up to the git root; none without one |
+| prime | `AGENTS.md`, `CLAUDE.md` | every ancestor, up to `/` (it does not stop at the git root) |
 | opencode, kiro, null, custom | none checked | |
 
 When the list is non-empty, `ach run` prints a `[warn]` block naming every file on
@@ -492,7 +499,7 @@ semantics. An optional second argument overrides the wired signals
 (`driver.installSignalAbort(runId, ['SIGHUP'])`).
 
 Exported: `createDriver`, `defaultAdapters`, `runToDirectory`, `ClaudeCodeAdapter`, `KiroAdapter`,
-`CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `VERSION`, plus the run-record API —
+`CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `PrimeAdapter`, `VERSION`, plus the run-record API —
 `RunRecordSchema`, `CanonicalTokenRecordSchema`, `ExternalRunFeedSchema`, `writeRunRecord`,
 `readRunRecord`, `listRunIds`, `listRunRecords`, `registryDir`, and the `RunRecord` /
 `CanonicalTokenRecord` / `ExternalRunFeed` / `RunSource` types. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
