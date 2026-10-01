@@ -2,7 +2,7 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
-## [Unreleased]
+## [0.14.0] - 2026-10-01
 
 ### Added
 
