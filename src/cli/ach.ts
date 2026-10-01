@@ -64,7 +64,7 @@ import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer } from "../core/pricing.ts";
-import { aggregate, extraArgsFromValues, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, resolveDirFlag, wantsHelp } from "./lib.ts";
+import { aggregate, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, orderedExtraArgs, resolveDirFlag, wantsHelp } from "./lib.ts";
 import { deriveLatency } from "../web/derive.ts";
 import {
   aggregateDims,
@@ -148,6 +148,12 @@ usage:
                            the agent exits; verdict on the RunRecord, failed checker exits 1; passing checker keeps the run exit code)
               [--repeat N [--parallel K]]  (N fresh sessions, one repeat group; exits with the most severe child code)
               [--experiment E] [--variant V]  (compare-view labels on the RunRecord)
+              [--extra-args '<a b>']... [--extra-arg <token>]...  (extra CLI args for the
+                           launched agent, every launchable agent; both repeatable and kept in
+                           command-line order. --extra-args splits each value on spaces;
+                           --extra-arg is ONE verbatim argv token, never split, so a value with
+                           spaces works. e.g. route codex to a custom provider:
+                           --extra-arg -c --extra-arg 'model_provider=ferry')
               [--hermetic]  (run in a temp copy of cwd whose ancestor dirs hold no
                            CLAUDE.md/AGENTS.md/GEMINI.md, then sync edits (and deletions)
                            back before --verify; fails if the temp root is not clean.
@@ -181,6 +187,8 @@ usage:
   ach agents [--json]       list built-in agents, agents.d descriptors and descriptor errors
   ach preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
                     [--cwd DIR] [--json] [--kiro-startup-ms MS] [--kiro-mcp-server '<json>']...
+                    [--extra-args '<a b>']... [--extra-arg <token>]...
+                    (same as ach run: --extra-args splits on spaces, --extra-arg is verbatim)
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
   ach doctor [--agent A] [--model M] [--cwd DIR] [--claude-default-config] [--json]
@@ -464,6 +472,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       "warn-at": { type: "string" },
       "on-budget": { type: "string" },
       "extra-args": { type: "string", multiple: true },
+      "extra-arg": { type: "string", multiple: true },
       // Kiro-only typed config (src/core/types.ts KiroConfig). Ignored for
       // other agents; the driver's RunSpecSchema validates the shape.
       "kiro-transport": { type: "string" },
@@ -493,6 +502,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       hermetic: { type: "boolean", default: false },
     },
     allowPositionals: true,
+    tokens: true,
   });
   const exitMode = parseExitCodesMode(args.values["exit-codes"]);
   const trialFlags = parseTrialFlags(args.values);
@@ -544,8 +554,9 @@ async function cmdRun(rest: string[]): Promise<number> {
   // Threshold alerts (#20): parsed with the other budget flags, before launch.
   const alertBudget = alertFlagsToBudget(args.values, budget);
   // #104: `--extra-args` is repeatable; each occurrence splits on spaces
-  // (backwards compatibility) and the tokens accumulate in order.
-  const extraArgs = extraArgsFromValues(args.values["extra-args"]);
+  // (backwards compatibility). `--extra-arg` is one verbatim token. Both
+  // accumulate in command-line order.
+  const extraArgs = orderedExtraArgs(args.tokens);
   const spec: RunSpec = {
     prompt,
     model: args.values.model,
@@ -779,9 +790,11 @@ async function cmdPreflight(rest: string[]): Promise<number> {
       "kiro-startup-ms": { type: "string" },
       "kiro-mcp-server": { type: "string", multiple: true },
       "extra-args": { type: "string", multiple: true },
+      "extra-arg": { type: "string", multiple: true },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
+    tokens: true,
   });
   const agent = args.values.agent;
   if (agent !== "kiro") {
@@ -803,8 +816,8 @@ async function cmdPreflight(rest: string[]): Promise<number> {
   // run-time (session/prompt) gate and has no preflight equivalent.
   const startupMs = optPositiveInt(args.values["kiro-startup-ms"], "--kiro-startup-ms");
   const mcpServers = optAcpMcpServers(args.values["kiro-mcp-server"], "--kiro-mcp-server");
-  // #104: repeatable, space-split per occurrence — same rule as `run`.
-  const extraArgs = extraArgsFromValues(args.values["extra-args"]);
+  // #104: repeatable; --extra-args space-split, --extra-arg verbatim — same rule as `run`.
+  const extraArgs = orderedExtraArgs(args.tokens);
   const receipt = await kiroPreflight({
     cwd: args.values.cwd ?? process.cwd(),
     ...(args.values.model !== undefined ? { model: args.values.model } : {}),
@@ -1640,7 +1653,7 @@ async function main(argv: string[]): Promise<number> {
   // unambiguous `--extra-args=<value>` form before parseArgs (and before the
   // #101 help scan, so `--extra-args --help` passes --help through as the
   // flag's VALUE — the next token is always the value).
-  const rest = cmd === "run" || cmd === "preflight" ? joinOptionValues(raw, ["extra-args"]) : raw;
+  const rest = cmd === "run" || cmd === "preflight" ? joinOptionValues(raw, ["extra-args", "extra-arg"]) : raw;
   // #101: every subcommand accepts -h/--help (usage + exit 0).
   if (cmd !== undefined && SUBCOMMANDS.has(cmd) && wantsHelp(rest)) {
     process.stdout.write(subcommandHelp(cmd) + "\n");

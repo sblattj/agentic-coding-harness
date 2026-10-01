@@ -80,6 +80,37 @@ export function extraArgsFromValues(values: readonly string[] | undefined): stri
   return values.flatMap((v) => v.split(" ")).filter(Boolean);
 }
 
+/** The slice of a parseArgs `tokens: true` entry that `orderedExtraArgs` reads. */
+export interface ArgToken {
+  kind: string;
+  name?: string;
+  value?: string | undefined;
+}
+
+/**
+ * Combine `--extra-args` (split on spaces, as `extraArgsFromValues`) and
+ * `--extra-arg` (ONE verbatim token, never split) into one list in
+ * COMMAND-LINE order. parseArgs groups values per option and loses the
+ * cross-option order, so this reads the `tokens: true` stream, which keeps
+ * it. undefined when neither flag appeared.
+ */
+export function orderedExtraArgs(tokens: readonly ArgToken[] | undefined): string[] | undefined {
+  if (tokens === undefined) return undefined;
+  let seen = false;
+  const out: string[] = [];
+  for (const t of tokens) {
+    if (t.kind !== "option" || t.value === undefined) continue;
+    if (t.name === "extra-args") {
+      seen = true;
+      out.push(...t.value.split(" ").filter(Boolean));
+    } else if (t.name === "extra-arg") {
+      seen = true;
+      out.push(t.value);
+    }
+  }
+  return seen ? out : undefined;
+}
+
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 function clock(ts: number): string {
