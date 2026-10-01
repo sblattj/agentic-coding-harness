@@ -262,11 +262,13 @@ export function parsePrimeLine(line: string): CanonicalEvent[] {
  * - first output = a `step` {kind:'chunk'} at the first assistant
  *   message_start / message_update of the call (the first streamed delta;
  *   the full text is only emitted once, at message_end);
- * - end = the assistant message_end, carrying that call's own output tokens
+ * - end = the assistant message_end (or, when prime skips it, the turn_end
+ *   repeating that message), carrying that call's own output tokens
  *   (per-call usage is exact here, so throughput is measurable).
  * An assistant message with no open call (defensive) opens one at its own
- * message_start. A message_end is accounted once even if the CLI repeats it
- * (keyed by responseId, else timestamp).
+ * message_start. Each assistant message is accounted once across
+ * message_end / turn_end (keyed by responseId, else timestamp). Every run
+ * path uses this parser; parsePrimeLine alone is message_end-only.
  */
 export function createPrimeLineParser(): (line: string) => CanonicalEvent[] {
   let calls = 0;
@@ -282,11 +284,11 @@ export function createPrimeLineParser(): (line: string) => CanonicalEvent[] {
       type?: unknown;
       message?: { role?: unknown; model?: unknown; responseId?: unknown; timestamp?: unknown; usage?: { output?: unknown } };
     };
-    const events = parsePrimeLine(line);
+    const parsed = parsePrimeLine(line);
     const role = raw.message?.role;
     const model = typeof raw.message?.model === 'string' ? raw.message.model : undefined;
     if (raw.type === 'turn_start') {
-      return [openCall(), ...events];
+      return [openCall(), ...parsed];
     }
     if ((raw.type === 'message_start' || raw.type === 'message_update') && role === 'assistant') {
       const out: CanonicalEvent[] = [];
@@ -296,19 +298,26 @@ export function createPrimeLineParser(): (line: string) => CanonicalEvent[] {
         call.chunked = true;
         out.push({ type: 'step', payload: { kind: 'chunk', source: raw.type } });
       }
-      return [...out, ...events];
+      return [...out, ...parsed];
     }
-    if (raw.type === 'message_end' && role === 'assistant') {
+    // prime-agent sometimes skips an assistant message_end (0.9.8: 3 of 22
+    // calls in a run that awaited a subagent) while its turn_end still carries
+    // the finished message, so turn_end is accounted too — once per message.
+    if ((raw.type === 'message_end' || raw.type === 'turn_end') && role === 'assistant') {
       const key =
         typeof raw.message?.responseId === 'string'
           ? `r:${raw.message.responseId}`
           : typeof raw.message?.timestamp === 'number'
             ? `t:${raw.message.timestamp}`
             : undefined;
+      // Without a key a turn_end cannot be told apart from its message_end.
+      if (key === undefined && raw.type === 'turn_end') return [];
       if (key !== undefined) {
         if (seen.has(key)) return [];
         seen.add(key);
       }
+      const events =
+        raw.type === 'turn_end' ? parsePrimeLine(JSON.stringify({ type: 'message_end', message: raw.message })) : parsed;
       if (open === null) return events;
       const call = open as { id: string; chunked: boolean };
       open = null;
@@ -322,7 +331,7 @@ export function createPrimeLineParser(): (line: string) => CanonicalEvent[] {
       };
       return [...events, end];
     }
-    return events;
+    return parsed;
   };
 }
 
@@ -568,7 +577,7 @@ export class PrimeAdapter implements AgentAdapter, CoreAgentAdapter {
   #run(
     spec: JsonlRunSpec,
     onOutput?: (chunk: string) => void,
-    parseLine: (line: string) => CanonicalEvent[] = parsePrimeLine,
+    parseLine: (line: string) => CanonicalEvent[] = createPrimeLineParser(),
   ): RunHandle {
     const handle = runJsonlCli({ spec, parseLine: withPrimeChildUsage(parseLine, this.#agentDir), spawnFn: this.#spawnFn, onOutput });
     this.#current = handle;
