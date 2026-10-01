@@ -139,7 +139,7 @@ version: ${VERSION}
 
 usage:
   ach --version | -v        print the harness version
-  ach run --agent <claude|opencode|kiro|codex|gemini|null> [--model M] [--resume SID]
+  ach run --agent <claude|opencode|kiro|codex|gemini|prime|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               [--budget-alerts 0.5,0.8,1.0] [--warn-at 0.5,0.8,0.95] [--on-budget abort|warn]
                 (threshold alerts warn once per crossing, never abort; fractions in (0,1];

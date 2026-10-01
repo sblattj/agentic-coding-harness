@@ -116,11 +116,11 @@ export function registerJobTools(
   server.registerTool({
     name: "harness_run_async",
     description:
-      "Start a harness agent run (claude|opencode|kiro|codex|gemini) WITHOUT waiting for completion; returns { runId, sessionId: null, started, transcriptPath } promptly. Poll harness_run_status, page harness_run_events, or harness_run_cancel with the runId.",
+      "Start a harness agent run (claude|opencode|kiro|codex|gemini|prime) WITHOUT waiting for completion; returns { runId, sessionId: null, started, transcriptPath } promptly. Poll harness_run_status, page harness_run_events, or harness_run_cancel with the runId.",
     inputSchema: {
       type: "object",
       properties: {
-        agent: { type: "string", enum: ["claude", "opencode", "kiro", "codex", "gemini", "null"], description: "Agent to run" },
+        agent: { type: "string", enum: ["claude", "opencode", "kiro", "codex", "gemini", "prime", "null"], description: "Agent to run" },
         prompt: { type: "string", description: "Prompt sent to the agent" },
         model: { type: "string", description: "Model override" },
         cwd: { type: "string", description: "Working directory for the agent subprocess" },
