@@ -1,4 +1,8 @@
+import { readdirSync, readFileSync, type Dirent } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { z } from 'zod';
+import { isPrimeSessionFile } from '../monitors/prime.ts';
 import type { AdapterCapabilities, AgentAdapter, CanonicalEvent, RunHandle, RunOptions } from './types.ts';
 import type {
   AdapterProfileCheck,
@@ -183,8 +187,8 @@ function contentText(content: unknown, kind: 'text' | 'thinking'): string {
  * carry that event (prime-agent 0.9.8: a spawn run streamed 34
  * `rlm_child_update` lines and zero `child_usage_attributed`). The stream's
  * `rlm_child_update.child.tokenCount` is a progressive snapshot without an
- * input/output split, so it is NOT summed. Child tokens are therefore absent
- * from live run totals — a known gap; the session-file importer sees them.
+ * input/output split, so it is NOT summed. Child tokens are instead read from
+ * the children's own session files once the run ends (withPrimeChildUsage).
  *
  * Malformed JSON propagates (the run loop surfaces it); unrecognized lines
  * are ignored for forward compatibility.
@@ -322,6 +326,83 @@ export function createPrimeLineParser(): (line: string) => CanonicalEvent[] {
   };
 }
 
+/** prime-agent's state dir (sessions/, session-artifacts/). */
+export const PRIME_AGENT_DIR = join(homedir(), '.prime', 'agent');
+
+/**
+ * Usage events for every subagent session spawned under one root session:
+ * child transcripts live at `<agentDir>/session-artifacts/<sid>/…/sub-<hex>/<uuid>.jsonl`
+ * (grandchildren nest one `session-artifacts/<child>/` deeper, so the walk is
+ * recursive). Counted from the child files, never from the parent's
+ * `child_usage_attributed` summary, matching src/monitors/prime.ts. Unreadable
+ * files and bad lines are skipped: metering must never fail a run.
+ */
+export function primeChildUsageEvents(agentDir: string, sessionId: string): CanonicalEvent[] {
+  const root = join(agentDir, 'session-artifacts', sessionId);
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && isPrimeSessionFile(p)) files.push(p);
+    }
+  };
+  walk(root);
+  const events: CanonicalEvent[] = [];
+  for (const file of files) {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      let rec: { type?: unknown; message?: { role?: unknown; usage?: unknown; model?: unknown; provider?: unknown; responseModel?: unknown } };
+      try {
+        rec = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const m = rec.message;
+      if (rec.type !== 'message' || !m || m.role !== 'assistant') continue;
+      const usage = primeUsageEvent(m.usage, {
+        ...(typeof m.model === 'string' ? { model: m.model } : {}),
+        ...(typeof m.provider === 'string' ? { provider: m.provider } : {}),
+        ...(typeof m.responseModel === 'string' ? { responseModel: m.responseModel } : {}),
+      });
+      if (usage) events.push(usage);
+    }
+  }
+  return events;
+}
+
+/**
+ * Wrap a line parser so the run's subagent usage is appended at `agent_end`
+ * (the stream's last line; the parent has collected its children by then).
+ * A child still running when the parent ends is not counted.
+ */
+export function withPrimeChildUsage(
+  parse: (line: string) => CanonicalEvent[],
+  agentDir: string = PRIME_AGENT_DIR,
+): (line: string) => CanonicalEvent[] {
+  let sessionId: string | null = null;
+  let done = false;
+  return (line: string): CanonicalEvent[] => {
+    const events = parse(line);
+    for (const e of events) if (e.type === 'session' && sessionId === null) sessionId = e.sessionId;
+    if (done || sessionId === null || (JSON.parse(line) as { type?: unknown }).type !== 'agent_end') return events;
+    done = true;
+    return [...events, ...primeChildUsageEvents(agentDir, sessionId)];
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
@@ -333,6 +414,8 @@ export interface PrimeAdapterOptions {
   spawnFn?: SpawnFn;
   /** Extra args inserted before the `--` prompt separator. */
   extraArgs?: string[];
+  /** prime-agent state dir, read for subagent usage; defaults to ~/.prime/agent. */
+  agentDir?: string;
 }
 
 /**
@@ -395,12 +478,14 @@ export class PrimeAdapter implements AgentAdapter, CoreAgentAdapter {
   #command: string;
   #spawnFn: SpawnFn | undefined;
   #extraArgs: string[];
+  #agentDir: string;
   #current: RunHandle | null = null;
 
   constructor(options: PrimeAdapterOptions = {}) {
     this.#command = options.command ?? 'prime-agent';
     this.#spawnFn = options.spawnFn;
     this.#extraArgs = options.extraArgs ?? [];
+    this.#agentDir = options.agentDir ?? PRIME_AGENT_DIR;
   }
 
   spawn(prompt: string, opts: RunOptions = {}): RunHandle {
@@ -485,7 +570,7 @@ export class PrimeAdapter implements AgentAdapter, CoreAgentAdapter {
     onOutput?: (chunk: string) => void,
     parseLine: (line: string) => CanonicalEvent[] = parsePrimeLine,
   ): RunHandle {
-    const handle = runJsonlCli({ spec, parseLine, spawnFn: this.#spawnFn, onOutput });
+    const handle = runJsonlCli({ spec, parseLine: withPrimeChildUsage(parseLine, this.#agentDir), spawnFn: this.#spawnFn, onOutput });
     this.#current = handle;
     void handle.wait().finally(() => {
       if (this.#current === handle) this.#current = null;

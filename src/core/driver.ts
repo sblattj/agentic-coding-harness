@@ -194,7 +194,7 @@ interface LaunchableAdapter {
 }
 
 /**
- * Registry helper: instantiates each bundled adapter CLASS. All five adapters
+ * Registry helper: instantiates each bundled adapter CLASS. Every agent adapter
  * implement the driver contract's launch() natively (bridged via
  * launchDriverHandle in src/adapters/shared.ts); the wrapper here supplies the
  * canonical `name` field and, for claude, the enforcesBudget marker (claude
