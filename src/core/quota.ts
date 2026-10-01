@@ -25,7 +25,7 @@
 //           <stateDir>/quota/claude.json (override:
 //           AGENTIC_CODING_HARNESS_QUOTA_CLAUDE_FILE).
 //
-//  gemini, opencode, kiro — no vendor quota source is wired: n/a.
+//  gemini, opencode, kiro, prime — no vendor quota source is wired: n/a.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -81,6 +81,7 @@ const NO_SOURCE: Record<QuotaAgent, string> = {
   gemini: "no vendor quota source wired",
   opencode: "no vendor quota source wired",
   kiro: "no vendor quota source wired",
+  prime: "no vendor quota source wired",
   null: "offline adapter; no vendor quota",
 };
 

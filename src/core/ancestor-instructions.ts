@@ -30,6 +30,14 @@
 //           0.56.0 bundle, getEnvironmentMemoryPaths → findProjectRoot2
 //           (boundary marker ".git", returns null when none is found, then
 //           the ceiling is the start dir itself) → findUpwardGeminiFiles.
+//   prime   AGENTS.md, CLAUDE.md up to the filesystem root (`-nc` help text:
+//           "Disable AGENTS.md and CLAUDE.md discovery"). Behavioural probe,
+//           prime-agent 0.9.8: tree <t>/AGENTS.md, <t>/repo/.git/,
+//           <t>/repo/CLAUDE.md, cwd <t>/repo/ws with its own AGENTS.md — the
+//           model quoted codewords from all three files, so the walk goes
+//           PAST the git root (not gemini's ceiling) and reads CLAUDE.md as
+//           well as AGENTS.md. That `/` itself is reached is inferred from the
+//           pi-style upward walk, not observed; over-reporting is the safe side.
 //   opencode, kiro, null, custom, agents.d descriptors: nothing verified,
 //           so nothing is reported (empty list).
 
@@ -50,6 +58,7 @@ export const ANCESTOR_INSTRUCTION_SPECS: Readonly<Record<string, AncestorInstruc
   claude: { files: ['CLAUDE.md', 'CLAUDE.local.md'], stop: 'filesystem-root' },
   codex: { files: ['AGENTS.override.md', 'AGENTS.md'], stop: 'git-root' },
   gemini: { files: ['GEMINI.md'], stop: 'git-root' },
+  prime: { files: ['AGENTS.md', 'CLAUDE.md'], stop: 'filesystem-root' },
 };
 
 export interface AncestorProbe {

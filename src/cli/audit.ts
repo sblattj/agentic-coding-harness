@@ -258,6 +258,9 @@ const RAW_EXTRACTORS: Record<string, (d: Record<string, unknown>) => RawTokens |
   kiro: fromKiro,
   gemini: fromGeminiFlat,
   codex: fromCodex,
+  // prime-agent usage {input (uncached), output, cacheRead, cacheWrite,
+  // totalTokens, cost} is the same top-level shape as the claude house payload.
+  prime: fromClaudeHouse,
 };
 
 /** The run's own agent first, then every other shape (mock/ACP agent names). */

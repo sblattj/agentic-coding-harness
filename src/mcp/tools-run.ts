@@ -17,6 +17,7 @@ import { OPENCODE_CAPABILITIES } from "../adapters/opencode.ts";
 import { KIRO_CAPABILITIES } from "../adapters/kiro.ts";
 import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
 import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
+import { PRIME_CAPABILITIES } from "../adapters/prime.ts";
 import { NULL_CAPABILITIES } from "../adapters/null.ts";
 import { checkCwd, filterExtraArgs, type GatewayConfig } from "../serve/gateway.ts";
 import { runHermetic } from "../core/hermetic.ts";
@@ -129,6 +130,8 @@ function agentInfo(name: string): { command: string | null; capabilities?: Adapt
       return { command: "codex", capabilities: CODEX_CAPABILITIES };
     case "gemini":
       return { command: "gemini", capabilities: GEMINI_CAPABILITIES };
+    case "prime":
+      return { command: "prime-agent", capabilities: PRIME_CAPABILITIES };
     case "null":
       return { command: null, capabilities: NULL_CAPABILITIES };
     default:
@@ -185,7 +188,7 @@ export function registerRunTools(
   server.registerTool({
     name: "harness_run",
     description:
-      "Run one harness agent (claude|opencode|kiro|codex|gemini) with a prompt and optional model/cwd/budget/turn limits; resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
+      "Run one harness agent (claude|opencode|kiro|codex|gemini|prime) with a prompt and optional model/cwd/budget/turn limits; resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
     inputSchema: {
       type: "object",
       properties: {
