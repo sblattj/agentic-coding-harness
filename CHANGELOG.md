@@ -2,6 +2,16 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.13.0] - 2026-09-30
+
+### Added
+
+- `ach run` and `ach preflight` take a new repeatable `--extra-arg <token>`, which passes ONE verbatim argv token to the launched agent and never splits it. A value with spaces now works, for example a codex config override `--extra-arg -c --extra-arg 'developer_instructions="a b"'`. Tokens from `--extra-arg` and `--extra-args` reach the agent in command-line order. Both flags are now listed in `ach run --help`, `ach preflight --help` and the README ("Passing extra CLI args to the agent"); `--extra-args` was previously undocumented in the usage text.
+
+### Fixed
+
+- `npm run typecheck` is green again: three `AtifWriter.fromEvents` calls added in `tests/kiro-events.test.ts` for #107 passed only `agent`.
+
 ## [0.12.1] - 2026-09-30
 
 ### Fixed
