@@ -212,6 +212,44 @@ describe("runDoctor — per-agent checks", () => {
     assert.match(check(badGac, "gemini", "auth").detail, /GOOGLE_APPLICATION_CREDENTIALS/);
   });
 
+  it("prime: binary is prime-agent; auth via PRIME_API_KEY, auth.json, or a models.json provider apiKey; MCP from settings.json", async () => {
+    const w = await world();
+    await fakeBin(w, "prime-agent", 'echo "0.9.8"');
+    const base = { agents: ["prime" as const], cwd: w.cwd, stateDir: w.state };
+    const none = await runDoctor({ ...base, env: w.env });
+    assert.equal(check(none, "prime", "binary").status, "verified");
+    assert.match(check(none, "prime", "version").detail, /0\.9\.8/);
+    assert.equal(check(none, "prime", "auth").status, "failed");
+    assert.match(check(none, "prime", "auth").hint ?? "", /PRIME_API_KEY/);
+
+    const env = await runDoctor({ ...base, env: { ...w.env, PRIME_API_KEY: "pk-SECRET" } });
+    assert.equal(check(env, "prime", "auth").status, "verified");
+    assert.doesNotMatch(JSON.stringify(env), /pk-SECRET/);
+
+    const dir = path.join(w.home, ".prime", "agent");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "auth.json"), "{}");
+    await fs.writeFile(
+      path.join(dir, "models.json"),
+      '{"providers":{"gw":{"baseUrl":"http://127.0.0.1:1/v1","apiKey":"GW-SECRET","models":[{"id":"flash"}]},"nokey":{"models":[]}}}',
+    );
+    await fs.writeFile(path.join(dir, "settings.json"), '{"mcpServers":{"probe":{"type":"stdio","command":"definitely-not-on-path"}}}');
+    const custom = await runDoctor({ ...base, env: w.env, model: "gw/flash" });
+    const auth = check(custom, "prime", "auth");
+    assert.equal(auth.status, "verified");
+    assert.match(auth.detail, /models\.json.*gw/);
+    assert.doesNotMatch(auth.detail, /nokey/);
+    assert.doesNotMatch(JSON.stringify(custom), /GW-SECRET/);
+    assert.equal(check(custom, "prime", "model").status, "unproven", "an unpriced custom model is unproven, never failed");
+    assert.equal(check(custom, "prime", "mcp").status, "failed");
+    assert.match(check(custom, "prime", "mcp").detail, /definitely-not-on-path/);
+
+    const missing = await world();
+    const nobin = await runDoctor({ ...base, env: missing.env, cwd: missing.cwd, stateDir: missing.state });
+    assert.equal(check(nobin, "prime", "binary").status, "failed");
+    assert.match(check(nobin, "prime", "binary").hint ?? "", /prime-agent/);
+  });
+
   it("model checks: pricing table, CLI aliases, adapter family, opencode provider/model", async () => {
     const w = await world();
     await fakeAllVersions(w);

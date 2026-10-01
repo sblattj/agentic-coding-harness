@@ -133,6 +133,7 @@ describe("suite resolution", () => {
         { agent: "opencode", reason: "opencode-bin not found on PATH" },
         { agent: "kiro", reason: "kiro-bin not found on PATH" },
         { agent: "gemini", reason: "gemini-bin not found on PATH" },
+        { agent: "prime", reason: "prime-bin not found on PATH" },
       ],
     });
     assert.deepEqual(selectAgents(["null", "gemini", "null"], probe), {

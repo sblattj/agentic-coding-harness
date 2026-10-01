@@ -136,6 +136,19 @@ const KiroTokenUsage = z.object({
   }),
 });
 
+/** prime-agent (pi-style) assistant message.usage — {input, output,
+ * cacheRead, cacheWrite, totalTokens, cost:{…, total}}. `input` is already
+ * the uncached slice (pi-ai convention; see src/adapters/prime.ts). cacheRead
+ * AND cacheWrite are required so a bare {input, output} payload from another
+ * producer is not taken for this one. */
+const PrimeMessageUsage = z.object({
+  input: z.number().nonnegative(),
+  output: z.number().nonnegative(),
+  cacheRead: z.number().nonnegative(),
+  cacheWrite: z.number().nonnegative(),
+  cost: z.object({ total: z.number().nullish() }).passthrough().nullish(),
+});
+
 // ---------------------------------------------------------------------------
 // Per-agent extractors (pure, unit-testable). Each returns null when the raw
 // payload does not match — never throws, never fabricates zeros.
@@ -398,12 +411,35 @@ export function normalizeKiro(agent: string, raw: unknown, timestamp = Date.now(
   );
 }
 
+/** prime-agent: one assistant message's usage. A provider cost of 0 means
+ * "no price configured" for the model (custom providers), so only a positive
+ * cost.total is carried as costUsd — never a fabricated $0. */
+export function normalizePrime(agent: string, raw: unknown, timestamp = Date.now()): CanonicalTokenRecord | null {
+  const parsed = PrimeMessageUsage.safeParse(raw);
+  if (!parsed.success) return null;
+  const u = parsed.data;
+  if (u.input === 0 && u.output === 0 && u.cacheRead === 0 && u.cacheWrite === 0) return null;
+  const total = u.cost?.total;
+  return record(
+    agent,
+    'unknown', // message.usage does not carry the model; the adapter stamps it
+    u.input,
+    u.output,
+    u.cacheRead,
+    u.cacheWrite,
+    timestamp,
+    undefined,
+    typeof total === 'number' && Number.isFinite(total) && total > 0 ? total : undefined,
+  );
+}
+
 const EXTRACTORS: Record<string, (agent: string, raw: unknown, ts: number) => CanonicalTokenRecord | null> = {
   claude: normalizeClaude,
   opencode: normalizeOpencode,
   codex: normalizeCodex,
   gemini: normalizeGemini,
   kiro: normalizeKiro,
+  prime: normalizePrime,
 };
 
 /** Central dispatcher: agent name -> its extractor. Unknown agent or unrecognized shape -> null. */
