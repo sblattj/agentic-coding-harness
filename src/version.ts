@@ -12,7 +12,7 @@ function loadVersion(): string {
   } catch {
     // bundled/standalone: fall through to the release-time literal
   }
-  return "0.13.0";
+  return "0.14.0";
 }
 
 export const VERSION: string = loadVersion();
