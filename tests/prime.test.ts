@@ -10,6 +10,7 @@ import {
   parsePrimeLine,
   primeArgs,
   primeUsageEvent,
+  primeChildUsageEvents,
 } from '../src/adapters/prime.ts';
 import { normalizePrime, normalizeUsage } from '../src/core/normalize.ts';
 import type { CanonicalEvent } from '../src/adapters/types.ts';
@@ -21,6 +22,10 @@ import { FakeChild, fakeSpawnFn, splitMidFirstLine, type FakeSpawnCall } from '.
 const FIXTURE = readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures/prime-session.ndjson'), 'utf8');
 const LINES = FIXTURE.trim().split('\n');
 const SESSION_ID = '01a0f5c1-58b0-7452-a3c9-dfe75f77b6e9';
+// Home-shaped prime state dir (sessions/, session-artifacts/) holding one
+// parent session 01a0f5bd… whose subagent transcript sits under sub-61b507e2/.
+const AGENT_DIR = join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures/prime');
+const PARENT_ID = '01a0f5bd-e279-7384-a414-0852a851db8d';
 const TOOL_CALL_ID = 'call_63e6cfc7c3c54ddbb8af7f7e';
 
 type Usage = Extract<CanonicalEvent, { type: 'usage' }>;
@@ -222,7 +227,7 @@ describe('prime spawn integration (fake child, real plumbing)', () => {
   it('spawns `prime-agent -p --mode json …`, buffers split lines, forwards stderr as progress', async () => {
     const child = new FakeChild();
     const calls: FakeSpawnCall[] = [];
-    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child, calls) });
+    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child, calls), agentDir: AGENT_DIR });
     const handle = adapter.spawn('do it', { model: 'ferry/flash', cwd: '/tmp' });
     assert.equal(calls.length, 1);
     assert.equal(calls[0]!.command, 'prime-agent');
@@ -244,7 +249,7 @@ describe('prime spawn integration (fake child, real plumbing)', () => {
   it('resume() passes -r <sessionId>', async () => {
     const child = new FakeChild();
     const calls: FakeSpawnCall[] = [];
-    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child, calls) });
+    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child, calls), agentDir: AGENT_DIR });
     const handle = adapter.resume(SESSION_ID, 'again');
     child.close(0);
     await collect(handle);
@@ -254,7 +259,7 @@ describe('prime spawn integration (fake child, real plumbing)', () => {
   it('launch() bridges to core events: session id, usage stamped with the model, no fabricated cost', async () => {
     const child = new FakeChild();
     const calls: FakeSpawnCall[] = [];
-    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child, calls) });
+    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child, calls), agentDir: AGENT_DIR });
     const launching = adapter.launch({ prompt: 'p', model: 'ferry/flash', resume: SESSION_ID, extraArgs: ['-nc'] });
     child.writeStdout(FIXTURE);
     child.close(0);
@@ -279,7 +284,7 @@ describe('prime spawn integration (fake child, real plumbing)', () => {
 
   it('abort() SIGTERMs the child and the driver handle reports aborted', async () => {
     const child = new FakeChild();
-    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child) });
+    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child), agentDir: AGENT_DIR });
     const handle = adapter.spawn('long running');
     const collected = collect(handle);
     await new Promise((r) => setTimeout(r, 0));
@@ -289,7 +294,7 @@ describe('prime spawn integration (fake child, real plumbing)', () => {
     assert.equal((await collected).code, -1);
 
     const child2 = new FakeChild();
-    const launching = new PrimeAdapter({ spawnFn: fakeSpawnFn(child2) }).launch({ prompt: 'x' });
+    const launching = new PrimeAdapter({ spawnFn: fakeSpawnFn(child2), agentDir: AGENT_DIR }).launch({ prompt: 'x' });
     child2.writeStdout(LINES[0] + '\n');
     const h = await launching;
     h.abort();
@@ -298,9 +303,33 @@ describe('prime spawn integration (fake child, real plumbing)', () => {
     assert.equal(await h.wait(), 'aborted');
   });
 
+  it('appends subagent usage from the child session files at agent_end, once', async () => {
+    const child = new FakeChild();
+    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child), agentDir: AGENT_DIR });
+    const launching = adapter.launch({ prompt: 'p' });
+    // Same recorded stream, re-keyed to the parent session that has a child.
+    child.writeStdout(FIXTURE.split(SESSION_ID).join(PARENT_ID));
+    child.close(0);
+    const handle = await launching;
+    const events: AgentEvent[] = [];
+    for await (const e of handle.attach()) events.push(e);
+    assert.equal(await handle.wait(), 'success');
+    const usage = events.filter((e) => e.type === 'usage');
+    // 2 parent calls from the stream + 7 child calls from sub-61b507e2/*.jsonl.
+    assert.equal(usage.length, 9);
+    assert.equal(usage.reduce((s, u) => s + (u.usage?.inputTokens ?? 0), 0), 23952 + 93710);
+    assert.equal(usage.reduce((s, u) => s + (u.usage?.outputTokens ?? 0), 0), 58 + 1360);
+  });
+
+  it('primeChildUsageEvents ignores semantic-edges.jsonl and missing sessions', () => {
+    const events = primeChildUsageEvents(AGENT_DIR, PARENT_ID);
+    assert.deepEqual(sumUsage(events), { count: 7, input: 93710, output: 1360, cacheRead: 0, cacheWrite: 0, total: 95070 });
+    assert.deepEqual(primeChildUsageEvents(AGENT_DIR, SESSION_ID), []);
+  });
+
   it('a non-zero exit becomes an error event', async () => {
     const child = new FakeChild();
-    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child) });
+    const adapter = new PrimeAdapter({ spawnFn: fakeSpawnFn(child), agentDir: AGENT_DIR });
     const handle = adapter.spawn('x');
     child.close(2);
     const { events, code } = await collect(handle);
