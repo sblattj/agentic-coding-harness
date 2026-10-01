@@ -186,6 +186,18 @@ describe('prime createPrimeLineParser (model-call boundaries, dedupe)', () => {
     assert.equal(sumUsage(events).count, 2);
     assert.equal(sumUsage(events).input, 23952);
   });
+
+  it('a skipped assistant message_end is recovered from its turn_end, once', () => {
+    // prime-agent 0.9.8 sometimes emits turn_end without the message_end
+    // (observed live while a turn awaited a subagent).
+    const parse = createPrimeLineParser();
+    const lines = LINES.filter((l) => !(l.startsWith('{"type":"message_end"') && l.includes('"role":"assistant"')));
+    assert.equal(lines.length, LINES.length - 2);
+    const events = lines.flatMap((l) => parse(l));
+    assert.deepEqual(sumUsage(events), { count: 2, input: 23952, output: 58, cacheRead: 0, cacheWrite: 0, total: 24010 });
+    assert.equal(events.filter((e) => e.type === 'model_call').length, 4);
+    assert.ok(events.some((e) => e.type === 'message' && e.text === 'DONE'));
+  });
 });
 
 describe('prime argv', () => {
