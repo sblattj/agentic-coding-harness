@@ -79,7 +79,7 @@ protocol) is not yet handled — see Trap 2 for why it must stay delta-based whe
 
 ### Prime Agent (stream tap `prime`)
 
-Event: `prime-agent -p --mode json` → one `usage` block `{input, output, cacheRead, cacheWrite, cost}` per assistant `message_end`, counted once per message. `input` is taken as the uncached prompt slice (pi convention; unverified, because the observed sessions had `cacheRead` 0). A provider-reported `cost` of 0 is treated as unpriced (`n/a`), not $0. Subagent (`rlm.spawn`) usage is not in the stream, so at `agent_end` the adapter adds the child session files under `~/.prime/agent/session-artifacts/`.
+Event: `prime-agent -p --mode json` → one `usage` block `{input, output, cacheRead, cacheWrite, cost}` per assistant message, taken from `message_end` or, when prime-agent skips that event, from the `turn_end` that repeats the message; counted once per message (keyed by `responseId`). `input` is taken as the uncached prompt slice (pi convention; unverified, because the observed sessions had `cacheRead` 0). A provider-reported `cost` of 0 is treated as unpriced (`n/a`), not $0. Subagent (`rlm.spawn`) usage is not in the stream, so at `agent_end` the adapter adds the child session files under `~/.prime/agent/session-artifacts/`.
 
 ### Gemini CLI (stream tap `gemini`)
 
