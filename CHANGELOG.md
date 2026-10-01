@@ -8,6 +8,16 @@ Note: releases before 0.8.1 predate this changelog.
 
 - `prime` agent: Prime Intellect's Prime Agent CLI (`prime-agent`). `ach run --agent prime` and the MCP run tools (`harness_run`, the jobs tool) launch `prime-agent -p --mode json`; `--model` passes through verbatim (`<provider>/<model>`) and `--resume` uses `-r`. Each model call carries start and end events, so per-call latency is measured. Usage is counted once per assistant message, a provider-reported cost of 0 is shown as `n/a` rather than $0, and subagent (`rlm.spawn`) usage, which is not in the JSON stream, is added at the end of the run from the child session files under `~/.prime/agent/session-artifacts/`. `ach doctor --agent prime` checks the `prime-agent` binary (with an install hint), auth (`PRIME_API_KEY`, `~/.prime/agent/auth.json`, or a provider `apiKey` in `~/.prime/agent/models.json`) and the MCP servers in `~/.prime/agent/settings.json`. Ancestor instruction detection and `--hermetic` cover `AGENTS.md` and `CLAUDE.md` all the way up to `/`, because prime does not stop at the git root. `ach stats`, `ach watch` and `ach archive` meter `~/.prime/agent/sessions/*.jsonl` and its subagent sessions without double counting (the parent's `child_usage_attributed` summary is ignored). `--agent` filters on `ach stats` and `ach archive` now validate against the transcript registry. There is no vendor quota source, so quota is `n/a`.
 
+## [0.13.0] - 2026-09-30
+
+### Added
+
+- `ach run` and `ach preflight` take a new repeatable `--extra-arg <token>`, which passes ONE verbatim argv token to the launched agent and never splits it. A value with spaces now works, for example a codex config override `--extra-arg -c --extra-arg 'developer_instructions="a b"'`. Tokens from `--extra-arg` and `--extra-args` reach the agent in command-line order. Both flags are now listed in `ach run --help`, `ach preflight --help` and the README ("Passing extra CLI args to the agent"); `--extra-args` was previously undocumented in the usage text.
+
+### Fixed
+
+- `npm run typecheck` is green again: three `AtifWriter.fromEvents` calls added in `tests/kiro-events.test.ts` for #107 passed only `agent`.
+
 ## [0.12.1] - 2026-09-30
 
 ### Fixed
