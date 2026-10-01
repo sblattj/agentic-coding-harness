@@ -877,7 +877,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
-  type WatchedAgent = "claude" | "codex" | "gemini" | (typeof TRANSCRIPT_SOURCES)[number]["agent"];
+  type WatchedAgent = "claude" | "codex" | "gemini" | "prime" | (typeof TRANSCRIPT_SOURCES)[number]["agent"];
   interface Watched {
     file: string;
     agent: WatchedAgent;
@@ -1181,7 +1181,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   const catalog = loadCatalog();
   reportCatalogIssues(catalog);
   // amp/goose/qwen (#22) are read-only transcript sources: valid filters.
-  if (agent && !isKnownAgent(agent) && !isTranscriptOnlyAgent(agent) && agent !== "custom" && !findDescriptor(catalog, agent)) {
+  if (agent && !isKnownAgent(agent) && !isTranscriptOnlyAgent(agent) && !transcriptAgentNames().includes(agent) && agent !== "custom" && !findDescriptor(catalog, agent)) {
     throw new HarnessError(`unknown agent '${agent}' (expected one of: ${[...new Set([...runnableAgentNames(catalog), ...transcriptAgentNames()])].join(", ")})`, "UNKNOWN_AGENT");
   }
   // One code path computes the window (#26) and the zone (#84); every output
