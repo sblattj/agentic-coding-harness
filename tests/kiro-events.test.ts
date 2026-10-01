@@ -727,11 +727,11 @@ describe('kiro-events: chunk coalescing and derived request spans (#108)', () =>
     const without = core.filter((e) => e.type !== 'model_call_start' && e.type !== 'model_call_end');
     assert.equal(core.length - without.length, 6);
     assert.deepEqual(deriveMetrics(core).map(stripT), deriveMetrics(without).map(stripT));
-    const atifWith = AtifWriter.fromEvents(core, { agent: 'kiro' }).toTrajectory().final_metrics;
-    const atifWithout = AtifWriter.fromEvents(without, { agent: 'kiro' }).toTrajectory().final_metrics;
+    const atifWith = AtifWriter.fromEvents(core, { agent: 'kiro', version: 'test', modelName: 'unknown' }).toTrajectory().final_metrics;
+    const atifWithout = AtifWriter.fromEvents(without, { agent: 'kiro', version: 'test', modelName: 'unknown' }).toTrajectory().final_metrics;
     assert.deepEqual(atifWith, atifWithout);
     // #107: ATIF files exactly one tool call per toolCallId (2 in the fixture), never the announcement duplicate.
-    const atifSteps = AtifWriter.fromEvents(core, { agent: 'kiro' }).toTrajectory().steps;
+    const atifSteps = AtifWriter.fromEvents(core, { agent: 'kiro', version: 'test', modelName: 'unknown' }).toTrajectory().steps;
     const atifToolCalls = atifSteps.reduce((n, s) => n + ((s as { tool_calls?: unknown[] }).tool_calls?.length ?? 0), 0);
     assert.equal(atifToolCalls, 2);
     const otelOpts = { agentName: 'kiro', model: 'unknown' } as Parameters<typeof deriveOtelSpans>[1];
