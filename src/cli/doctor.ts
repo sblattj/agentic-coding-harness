@@ -80,6 +80,12 @@ const INSTALL_HINT: Record<AgentName, string> = {
   opencode: "install opencode (npm i -g opencode-ai) or put `opencode` on PATH",
   null: "built-in offline adapter; no installation needed",
   kiro: "install kiro-cli or point KIRO_CLI_BIN at it",
+  prime: "install Prime Agent (curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh; releases: https://github.com/PrimeIntellect-ai/prime-agent/releases/latest) or put `prime-agent` on PATH",
+};
+
+/** The binary each agent's adapter spawns, when it differs from the agent name. */
+const AGENT_BINARY: Partial<Record<AgentName, string>> = {
+  prime: "prime-agent",
 };
 
 /** Credential env vars each adapter's CLI reads (mirrors PROVIDER_CREDENTIAL_ENV_VARS in adapters/shared.ts). */
@@ -89,6 +95,7 @@ const AUTH_ENV: Record<AgentName, string[]> = {
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   opencode: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"],
   kiro: ["KIRO_API_KEY"],
+  prime: ["PRIME_API_KEY"],
   null: [],
 };
 
@@ -410,6 +417,32 @@ async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv): Promise<Doct
       if (providers.length === 0) return mk("unproven", `${p} lists no providers`, "run `opencode auth login`");
       return mk("verified", `${p} lists provider(s) ${providers.join(", ")} (${offline})`);
     }
+    case "prime": {
+      // prime-agent authenticates via PRIME_API_KEY (handled above), a
+      // `/login` record (interactive prime-agent) in ~/.prime/agent/auth.json, or a custom
+      // provider with its own apiKey in ~/.prime/agent/models.json (e.g. a
+      // local gateway). Values are never printed — only names.
+      const dir = path.join(home, ".prime", "agent");
+      const authFile = path.join(dir, "auth.json");
+      const auth = await readJson(authFile);
+      if (auth !== undefined && !auth.ok) return mk("failed", `${authFile} does not parse: ${auth.error}`, "run `prime-agent` and /login again to rewrite it");
+      if (auth?.ok && isObj(auth.value) && Object.keys(auth.value).length > 0) {
+        return mk("verified", `${authFile} holds credential(s) for ${Object.keys(auth.value).join(", ")} (${offline})`);
+      }
+      const modelsFile = path.join(dir, "models.json");
+      const models = await readJson(modelsFile);
+      if (models !== undefined && !models.ok) return mk("failed", `${modelsFile} does not parse: ${models.error}`, "fix the JSON in models.json");
+      const providers = models?.ok && isObj(models.value) && isObj(models.value.providers) ? models.value.providers : {};
+      const keyed = Object.entries(providers)
+        .filter(([, v]) => isObj(v) && typeof v.apiKey === "string" && v.apiKey !== "")
+        .map(([name]) => name);
+      if (keyed.length > 0) return mk("verified", `${modelsFile} defines provider(s) with an apiKey: ${keyed.join(", ")} (${offline})`);
+      return mk(
+        "failed",
+        `no PRIME_API_KEY in env, no credentials in ${authFile}, no provider apiKey in ${modelsFile}`,
+        "run `prime-agent` and use /login, set PRIME_API_KEY, or add a provider with an apiKey to ~/.prime/agent/models.json",
+      );
+    }
     case "kiro":
       // Kiro's real auth check is the preflight's `kiro-cli whoami`; this path
       // only runs when the binary is missing.
@@ -520,6 +553,11 @@ async function scanMcp(agent: AgentName, env: NodeJS.ProcessEnv, cwd: string): P
     case "gemini":
       await jsonSource(path.join(home, ".gemini", "settings.json"), "mcpServers");
       await jsonSource(path.join(cwd, ".gemini", "settings.json"), "mcpServers");
+      break;
+    case "prime":
+      // `prime-agent mcp add` writes user servers to settings.json mcpServers
+      // (observed, prime-agent 0.9.8).
+      await jsonSource(path.join(home, ".prime", "agent", "settings.json"), "mcpServers");
       break;
     case "opencode": {
       const cfgHome = env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME !== "" ? env.XDG_CONFIG_HOME : path.join(home, ".config");
@@ -779,7 +817,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     options.agents.map(async (agent): Promise<DoctorCheck[]> => {
       if (agent === "null") return [{ agent, name: "runtime", status: "verified", depth: "shallow", detail: "built-in offline adapter; no binary, auth or MCP required", ms: 0 }];
       if (agent === "kiro") return checkKiro({ ...options, env, cwd, versionTimeoutMs });
-      const bin = await checkBinary(agent, agent, env, cwd, versionTimeoutMs);
+      const bin = await checkBinary(agent, AGENT_BINARY[agent] ?? agent, env, cwd, versionTimeoutMs);
       return [...bin.checks, await checkAuth(agent, env), checkModel(agent, options.model), await checkMcp(agent, env, cwd)];
     }),
   );
