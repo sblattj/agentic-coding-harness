@@ -2,6 +2,12 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [Unreleased]
+
+### Added
+
+- `prime` agent: Prime Intellect's Prime Agent CLI (`prime-agent`). `ach run --agent prime` and the MCP run tools (`harness_run`, the jobs tool) launch `prime-agent -p --mode json`; `--model` passes through verbatim (`<provider>/<model>`) and `--resume` uses `-r`. Each model call carries start and end events, so per-call latency is measured. Usage is counted once per assistant message, a provider-reported cost of 0 is shown as `n/a` rather than $0, and subagent (`rlm.spawn`) usage, which is not in the JSON stream, is added at the end of the run from the child session files under `~/.prime/agent/session-artifacts/`. `ach doctor --agent prime` checks the `prime-agent` binary (with an install hint), auth (`PRIME_API_KEY`, `~/.prime/agent/auth.json`, or a provider `apiKey` in `~/.prime/agent/models.json`) and the MCP servers in `~/.prime/agent/settings.json`. Ancestor instruction detection and `--hermetic` cover `AGENTS.md` and `CLAUDE.md` all the way up to `/`, because prime does not stop at the git root. `ach stats`, `ach watch` and `ach archive` meter `~/.prime/agent/sessions/*.jsonl` and its subagent sessions without double counting (the parent's `child_usage_attributed` summary is ignored). `--agent` filters on `ach stats` and `ach archive` now validate against the transcript registry. There is no vendor quota source, so quota is `n/a`.
+
 ## [0.12.1] - 2026-09-30
 
 ### Fixed

@@ -4,7 +4,7 @@
 
 ## The one-sentence position
 
-**ach is the only local-first tool that both LAUNCHES and METERS coding-agent CLIs** — five adapters (claude, opencode, kiro, codex, gemini) with one normalized event stream, defensible cost math, budgets that abort runs mid-flight, and artifacts (registry, replay, OTel/ATIF/Langfuse, HTML compare) — with no account, no server, and no container required.
+**ach is the only local-first tool that both LAUNCHES and METERS coding-agent CLIs** — six adapters (claude, opencode, kiro, codex, gemini, prime) with one normalized event stream, defensible cost math, budgets that abort runs mid-flight, and artifacts (registry, replay, OTel/ATIF/Langfuse, HTML compare) — with no account, no server, and no container required.
 
 Every surveyed rival is exactly one of the things ach combines, and admits it:
 - **Reporters** (ccusage 18.7k★, codeburn 11.3k★): read transcripts after the fact; cannot launch, abort, or cap anything. ccusage's own docs note its live monitor was deleted.
@@ -42,5 +42,5 @@ Coverage (5 CLIs vs ccusage 18 / codeburn 40 / loongsuite 30), quota & plan inte
 ## Quotable lines
 
 - "ccusage tells you what you spent. claude-squad spends it. ach is the only tool that spends it *and* stops it at $2."
-- "One registry, five agents, two dashboards, ten MCP tools, zero servers."
+- "One registry, six agents, two dashboards, ten MCP tools, zero servers."
 - "Every number carries its proof: provider-reported, or computed and auditable — never silent."

@@ -14,7 +14,7 @@ ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
 
 | kind     | source                                                                  | stored at                                   |
 |----------|-------------------------------------------------------------------------|---------------------------------------------|
-| `native` | machine transcripts `ach stats` reads: `~/.claude/projects/**/*.jsonl` (subagent files included), `~/.codex/sessions/**/*.jsonl`, `~/.gemini/tmp/*/chats/*.json`, plus every read-only source (amp, goose, qwen, cursor; roots in [transcript-adapters.md](transcript-adapters.md), SQLite stores snapshotted) | `<batch>/native/<agent>/<path under the source dir>` |
+| `native` | machine transcripts `ach stats` reads: `~/.claude/projects/**/*.jsonl` (subagent files included), `~/.codex/sessions/**/*.jsonl`, `~/.gemini/tmp/*/chats/*.json`, `~/.prime/agent/sessions/*.jsonl` (plus subagent sessions under `session-artifacts/`), plus every read-only source (amp, goose, qwen, cursor; roots in [transcript-adapters.md](transcript-adapters.md), SQLite stores snapshotted) | `<batch>/native/<agent>/<path under the source dir>` |
 | `raw`    | harness raw transcripts referenced by `RunRecord.rawTranscript` (`<stateDir>/raw/<agent>-<session>.jsonl`) | `<batch>/raw/<basename>` |
 | `record` | registry records `<stateDir>/runs/<runId>.json`                          | `<batch>/runs/<runId>.json`                 |
 
@@ -35,7 +35,7 @@ one line per copied file:
 - `sha256`, `size` and `mtimeMs` describe the source file at copy time. The copy keeps the
   source's mtime.
 - `sessionId` is taken from the file name: the Claude session file or its `<session>/subagents/`
-  parent, the trailing UUID of a Codex rollout, or the Gemini chat stem. It is `null` when the
+  parent, the trailing UUID of a Codex rollout, the Gemini chat stem, or the Prime Agent session UUID. It is `null` when the
   name does not contain one; ach never guesses.
 - `runId` links the file to a registry record: through `rawTranscript` for `raw` files, and
   through a matching `(agent, sessionId)` for `native` files. It is `null` when no harness run
@@ -87,7 +87,7 @@ ach archive --restore latest --to /tmp/restored  # the newest batch only
 A restore writes a home-shaped tree:
 
 ```
-<to>/.claude/projects/…   <to>/.codex/sessions/…   <to>/.gemini/tmp/…
+<to>/.claude/projects/…   <to>/.codex/sessions/…   <to>/.gemini/tmp/…   <to>/.prime/agent/…
 <to>/.local/share/amp/threads/…   <to>/.qwen/projects/…   (each read-only source under its home-relative root)
 <to>/.agentic-coding-harness/raw/…   <to>/.agentic-coding-harness/runs/…
 ```

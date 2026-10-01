@@ -13,6 +13,7 @@ opencode  n/a     n/a   n/a        n/a     n/a       no vendor quota source wire
 kiro      n/a     n/a   n/a        n/a     n/a       no vendor quota source wired
 codex     7d      6.0%  14h50m     94.0%   4d9h ago  ~/.codex/sessions/.../rollout-….jsonl
 gemini    n/a     n/a   n/a        n/a     n/a       no vendor quota source wired
+prime     n/a     n/a   n/a        n/a     n/a       no vendor quota source wired
 ```
 
 - **WINDOW**: `5h`, `7d`, `spend` (a gateway spend limit), or the vendor's stated length.
@@ -37,6 +38,7 @@ as `98%/5h`, and is re-read at most every 30 s.
 | codex | Codex CLI rollouts `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `payload.rate_limits.{primary,secondary}.{used_percent, window_minutes, resets_at}` on `payload.type == "token_count"` lines; `resets_at` is in epoch seconds | **Real.** Observed on disk in both the 7d-only and the 5h+7d shapes. ach reads the last observation in the newest rollout that has one. |
 | claude | Claude Code statusline stdin JSON | `rate_limits.{five_hour,seven_day,spend_limit}.{used_percentage, resets_at}`; `resets_at` is in epoch seconds | **Real, opt-in.** Documented at <https://code.claude.com/docs/en/statusline>. Claude Code sends it only to claude.ai Pro/Max subscribers (or behind a gateway spend limit), and only after the first API response. |
 | gemini | none | none | `n/a`: no vendor quota source is wired |
+| prime | none | none | `n/a`: no vendor quota source is wired |
 | opencode | none | none | `n/a`: no vendor quota source is wired |
 | kiro | none | none | `n/a`: Kiro reports per-run credits, not plan headroom |
 
