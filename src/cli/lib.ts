@@ -119,6 +119,8 @@ export function formatEventLine(e: AgentEvent, starts?: Map<string, number>): st
       const parts = [e.model ?? ""];
       if (typeof e.outputTokens === "number") parts.push(`${e.outputTokens} out`);
       if (t0 !== undefined && typeof e.timestamp === "number") parts.push(`${e.timestamp - t0}ms`);
+      // A derived boundary (#108, kiro ACP) must never read as a native span.
+      if (e.provenance === "estimated") parts.push("estimated");
       return `[${c}] model   ${parts.filter(Boolean).join(" · ")}`.trimEnd();
     }
     case "step":

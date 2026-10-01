@@ -467,7 +467,10 @@ function stepKind(ev: CoreAgentEvent): unknown {
  * - end = right after the first tool start, else at the last output before
  *   the turn terminator (runFinished).
  * No token counts exist (kiro reports credits only), so kiro throughput stays
- * null. The ACP transport emits no runStarted, so it gets no boundaries.
+ * null. The ACP transport emits no runStarted, so this tracker never fires
+ * there; ACP gets ESTIMATED spans from the normalizer instead (#108,
+ * src/adapters/kiro-events.ts "DERIVED REQUEST SPANS"), which the normalizer
+ * never emits on headless so the two never double up.
  */
 export class KiroModelCallTracker {
   #open: { id: string; lastAt: number | null } | null = null;
@@ -487,7 +490,8 @@ export class KiroModelCallTracker {
       const end = this.#end(ts);
       return [ev, end];
     }
-    // Only streamed chunks: the buffered `message` is flushed at the terminator.
+    // Only streamed chunks mark output time: a coalesced `message` (#108)
+    // repeats text whose chunks were already seen.
     if (kind === 'chunk') {
       this.#open.lastAt = ts;
       return [ev];

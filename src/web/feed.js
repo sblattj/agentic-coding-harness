@@ -17,6 +17,10 @@
  * status rows (progress, modelAck, stderrNotice) print WITHOUT closing that
  * block, so an interleaved heartbeat can no longer shred one message into a row
  * per delta; only a message, a tool card or a terminal row ends the stream.
+ * Kiro also emits each contiguous segment as one canonical `message` (#108;
+ * `reasoning: true` for thoughts) right after its chunks: a message whose text
+ * equals the live block of the same kind confirms it in place, so the text is
+ * never drawn twice.
  *
  * Context gauge: when the server stamps an event with `ctx` (the context-window
  * reading at that frame, src/web/context-frames.ts), the row gets a gauge at its
@@ -538,6 +542,20 @@
       var content = typeof ev.content === "string" ? ev.content : "";
       var source = ev.source === "assistant" ? "agent" : ev.source;
       var reasoning = typeof ev.reasoningContent === "string" ? ev.reasoningContent : "";
+      if (ev.reasoning === true) {
+        // A whole message flagged `reasoning` (codex items; kiro's coalesced
+        // thought chunks, #108) is reasoning text, never the answer.
+        if (content.trim() !== "" && reasoning.trim() === "") reasoning = content;
+        content = "";
+        if (reasoning.trim() === "") return;
+        if (state.stream !== null && state.stream.kind === "reasoning" &&
+            state.stream.text.trim() === reasoning.trim()) {
+          // The adapter is confirming the streamed reasoning block: keep the
+          // row, never add a duplicate.
+          endStream();
+          return;
+        }
+      }
       if (content.trim() === "" && reasoning.trim() === "") return;
 
       if (

@@ -76,6 +76,14 @@ function matchOpen(open: OpenSpanRef[], callId: string | undefined): number {
 
 const TEST_NAME_RE = /test|vitest|pytest|jest|spec/i;
 
+/**
+ * Display name of a model-call span. A derived boundary (#108, kiro ACP:
+ * `provenance: 'estimated'`) is labelled so it never reads as a native span.
+ */
+function modelSpanName(ev: { model?: string; provenance?: string }): string {
+  return `llm ${ev.model || "call"}${ev.provenance === "estimated" ? " (estimated)" : ""}`;
+}
+
 export function deriveSpans(events: AgentEvent[]): Span[] {
   const rows = normalizeTimeline(events);
   if (rows.length === 0) return [];
@@ -101,7 +109,7 @@ export function deriveSpans(events: AgentEvent[]): Span[] {
         const span: Span = {
           id: newId(),
           kind: "model",
-          name: `llm ${ev.model || "call"}`,
+          name: modelSpanName(ev),
           startMs: tMs,
           durationMs: 0,
           depth: 1,
@@ -297,13 +305,13 @@ export function deriveLogs(events: AgentEvent[]): LogLine[] {
         break;
       }
       case "model_call_start": {
-        const name = `llm ${ev.model || "call"}`;
+        const name = modelSpanName(ev);
         open.push({ kind: "model", name, callId: ev.callId });
         logs.push({ tMs, level: "info", span: name, text: `${name} begin` });
         break;
       }
       case "model_call_end": {
-        const name = `llm ${ev.model || "call"}`;
+        const name = modelSpanName(ev);
         const closed = close("model", ev.callId);
         logs.push({ tMs, level: "info", span: closed ?? innermost(), text: `${name} end` });
         break;

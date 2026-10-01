@@ -53,6 +53,13 @@ export interface ToolLatencyRow extends DurationStats {
  * - tools: tool_call -> tool_result per tool name (a call whose result never
  *   arrived is not measured).
  *
+ * Boundaries marked `provenance: 'estimated'` (#108: kiro ACP spans inferred
+ * from chunk/tool ordering) are EXCLUDED from ttft, modelCalls and
+ * throughput: their start is the first output itself, not the request, so
+ * they would report a fake ~0ms TTFT. Output events only ever set a call's
+ * FIRST output time, so a kiro `chunk` step and the coalesced `message` for
+ * the same text cannot count twice.
+ *
  * Only real, finite timestamps are used — unlike the span view, missing
  * timestamps are never carried forward, so an unmeasurable interval is
  * skipped rather than reported as 0ms.
@@ -125,9 +132,13 @@ export function deriveLatency(events: AgentEvent[]): LatencyMetrics {
     const ms = toEventMs(ev.timestamp);
     switch (ev.type) {
       case "model_call_start":
+        // An estimated (derived) span starts AT the first output, so its TTFT
+        // would be ~0 and its duration streaming time only: skip it (#108).
+        if (ev.provenance === "estimated") break;
         openModels.push({ callId: ev.callId, startMs: ms, firstOutputMs: null, outputTokens: null });
         break;
       case "model_call_end": {
+        if (ev.provenance === "estimated") break;
         const idx = findModel(ev.callId);
         if (idx === -1) break;
         const call = openModels.splice(idx, 1)[0]!;
