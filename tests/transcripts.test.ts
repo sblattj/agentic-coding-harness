@@ -145,6 +145,7 @@ test("scanAll: walks all three fixture sources with agent set", async () => {
     claudeDir: join(fixtures, "claude"),
     codexDir: join(fixtures, "codex"),
     geminiDir: join(fixtures, "gemini"),
+    primeDir: join(fixtures, "does-not-exist"),
     // Hermetic: keep the read-only sources off the real home directory.
     sourceRoots: { amp: [], goose: [], qwen: [] },
   })) {

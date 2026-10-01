@@ -22,6 +22,7 @@ const SAMPLE_FILE: Record<string, string> = {
   claude: "proj/session.jsonl",
   codex: "2026/09/28/rollout-x.jsonl",
   gemini: "hash/chats/session.json",
+  prime: "sessions/01a0f5c1-58b0-7452-a3c9-dfe75f77b6e9.jsonl",
   amp: "thread.json",
   goose: "sessions.db",
   qwen: "proj/chats/session.jsonl",
@@ -43,10 +44,10 @@ function isUnder(root: string, p: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
-test("registry names are the native three plus every read-only source, without duplicates", () => {
+test("registry names are the native four plus every read-only source, without duplicates", () => {
   const names = transcriptAgentNames();
   assert.equal(new Set(names).size, names.length);
-  for (const n of ["claude", "codex", "gemini", ...TRANSCRIPT_SOURCES.map((s) => s.agent)]) {
+  for (const n of ["claude", "codex", "gemini", "prime", ...TRANSCRIPT_SOURCES.map((s) => s.agent)]) {
     assert.ok(names.includes(n), `registry missing '${n}'`);
   }
   // scanAll / archive / watch all walk transcriptSources(); it must cover the registry exactly.

@@ -287,6 +287,7 @@ describe("transcript source registry", () => {
       claudeDir: path.join(fixtures, "does-not-exist"),
       codexDir: path.join(fixtures, "does-not-exist"),
       geminiDir: path.join(fixtures, "does-not-exist"),
+      primeDir: path.join(fixtures, "does-not-exist"),
       sourceRoots: {
         amp: [path.join(fixtures, "amp", "threads"), path.join(fixtures, "amp-malformed", "threads")],
         goose: [],

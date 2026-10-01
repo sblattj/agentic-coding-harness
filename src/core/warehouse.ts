@@ -88,6 +88,8 @@ function nativeSessionId(agent: string, relPath: string): string | null {
   }
   if (agent === "codex") return CODEX_UUID_RE.exec(base)?.[1] ?? null;
   if (agent === "gemini") return base.endsWith(".json") ? base.slice(0, -".json".length) : null;
+  // <uuid>.jsonl in sessions/ or session-artifacts/<parent>/sub-*/: the stem is the session id.
+  if (agent === "prime") return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : null;
   return null;
 }
 
@@ -303,7 +305,7 @@ export interface RestoreResult {
 
 /**
  * Write archived files back into a directory tree the existing readers accept:
- *   native → <to>/.claude/projects|.codex/sessions|.gemini/tmp/<relPath>
+ *   native → <to>/.claude/projects|.codex/sessions|.gemini/tmp|.prime/agent/<relPath>
  *   raw    → <to>/.agentic-coding-harness/raw/<basename>
  *   record → <to>/.agentic-coding-harness/runs/<runId>.json
  * so `ach stats --dir <to>` reads the transcripts and a state dir of

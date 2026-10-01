@@ -4,6 +4,7 @@
 //  - Claude Code: ~/.claude/projects/**/*.jsonl (assistant message usage)
 //  - Codex CLI:   ~/.codex/sessions/**/rollout-*.jsonl (cumulative token_usage_record)
 //  - Gemini CLI:  ~/.gemini/tmp/*/chats/*.json (per-message token usage)
+//  - Prime Agent: ~/.prime/agent/sessions + session-artifacts (see ./prime.ts)
 //  - Amp / Goose / Qwen Code: read-only sources registered in
 //    ./transcript-sources.ts (contract + matrix: docs/transcript-adapters.md)
 //
@@ -21,6 +22,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
+import { isPrimeSessionFile, parsePrimeSession } from "./prime.ts";
 import { TRANSCRIPT_SOURCES, type TranscriptOnlyAgent } from "./transcript-sources.ts";
 
 // ---------------------------------------------------------------------------
@@ -32,7 +34,7 @@ export interface CanonicalTokenRecord {
   sourcePath?: string;
   /** Which CLI agent produced the record. amp/goose/qwen are read-only
    * transcript sources (src/monitors/transcript-sources.ts). */
-  agent: "claude" | "codex" | "gemini" | "amp" | "goose" | "qwen" | "cursor";
+  agent: "claude" | "codex" | "gemini" | "amp" | "goose" | "qwen" | "cursor" | "prime";
   /** Session identifier when the source exposes one, else null. */
   sessionId: string | null;
   /** ISO-8601 timestamp when the source exposes one, else null. */
@@ -366,6 +368,8 @@ export interface ScanOptions {
   codexDir?: string;
   /** Gemini tmp dir containing <hash>/chats/*.json files. */
   geminiDir?: string;
+  /** Prime Agent dir (~/.prime/agent) holding sessions/ and session-artifacts/. */
+  primeDir?: string;
   /** Root overrides for the read-only sources in TRANSCRIPT_SOURCES
    * (amp/goose/qwen); an omitted agent uses its defaultRoots(homedir()). */
   sourceRoots?: Partial<Record<TranscriptOnlyAgent, string[]>>;
@@ -425,9 +429,10 @@ const NATIVE_TRANSCRIPT_SOURCES = [
   { agent: "claude", option: "claudeDir", root: (home: string) => join(home, ".claude", "projects"), keep: isJsonl, parse: parseClaudeTranscript },
   { agent: "codex", option: "codexDir", root: (home: string) => join(home, ".codex", "sessions"), keep: isJsonl, parse: parseCodexRollout },
   { agent: "gemini", option: "geminiDir", root: (home: string) => join(home, ".gemini", "tmp"), keep: isGeminiChatFile, parse: parseGeminiChat },
+  { agent: "prime", option: "primeDir", root: (home: string) => join(home, ".prime", "agent"), keep: isPrimeSessionFile, parse: parsePrimeSession },
 ] as const satisfies ReadonlyArray<{
   agent: CanonicalTokenRecord["agent"];
-  option: "claudeDir" | "codexDir" | "geminiDir";
+  option: "claudeDir" | "codexDir" | "geminiDir" | "primeDir";
   root: (home: string) => string;
   keep: (filePath: string) => boolean;
   parse: (filePath: string) => Promise<CanonicalTokenRecord[]>;
@@ -441,7 +446,7 @@ export function transcriptAgentNames(): string[] {
 /**
  * The machine transcript sources scanAll walks, with ScanOptions overrides
  * applied (defaults: ~/.claude/projects, ~/.codex/sessions, ~/.gemini/tmp,
- * then each read-only source's defaultRoots). Shared with the warehouse
+ * ~/.prime/agent, then each read-only source's defaultRoots). Shared with the warehouse
  * (src/core/warehouse.ts) so `ach archive` snapshots exactly the files
  * `ach stats` reads, and with `ach watch`.
  */
@@ -462,7 +467,7 @@ export function transcriptSources(opts: ScanOptions = {}): TranscriptSource[] {
 export function scanOptionsForRoot(root: string): Required<ScanOptions> {
   const native = Object.fromEntries(NATIVE_TRANSCRIPT_SOURCES.map((src) => [src.option, src.root(root)])) as Pick<
     Required<ScanOptions>,
-    "claudeDir" | "codexDir" | "geminiDir"
+    "claudeDir" | "codexDir" | "geminiDir" | "primeDir"
   >;
   return {
     ...native,
