@@ -27,6 +27,8 @@ export interface FakeTargetSpec {
   type: string;
   url: string;
   title?: string;
+  /** Hidden targets are absent from /json/list (mutable at run time). */
+  hidden?: boolean;
   contexts?: FakeContext[];
   handler?: FakeHandler;
 }
@@ -91,7 +93,7 @@ export async function startFakeCdp(spec: FakeCdpSpec): Promise<FakeCdp> {
     };
     if (req.url === "/json/list") {
       return json(
-        spec.targets.map((t) => ({
+        spec.targets.filter((t) => !t.hidden).map((t) => ({
           id: t.id,
           type: t.type,
           url: t.url,

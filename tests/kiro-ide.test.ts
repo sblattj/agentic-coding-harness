@@ -89,7 +89,20 @@ const CHAT_URL = "vscode-webview://abc/index.html?id=1&extensionId=kiro.kiroAgen
 
 interface World {
   fake: FakeCdp;
-  state: { text: string; autopilot: "on" | "off"; deep: string; sent: boolean; enter: number };
+  targets: Parameters<typeof startFakeCdp>[0]["targets"];
+  state: {
+    text: string;
+    autopilot: "on" | "off";
+    deep: string;
+    sent: boolean;
+    enter: number;
+    tabClicks: number;
+    /** Overrides what the pane-text expression returns. */
+    paneFn?: () => string;
+    /** Replaces the default Enter behaviour. */
+    onEnter?: () => void;
+    onTabClick?: (index: number) => void;
+  };
 }
 
 const open: FakeCdp[] = [];
@@ -104,18 +117,23 @@ async function world(
     deep?: string;
     title?: string;
     withChat?: boolean;
+    /** The chat starts with a previous conversation (so New session must be clicked). */
+    used?: boolean;
+    /** Adds a hidden second chat target "chat2" (a rebuilt webview after a folder switch). */
+    swapChat?: boolean;
     neverFinish?: boolean;
     /** Enter is swallowed: nothing is submitted (seen live right after a folder switch). */
     swallow?: boolean;
   } = {},
 ): Promise<World> {
   const state = {
-    text: IDLE_TEXT,
+    text: opts.used ? `${FIXTURE_WS_A.replace(/hello from ws-a/, "old")}` : IDLE_TEXT,
     autopilot: opts.autopilot ?? "on",
     deep: opts.deep ?? "Kiro Free 0 / 50 | Autocomplete",
     sent: false,
     enter: 0,
-  };
+    tabClicks: 0,
+  } as World["state"];
   const targets: Parameters<typeof startFakeCdp>[0]["targets"] = [
     {
       id: "page1",
@@ -134,9 +152,10 @@ async function world(
       },
     },
   ];
-  if (opts.withChat !== false) {
+  for (const [id, hidden] of opts.withChat === false ? [] : ([["chat1", false], ...(opts.swapChat ? [["chat2", true]] : [])] as Array<[string, boolean]>)) {
     targets.push({
-      id: "chat1",
+      id,
+      hidden,
       type: "iframe",
       url: CHAT_URL,
       contexts: [
@@ -151,6 +170,10 @@ async function world(
         if (method === "Input.dispatchKeyEvent") {
           if (params.type === "keyDown" && params.key === "Enter") {
             state.enter++;
+            if (state.onEnter) {
+              state.onEnter();
+              return {};
+            }
             if (opts.swallow) return {};
             // Submitted: the prompt is echoed; a finished turn adds the reply.
             state.text = opts.neverFinish ? `${IDLE_TEXT}\n\n${PROMPT}` : (opts.final ?? FIXTURE_WS_B);
@@ -168,14 +191,20 @@ async function world(
           return val("clicked");
         }
         if (e.includes("e.focus()")) return val(true);
-        if (e === "document.body.innerText") return val(state.text);
+        if (e.includes("tab-bar-item") && e.endsWith(".length")) return val(2);
+        if (e.includes("tab-bar-item")) {
+          state.tabClicks++;
+          state.onTabClick?.(Number(/\[(\d+)\]/.exec(e)![1]));
+          return val("clicked");
+        }
+        if (e.includes("session-manager-header")) return val(state.paneFn ? state.paneFn() : state.text);
         return val(null);
       },
     });
   }
   const fake = await startFakeCdp({ targets });
   open.push(fake);
-  return { fake, state };
+  return { fake, state, targets };
 }
 
 function recordingSpawn(): { spawn: SpawnFn; calls: Array<{ cmd: string; args: string[] }>; kills: number[] } {
@@ -212,7 +241,7 @@ const fast = { pollMs: 15, readyTimeoutMs: 3000, recoverMs: 100 };
 
 describe("KiroIdeAdapter (fake CDP)", () => {
   it("happy path: events, credits 0.18, hook marker, tool call; attach mode never spawns", async () => {
-    const w = await world();
+    const w = await world({ used: true });
     const { spawn, calls } = recordingSpawn();
     const adapter = new KiroIdeAdapter({ ...fast, spawn });
     const handle = await adapter.launch(specFor(w.fake));
@@ -347,6 +376,134 @@ describe("KiroIdeAdapter (fake CDP)", () => {
     // initial reuse-window + exactly one recovery re-invocation
     assert.equal(calls.length, 2);
     assert.ok(calls.every((c) => c.args.includes("--reuse-window")));
+  });
+
+  it("a truncated tab label of the prompt while the pane is idle does not pass submit", async () => {
+    const w = await world({ swallow: true });
+    // Even if the tab label leaked into the pane text, a 70-char label is not the full prompt.
+    w.state.paneFn = () => `${PROMPT.slice(0, 70)}\n${IDLE_TEXT}`;
+    const adapter = new KiroIdeAdapter({ ...fast, submitTimeoutMs: 600 });
+    const h = await adapter.launch(specFor(w.fake));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "error");
+    assert.match((events.find((e) => e.type === "error") as any).message, /not submitted/);
+  });
+
+  it("pane loses its echo: clicks the prompt's session tab and completes", async () => {
+    const w = await world();
+    let polls = 0;
+    w.state.onEnter = () => {
+      w.state.text = `${IDLE_TEXT}\n\n${PROMPT}`; // echoed, turn running
+    };
+    w.state.paneFn = () => {
+      // after submit proof, the webview flips to a fresh pane until the tab is clicked
+      if (w.state.enter > 0 && polls++ >= 3 && w.state.tabClicks === 0) return IDLE_TEXT;
+      return w.state.text;
+    };
+    w.state.onTabClick = (i) => {
+      if (i === 1) w.state.text = FIXTURE_WS_B; // the newest tab holds the prompt's session
+    };
+    const adapter = new KiroIdeAdapter(fast);
+    const h = await adapter.launch(specFor(w.fake));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "success", JSON.stringify(events.filter((e) => e.type === "error")));
+    assert.ok(w.state.tabClicks >= 1);
+    assert.ok(events.some((e: any) => e.type === "progress" && /re-selected/.test(e.text)));
+    assert.equal((events.find((e) => e.type === "usage") as any).usage.extra.credits, 0.18);
+  });
+
+  it("an already-empty chat is reused instead of clicking New session", async () => {
+    const w = await world();
+    const h = await new KiroIdeAdapter(fast).launch(specFor(w.fake));
+    const [, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "success");
+    assert.ok(!w.fake.calls.some((c) => String(c.params?.expression ?? "").includes("New session")));
+  });
+
+  it("submit stalls because the prompt ran in another tab: scans tabs and recovers", async () => {
+    const w = await world();
+    w.state.onEnter = () => {
+      w.state.text = IDLE_TEXT; // a late New Session took the pane; the prompt is in tab 1
+    };
+    w.state.onTabClick = (i) => {
+      if (i === 1) w.state.text = `${IDLE_TEXT}\n\n${PROMPT}`;
+      if (i === 1) setTimeout(() => (w.state.text = FIXTURE_WS_B), 100);
+    };
+    const adapter = new KiroIdeAdapter({ ...fast, pollMs: 100 });
+    const h = await adapter.launch(specFor(w.fake));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "success", JSON.stringify(events.filter((e) => e.type === "error")));
+    assert.ok(events.some((e: any) => e.type === "progress" && /another session tab/.test(e.text)));
+  });
+
+  it("only counts Elapsed time after the last prompt echo (an older turn's elapsed does not finish the run)", async () => {
+    const w = await world();
+    w.state.onEnter = () => {
+      w.state.text = `Elapsed time: 9s\n\n${PROMPT}`;
+    };
+    const adapter = new KiroIdeAdapter({ ...fast, turnTimeoutMs: 400 });
+    const h = await adapter.launch(specFor(w.fake, { kiroIde: { cdp: w.fake.endpoint, newSession: false } }));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "error");
+    assert.match((events.find((e) => e.type === "error") as any).message, /did not finish/);
+  });
+
+  it("after a folder switch, ignores the pre-switch chat id and uses the rebuilt one", async () => {
+    const w = await world({ title: "ws-a", swapChat: true });
+    const page = w.targets.find((t) => t.id === "page1")!;
+    const chat1 = w.targets.find((t) => t.id === "chat1")!;
+    const chat2 = w.targets.find((t) => t.id === "chat2")!;
+    const spawn: SpawnFn = () => {
+      page.title = "ws-b"; // title flips at once, the old webview lingers, then is replaced
+      setTimeout(() => {
+        chat1.hidden = true;
+        chat2.hidden = false;
+      }, 400);
+      return { pid: 1, exitCode: null, kill: () => true, unref: () => {}, on: () => undefined };
+    };
+    const port = Number(w.fake.endpoint.split(":")[1]);
+    const adapter = new KiroIdeAdapter({ ...fast, spawn });
+    const h = await adapter.launch({ prompt: PROMPT, cwd: "/tmp/kiro-ide-spike/ws-b", kiroIde: { port } } as RunSpec);
+    const [, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "success");
+    assert.ok(!w.fake.calls.some((c) => c.targetId === "chat1"), "the stale pre-switch chat id was never connected");
+    assert.ok(w.fake.calls.some((c) => c.targetId === "chat2" && c.method === "Input.insertText"));
+  });
+
+  it("a second concurrent run against the same endpoint is refused by the lock", async () => {
+    const w = await world({ neverFinish: true });
+    const lockDir = await fs.mkdtemp(path.join(os.tmpdir(), "ach-lock-"));
+    const a = new KiroIdeAdapter({ ...fast, lockDir });
+    const b = new KiroIdeAdapter({ ...fast, lockDir });
+    const h1 = await a.launch(specFor(w.fake));
+    const d1 = collect(h1);
+    while (w.state.enter === 0) await new Promise((r) => setTimeout(r, 10));
+    const h2 = await b.launch(specFor(w.fake));
+    const [ev2, exit2] = await Promise.all([collect(h2), h2.wait()]);
+    assert.equal(exit2, "error");
+    assert.match((ev2.find((e) => e.type === "error") as any).message, /already driving the Kiro IDE/);
+    h1.abort();
+    assert.equal(await h1.wait(), "aborted");
+    await d1;
+    assert.deepEqual(await fs.readdir(lockDir), [], "lock released");
+  });
+
+  it("ACH_KIRO_IDE_DEBUG=1 emits debug progress events with data for the CLI renderer", async () => {
+    process.env.ACH_KIRO_IDE_DEBUG = "1";
+    try {
+      const w = await world({ used: true });
+      const adapter = new KiroIdeAdapter(fast);
+      const h = await adapter.launch(specFor(w.fake));
+      const [events] = await Promise.all([collect(h), h.wait()]);
+      const dbgs = events.filter((e: any) => e.type === "progress" && /^kiro-ide\[debug\]/.test(e.text));
+      assert.ok(dbgs.some((e: any) => /ready chat target=/.test(e.text)));
+      assert.ok(dbgs.some((e: any) => /autopilot=on/.test(e.text)));
+      assert.ok(dbgs.some((e: any) => /new-session=clicked/.test(e.text)));
+      assert.ok(dbgs.some((e: any) => /submit-pass/.test(e.text)));
+      assert.ok(dbgs.every((e: any) => e.data === e.text));
+    } finally {
+      delete process.env.ACH_KIRO_IDE_DEBUG;
+    }
   });
 
   it("fails when the prompt is never submitted instead of polling an idle chat", async () => {
