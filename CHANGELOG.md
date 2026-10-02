@@ -2,6 +2,12 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [Unreleased]
+
+### Added
+
+- `ach quota wait` blocks until an agent's vendor-reported quota windows have headroom, then optionally runs a command: `ach quota wait [--agent A=claude] [--max-used PCT=95] [--window 5h,7d] [--poll-s S=60] [--grace-s S=60] [--timeout-s S] [--allow-unknown] [-- <cmd> ...]`. A window counts as clear when it is under `--max-used` or has reset since it was observed; otherwise it waits until the latest blocking `resets_at` plus `--grace-s`, re-reading the snapshot every `--poll-s`. Every check uses the wall clock, so a laptop that sleeps through the reset starts the job on wake. It exits with the command's code, `0` with no command, and `1` on `--timeout-s` or when the agent has no vendor number (unless `--allow-unknown`). The decision is the exported `quotaWaitDecision(rows, opts)`.
+
 ## [0.15.0] - 2026-10-01
 
 ### Added

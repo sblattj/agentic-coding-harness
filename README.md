@@ -242,6 +242,7 @@ ach run --agent null --verify 'true' --repeat 3 "offline smoke"
 ach stats --last 7d --tz America/Los_Angeles --by week,model,project
 ach stats --cost-mode calculate --blocks         # computed cost and Claude 5-hour blocks
 ach quota --json                                # vendor-reported headroom, n/a when absent
+ach quota wait --max-used 90 -- ./batch.sh       # start a job once the quota window has room
 ach status --compact
 ach statusline                                  # statusline-compatible usage summary
 ach archive                                     # preserve transcripts and run records

@@ -21,6 +21,7 @@ import {
   parseClaudeStatusline,
   parseCodexRateLimits,
   quotaRows,
+  quotaWaitDecision,
   readClaudeSnapshot,
   readCodexQuota,
   renderQuotaTable,
@@ -279,5 +280,127 @@ describe("quota — cli", () => {
     assert.equal(t.code, 0, t.stderr);
     assert.match(t.stdout, /^AGENT\s+WINDOW/);
     assert.ok(t.stdout.split("\n").filter((l) => l.includes("n/a")).length >= QUOTA_AGENTS.length, t.stdout);
+  });
+});
+
+describe("quota: wait decision", () => {
+  const NOW = Date.UTC(2026, 9, 2, 12, 0, 0);
+  const sec = (ms: number): number => Math.floor(ms / 1000);
+  const claude = (windows: Array<{ name: string; used: number; resetsInMs?: number }>) =>
+    quotaRows(
+      {
+        claude: {
+          agent: "claude",
+          source: "statusline",
+          observedAt: NOW - 60_000,
+          windows: windows.map((w) => ({
+            name: w.name,
+            usedPercent: w.used,
+            ...(w.resetsInMs === undefined ? {} : { resetsAt: sec(NOW + w.resetsInMs) }),
+          })),
+        },
+      },
+      NOW,
+    );
+
+  it("is ready when every window is under the limit", () => {
+    const d = quotaWaitDecision(claude([{ name: "5h", used: 40, resetsInMs: 3_600_000 }]), { agent: "claude" });
+    assert.equal(d.state, "ready");
+    assert.match(d.reason, /5h 40\.0% used \(limit 95%\)/);
+  });
+
+  it("waits until the latest blocking window resets", () => {
+    const rows = claude([
+      { name: "5h", used: 99, resetsInMs: 2 * 3_600_000 },
+      { name: "7d", used: 96, resetsInMs: 5 * 3_600_000 },
+    ]);
+    const d = quotaWaitDecision(rows, { agent: "claude" });
+    assert.equal(d.state, "wait");
+    assert.ok(d.state === "wait" && d.waitMs !== undefined && Math.abs(d.waitMs - 5 * 3_600_000) < 1000);
+  });
+
+  it("--window narrows which windows count", () => {
+    const rows = claude([
+      { name: "5h", used: 10, resetsInMs: 3_600_000 },
+      { name: "7d", used: 99, resetsInMs: 3 * 86_400_000 },
+    ]);
+    assert.equal(quotaWaitDecision(rows, { agent: "claude", windows: ["5h"] }).state, "ready");
+    assert.equal(quotaWaitDecision(rows, { agent: "claude" }).state, "wait");
+  });
+
+  it("--max-used moves the bar", () => {
+    const rows = claude([{ name: "5h", used: 80, resetsInMs: 3_600_000 }]);
+    assert.equal(quotaWaitDecision(rows, { agent: "claude", maxUsed: 75 }).state, "wait");
+    assert.equal(quotaWaitDecision(rows, { agent: "claude", maxUsed: 90 }).state, "ready");
+  });
+
+  it("a window that reset since it was observed counts as ready", () => {
+    const rows = claude([{ name: "5h", used: 100, resetsInMs: -60_000 }]);
+    const d = quotaWaitDecision(rows, { agent: "claude" });
+    assert.equal(d.state, "ready");
+    assert.match(d.reason, /reset since last observation/);
+  });
+
+  it("a blocker with no resets_at waits with no known end", () => {
+    const d = quotaWaitDecision(claude([{ name: "spend", used: 120 }]), { agent: "claude" });
+    assert.equal(d.state, "wait");
+    assert.ok(d.state === "wait" && d.waitMs === undefined);
+  });
+
+  it("an agent with no vendor number is unknown, never ready", () => {
+    const d = quotaWaitDecision(quotaRows({}, NOW), { agent: "gemini" });
+    assert.equal(d.state, "unknown");
+    assert.match(d.reason, /no vendor quota source wired/);
+  });
+});
+
+describe("quota: wait cli", () => {
+  const snapshotEnv = async (used: number, resetsAt: number): Promise<Record<string, string>> => {
+    const state = await fs.mkdtemp(path.join(os.tmpdir(), "ach-quota-wait-"));
+    await writeClaudeSnapshot(path.join(state, "quota", "claude.json"), {
+      agent: "claude",
+      source: "statusline",
+      observedAt: Date.now(),
+      windows: [{ name: "5h", windowMinutes: 300, usedPercent: used, resetsAt }],
+    });
+    return { AGENTIC_CODING_HARNESS_STATE_DIR: state, AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR: path.join(FIX, "none") };
+  };
+
+  it("with headroom it runs the command at once and exits with its code", async () => {
+    const env = await snapshotEnv(20, 4102444800);
+    const r = runCli(["quota", "wait", "--", process.execPath, "-e", "process.exit(3)"], env);
+    assert.equal(r.code, 3, r.stderr);
+    assert.match(r.stderr, /ready: claude: 5h 20\.0% used/);
+  });
+
+  it("at the limit it waits for the reset, then runs", async () => {
+    const env = await snapshotEnv(99, Math.ceil(Date.now() / 1000) + 2);
+    const t0 = Date.now();
+    const r = runCli(["quota", "wait", "--poll-s", "1", "--grace-s", "0", "--", process.execPath, "-e", "process.exit(0)"], env);
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(Date.now() - t0 >= 1000, "returned before the reset");
+    assert.match(r.stderr, /waiting: claude: 5h 99\.0% used/);
+  });
+
+  it("--timeout-s gives up with exit 1 and does not run the command", async () => {
+    const env = await snapshotEnv(99, 4102444800);
+    const r = runCli(["quota", "wait", "--poll-s", "1", "--timeout-s", "1", "--", process.execPath, "-e", "process.exit(0)"], env);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /timed out after/);
+  });
+
+  it("no vendor number exits 1 unless --allow-unknown", async () => {
+    const state = await fs.mkdtemp(path.join(os.tmpdir(), "ach-quota-wait-"));
+    const env = { AGENTIC_CODING_HARNESS_STATE_DIR: state, AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR: path.join(FIX, "none") };
+    const r = runCli(["quota", "wait"], env);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /--allow-unknown/);
+    assert.equal(runCli(["quota", "wait", "--allow-unknown"], env).code, 0);
+  });
+
+  it("rejects a bad --max-used and an empty command after --", async () => {
+    const env = await snapshotEnv(20, 4102444800);
+    assert.equal(runCli(["quota", "wait", "--max-used", "abc"], env).code, 1);
+    assert.equal(runCli(["quota", "wait", "--"], env).code, 1);
   });
 });
