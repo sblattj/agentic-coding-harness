@@ -491,6 +491,61 @@ pass `--claude-default-config` (or set `AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CO
 default config instead. Transcripts then land under `~/.claude/projects` and concurrent claude runs
 share one config, so pair it with sequential runs when isolation matters.
 
+## Kiro IDE (desktop app)
+
+`--agent kiro-ide` drives the Kiro IDE (the Electron desktop app) over Chrome DevTools Protocol.
+
+**Why.** `kiro-cli` does not load `.kiro/hooks/*.json`; only the IDE does. Observed: kiro-cli 2.21.2
+read the hook file without firing the hook. To measure a workspace hook you must run the IDE.
+
+**Install.** macOS: `brew install --cask kiro`. Binary: `/Applications/Kiro.app/Contents/MacOS/Kiro`
+(Windows and Linux paths are unverified).
+
+**One-time sign-in per profile.** ach runs Kiro with its own profile, `~/.local/state/ach-kiro-ide/profile`
+(`--kiro-ide-user-data-dir` overrides it). Open Kiro once with that profile and sign in, otherwise a run lands
+on the sign-in screen. Set `{"security.workspace.trust.enabled": false}` in the profile's `User/settings.json`
+so the workspace-trust dialog does not block the run.
+
+```sh
+cd <workspace>
+ach run --agent kiro-ide "<prompt>"
+ach doctor --agent kiro-ide    # binary, CDP reachable, signed in, chat input present
+```
+
+`ach run` has no `--cwd`: the workspace is the directory you run it from (as for `--verify`).
+
+**Attach mode.** `--kiro-ide-cdp host:port` drives an IDE that is already running elsewhere.
+CDP is remote code execution on the IDE host: forward the port (`ssh -L 9222:127.0.0.1:9222 host`)
+and never expose it more widely. `ach doctor` warns on a non-loopback endpoint.
+
+| Flag | Meaning |
+|---|---|
+| `--kiro-ide-cdp host:port` | attach to a running IDE's CDP endpoint (default `127.0.0.1:9222`) |
+| `--kiro-ide-port N` | CDP port to launch with / connect to |
+| `--kiro-ide-bin PATH` | Kiro IDE executable |
+| `--kiro-ide-user-data-dir DIR` | profile directory (default `~/.local/state/ach-kiro-ide/profile`) |
+| `--kiro-ide-no-new-session` | send into the chat that is already open instead of starting a new session |
+
+**Limits.**
+- Metering is credits only (`Est. Credits Used` from the chat); tokens are unavailable.
+- Autopilot mode is required so tool calls run without approval.
+- Not headless: it needs a desktop session and a visible Kiro window.
+- UI-fragile: ach reads the chat DOM. `ach doctor --agent kiro-ide` fails when the selectors no longer match
+  the installed Kiro version, so drift fails loudly instead of producing an empty run.
+
+**Hook A/B recipe.** Make two workspaces that differ only in `.kiro/hooks/` (one has a hook that writes
+`.hook-fired`, the other has none). Use a file-read prompt, not a shell one: other PreToolUse hooks can
+block the shell before your marker runs. Verify the marker after the run:
+
+```sh
+for ws in ws-a ws-b; do
+  (cd "$ws" && ach run --agent kiro-ide --verify 'test -f .hook-fired' \
+    "Read the file hello.txt with your file read tool and reply with its exact contents. Do not use the shell.")
+done
+```
+
+The workspace with the hook passes the verifier; the one without fails it, and both runs record credits.
+
 ## Use as a library
 
 The npm package exports its programmatic API directly — importing it never runs the CLI:

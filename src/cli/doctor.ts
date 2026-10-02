@@ -23,9 +23,20 @@ import { constants as fsConstants, accessSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseArgs } from "node:util";
+import { execFile } from "node:child_process";
+import { parseArgs, promisify } from "node:util";
 import { kiroPreflight, maskIdentity, type PreflightReceipt } from "../adapters/kiro-preflight.ts";
 import { defaultSpawnFn, type SpawnFn } from "../adapters/shared.ts";
+import {
+  CdpSession,
+  DEEP_TEXT_JS,
+  KIRO_IDE_SELECTORS,
+  browserVersion,
+  endpointFrom,
+  isLoopbackHost,
+  listTargets,
+  type CdpTarget,
+} from "../adapters/kiro-ide-cdp.ts";
 import { createPricer, resolveAlias } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { descriptorDirs, loadAgentDescriptors } from "../core/agent-descriptors.ts";
@@ -677,6 +688,186 @@ async function checkKiro(opts: Required<Pick<DoctorOptions, "env" | "cwd" | "ver
   // A malformed KIRO_API_KEY is worth flagging even if whoami passed via another profile.
   const envAuth = await checkAuth("kiro", env);
   if (envAuth.status === "failed") out.push({ ...envAuth, name: "authEnv" });
+  return out;
+}
+
+// ------------------------------------------------------------------ kiro-ide (#110)
+
+export interface KiroIdeDoctorOptions {
+  env: NodeJS.ProcessEnv;
+  cwd: string;
+  /** host:port of the CDP endpoint; default 127.0.0.1:9222. */
+  endpoint?: string;
+  /** Kiro IDE executable; default per platform. */
+  bin?: string;
+  platform?: NodeJS.Platform;
+  fetchTimeoutMs?: number;
+}
+
+const KIRO_IDE_LAUNCH_HINT =
+  "launch Kiro with --remote-debugging-port=9222 --user-data-dir=~/.local/state/ach-kiro-ide/profile, or run `ach run --agent kiro-ide` which launches it";
+
+function kiroIdeDefaultBin(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | undefined {
+  if (platform === "darwin") return "/Applications/Kiro.app/Contents/MacOS/Kiro";
+  if (platform === "win32") return path.join(env.LOCALAPPDATA ?? "", "Programs", "Kiro", "Kiro.exe"); // UNVERIFIED path
+  return resolveOnPath("kiro", env.PATH); // UNVERIFIED on linux
+}
+
+async function plistVersion(bin: string): Promise<string | undefined> {
+  const plistPath = path.join(path.dirname(bin), "..", "Info.plist");
+  try {
+    // Kiro ships a binary plist; plutil reads both binary and XML.
+    const { stdout } = await promisify(execFile)("plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", plistPath], { timeout: 2000 });
+    return stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Evaluates `expr` in every execution context of `target`; returns the non-error values. */
+async function kiroIdeEvalTarget<T>(target: CdpTarget, expr: string, timeoutMs: number): Promise<Array<T | undefined>> {
+  const session = await CdpSession.connect(target, { timeoutMs });
+  try {
+    await session.enableRuntime();
+    return (await session.evaluateEach<T>(expr)).filter((r) => r.error === undefined).map((r) => r.value);
+  } finally {
+    session.close();
+  }
+}
+
+/**
+ * Doctor rows for the `kiro-ide` agent (drives the Kiro IDE desktop app over CDP).
+ * Read-only: evaluates text/selector probes only, never sends input.
+ * `DoctorCheck.agent` is a plain string, so rows carry `agent: "kiro-ide"` with
+ * no cast. The `runDoctor` dispatch is added once AGENTS includes `kiro-ide`.
+ */
+export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCheck[]> {
+  const env = opts.env;
+  const platform = opts.platform ?? process.platform;
+  const endpoint = opts.endpoint ?? endpointFrom(undefined, 9222);
+  const timeoutMs = opts.fetchTimeoutMs ?? 3000;
+  const host = endpoint.replace(/:\d+$/, "");
+  const loopback = isLoopbackHost(host);
+  const mk = (name: string, status: DoctorStatus, detail: string, t0: number, hint?: string): DoctorCheck => ({
+    agent: "kiro-ide",
+    name,
+    status,
+    depth: "deep",
+    detail,
+    ...(hint !== undefined ? { hint } : {}),
+    ms: Date.now() - t0,
+  });
+  const out: DoctorCheck[] = [];
+
+  // binary
+  let t0 = Date.now();
+  const bin = opts.bin ?? env.KIRO_IDE_BIN ?? kiroIdeDefaultBin(platform, env);
+  const binOk = bin !== undefined && bin !== "" && isExecutableFile(bin);
+  let version: string | undefined;
+  if (binOk && platform === "darwin") version = await plistVersion(bin);
+  if (binOk) {
+    out.push(mk("binary", "verified", `${bin}${version ? ` (Kiro ${version})` : ""}`, t0));
+  } else {
+    const detail = `Kiro IDE not found at ${bin ?? "(no default for this platform)"}`;
+    out.push(
+      loopback
+        ? mk("binary", "failed", detail, t0, "install Kiro IDE (macOS: `brew install --cask kiro`) or pass --kiro-ide-bin")
+        : mk("binary", "unproven", `${detail}; attach mode, the IDE runs elsewhere`, t0),
+    );
+  }
+  const binaryIndex = 0;
+
+  // cdp
+  t0 = Date.now();
+  let cdpOk = false;
+  try {
+    const v = await browserVersion(endpoint, { timeoutMs });
+    const ideVersion = /Kiro\/(\S+)/.exec(String(v?.["User-Agent"] ?? ""))?.[1];
+    cdpOk = true;
+    out.push(mk("cdp", "verified", `${endpoint} reachable${ideVersion ? ` (Kiro/${ideVersion})` : ""}`, t0));
+    // Version fallback: no plist version (non-darwin or unreadable) -> report the running IDE's version on the binary row.
+    if (ideVersion && !version) out[binaryIndex] = { ...out[binaryIndex]!, detail: `${out[binaryIndex]!.detail} (running IDE: Kiro ${ideVersion})` };
+  } catch (e) {
+    out.push(mk("cdp", "failed", `${endpoint} unreachable: ${e instanceof Error ? e.message : String(e)}`, t0, KIRO_IDE_LAUNCH_HINT));
+  }
+  if (!loopback) {
+    out.push(
+      mk(
+        "cdp-exposure",
+        "unproven",
+        `CDP endpoint host '${host}' is not loopback: CDP is remote code execution on the IDE host`,
+        Date.now(),
+        "tunnel it (ssh -L / port-forward) and never expose the debugging port beyond loopback",
+      ),
+    );
+  }
+  if (!cdpOk) {
+    out.push(mk("signed-in", "unproven", "not attempted: CDP unreachable", Date.now()));
+    out.push(mk("chat", "unproven", "not attempted: CDP unreachable", Date.now()));
+    return out;
+  }
+
+  // targets
+  let targets: CdpTarget[] = [];
+  let listErr: string | undefined;
+  try {
+    targets = await listTargets(endpoint, { timeoutMs });
+  } catch (e) {
+    listErr = e instanceof Error ? e.message : String(e);
+  }
+  const chatTargets = targets.filter((t) => t.url.includes(KIRO_IDE_SELECTORS.chatTargetUrl));
+  const page = targets.find((t) => t.type === "page" && t.url.includes(KIRO_IDE_SELECTORS.workbenchUrl));
+
+  // signed-in
+  t0 = Date.now();
+  if (listErr !== undefined) {
+    out.push(mk("signed-in", "unproven", `could not list targets: ${listErr}`, t0));
+  } else if (!page) {
+    out.push(
+      chatTargets.length > 0
+        ? mk("signed-in", "verified", "chat target present (no workbench page to read)", t0)
+        : mk("signed-in", "unproven", "no Kiro workbench window (window closed?); ach reopens one at run time", t0),
+    );
+  } else {
+    try {
+      const text = (await kiroIdeEvalTarget<string>(page, DEEP_TEXT_JS, timeoutMs)).filter((v): v is string => typeof v === "string").join(" | ");
+      if (text.includes("By signing in")) {
+        out.push(mk("signed-in", "failed", "Kiro shows the sign-in screen", t0, "sign in once for this profile: open Kiro with the same --user-data-dir and complete sign-in"));
+      } else if (/Kiro (Free|Pro|Power)/.test(text) || chatTargets.length > 0) {
+        out.push(mk("signed-in", "verified", /Kiro (Free|Pro|Power)[^|]*/.exec(text)?.[0]?.trim() ?? "chat target present", t0));
+      } else {
+        out.push(mk("signed-in", "unproven", "no sign-in screen and no plan status text seen", t0));
+      }
+      if (text.includes("Skip All")) {
+        out.push(mk("onboarding", "unproven", "onboarding screen is showing; ach dismisses it at run time", Date.now()));
+      }
+    } catch (e) {
+      out.push(mk("signed-in", "unproven", `could not read the workbench: ${e instanceof Error ? e.message : String(e)}`, t0));
+    }
+  }
+
+  // chat
+  t0 = Date.now();
+  if (chatTargets.length === 0) {
+    out.push(mk("chat", "failed", `no chat target (url containing '${KIRO_IDE_SELECTORS.chatTargetUrl}') among ${targets.length} targets`, t0, "open a workspace folder in Kiro and wait for the chat panel to load"));
+  } else {
+    const probe = `!!document.querySelector(${JSON.stringify(KIRO_IDE_SELECTORS.chatInput)})`;
+    let found = false;
+    let lastErr: string | undefined;
+    for (const t of chatTargets) {
+      try {
+        if ((await kiroIdeEvalTarget<boolean>(t, probe, timeoutMs)).some((v) => v === true)) {
+          found = true;
+          break;
+        }
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : String(e);
+      }
+    }
+    if (found) out.push(mk("chat", "verified", `chat input '${KIRO_IDE_SELECTORS.chatInput}' present`, t0));
+    else if (lastErr !== undefined) out.push(mk("chat", "unproven", `could not probe the chat target: ${lastErr}`, t0));
+    else out.push(mk("chat", "failed", `chat target present but '${KIRO_IDE_SELECTORS.chatInput}' not found: selectors no longer match this Kiro IDE version`, t0, "Kiro's UI changed; update KIRO_IDE_SELECTORS in src/adapters/kiro-ide-cdp.ts"));
+  }
   return out;
 }
 
