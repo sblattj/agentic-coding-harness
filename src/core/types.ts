@@ -688,6 +688,30 @@ export const KiroConfigSchema = z
   })
   .strict();
 
+/** Kiro IDE (desktop app over CDP) run configuration (RunSpec.kiroIde, issue #110). */
+export interface KiroIdeConfig {
+  /** Attach to an already-running IDE at host:port instead of launching one. */
+  cdp?: string;
+  /** CDP port when ach launches the IDE (default 9222). */
+  port?: number;
+  /** IDE executable (default per platform; macOS /Applications/Kiro.app/Contents/MacOS/Kiro). */
+  bin?: string;
+  /** --user-data-dir profile (default ~/.local/state/ach-kiro-ide/profile). */
+  userDataDir?: string;
+  /** Start a fresh chat session before the prompt (default true). */
+  newSession?: boolean;
+}
+
+export const KiroIdeConfigSchema = z
+  .object({
+    cdp: z.string().optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+    bin: z.string().optional(),
+    userDataDir: z.string().optional(),
+    newSession: z.boolean().optional(),
+  })
+  .strict();
+
 /** Whether the model request was acknowledged by the agent process. */
 export type KiroModelAck = "acknowledged" | "rejected" | "unsupported" | "not-requested" | "unverified";
 
@@ -947,6 +971,8 @@ export interface RunSpec {
   outputDir?: string;
   /** Kiro-specific configuration (ignored by other adapters). */
   kiro?: KiroConfig;
+  /** Kiro IDE (CDP) configuration (ignored by other adapters). */
+  kiroIde?: KiroIdeConfig;
   /**
    * Typed sandbox/permission policy translated per adapter (issue #8). See
    * SandboxPolicy for the field-by-field adapter mapping; scrubEnv applies
@@ -1019,6 +1045,7 @@ export const RunSpecSchema = z
     stateDir: z.string().optional(),
     outputDir: z.string().optional(),
     kiro: KiroConfigSchema.optional(),
+    kiroIde: KiroIdeConfigSchema.optional(),
     attachments: z.array(z.string()).optional(),
     attachmentsMaxBytes: z.number().int().positive().optional(),
     sandbox: SandboxPolicySchema.optional(),
