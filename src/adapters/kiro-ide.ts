@@ -10,6 +10,7 @@
 // (2026-10-01); anything not observed is marked UNVERIFIED.
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -210,7 +211,17 @@ const FOCUS_INPUT_JS = `(() => { const e = document.querySelector(${JSON.stringi
 // Observed: a button with aria-label "New session" in the chat webview.
 const NEW_SESSION_JS =
   "(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.getAttribute('aria-label') || x.title || '') === 'New session'); if (!b) return 'none'; b.click(); return 'clicked'; })()";
-const BODY_TEXT_JS = "document.body.innerText";
+// The chat pane's text WITHOUT the session tab bar. Tab labels are truncated copies of
+// session titles / prompts, so matching against whole-body text lets a tab satisfy a
+// "prompt was echoed" check (live bug, folder-switch path). The tab bar lives in
+// `.session-manager-header` (observed Kiro IDE 1.2.4); fall back to the whole body.
+const PANE_TEXT_JS =
+  "(() => { const t = document.body.innerText; const h = document.querySelector('.session-manager-header'); if (!h) return t; const ht = h.innerText; const i = ht ? t.indexOf(ht) : -1; return i < 0 ? t : t.slice(0, i) + t.slice(i + ht.length); })()";
+const TAB_COUNT_JS = "document.querySelectorAll('.tab-bar-item').length";
+function clickTabIndexJs(i: number): string {
+  return `(() => { const t = document.querySelectorAll('.tab-bar-item')[${i}]; if (!t) return 'none'; t.click(); return 'clicked'; })()`;
+}
+const normWs = (s: string): string => s.replace(/\s+/g, " ").trim();
 const INPUT_TEXT_JS = `(() => { const e = document.querySelector(${JSON.stringify(KIRO_IDE_SELECTORS.chatInput)}); return e ? e.innerText : null; })()`;
 
 const countElapsed = (s: string): number => (s.match(/Elapsed time:/g) ?? []).length;
@@ -237,6 +248,8 @@ export interface KiroIdeAdapterOptions {
   homeDir?: string;
   /** Wait before the one --reuse-window recovery re-invocation, default 5000 ms. */
   recoverMs?: number;
+  /** Directory for the per-endpoint run lock file (default os.tmpdir()). */
+  lockDir?: string;
   /** How long the prompt may take to show up as submitted (echoed in the chat, input cleared), default 15 000 ms. */
   submitTimeoutMs?: number;
   /**
@@ -299,6 +312,7 @@ export class KiroIdeAdapter implements AgentAdapter {
   readonly #recoverMs: number;
   readonly #submitTimeoutMs: number;
   readonly #turnTimeoutMs: number;
+  readonly #lockDir: string;
 
   constructor(options: KiroIdeAdapterOptions = {}) {
     this.#spawn = options.spawn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts) as unknown as SpawnedChild);
@@ -310,6 +324,7 @@ export class KiroIdeAdapter implements AgentAdapter {
     this.#recoverMs = options.recoverMs ?? 5000;
     this.#submitTimeoutMs = options.submitTimeoutMs ?? 15_000;
     this.#turnTimeoutMs = options.turnTimeoutMs ?? 15 * 60_000;
+    this.#lockDir = options.lockDir ?? os.tmpdir();
   }
 
   async launch(spec: RunSpec): Promise<AgentHandle> {
@@ -319,6 +334,14 @@ export class KiroIdeAdapter implements AgentAdapter {
     const ts = () => this.#now();
     const emit = (e: { type: string; [k: string]: unknown }) =>
       queue.push({ ...e, timestamp: ts(), sessionId } as AgentEvent);
+
+    // `data` is what the CLI renderer prints (src/cli/lib.ts formatEventLine); `text` is
+    // what run artifacts read (src/core/run-artifacts.ts). Emit both.
+    const progress = (text: string) => emit({ type: "progress", text, data: text });
+    const debug = process.env.ACH_KIRO_IDE_DEBUG === "1";
+    const dbg = (text: string) => {
+      if (debug) progress(`kiro-ide[debug] ${text}`);
+    };
 
     let aborted = false;
     let wake: (() => void) | null = null;
@@ -373,13 +396,60 @@ export class KiroIdeAdapter implements AgentAdapter {
     const deadline = this.#now() + this.#readyTimeoutMs;
     const timeLeft = () => deadline - this.#now();
 
+    // Per-endpoint lock: two runs driving one IDE would fight over its single chat input.
+    const lockPath = path.join(this.#lockDir, `ach-kiro-ide-${endpoint.replace(/[^A-Za-z0-9._-]/g, "_")}.lock`);
+    let lockHeld = false;
+    const acquireLock = (): void => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
+          lockHeld = true;
+          return;
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "EEXIST") return; // unwritable lock dir: do not block the run
+          let pid = 0;
+          try {
+            pid = Number(fs.readFileSync(lockPath, "utf8").trim());
+          } catch {
+            /* raced away */
+          }
+          let alive = false;
+          if (pid > 0) {
+            try {
+              process.kill(pid, 0);
+              alive = true;
+            } catch (k) {
+              alive = (k as NodeJS.ErrnoException).code === "EPERM";
+            }
+          }
+          if (alive) {
+            throw new RunFailure(`another ach run (pid ${pid}) is already driving the Kiro IDE on ${endpoint}; wait for it to finish (lock ${lockPath})`);
+          }
+          try {
+            fs.unlinkSync(lockPath);
+          } catch {
+            /* raced away */
+          }
+        }
+      }
+    };
+    const releaseLock = (): void => {
+      if (!lockHeld) return;
+      lockHeld = false;
+      try {
+        fs.unlinkSync(lockPath);
+      } catch {
+        /* already gone */
+      }
+    };
+    // Chat targets that existed before a folder switch; their webview is torn down by the switch.
+    const staleChatIds = new Set<string>();
+
     const run = async (): Promise<void> => {
       emit({ type: "session_start", agent: "kiro-ide" });
+      acquireLock();
       if (spec.model) {
-        emit({
-          type: "progress",
-          text: `kiro-ide: model '${spec.model}' ignored (the IDE chat's model cannot be pinned over CDP)`,
-        });
+        progress(`kiro-ide: model '${spec.model}' ignored (the IDE chat's model cannot be pinned over CDP)`);
       }
 
       // ---- 1/2. endpoint + launch
@@ -389,7 +459,20 @@ export class KiroIdeAdapter implements AgentAdapter {
         checkAbort();
         const wsArgs = cwd ? [cwd] : [];
         if (preexisting) {
-          // An IDE already owns the profile: point its window at the workspace.
+          // An IDE already owns the profile: point its window at the workspace. If that
+          // is a DIFFERENT folder than the open one, the switch recreates the chat
+          // webview, so every chat target seen now is stale (live: a run that attached
+          // to the pre-switch iframe). Same folder keeps the target, so nothing is stale.
+          try {
+            const before = await listTargets(endpoint, { timeoutMs: 2000 });
+            const pg = before.find((t) => t.type === "page" && t.url.includes(KIRO_IDE_SELECTORS.workbenchUrl));
+            if (!pg || !workspaceTitleMatches(pg.title ?? "", cwd)) {
+              for (const t of before) if (t.url.includes(KIRO_IDE_SELECTORS.chatTargetUrl)) staleChatIds.add(t.id);
+            }
+            dbg(`pre-spawn page title=${JSON.stringify(pg?.title)} stale chat ids=[${[...staleChatIds].map((x) => x.slice(0, 8))}]`);
+          } catch {
+            /* IDE not listing yet */
+          }
           spawnChild([`--user-data-dir=${userDataDir}`, "--reuse-window", ...wsArgs]);
         } else {
           freshChild = spawnChild([`--remote-debugging-port=${cfg.port ?? DEFAULT_PORT}`, `--user-data-dir=${userDataDir}`, ...wsArgs]);
@@ -406,6 +489,7 @@ export class KiroIdeAdapter implements AgentAdapter {
       let workbenchId = "";
       let chatTarget: CdpTarget | null = null;
       let skipAttempts = 0;
+      let readyTitle = "";
       for (;;) {
         checkAbort();
         if (launchError) throw new RunFailure(`could not start Kiro IDE '${bin}': ${(launchError as Error).message}`);
@@ -422,7 +506,7 @@ export class KiroIdeAdapter implements AgentAdapter {
           targets = [];
         }
         const page = targets.find((t) => t.type === "page" && t.url.includes(KIRO_IDE_SELECTORS.workbenchUrl));
-        const chat = targets.find((t) => t.url.includes(KIRO_IDE_SELECTORS.chatTargetUrl));
+        const chat = targets.find((t) => t.url.includes(KIRO_IDE_SELECTORS.chatTargetUrl) && !staleChatIds.has(t.id));
         if (page) {
           if (!workbench || workbenchId !== page.id) {
             workbench?.close();
@@ -446,7 +530,7 @@ export class KiroIdeAdapter implements AgentAdapter {
                 skipAttempts++;
                 // Only the Electron Isolated Context finds the button; evaluateEach tries every context.
                 await workbench.evaluateEach<string>(clickByTextJs("Skip All"));
-                emit({ type: "progress", text: "kiro-ide: dismissed first-run onboarding (Skip All)" });
+                progress("kiro-ide: dismissed first-run onboarding (Skip All)");
               }
             } catch (e) {
               if (e instanceof RunFailure) throw e;
@@ -457,6 +541,7 @@ export class KiroIdeAdapter implements AgentAdapter {
         const wsOk = attachMode || !page || workspaceTitleMatches(page.title ?? "", cwd);
         if (page && chat && wsOk) {
           chatTarget = chat;
+          readyTitle = page.title ?? "";
           break;
         }
         chatTarget = null;
@@ -468,43 +553,104 @@ export class KiroIdeAdapter implements AgentAdapter {
         await sleep(Math.min(500, Math.max(50, this.#pollMs)));
       }
 
-      // ---- chat session
-      const chat = await CdpSession.connect(chatTarget!, { timeoutMs: 5000 });
-      sessions.push(chat);
-      await chat.enableRuntime();
-      const findCtx = async (): Promise<number | undefined> => {
-        for (const r of await chat.evaluateEach<boolean>(HAS_INPUT_JS)) if (r.value === true) return r.contextId;
+      // ---- chat session: connect, then require a STABLE chat before touching it.
+      // Stable = two consecutive polls with the same target id, the same execution
+      // context ids and unchanged pane text (a folder switch tears the webview down
+      // and rebuilds it; acting mid-rebuild lost the prompt live).
+      const findCtxOn = async (sess: CdpSession): Promise<number | undefined> => {
+        for (const r of await sess.evaluateEach<boolean>(HAS_INPUT_JS)) if (r.value === true) return r.contextId;
         return undefined;
       };
+      let cur: { id: string; session: CdpSession } | null = null;
       let ctx: number | undefined;
-      while ((ctx = await findCtx()) === undefined) {
+      let prevSig = "";
+      let stable = 0;
+      const settleStart = this.#now();
+      for (;;) {
         checkAbort();
-        if (timeLeft() <= 0) throw new RunFailure(`Kiro IDE chat input (${KIRO_IDE_SELECTORS.chatInput}) never appeared within ${this.#readyTimeoutMs}ms`);
-        await sleep(300);
+        if (timeLeft() <= 0) throw new RunFailure(`Kiro IDE chat did not settle (stable target, contexts and pane) within ${this.#readyTimeoutMs}ms`);
+        let targets: CdpTarget[] = [];
+        try {
+          targets = await listTargets(endpoint, { timeoutMs: 2000 });
+        } catch {
+          /* retry */
+        }
+        const pick = targets.find((t) => t.url.includes(KIRO_IDE_SELECTORS.chatTargetUrl) && !staleChatIds.has(t.id));
+        if (!pick) {
+          stable = 0;
+          await sleep(Math.min(300, this.#pollMs));
+          continue;
+        }
+        if (!cur || cur.id !== pick.id) {
+          cur?.session.close();
+          cur = null;
+          try {
+            const sess = await CdpSession.connect(pick, { timeoutMs: 5000 });
+            sessions.push(sess);
+            await sess.enableRuntime();
+            cur = { id: pick.id, session: sess };
+          } catch {
+            stable = 0;
+            await sleep(Math.min(300, this.#pollMs));
+            continue;
+          }
+          stable = 0;
+          prevSig = "";
+        }
+        try {
+          ctx = await findCtxOn(cur.session);
+          if (ctx === undefined) {
+            stable = 0;
+          } else {
+            const pane = (await cur.session.evaluate<string>(PANE_TEXT_JS, ctx)) ?? "";
+            const sig = JSON.stringify([cur.id, cur.session.contexts().map((c) => c.id).sort((x, y) => x - y), pane]);
+            stable = sig === prevSig ? stable + 1 : 1;
+            prevSig = sig;
+            // A rebuilt webview renders its input before the Autopilot switch (live: "unknown"
+            // right after a folder switch); give the switch up to 10 s to appear.
+            if ((await cur.session.evaluate<string>(AUTOPILOT_STATE_JS, ctx)) === "unknown" && this.#now() - settleStart < 10_000) stable = 0;
+          }
+        } catch {
+          stable = 0;
+        }
+        if (stable >= 2) break;
+        await sleep(Math.min(300, this.#pollMs));
       }
+      const chat = cur!.session;
+      const findCtx = () => findCtxOn(chat);
+      dbg(`ready chat target=${cur!.id.slice(0, 8)} page title=${JSON.stringify(readyTitle)} ctx=${ctx}`);
 
       // ---- 4. Autopilot (a supervised tool call would block until the wall timeout)
       const mode = await chat.evaluate<string>(AUTOPILOT_STATE_JS, ctx);
+      dbg(`autopilot=${mode}`);
       if (mode === "off") {
         throw new RunFailure(
           "Kiro IDE chat is not in Autopilot mode (supervised tool calls would block waiting for approval); turn Autopilot on in the chat and retry",
         );
       }
       if (mode !== "on") {
-        emit({ type: "progress", text: "kiro-ide: could not read the Autopilot switch (#autopilot-toggle missing); proceeding" });
+        progress("kiro-ide: could not read the Autopilot switch (#autopilot-toggle missing); proceeding");
       }
 
       // ---- 5. new session
-      if (cfg.newSession !== false) {
+      const paneNow = (await chat.evaluate<string>(PANE_TEXT_JS, ctx).catch(() => "")) ?? "";
+      // A pane that is already an empty chat IS a fresh session; clicking New session on
+      // top of a just-rebuilt webview raced its own session restore live (the prompt ran
+      // in one tab while a later "New Session" tab took the pane).
+      const alreadyFresh = countElapsed(paneNow) === 0 && paneNow.includes("Let's build") && !paneNow.includes("Restore");
+      if (cfg.newSession !== false && alreadyFresh) {
+        dbg("new-session=skipped (pane is already an empty chat)");
+      } else if (cfg.newSession !== false) {
         const r = await chat.evaluate<string>(NEW_SESSION_JS, ctx);
+        dbg(`new-session=${r}`);
         if (r !== "clicked") {
-          emit({ type: "progress", text: "kiro-ide: 'New session' button not found; continuing in the current chat" });
+          progress("kiro-ide: 'New session' button not found; continuing in the current chat");
         } else {
           const t0 = this.#now();
           for (;;) {
             checkAbort();
             ctx = (await findCtx()) ?? ctx;
-            const txt = (await chat.evaluate<string>(BODY_TEXT_JS, ctx)) ?? "";
+            const txt = (await chat.evaluate<string>(PANE_TEXT_JS, ctx)) ?? "";
             if (countElapsed(txt) === 0 || this.#now() - t0 > 4000) break;
             await sleep(200);
           }
@@ -513,33 +659,66 @@ export class KiroIdeAdapter implements AgentAdapter {
 
       // ---- 6. send
       checkAbort();
-      const preText = (await chat.evaluate<string>(BODY_TEXT_JS, ctx)) ?? "";
-      const before = countElapsed(preText);
-      const probe = spec.prompt.trim().split("\n")[0]!.slice(0, 40);
-      const echoesBefore = countOccurrences(preText, probe);
+      // Pane-local, FULL-prompt proof (first 200 normalized chars). A session tab shows a
+      // truncated copy of the prompt, so a short probe or whole-body text is satisfied by
+      // the tab label while the pane is idle (live bug).
+      const probe = normWs(spec.prompt).slice(0, 200);
+      // The prompt can end up running in a session tab that is NOT the one the pane shows
+      // (a late "New Session" took the pane, live). Scan tabs newest-first, select each,
+      // and stop at the first whose pane echoes the full prompt (ours is the newest tab
+      // containing it; older tabs with the same prompt come from earlier runs).
+      const recoverPromptTab = async (): Promise<boolean> => {
+        const n = Number((await chat.evaluate<number>(TAB_COUNT_JS, ctx).catch(() => 0)) ?? 0);
+        for (let i = n - 1; i >= 0; i--) {
+          const r = await chat.evaluate<string>(clickTabIndexJs(i), ctx).catch(() => "none");
+          if (r !== "clicked") continue;
+          await sleep(250);
+          const pane = (await chat.evaluate<string>(PANE_TEXT_JS, ctx).catch(() => "")) ?? "";
+          if (countOccurrences(normWs(pane), probe) > 0) {
+            dbg(`recovered prompt tab index=${i} of ${n}`);
+            return true;
+          }
+        }
+        return false;
+      };
+      const preText = (await chat.evaluate<string>(PANE_TEXT_JS, ctx)) ?? "";
+      const echoesBefore = countOccurrences(normWs(preText), probe);
       const focused = await chat.evaluate<boolean>(FOCUS_INPUT_JS, ctx);
       if (!focused) throw new RunFailure("could not focus the Kiro IDE chat input");
       await chat.insertText(spec.prompt);
       await chat.pressEnter();
 
-      // Prove the prompt was submitted: the input is empty AND the chat shows one
+      // Prove the prompt was submitted: the input is empty AND the pane shows one
       // more echo of the prompt than before. An empty input alone proves nothing:
       // live, right after a folder switch, the webview swallowed the prompt and
       // left an empty input, and the wait loop below polled an idle chat forever.
       const submitStart = this.#now();
       let resent = false;
+      let lastRecover = 0;
       for (;;) {
         await sleep(Math.min(250, this.#pollMs));
         checkAbort();
         const input = ((await chat.evaluate<string | null>(INPUT_TEXT_JS, ctx).catch(() => null)) ?? "").trim();
-        const body = (await chat.evaluate<string>(BODY_TEXT_JS, ctx).catch(() => "")) ?? "";
-        if (input === "" && countOccurrences(body, probe) > echoesBefore) break;
-        if (!resent && input.includes(probe) && this.#now() - submitStart > 2000) {
+        const body = (await chat.evaluate<string>(PANE_TEXT_JS, ctx).catch(() => "")) ?? "";
+        const echoes = countOccurrences(normWs(body), probe);
+        if (input === "" && echoes > echoesBefore) {
+          dbg(`submit-pass input=${JSON.stringify(input)} echoes=${echoes} (before ${echoesBefore}) pane=${JSON.stringify(body.slice(0, 200))}`);
+          break;
+        }
+        if (!resent && normWs(input).startsWith(probe.slice(0, 40)) && this.#now() - submitStart > 2000) {
           // Text is in the box but Enter did not take: press it once more.
           resent = true;
           await chat.evaluate<boolean>(FOCUS_INPUT_JS, ctx);
           await chat.pressEnter();
           continue;
+        }
+        if (input === "" && this.#now() - submitStart > 2500 && this.#now() - lastRecover > 2500) {
+          lastRecover = this.#now();
+          dbg(`submit stalled; pane=${JSON.stringify(body.slice(0, 160))}; scanning session tabs`);
+          if (await recoverPromptTab()) {
+            progress("kiro-ide: the prompt ran in another session tab; re-selected it");
+            continue;
+          }
         }
         if (this.#now() - submitStart > this.#submitTimeoutMs) {
           throw new RunFailure(
@@ -548,9 +727,11 @@ export class KiroIdeAdapter implements AgentAdapter {
         }
       }
 
-      // ---- 7. wait for a new "Elapsed time:"
+      // ---- 7. wait for an "Elapsed time:" AFTER the last full-prompt echo in the pane
       let fails = 0;
       let finalText = "";
+      let polls = 0;
+      let lastTabClick = 0;
       const turnStart = this.#now();
       for (;;) {
         await sleep(this.#pollMs);
@@ -559,9 +740,29 @@ export class KiroIdeAdapter implements AgentAdapter {
           throw new RunFailure(`Kiro IDE turn did not finish (no new "Elapsed time:") within ${this.#turnTimeoutMs}ms`);
         }
         try {
-          const txt = (await chat.evaluate<string>(BODY_TEXT_JS, ctx)) ?? "";
+          const txt = (await chat.evaluate<string>(PANE_TEXT_JS, ctx)) ?? "";
           fails = 0;
-          if (countElapsed(txt) > before) {
+          polls++;
+          const n = normWs(txt);
+          const idx = n.lastIndexOf(probe);
+          if (debug && polls % 5 === 0) {
+            const ids = (await listTargets(endpoint, { timeoutMs: 2000 }).catch(() => [] as CdpTarget[]))
+              .filter((t) => t.url.includes(KIRO_IDE_SELECTORS.chatTargetUrl))
+              .map((t) => t.id.slice(0, 8));
+            dbg(`poll ${polls} elapsed=${countElapsed(txt)} echoIdx=${idx} chat ids in /json/list=[${ids}] (using ${cur!.id.slice(0, 8)})`);
+          }
+          if (idx < 0) {
+            // The pane lost our prompt (the webview showed another session): re-select
+            // the session tab labelled with the prompt's first characters.
+            if (this.#now() - lastTabClick > 2000) {
+              lastTabClick = this.#now();
+              progress(
+                (await recoverPromptTab())
+                  ? "kiro-ide: chat pane lost the prompt echo; re-selected the session tab that holds it"
+                  : "kiro-ide: chat pane lost the prompt echo and no session tab holds it",
+              );
+            }
+          } else if (countElapsed(n.slice(idx)) > 0) {
             finalText = txt;
             break;
           }
@@ -573,7 +774,7 @@ export class KiroIdeAdapter implements AgentAdapter {
 
       // ---- 8/9. parse + events
       const turn = parseKiroIdeTurn(finalText, spec.prompt);
-      if (!turn.complete) emit({ type: "progress", text: "kiro-ide: final chat text lacked credits/elapsed lines" });
+      if (!turn.complete) progress("kiro-ide: final chat text lacked credits/elapsed lines");
       emit({ type: "message", source: "assistant", content: turn.reply });
       for (const h of turn.hooks) emit({ type: "tool_call", functionName: `hook:${h}`, title: `Run Command Hook ${h}` });
       for (const t of turn.toolCalls) {
@@ -610,6 +811,7 @@ export class KiroIdeAdapter implements AgentAdapter {
       .then((exit) => {
         emit({ type: "session_end" });
         for (const s of sessions) s.close();
+        releaseLock();
         queue.close();
         return exit;
       });
