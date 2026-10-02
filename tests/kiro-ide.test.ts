@@ -105,6 +105,8 @@ async function world(
     title?: string;
     withChat?: boolean;
     neverFinish?: boolean;
+    /** Enter is swallowed: nothing is submitted (seen live right after a folder switch). */
+    swallow?: boolean;
   } = {},
 ): Promise<World> {
   const state = {
@@ -149,7 +151,9 @@ async function world(
         if (method === "Input.dispatchKeyEvent") {
           if (params.type === "keyDown" && params.key === "Enter") {
             state.enter++;
-            if (!opts.neverFinish) state.text = opts.final ?? FIXTURE_WS_B;
+            if (opts.swallow) return {};
+            // Submitted: the prompt is echoed; a finished turn adds the reply.
+            state.text = opts.neverFinish ? `${IDLE_TEXT}\n\n${PROMPT}` : (opts.final ?? FIXTURE_WS_B);
           }
           return {};
         }
@@ -343,6 +347,36 @@ describe("KiroIdeAdapter (fake CDP)", () => {
     // initial reuse-window + exactly one recovery re-invocation
     assert.equal(calls.length, 2);
     assert.ok(calls.every((c) => c.args.includes("--reuse-window")));
+  });
+
+  it("fails when the prompt is never submitted instead of polling an idle chat", async () => {
+    const w = await world({ swallow: true });
+    const h = await new KiroIdeAdapter({ ...fast, submitTimeoutMs: 300 }).launch(specFor(w.fake));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "error");
+    assert.match((events.find((e) => e.type === "error") as any).message, /not submitted/);
+  });
+
+  it("bounds a submitted turn that never prints Elapsed time", async () => {
+    const w = await world({ neverFinish: true });
+    const h = await new KiroIdeAdapter({ ...fast, turnTimeoutMs: 300 }).launch(specFor(w.fake));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "error");
+    assert.match((events.find((e) => e.type === "error") as any).message, /did not finish/);
+  });
+
+  it("with no spec.cwd (how `ach run` calls it) targets process.cwd(), not whatever folder is open", async () => {
+    // Regression: the first live A/B ran the ws-a prompt in the ws-b window because
+    // spec.cwd was undefined, so no folder was passed and any title matched.
+    const w = await world({ title: "ws-b" });
+    const port = Number(w.fake.endpoint.split(":")[1]);
+    const { spawn, calls } = recordingSpawn();
+    const adapter = new KiroIdeAdapter({ ...fast, readyTimeoutMs: 700, recoverMs: 100, spawn });
+    const h = await adapter.launch({ prompt: PROMPT, kiroIde: { port } } as RunSpec);
+    const [, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "error"); // the open window is ws-b, not this process's cwd
+    assert.ok(calls.length >= 1);
+    assert.equal(calls[0]!.args.at(-1), process.cwd());
   });
 
   it("fresh launch spawns with --remote-debugging-port and abort kills only that child", async () => {

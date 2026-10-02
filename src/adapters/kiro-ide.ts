@@ -211,8 +211,10 @@ const FOCUS_INPUT_JS = `(() => { const e = document.querySelector(${JSON.stringi
 const NEW_SESSION_JS =
   "(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.getAttribute('aria-label') || x.title || '') === 'New session'); if (!b) return 'none'; b.click(); return 'clicked'; })()";
 const BODY_TEXT_JS = "document.body.innerText";
+const INPUT_TEXT_JS = `(() => { const e = document.querySelector(${JSON.stringify(KIRO_IDE_SELECTORS.chatInput)}); return e ? e.innerText : null; })()`;
 
 const countElapsed = (s: string): number => (s.match(/Elapsed time:/g) ?? []).length;
+const countOccurrences = (s: string, needle: string): number => (needle === "" ? 0 : s.split(needle).length - 1);
 
 export interface SpawnedChild {
   pid?: number;
@@ -235,6 +237,14 @@ export interface KiroIdeAdapterOptions {
   homeDir?: string;
   /** Wait before the one --reuse-window recovery re-invocation, default 5000 ms. */
   recoverMs?: number;
+  /** How long the prompt may take to show up as submitted (echoed in the chat, input cleared), default 15 000 ms. */
+  submitTimeoutMs?: number;
+  /**
+   * Bound on one turn after submit, default 15 min. The driver's wall/idle
+   * limits are opt-in, and a turn that never prints "Elapsed time:" would
+   * otherwise poll forever.
+   */
+  turnTimeoutMs?: number;
 }
 
 export function defaultKiroBin(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = process.env): string {
@@ -287,6 +297,8 @@ export class KiroIdeAdapter implements AgentAdapter {
   readonly #platform: NodeJS.Platform;
   readonly #homeDir: string;
   readonly #recoverMs: number;
+  readonly #submitTimeoutMs: number;
+  readonly #turnTimeoutMs: number;
 
   constructor(options: KiroIdeAdapterOptions = {}) {
     this.#spawn = options.spawn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts) as unknown as SpawnedChild);
@@ -296,6 +308,8 @@ export class KiroIdeAdapter implements AgentAdapter {
     this.#platform = options.platform ?? process.platform;
     this.#homeDir = options.homeDir ?? os.homedir();
     this.#recoverMs = options.recoverMs ?? 5000;
+    this.#submitTimeoutMs = options.submitTimeoutMs ?? 15_000;
+    this.#turnTimeoutMs = options.turnTimeoutMs ?? 15 * 60_000;
   }
 
   async launch(spec: RunSpec): Promise<AgentHandle> {
@@ -332,7 +346,10 @@ export class KiroIdeAdapter implements AgentAdapter {
     const endpoint = attachMode ? endpointFrom(cfg.cdp, DEFAULT_PORT) : `127.0.0.1:${cfg.port ?? DEFAULT_PORT}`;
     const bin = cfg.bin ?? defaultKiroBin(this.#platform);
     const userDataDir = cfg.userDataDir ?? path.join(this.#homeDir, ".local", "state", "ach-kiro-ide", "profile");
-    const cwd = spec.cwd;
+    // `ach run` leaves spec.cwd unset and runs in process.cwd() (same fallback
+    // as src/adapters/custom.ts). Without it the window is never pointed at the
+    // workspace and any open folder is accepted.
+    const cwd = typeof spec.cwd === "string" && spec.cwd !== "" ? spec.cwd : process.cwd();
 
     let launchError: Error | null = null;
     const spawnChild = (args: string[]): SpawnedChild => {
@@ -496,18 +513,51 @@ export class KiroIdeAdapter implements AgentAdapter {
 
       // ---- 6. send
       checkAbort();
-      const before = countElapsed((await chat.evaluate<string>(BODY_TEXT_JS, ctx)) ?? "");
+      const preText = (await chat.evaluate<string>(BODY_TEXT_JS, ctx)) ?? "";
+      const before = countElapsed(preText);
+      const probe = spec.prompt.trim().split("\n")[0]!.slice(0, 40);
+      const echoesBefore = countOccurrences(preText, probe);
       const focused = await chat.evaluate<boolean>(FOCUS_INPUT_JS, ctx);
       if (!focused) throw new RunFailure("could not focus the Kiro IDE chat input");
       await chat.insertText(spec.prompt);
       await chat.pressEnter();
 
+      // Prove the prompt was submitted: the input is empty AND the chat shows one
+      // more echo of the prompt than before. An empty input alone proves nothing:
+      // live, right after a folder switch, the webview swallowed the prompt and
+      // left an empty input, and the wait loop below polled an idle chat forever.
+      const submitStart = this.#now();
+      let resent = false;
+      for (;;) {
+        await sleep(Math.min(250, this.#pollMs));
+        checkAbort();
+        const input = ((await chat.evaluate<string | null>(INPUT_TEXT_JS, ctx).catch(() => null)) ?? "").trim();
+        const body = (await chat.evaluate<string>(BODY_TEXT_JS, ctx).catch(() => "")) ?? "";
+        if (input === "" && countOccurrences(body, probe) > echoesBefore) break;
+        if (!resent && input.includes(probe) && this.#now() - submitStart > 2000) {
+          // Text is in the box but Enter did not take: press it once more.
+          resent = true;
+          await chat.evaluate<boolean>(FOCUS_INPUT_JS, ctx);
+          await chat.pressEnter();
+          continue;
+        }
+        if (this.#now() - submitStart > this.#submitTimeoutMs) {
+          throw new RunFailure(
+            `the prompt was not submitted to the Kiro IDE chat within ${this.#submitTimeoutMs}ms (input still holds ${JSON.stringify(input.slice(0, 60))})`,
+          );
+        }
+      }
+
       // ---- 7. wait for a new "Elapsed time:"
       let fails = 0;
       let finalText = "";
+      const turnStart = this.#now();
       for (;;) {
         await sleep(this.#pollMs);
         checkAbort();
+        if (this.#now() - turnStart > this.#turnTimeoutMs) {
+          throw new RunFailure(`Kiro IDE turn did not finish (no new "Elapsed time:") within ${this.#turnTimeoutMs}ms`);
+        }
         try {
           const txt = (await chat.evaluate<string>(BODY_TEXT_JS, ctx)) ?? "";
           fails = 0;
