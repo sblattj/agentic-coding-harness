@@ -321,6 +321,13 @@ usage:
   ach quota ingest claude
                 (reads Claude Code statusline JSON on stdin and snapshots its
                  rate_limits; call it from your statusLine script)
+  ach quota wait [--agent A=claude] [--max-used PCT=95] [--window 5h,7d]
+                 [--poll-s S=60] [--grace-s S=60] [--timeout-s S] [--allow-unknown]
+                 [-- <cmd> [args...]]
+                (blocks until every counted vendor window is under --max-used or
+                 has reset, checking the wall clock so laptop sleep cannot
+                 stretch the wait, then runs <cmd> and exits with its code;
+                 exit 1 on --timeout-s or when the agent has no vendor number)
   ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
