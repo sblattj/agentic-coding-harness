@@ -19,9 +19,11 @@ import {
   HarnessError,
   isKnownAgent,
   KiroConfigSchema,
+  KiroIdeConfigSchema,
   type AcpMcpServer,
   type AgentEvent,
   type KiroConfig,
+  type KiroIdeConfig,
   type RunResult,
   type RunSpec,
 } from "../core/types.ts";
@@ -132,14 +134,15 @@ import {
   unknownAgentError,
   unmeteredRuns,
 } from "./custom-agents.ts";
-import { cmdDoctor } from "./doctor.ts";
+import { cmdDoctor, checkKiroIde } from "./doctor.ts";
+import { endpointFrom } from "../adapters/kiro-ide-cdp.ts";
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
 
 usage:
   ach --version | -v        print the harness version
-  ach run --agent <claude|opencode|kiro|codex|gemini|prime|null> [--model M] [--resume SID]
+  ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               [--budget-alerts 0.5,0.8,1.0] [--warn-at 0.5,0.8,0.95] [--on-budget abort|warn]
                 (threshold alerts warn once per crossing, never abort; fractions in (0,1];
@@ -172,6 +175,11 @@ usage:
                          [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                          [--kiro-startup-ms MS] [--kiro-require-model-ack]
                          [--kiro-mcp-server '<json>']...
+              kiro-ide only: drives the Kiro IDE desktop app over CDP (no CLI, no token counts)
+                         [--kiro-ide-cdp HOST:PORT] [--kiro-ide-port N] [--kiro-ide-bin PATH]
+                         [--kiro-ide-user-data-dir DIR] [--kiro-ide-no-new-session]
+                         (--kiro-ide-cdp attaches to a running IDE instead of launching one;
+                          Autopilot must be on; usd budgets are not enforceable)
   ach run --agent custom --template '<cmd {prompt}>' [--prompt-stdin] [--template-shell] [--model M] "<prompt>"
               any CLI via a template; placeholders {prompt} {model} {workspace} (= cwd).
               The template is split argv-style and spawned WITHOUT a shell: the prompt
@@ -185,6 +193,8 @@ usage:
   ach run --agent <agents.d name> ...  drop-in descriptor (.ach/agents.d/ or <state>/agents.d/;
               see docs/CUSTOM-AGENTS.md)
   ach agents [--json]       list built-in agents, agents.d descriptors and descriptor errors
+  ach preflight --agent kiro-ide [--kiro-ide-cdp HOST:PORT] [--kiro-ide-port N] [--kiro-ide-bin PATH] [--json]
+                    (read-only: binary, CDP reachability, signed-in chat; same rows as doctor)
   ach preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
                     [--cwd DIR] [--json] [--kiro-startup-ms MS] [--kiro-mcp-server '<json>']...
                     [--extra-args '<a b>']... [--extra-arg <token>]...
@@ -192,7 +202,8 @@ usage:
                     (proves binary/auth/agent/model/set_model-ack/MCP over a real
                      ACP handshake; sends NO prompt, so it spends no tokens)
   ach doctor [--agent A] [--model M] [--cwd DIR] [--claude-default-config] [--json]
-                 (all six agents by default: binary+version, auth material, model,
+                 [--kiro-ide-cdp HOST:PORT] [--kiro-ide-port N] [--kiro-ide-bin PATH]
+                 (all seven agents by default: binary+version, auth material, model,
                   MCP config, plus state dir / pricing table / env sanity; kiro runs
                   the preflight handshake. Sends NO prompt; exit 1 if any check failed)
   ach regrade <run-id> --verify '<cmd>' [--verify-timeout-ms MS] [--json]
@@ -457,6 +468,29 @@ function kiroConfigFromFlags(v: {
   return parsed.data;
 }
 
+/** `--kiro-ide-*` flags → KiroIdeConfig (undefined when no flag was given). */
+export function kiroIdeConfigFromFlags(v: {
+  "kiro-ide-cdp"?: string;
+  "kiro-ide-port"?: string;
+  "kiro-ide-bin"?: string;
+  "kiro-ide-user-data-dir"?: string;
+  "kiro-ide-no-new-session"?: boolean;
+}): KiroIdeConfig | undefined {
+  const cfg: Record<string, unknown> = {};
+  if (v["kiro-ide-cdp"] !== undefined) cfg.cdp = v["kiro-ide-cdp"];
+  const port = optPositiveInt(v["kiro-ide-port"], "--kiro-ide-port");
+  if (port !== undefined) cfg.port = port;
+  if (v["kiro-ide-bin"] !== undefined) cfg.bin = v["kiro-ide-bin"];
+  if (v["kiro-ide-user-data-dir"] !== undefined) cfg.userDataDir = v["kiro-ide-user-data-dir"];
+  if (v["kiro-ide-no-new-session"]) cfg.newSession = false;
+  if (Object.keys(cfg).length === 0) return undefined;
+  const parsed = KiroIdeConfigSchema.safeParse(cfg);
+  if (!parsed.success) {
+    throw new HarnessError(`invalid --kiro-ide-* flags: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`, "USAGE");
+  }
+  return parsed.data;
+}
+
 async function cmdRun(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
@@ -485,6 +519,13 @@ async function cmdRun(rest: string[]): Promise<number> {
       "kiro-require-model-ack": { type: "boolean", default: false },
       "claude-default-config": { type: "boolean", default: false },
       "kiro-mcp-server": { type: "string", multiple: true },
+      // Kiro IDE typed config (src/core/types.ts KiroIdeConfig, #110). Ignored
+      // for other agents, like the --kiro-* flags above.
+      "kiro-ide-cdp": { type: "string" },
+      "kiro-ide-port": { type: "string" },
+      "kiro-ide-bin": { type: "string" },
+      "kiro-ide-user-data-dir": { type: "string" },
+      "kiro-ide-no-new-session": { type: "boolean", default: false },
       // Custom agents (#37): per-invocation command template.
       template: { type: "string" },
       "prompt-stdin": { type: "boolean", default: false },
@@ -564,6 +605,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     budget: { ...budget, ...alertBudget },
     ...(extraArgs !== undefined ? { extraArgs } : {}),
     ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
+    ...(agent === "kiro-ide" ? { kiroIde: kiroIdeConfigFromFlags(args.values) } : {}),
     ...(trialFlags.labels.variant !== undefined ? { variant: trialFlags.labels.variant } : {}),
   };
   // #106: ancestor instruction files. Non-hermetic: warn BEFORE launch (the
@@ -789,6 +831,9 @@ async function cmdPreflight(rest: string[]): Promise<number> {
       "kiro-transport": { type: "string" },
       "kiro-startup-ms": { type: "string" },
       "kiro-mcp-server": { type: "string", multiple: true },
+      "kiro-ide-cdp": { type: "string" },
+      "kiro-ide-port": { type: "string" },
+      "kiro-ide-bin": { type: "string" },
       "extra-args": { type: "string", multiple: true },
       "extra-arg": { type: "string", multiple: true },
       json: { type: "boolean", default: false },
@@ -797,9 +842,32 @@ async function cmdPreflight(rest: string[]): Promise<number> {
     tokens: true,
   });
   const agent = args.values.agent;
+  if (agent === "kiro-ide") {
+    // No ACP handshake here: the IDE is observed over CDP, read-only. Same
+    // rows as `ach doctor --agent kiro-ide`.
+    const ide = kiroIdeConfigFromFlags({
+      ...(args.values["kiro-ide-cdp"] !== undefined ? { "kiro-ide-cdp": args.values["kiro-ide-cdp"] } : {}),
+      ...(args.values["kiro-ide-port"] !== undefined ? { "kiro-ide-port": args.values["kiro-ide-port"] } : {}),
+      ...(args.values["kiro-ide-bin"] !== undefined ? { "kiro-ide-bin": args.values["kiro-ide-bin"] } : {}),
+    });
+    const checks = await checkKiroIde({
+      env: { ...process.env },
+      cwd: args.values.cwd ?? process.cwd(),
+      endpoint: endpointFrom(ide?.cdp, ide?.port ?? 9222),
+      ...(ide?.bin !== undefined ? { bin: ide.bin } : {}),
+    });
+    const ok = checks.every((c) => c.status !== "failed");
+    if (args.values.json) {
+      process.stdout.write(JSON.stringify({ ok, checks }, null, 2) + "\n");
+    } else {
+      for (const c of checks) process.stdout.write(`${c.status.padEnd(8)} ${c.name.padEnd(11)} ${c.detail} (${c.ms}ms)\n`);
+      process.stdout.write(`ok       ${String(ok)}\n`);
+    }
+    return ok ? 0 : 1;
+  }
   if (agent !== "kiro") {
     throw new HarnessError(
-      `preflight supports --agent kiro only (got '${agent ?? "<missing>"}')`,
+      `preflight supports --agent kiro|kiro-ide only (got '${agent ?? "<missing>"}')`,
       "USAGE",
     );
   }

@@ -784,6 +784,8 @@ function runCost(r) {
     // Non-interactive flags so the pane doesn't die on a trust/approval prompt.
     claude: ["claude", "--dangerously-skip-permissions"],
     opencode: ["opencode"],
+    // kiro-ide is a desktop app driven over CDP: no CLI to run in a pane.
+    "kiro-ide": ["bash", "-i"],
     kiro: ["kiro-cli", "chat", "--trust-all-tools"],
     codex: ["codex", "--full-auto"],
     gemini: ["gemini", "--yolo"],

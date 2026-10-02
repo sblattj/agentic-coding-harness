@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "./contract.ts";
-import { KIRO_INPUT_SCHEMA, RunArgsSchema } from "./tools-run.ts";
+import { KIRO_IDE_INPUT_SCHEMA, KIRO_INPUT_SCHEMA, RunArgsSchema } from "./tools-run.ts";
 import type { RunSpec as CoreRunSpec } from "../core/types.ts";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { unchainedLines } from "../core/hash-chain.ts";
@@ -80,6 +80,7 @@ export function toSpec(a: RunArgs, runId: string, extraArgsOverride?: string[]):
       : {}),
     ...(extraArgs !== undefined ? { extraArgs } : {}),
     ...(a.kiro !== undefined ? { kiro: a.kiro } : {}),
+    ...(a.kiroIde !== undefined ? { kiroIde: a.kiroIde } : {}),
   };
 }
 
@@ -116,11 +117,11 @@ export function registerJobTools(
   server.registerTool({
     name: "harness_run_async",
     description:
-      "Start a harness agent run (claude|opencode|kiro|codex|gemini|prime) WITHOUT waiting for completion; returns { runId, sessionId: null, started, transcriptPath } promptly. Poll harness_run_status, page harness_run_events, or harness_run_cancel with the runId.",
+      "Start a harness agent run (claude|opencode|kiro|codex|gemini|prime|kiro-ide) WITHOUT waiting for completion; returns { runId, sessionId: null, started, transcriptPath } promptly. Poll harness_run_status, page harness_run_events, or harness_run_cancel with the runId.",
     inputSchema: {
       type: "object",
       properties: {
-        agent: { type: "string", enum: ["claude", "opencode", "kiro", "codex", "gemini", "prime", "null"], description: "Agent to run" },
+        agent: { type: "string", enum: ["claude", "opencode", "kiro", "codex", "gemini", "prime", "kiro-ide", "null"], description: "Agent to run" },
         prompt: { type: "string", description: "Prompt sent to the agent" },
         model: { type: "string", description: "Model override" },
         cwd: { type: "string", description: "Working directory for the agent subprocess" },
@@ -130,6 +131,7 @@ export function registerJobTools(
         idleMs: { type: "number", description: "Abort the run if no agent events arrive for this many milliseconds" },
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
         kiro: KIRO_INPUT_SCHEMA,
+        kiroIde: KIRO_IDE_INPUT_SCHEMA,
         hermetic: {
           type: "boolean",
           description:

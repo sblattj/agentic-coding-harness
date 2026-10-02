@@ -82,6 +82,7 @@ const NO_SOURCE: Record<QuotaAgent, string> = {
   opencode: "no vendor quota source wired",
   kiro: "no vendor quota source wired",
   prime: "no vendor quota source wired",
+  "kiro-ide": "no vendor quota source wired",
   null: "offline adapter; no vendor quota",
 };
 
