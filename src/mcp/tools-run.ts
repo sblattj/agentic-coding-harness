@@ -7,6 +7,7 @@ import type { McpServer } from "./contract.ts";
 import {
   AGENTS,
   KiroConfigSchema,
+  KiroIdeConfigSchema,
   type AdapterCapabilities,
   type RunSpec as CoreRunSpec,
 } from "../core/types.ts";
@@ -15,6 +16,7 @@ import { createPricer } from "../core/pricing.ts";
 import { capabilities as claudeCapabilities } from "../adapters/claude.ts";
 import { OPENCODE_CAPABILITIES } from "../adapters/opencode.ts";
 import { KIRO_CAPABILITIES } from "../adapters/kiro.ts";
+import { KIRO_IDE_CAPABILITIES, defaultKiroBin } from "../adapters/kiro-ide.ts";
 import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
 import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
 import { PRIME_CAPABILITIES } from "../adapters/prime.ts";
@@ -43,9 +45,25 @@ export const RunArgsSchema = z.object({
   idleMs: z.number().positive().optional(),
   extraArgs: z.array(z.string()).optional(),
   kiro: KiroConfigSchema.optional(),
+  kiroIde: KiroIdeConfigSchema.optional(),
   /** #106: run in a hermetic temp copy of cwd (src/core/hermetic.ts). */
   hermetic: z.boolean().optional(),
 });
+
+/** JSON Schema for the `kiroIde` tool param (issue #110) — shared by harness_run
+ *  and harness_run_async. */
+export const KIRO_IDE_INPUT_SCHEMA = {
+  type: "object",
+  description: "Kiro IDE (desktop app over CDP) run configuration (ignored by other agents)",
+  additionalProperties: false,
+  properties: {
+    cdp: { type: "string", description: "Attach to an already-running IDE at host:port instead of launching one" },
+    port: { type: "number", description: "CDP port when the harness launches the IDE (default 9222)" },
+    bin: { type: "string", description: "Kiro IDE executable (default per platform)" },
+    userDataDir: { type: "string", description: "--user-data-dir profile (default ~/.local/state/ach-kiro-ide/profile)" },
+    newSession: { type: "boolean", description: "Start a fresh chat session before the prompt (default true)" },
+  },
+} as const;
 
 /** JSON Schema for the `kiro` tool param — shared by harness_run and
  *  harness_run_async so the two tool contracts cannot drift. */
@@ -130,6 +148,8 @@ function agentInfo(name: string): { command: string | null; capabilities?: Adapt
       return { command: "codex", capabilities: CODEX_CAPABILITIES };
     case "gemini":
       return { command: "gemini", capabilities: GEMINI_CAPABILITIES };
+    case "kiro-ide":
+      return { command: defaultKiroBin(process.platform), capabilities: KIRO_IDE_CAPABILITIES };
     case "prime":
       return { command: "prime-agent", capabilities: PRIME_CAPABILITIES };
     case "null":
@@ -163,6 +183,7 @@ export function toRunSpec(
       : {}),
     ...(a.extraArgs !== undefined ? { extraArgs: extraArgsAllowed } : {}),
     ...(a.kiro !== undefined ? { kiro: a.kiro } : {}),
+    ...(a.kiroIde !== undefined ? { kiroIde: a.kiroIde } : {}),
   };
 }
 
@@ -188,7 +209,7 @@ export function registerRunTools(
   server.registerTool({
     name: "harness_run",
     description:
-      "Run one harness agent (claude|opencode|kiro|codex|gemini|prime) with a prompt and optional model/cwd/budget/turn limits; resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
+      "Run one harness agent (claude|opencode|kiro|codex|gemini|prime|kiro-ide) with a prompt and optional model/cwd/budget/turn limits; resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
     inputSchema: {
       type: "object",
       properties: {
@@ -202,6 +223,7 @@ export function registerRunTools(
         idleMs: { type: "number", description: "Abort the run if no agent events arrive for this many milliseconds" },
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
         kiro: KIRO_INPUT_SCHEMA,
+        kiroIde: KIRO_IDE_INPUT_SCHEMA,
         hermetic: {
           type: "boolean",
           description:

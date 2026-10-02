@@ -972,6 +972,10 @@ function ensureXterm() {
 var AGENT_CMDS = {
   claude:  ["claude", "--dangerously-skip-permissions"],
   opencode: ["opencode"],
+  // kiro-ide is a desktop app driven over CDP: no CLI to run in a pane. It must
+  // precede `kiro`: agentCommand() prefix-matches `<key>-`, and "kiro-ide"
+  // would otherwise open kiro-cli.
+  "kiro-ide": ["bash", "-i"],
   kiro:    ["kiro-cli", "chat", "--trust-all-tools"],
   codex:   ["codex", "--full-auto"],
   gemini:  ["gemini", "--yolo"],

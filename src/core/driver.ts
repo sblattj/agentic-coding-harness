@@ -24,6 +24,7 @@ import { KiroAdapter } from '../adapters/kiro.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { GeminiAdapter } from '../adapters/gemini.js';
 import { PrimeAdapter } from '../adapters/prime.js';
+import { KiroIdeAdapter } from '../adapters/kiro-ide.js';
 import { NullAdapter } from '../adapters/null.js';
 import { takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
@@ -181,7 +182,7 @@ export interface Driver {
   installSignalAbort(runId: string, signals?: readonly NodeJS.Signals[]): () => void;
 }
 
-const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'prime', 'null'] as const;
+const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'prime', 'kiro-ide', 'null'] as const;
 
 /** Default signals wired by installSignalAbort (#11). */
 const ABORT_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
@@ -211,6 +212,7 @@ export async function defaultAdapters(): Promise<Record<string, AgentAdapter>> {
     codex: () => new CodexAdapter(),
     gemini: () => new GeminiAdapter(),
     prime: () => new PrimeAdapter(),
+    'kiro-ide': () => new KiroIdeAdapter(),
     null: () => new NullAdapter(),
   };
   for (const name of ADAPTER_MODULE_NAMES) {
@@ -420,9 +422,9 @@ export function createDriver(options: DriverOptions): Driver {
         // Truthful budgets: kiro bills in CREDITS, and nothing maps credits to
         // USD, so a --budget-usd cap silently never fires there. Say so up front
         // rather than let the caller believe the run is capped.
-        if (budgetUsd !== undefined && agentName === 'kiro') {
+        if (budgetUsd !== undefined && (agentName === 'kiro' || agentName === 'kiro-ide')) {
           warnings.push(
-            'budget: usd cap is not enforceable for kiro (credits only); wall/idle/maxTurns still apply',
+            `budget: usd cap is not enforceable for ${agentName} (credits only); wall/idle/maxTurns still apply`,
           );
         }
         // --- threshold alerts / near-limit warnings (#20) ---

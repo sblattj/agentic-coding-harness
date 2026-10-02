@@ -7,6 +7,7 @@ Note: releases before 0.8.1 predate this changelog.
 ### Added
 
 - `kiro-ide` agent (#110): `ach run --agent kiro-ide` drives the Kiro IDE desktop app over Chrome DevTools Protocol, so workspace `.kiro/hooks/*.json` hooks, which `kiro-cli` does not load, actually fire and can be A/B tested. Flags: `--kiro-ide-cdp host:port` (attach to a running IDE), `--kiro-ide-port`, `--kiro-ide-bin`, `--kiro-ide-user-data-dir` (default profile `~/.local/state/ach-kiro-ide/profile`, signed in once) and `--kiro-ide-no-new-session`. Metering is credits only (`Est. Credits Used`); tokens are unavailable. `ach doctor --agent kiro-ide` checks the binary, CDP reachability, sign-in state and the chat input, and fails when the UI selectors no longer match the installed Kiro version. See the README section "Kiro IDE (desktop app)".
+- `kiro-ide` is wired everywhere an agent is named: `AGENTS`, `defaultAdapters()`, the package exports (`KiroIdeAdapter`), the MCP run tools (`agent` enum, a `kiroIde` argument), `ach run`/`ach preflight`/`ach doctor` flags, and the dashboard pane maps. `ach preflight --agent kiro-ide` runs the same read-only CDP rows as doctor. A `--budget-usd` cap on `kiro-ide` warns that it cannot fire (credits only), as for `kiro`.
 
 ## [0.14.0] - 2026-10-01
 

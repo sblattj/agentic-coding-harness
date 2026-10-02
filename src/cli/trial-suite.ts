@@ -116,7 +116,10 @@ export interface AgentSelection {
 }
 
 /**
- * No `requested` → every built-in agent except `null` whose CLI is on PATH.
+ * No `requested` → every built-in agent except `null` and `kiro-ide` whose CLI
+ * is on PATH. `kiro-ide` is opt-in (`--agent kiro-ide`): it launches a desktop
+ * app against a signed-in profile and one fixed CDP port, so a default sweep
+ * must not start it just because Kiro is installed.
  * With `requested` → those agents, minus built-ins whose CLI is absent.
  * Uses the `harness_agents` probe (agentCliAvailability); agents.d names are
  * not probed here (a missing descriptor CLI surfaces at run time as
@@ -126,7 +129,7 @@ export function selectAgents(
   requested: readonly string[],
   probe: (name: string) => { command: string | null; available: boolean } = agentCliAvailability,
 ): AgentSelection {
-  const names = requested.length > 0 ? [...new Set(requested)] : AGENTS.filter((a) => a !== NULL_AGENT);
+  const names = requested.length > 0 ? [...new Set(requested)] : AGENTS.filter((a) => a !== NULL_AGENT && a !== "kiro-ide");
   const sel: AgentSelection = { run: [], skipped: [] };
   for (const agent of names) {
     if (!isKnownAgent(agent)) {

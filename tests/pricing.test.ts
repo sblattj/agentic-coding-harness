@@ -25,6 +25,8 @@ const AGENT_DEFAULT_MODELS: Record<(typeof AGENTS)[number], string> = {
   gemini: 'gemini-3-flash',
   // prime-agent stamps message.model: the provider's bare model id.
   prime: 'claude-sonnet-5',
+  // kiro-ide reports no tokens (credits only); a priceable stand-in, as for kiro.
+  'kiro-ide': 'claude-sonnet-4-5',
   null: 'null',
 };
 

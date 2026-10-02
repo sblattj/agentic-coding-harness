@@ -82,6 +82,12 @@ export interface DoctorOptions {
   versionTimeoutMs?: number;
   /** Test seam for the kiro handshake. */
   kiroPreflightFn?: typeof kiroPreflight;
+  /** kiro-ide: CDP host[:port] (--kiro-ide-cdp). Wins over kiroIdePort. */
+  kiroIdeCdp?: string;
+  /** kiro-ide: loopback CDP port (--kiro-ide-port). Default 9222. */
+  kiroIdePort?: number;
+  /** kiro-ide: Kiro executable (--kiro-ide-bin). */
+  kiroIdeBin?: string;
 }
 
 const INSTALL_HINT: Record<AgentName, string> = {
@@ -91,6 +97,7 @@ const INSTALL_HINT: Record<AgentName, string> = {
   opencode: "install opencode (npm i -g opencode-ai) or put `opencode` on PATH",
   null: "built-in offline adapter; no installation needed",
   kiro: "install kiro-cli or point KIRO_CLI_BIN at it",
+  "kiro-ide": "install Kiro IDE (macOS: `brew install --cask kiro`) or pass --kiro-ide-bin",
   prime: "install Prime Agent (curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh; releases: https://github.com/PrimeIntellect-ai/prime-agent/releases/latest) or put `prime-agent` on PATH",
 };
 
@@ -106,6 +113,7 @@ const AUTH_ENV: Record<AgentName, string[]> = {
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   opencode: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"],
   kiro: ["KIRO_API_KEY"],
+  "kiro-ide": [],
   prime: ["PRIME_API_KEY"],
   null: [],
 };
@@ -458,6 +466,10 @@ async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv): Promise<Doct
       // Kiro's real auth check is the preflight's `kiro-cli whoami`; this path
       // only runs when the binary is missing.
       return mk("unproven", "not attempted: `kiro-cli whoami` needs the binary");
+    case "kiro-ide":
+      // The IDE holds its own signed-in session; checkKiroIde reports it. This
+      // path is never reached from runDoctor (it dispatches to checkKiroIde).
+      return mk("unproven", "not attempted: Kiro IDE sign-in is observed over CDP (see the `chat` row)");
   }
 }
 
@@ -598,6 +610,7 @@ async function scanMcp(agent: AgentName, env: NodeJS.ProcessEnv, cwd: string): P
       break;
     }
     case "kiro":
+    case "kiro-ide":
       break;
   }
   for (const s of scan.servers) {
@@ -739,7 +752,7 @@ async function kiroIdeEvalTarget<T>(target: CdpTarget, expr: string, timeoutMs: 
  * Doctor rows for the `kiro-ide` agent (drives the Kiro IDE desktop app over CDP).
  * Read-only: evaluates text/selector probes only, never sends input.
  * `DoctorCheck.agent` is a plain string, so rows carry `agent: "kiro-ide"` with
- * no cast. The `runDoctor` dispatch is added once AGENTS includes `kiro-ide`.
+ * no cast. `runDoctor` dispatches here for `--agent kiro-ide`.
  */
 export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCheck[]> {
   const env = opts.env;
@@ -1007,6 +1020,14 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const perAgent = await Promise.all(
     options.agents.map(async (agent): Promise<DoctorCheck[]> => {
       if (agent === "null") return [{ agent, name: "runtime", status: "verified", depth: "shallow", detail: "built-in offline adapter; no binary, auth or MCP required", ms: 0 }];
+      if (agent === "kiro-ide") {
+        return checkKiroIde({
+          env,
+          cwd,
+          endpoint: endpointFrom(options.kiroIdeCdp, options.kiroIdePort ?? 9222),
+          ...(options.kiroIdeBin !== undefined ? { bin: options.kiroIdeBin } : {}),
+        });
+      }
       if (agent === "kiro") return checkKiro({ ...options, env, cwd, versionTimeoutMs });
       const bin = await checkBinary(agent, AGENT_BINARY[agent] ?? agent, env, cwd, versionTimeoutMs);
       return [...bin.checks, await checkAuth(agent, env), checkModel(agent, options.model), await checkMcp(agent, env, cwd)];
@@ -1047,6 +1068,9 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
       model: { type: "string" },
       cwd: { type: "string" },
       "claude-default-config": { type: "boolean", default: false },
+      "kiro-ide-cdp": { type: "string" },
+      "kiro-ide-port": { type: "string" },
+      "kiro-ide-bin": { type: "string" },
       json: { type: "boolean", default: false },
     },
     allowPositionals: false,
@@ -1059,6 +1083,12 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
   if (args.values.model !== undefined && agent === undefined) {
     throw new HarnessError("doctor --model needs --agent (a model belongs to one adapter)", "USAGE");
   }
+  let kiroIdePort: number | undefined;
+  if (args.values["kiro-ide-port"] !== undefined) {
+    const n = Number(args.values["kiro-ide-port"]);
+    if (!Number.isInteger(n) || n <= 0 || n > 65535) throw new HarnessError(`--kiro-ide-port must be a port number (1-65535), got '${args.values["kiro-ide-port"]}'`, "USAGE");
+    kiroIdePort = n;
+  }
   const env: NodeJS.ProcessEnv = { ...process.env };
   if (args.values["claude-default-config"]) env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
   const report = await runDoctor({
@@ -1067,6 +1097,9 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
     cwd: args.values.cwd ?? process.cwd(),
     stateDir: defaultStateDir(),
     ...(args.values.model !== undefined ? { model: args.values.model } : {}),
+    ...(args.values["kiro-ide-cdp"] !== undefined ? { kiroIdeCdp: args.values["kiro-ide-cdp"] } : {}),
+    ...(kiroIdePort !== undefined ? { kiroIdePort } : {}),
+    ...(args.values["kiro-ide-bin"] !== undefined ? { kiroIdeBin: args.values["kiro-ide-bin"] } : {}),
   });
   for (const { descriptor: d, file } of catalog.descriptors) {
     if (agent !== undefined && agent !== d.name) continue;

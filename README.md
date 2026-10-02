@@ -13,7 +13,7 @@
 
 ## Highlights
 
-- **One CLI, six agents** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` adapters normalize six different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
+- **One CLI, six agents (plus the Kiro IDE)** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` adapters (and `kiro-ide`, which drives the Kiro desktop app over CDP) normalize six different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
 - **Cost math you can defend** — cache-aware accounting verified against each CLI's own ground truth (Claude session JSONL, Kiro session files, provider-reported `costUSD`); LiteLLM pricing, and unpriced models are marked unavailable rather than silently assigned a price.
 - **Live agent runs dashboard** — `ach dash` redraws 2×/s in the terminal; `ach web` (port 8399) grids every run with a browser terminal you can type into — PTY per run, vendored xterm.js, zero CDN.
 - **Terminal replay** — every run renders to an asciinema-format `.cast`, so you can scrub what the agent did and when.
@@ -127,7 +127,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 
 ## What it does: token metering, verified cost tracking, and run artifacts for six agents
 
-- **Six adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes).
+- **Six CLI adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes) — plus `kiro-ide`, which drives the Kiro IDE desktop app over CDP (see "Kiro IDE (desktop app)").
 - **Prime Agent** — `ach run --agent prime` drives `prime-agent -p --mode json`; `--model`
   passes through verbatim (`<provider>/<model>`). Usage is counted per assistant message plus
   the subagent (`rlm.spawn`) sessions read from `~/.prime/agent/session-artifacts/`; a
@@ -263,13 +263,15 @@ estimates; quota output uses provider-reported values when available.
 ## CLI
 
 ```sh
-ach run --agent <claude|opencode|kiro|codex|gemini|prime|null|custom|descriptor> [--model M] [--resume SID]
+ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|null|custom|descriptor> [--model M] [--resume SID]
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
             [--extra-args 'a b']... [--extra-arg TOKEN]...   # see "Passing extra CLI args"
             kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                        [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                        [--kiro-startup-ms N] [--kiro-require-model-ack] [--kiro-mcp-server '<json>']...
+            kiro-ide only: [--kiro-ide-cdp host:port] [--kiro-ide-port N] [--kiro-ide-bin PATH]
+                           [--kiro-ide-user-data-dir DIR] [--kiro-ide-no-new-session]
             claude only: [--claude-default-config]   # default CLAUDE_CONFIG_DIR (keychain OAuth)
 ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]
             # resumable agents x tasks x models x trials grid; re-run the same command
@@ -277,6 +279,7 @@ ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--jso
 ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--tasks-dir DIR] [--ledger PATH]
             # bundled task suite; missing agent CLIs skipped; HTML report next to the ledger
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
+ach preflight --agent kiro-ide [--kiro-ide-cdp host:port] [--json]  # read-only CDP rows, same as doctor
 ach watch [--transcript-dir <root>]           # live per-session token deltas
 ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--json] [--state-only]
             [--transcript-dir <root>] [--origin all|native|imported|transcript]
@@ -511,6 +514,18 @@ cd <workspace>
 ach run --agent kiro-ide "<prompt>"
 ach doctor --agent kiro-ide    # binary, CDP reachable, signed in, chat input present
 ```
+
+**How it works / gotchas.**
+- One IDE instance per `--user-data-dir`. A second launch with the same profile hands off to the running
+  instance and exits, so ach polls CDP for readiness instead of tracking the child process it spawned.
+- `--reuse-window <folder>` makes that running instance switch to (or reopen) the workspace folder, which is
+  how the directory you ran `ach` from becomes the IDE's workspace.
+- Autopilot is the `#autopilot-toggle` switch in the chat panel and must be on, or the run fails fast (a
+  supervised tool call would block waiting for approval).
+- Each run starts a fresh chat through the "New session" button (`--kiro-ide-no-new-session` skips it), so
+  one run never inherits the previous run's context.
+- `--budget-usd` cannot fire (credits only); wall, idle and turn limits still apply, and the run carries a
+  warning saying so.
 
 `ach run` has no `--cwd`: the workspace is the directory you run it from (as for `--verify`).
 

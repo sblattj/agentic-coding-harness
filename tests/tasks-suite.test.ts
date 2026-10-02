@@ -136,6 +136,11 @@ describe("suite resolution", () => {
         { agent: "prime", reason: "prime-bin not found on PATH" },
       ],
     });
+    // kiro-ide is opt-in: absent from the default sweep, probed when asked for.
+    assert.deepEqual(selectAgents(["kiro-ide"], probe), {
+      run: [],
+      skipped: [{ agent: "kiro-ide", reason: "kiro-ide-bin not found on PATH" }],
+    });
     assert.deepEqual(selectAgents(["null", "gemini", "null"], probe), {
       run: ["null"],
       skipped: [{ agent: "gemini", reason: "gemini-bin not found on PATH" }],
