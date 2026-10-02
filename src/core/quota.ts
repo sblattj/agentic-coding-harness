@@ -352,3 +352,52 @@ export function dashQuotaCell(rows: QuotaRow[], agent: string): string {
   if (!best || best.leftPercent === undefined) return "n/a";
   return `${Math.floor(best.leftPercent)}%/${best.window ?? "?"}`;
 }
+
+// ---------------------------------------------------------------- wait
+
+export interface QuotaWaitOptions {
+  agent: string;
+  /** A live window at or above this used percent blocks (default 95). */
+  maxUsed?: number;
+  /** Only these window names count (e.g. ["5h"]); default every window. */
+  windows?: string[];
+}
+
+export type QuotaWaitDecision =
+  | { state: "ready"; reason: string }
+  /** waitMs is the time until the last blocking window resets; undefined when a blocker has no resets_at. */
+  | { state: "wait"; waitMs?: number; reason: string }
+  | { state: "unknown"; reason: string };
+
+/**
+ * Should a job that spends this agent's quota start now? Uses only vendor rows:
+ * ready when every counted live window is under `maxUsed` or has reset since it
+ * was observed; wait (until the latest blocking reset) when one is at or over;
+ * unknown when the agent has no vendor number at all.
+ */
+export function quotaWaitDecision(rows: QuotaRow[], opts: QuotaWaitOptions): QuotaWaitDecision {
+  const maxUsed = opts.maxUsed ?? 95;
+  const counted = rows.filter(
+    (r) => r.agent === opts.agent && r.window !== undefined && (!opts.windows || opts.windows.includes(r.window)),
+  );
+  if (counted.length === 0) {
+    const reason = rows.find((r) => r.agent === opts.agent && !r.available)?.reason;
+    return { state: "unknown", reason: reason ?? `no vendor quota for ${opts.agent}` };
+  }
+  const blocking = counted.filter((r) => r.available && (r.usedPercent ?? 0) >= maxUsed);
+  if (blocking.length === 0) {
+    const live = counted.filter((r) => r.available);
+    const parts = live.map((r) => `${r.window} ${fmtPct(r.usedPercent)} used`);
+    const reset = counted.length - live.length;
+    if (reset > 0) parts.push(`${reset} window(s) reset since last observation`);
+    return { state: "ready", reason: `${opts.agent}: ${parts.join(", ")} (limit ${maxUsed}%)` };
+  }
+  const waits = blocking.map((r) => r.resetsInMs);
+  const waitMs = waits.some((w) => w === undefined) ? undefined : Math.max(...(waits as number[]));
+  const names = blocking.map((r) => `${r.window} ${fmtPct(r.usedPercent)} used`).join(", ");
+  return {
+    state: "wait",
+    ...(waitMs === undefined ? {} : { waitMs }),
+    reason: `${opts.agent}: ${names} (limit ${maxUsed}%), resets in ${fmtDuration(waitMs)}`,
+  };
+}
