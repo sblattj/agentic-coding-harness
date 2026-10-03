@@ -16,6 +16,7 @@ import {
   fmtDuration,
   parseClaudeStatusline,
   quotaWaitDecision,
+  readClaudeSnapshot,
   renderQuotaTable,
   writeClaudeSnapshot,
 } from "../core/quota.ts";
@@ -43,7 +44,15 @@ async function ingest(rest: string[]): Promise<number> {
     return 0;
   }
   const snap = parseClaudeStatusline(json, Date.now());
-  if (snap) await writeClaudeSnapshot(claudeSnapshotPath(stateDir()), snap);
+  if (!snap) return 0;
+  const file = claudeSnapshotPath(stateDir());
+  // A payload can omit a window (right after a 5h reset it carries only 7d).
+  // Keep the earlier reading so its passed resets_at still reads as "reset"
+  // instead of the window vanishing and `quota wait --window 5h` going blind.
+  const prev = await readClaudeSnapshot(file);
+  const have = new Set(snap.windows.map((w) => w.name));
+  for (const w of prev?.windows ?? []) if (!have.has(w.name)) snap.windows.push(w);
+  await writeClaudeSnapshot(file, snap);
   return 0;
 }
 
