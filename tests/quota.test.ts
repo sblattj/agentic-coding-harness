@@ -281,6 +281,22 @@ describe("quota — cli", () => {
     assert.match(t.stdout, /^AGENT\s+WINDOW/);
     assert.ok(t.stdout.split("\n").filter((l) => l.includes("n/a")).length >= QUOTA_AGENTS.length, t.stdout);
   });
+
+  it("a payload without the 5h window keeps the earlier 5h reading, so wait --window 5h sees the reset", async () => {
+    const state = await fs.mkdtemp(path.join(os.tmpdir(), "ach-quota-state-"));
+    const env = { AGENTIC_CODING_HARNESS_STATE_DIR: state, AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR: path.join(FIX, "none") };
+    const passed = Math.floor(Date.now() / 1000) - 60;
+    const before = { rate_limits: { five_hour: { used_percentage: 86, resets_at: passed }, seven_day: { used_percentage: 20, resets_at: 4102444800 } } };
+    assert.equal(runCli(["quota", "ingest", "claude"], env, JSON.stringify(before)).code, 0);
+    const after = { rate_limits: { seven_day: { used_percentage: 27, resets_at: 4102444800 } } };
+    assert.equal(runCli(["quota", "ingest", "claude"], env, JSON.stringify(after)).code, 0);
+    const rows = JSON.parse(runCli(["quota", "--json"], env).stdout) as Array<{ agent: string; window?: string; usedPercent?: number }>;
+    assert.deepEqual(rows.filter((x) => x.agent === "claude").map((x) => x.window).sort(), ["5h", "7d"]);
+    assert.equal(rows.find((x) => x.agent === "claude" && x.window === "7d")?.usedPercent, 27);
+    const w = runCli(["quota", "wait", "--window", "5h", "--max-used", "10"], env);
+    assert.equal(w.code, 0, w.stderr);
+    assert.match(w.stderr, /ready: claude: 1 window\(s\) reset since last observation/);
+  });
 });
 
 describe("quota: wait decision", () => {
