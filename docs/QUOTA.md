@@ -31,6 +31,27 @@ prime     n/a     n/a   n/a        n/a     n/a       no vendor quota source wire
 column built from the same rows. It holds the tightest live window's % left, such
 as `98%/5h`, and is re-read at most every 30 s.
 
+## Wait for headroom: `ach quota wait`
+
+`ach quota wait` holds a quota-hungry job until the vendor says there is room,
+so a long batch does not start into a nearly spent window and die on 429s halfway:
+
+```bash
+ach quota wait --agent claude --max-used 90 -- ./run-batch.sh --resume
+```
+
+- A window is clear when it is under `--max-used` (default 95) or has reset since
+  it was observed. `--window 5h` counts only the named windows.
+- Otherwise it waits until the latest blocking `resets_at`, plus `--grace-s`
+  (default 60), and re-reads the snapshot every `--poll-s` (default 60). A fresher
+  snapshot that shows room ends the wait early.
+- Each check compares against the wall clock, so a laptop that sleeps through the
+  reset starts the job on wake instead of resuming a paused timer.
+- It exits with the command's exit code, or `0` when no command is given. It exits
+  `1` on `--timeout-s` and when the agent has no vendor number; ach never guesses
+  headroom, so pass `--allow-unknown` to start anyway.
+- Progress lines go to stderr, so the job's own stdout stays clean.
+
 ## Sources and field paths
 
 | Agent | Source | Field path | Status |
