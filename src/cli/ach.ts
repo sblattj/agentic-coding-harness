@@ -29,7 +29,7 @@ import {
 } from "../core/types.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, type VerifyResult } from "../core/verify.ts";
 import { findAncestorInstructions, formatAncestorWarning } from "../core/ancestor-instructions.ts";
-import { formatHermeticLine, type HermeticWorkspace } from "../core/hermetic.ts";
+import { formatHermeticLine, HermeticSyncError, type HermeticWorkspace } from "../core/hermetic.ts";
 import {
   formatRepeatGroupLine,
   formatStatsInline,
@@ -643,6 +643,20 @@ async function cmdRun(rest: string[]): Promise<number> {
     outcome = await runOnce(trialOpts);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // #113: the run settled but the hermetic sync-back failed. Still emit the
+    // run record (usage, events, --verify graded on the KEPT copy) with the
+    // error attached, then exit non-zero.
+    if (err instanceof HermeticSyncError && err.partial?.result !== undefined) {
+      const { result: settled, verify } = err.partial;
+      for (const w of settled.warnings) process.stderr.write(`[warn] ${w}\n`);
+      if (args.values.json) {
+        const out = { ...settled, ...(verify !== undefined ? { verify } : {}), error: { code: err.code, message, keptDir: err.keptDir, source: err.source } };
+        process.stdout.write(JSON.stringify(out, null, 2) + "\n");
+      } else {
+        process.stdout.write(runSummaryText(agent, settled, args.values.model, verify) + "\n");
+      }
+      throw new HarnessError(message, "HERMETIC_SYNC_FAILED");
+    }
     // Launch-time outage (#60): exit 20 under the ladder, 1 otherwise.
     if (err instanceof HarnessError && err.code === "UNAVAILABLE") {
       throw new HarnessError(message, "UNAVAILABLE", exitMode === "ladder" ? EXIT_CODES.indeterminate : 1);
@@ -698,7 +712,7 @@ async function runRepeatCli(
       o.result !== undefined
         ? { ...o.result, repeat: o.repeat, ...(o.verify !== undefined ? { verify: o.verify } : {}) }
         : { repeat: o.repeat, error: o.error },
-    );
+    ).map((r, i) => (outcomes[i]!.result !== undefined && outcomes[i]!.error !== undefined ? { ...r, error: outcomes[i]!.error } : r));
     const envelope = {
       repeat: { group, count, attempted: outcomes.length, succeeded, ...(verified.length > 0 ? { verified: verified.length, passed } : {}) },
       ...(stats !== undefined ? { stats } : {}),
