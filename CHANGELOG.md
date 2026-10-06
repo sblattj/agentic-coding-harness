@@ -2,6 +2,14 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.15.1] - 2026-10-06
+
+### Fixed
+
+- `--hermetic` sync-back no longer fails with `EACCES` when the run touched a read-only file (#113), such as a git loose object under `.git/objects` (mode 0444). A non-writable destination is removed and re-copied, and its mode is restored. A file whose size and sha256 match the destination is not copied at all, so git object freshening (an mtime-only change) is skipped. If sync-back still fails, `ach run --json` writes the run record (usage, events, `verify`) with `error: {code, message, keptDir, source}` attached and exits 1. `--verify` grades the kept temp copy, which holds the agent's edits.
+- Parallel `ach run --agent kiro` runs no longer share one MITM tap port (#114). The port probe now detects a wildcard (`*:port`) listener, mitmdump is pinned to `--listen-host 127.0.0.1`, and concurrent launches in one process claim distinct ports. `HTTPS_PROXY` is injected only after this run's own mitmdump reports that it is listening. If mitmdump exits, fails to bind, or stays silent for 8 s, the run goes untapped with a `[warn] kiro: MITM tap skipped …` line instead of pointing at another run's proxy.
+- `ach run` prints `progress` and `error` event lines in full (#111), with continuation lines aligned under the first. `text` and tool previews are still clipped.
+
 ## [0.15.0] - 2026-10-01
 
 ### Added
