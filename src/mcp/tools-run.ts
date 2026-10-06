@@ -22,7 +22,8 @@ import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
 import { PRIME_CAPABILITIES } from "../adapters/prime.ts";
 import { NULL_CAPABILITIES } from "../adapters/null.ts";
 import { checkCwd, filterExtraArgs, type GatewayConfig } from "../serve/gateway.ts";
-import { runHermetic } from "../core/hermetic.ts";
+import { HermeticSyncError, hermeticSyncErrorInfo, runHermetic, type HermeticSyncErrorInfo } from "../core/hermetic.ts";
+import type { RunResult } from "../core/types.ts";
 
 /** One-line MCP warning for ancestor instruction files (#106). */
 export function ancestorWarningLine(agent: string, files: readonly string[]): string {
@@ -261,17 +262,28 @@ export function registerRunTools(
       // #106: hermetic runs copy cwd to a clean temp dir and sync back; the
       // temp path is harness-minted, so the gateway cwd check above (on the
       // caller's cwd) is the one that matters.
-      const result =
-        a.hermetic === true
-          ? await runHermetic(driver, a.agent, spec, { stateDir: opts.stateDir })
-          : await driver.run(a.agent, spec);
+      let result: RunResult;
+      let syncError: HermeticSyncErrorInfo | undefined;
+      try {
+        result =
+          a.hermetic === true
+            ? await runHermetic(driver, a.agent, spec, { stateDir: opts.stateDir })
+            : await driver.run(a.agent, spec);
+      } catch (err) {
+        // #113: the run settled but the sync-back failed: keep the run
+        // (usage, events, cost) and attach the error instead of dropping it.
+        if (!(err instanceof HermeticSyncError) || err.result === undefined) throw err;
+        result = err.result;
+        syncError = hermeticSyncErrorInfo(err);
+      }
       const extraWarnings = [
         ...(result.ancestorInstructions !== undefined && result.ancestorInstructions.length > 0
           ? [ancestorWarningLine(a.agent, result.ancestorInstructions)]
           : []),
         ...(strippedWarning !== undefined ? [strippedWarning] : []),
       ];
-      return extraWarnings.length === 0 ? result : { ...result, warnings: [...result.warnings, ...extraWarnings] };
+      const out = extraWarnings.length === 0 ? result : { ...result, warnings: [...result.warnings, ...extraWarnings] };
+      return syncError === undefined ? out : { ...out, error: syncError };
     },
   });
 

@@ -204,6 +204,8 @@ export function writeCellArtifact(runsDir: string, cell: MatrixCell, outcome: Tr
     cellId: cell.cellId,
     task: cell.task.id,
     ...(outcome.verify !== undefined ? { verify: outcome.verify } : {}),
+    // #113: sync-back failed but the run settled: keep the run, attach the error.
+    ...(outcome.syncError !== undefined ? { error: outcome.syncError } : {}),
   };
   fs.writeFileSync(file, JSON.stringify(artifact, null, 2) + "\n");
   fs.writeFileSync(file.replace(/\.json$/, ".secs"), `${(result.durationMs / 1000).toFixed(3)}\n`);

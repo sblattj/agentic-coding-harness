@@ -35,6 +35,7 @@ import { HarnessError, isKnownAgent, type AgentAdapter, type RunSpec } from "../
 import { DEFAULT_VERIFY_TIMEOUT_MS, runVerifier, type VerifyStatus } from "../core/verify.ts";
 import { isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { loadCatalog, reportCatalogIssues, resolveRunAgent } from "./custom-agents.ts";
+import { HermeticSyncError, hermeticSyncErrorInfo, type HermeticSyncErrorInfo } from "../core/hermetic.ts";
 import { runOnce, type TrialOutcome } from "./trials.ts";
 
 // ------------------------------------------------------------------ schema
@@ -431,6 +432,8 @@ export interface LedgerRow {
   exitStatus?: string;
   verify?: VerifyStatus;
   error?: string;
+  /** #113: set when the run settled but its hermetic sync-back failed (code, message, keptDir, source). */
+  errorInfo?: HermeticSyncErrorInfo;
   startedAt: number;
   endedAt: number;
 }
@@ -541,6 +544,8 @@ export interface CellReport {
   exitStatus?: string;
   verify?: VerifyStatus;
   error?: string;
+  /** #113: hermetic sync-back failure detail; the cell's run (runId, usage) is still recorded. */
+  errorInfo?: HermeticSyncErrorInfo;
 }
 
 /** Counts are over every cell of the plan, whether run now or resumed from the ledger. */
@@ -726,6 +731,25 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
     );
   } catch (err) {
     if (err instanceof Interrupted) throw err;
+    // #113: the run settled but the hermetic sync-back failed. Keep the run
+    // (usage, events, cost, verify graded on the KEPT copy): the cell is an
+    // `error`, but its runId/exitStatus/verify and the error survive.
+    if (err instanceof HermeticSyncError && err.partial?.result !== undefined) {
+      const info = hermeticSyncErrorInfo(err);
+      const partial = err.partial;
+      const settled = partial.result!;
+      opts.onOutcome?.(cell, { ...partial, error: err.message, errorCode: err.code, syncError: info });
+      return {
+        ...base,
+        status: "error",
+        runId: settled.runId,
+        exitStatus: settled.exitStatus,
+        ...(partial.verify !== undefined ? { verify: partial.verify.status } : {}),
+        error: err.message,
+        errorInfo: info,
+        endedAt: Date.now(),
+      };
+    }
     return {
       ...base,
       status: classifyCell({ thrown: err }),
@@ -786,6 +810,7 @@ export async function runMatrix(opts: RunMatrixOptions): Promise<MatrixSummary> 
     ...(row.exitStatus !== undefined ? { exitStatus: row.exitStatus } : {}),
     ...(row.verify !== undefined ? { verify: row.verify } : {}),
     ...(row.error !== undefined ? { error: row.error } : {}),
+    ...(row.errorInfo !== undefined ? { errorInfo: row.errorInfo } : {}),
   });
   for (const { cell, action, last } of entries) {
     if (action === "skip" || action === "error") {

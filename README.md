@@ -417,7 +417,11 @@ ach run --agent claude --hermetic --verify 'npm test' "fix the failing test"
    **Deletions propagate**, but only for paths that existed when the copy was made, so a
    file you create in the original during the run is left alone.
 4. The temp dir is removed. It is kept only if the sync-back itself fails, because it
-   then holds the only copy of the agent's edits; the error prints its path.
+   then holds the only copy of the agent's edits; the error prints its path. The settled
+   run is not lost: `ach run --json`, `ach trial --matrix` cells, and the MCP
+   `harness_run` / `harness_run_status` keep the run's usage and events and attach
+   `error: {code: "HERMETIC_SYNC_FAILED", message, keptDir, source}`; the registry record is
+   marked `error`, and `--verify`/`verify` is graded on `keptDir` (#113).
 
 The RunRecord records `hermetic: {tempDir, source, avoided?, synced: {copied, deleted}}`,
 and its `cwd` stays the original workspace, so `ach regrade` and `ach stats --project`

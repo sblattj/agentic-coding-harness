@@ -384,7 +384,11 @@ cell then measures your instructions, not the agent. This matters for trials bec
   runs in the real workspace first. The agent's edits and deletions are synced back
   before `verify` runs there, so the verdict is unchanged in meaning. A temp root that is
   not clean fails the cell as an `error`; it never runs non-hermetically. The RunRecord
-  carries `hermetic: {tempDir, source, avoided?, synced}`.
+  carries `hermetic: {tempDir, source, avoided?, synced}`. If one cell's sync-back
+  fails (`HERMETIC_SYNC_FAILED`), that cell is an `error` row that still carries its
+  `runId`, `exitStatus`, and a `verify` verdict graded on the kept copy, plus
+  `errorInfo: {code, message, keptDir, source}`; the other cells run on and keep their
+  results (#113).
 - Without `--hermetic`, put the ledger (`--ledger`) and shared `cwd`s outside `$HOME`,
   for example under `/tmp`.
 
