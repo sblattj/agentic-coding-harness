@@ -133,6 +133,16 @@ function clip(s: string, max = CLIP): string {
 }
 
 /**
+ * Diagnostics (`progress`, `error`) print in full (#111): trimmed, with
+ * continuation lines indented to sit under the first line's body.
+ */
+function full(prefix: string, s: string): string {
+  const rows = s.split(/\r?\n/).map((r) => r.trim()).filter((r, i) => i === 0 || r !== "");
+  const pad = " ".repeat(prefix.length);
+  return (prefix + rows.map((r, i) => (i === 0 ? r : pad + r)).join("\n")).trimEnd();
+}
+
+/**
  * One compact stderr line per streamed event, or null for an event that
  * prints nothing on its own: a `model_call_start` is folded into its
  * `model_call_end` row (#32), so each model call costs one line, not two.
@@ -167,9 +177,9 @@ export function formatEventLine(e: AgentEvent, starts?: Map<string, number>): st
     case "tool_result":
       return `[${c}] result  ${String(e.toolCallId ?? "")}`;
     case "progress":
-      return `[${c}] »       ${clip(String(e.data ?? ""))}`;
+      return full(`[${c}] »       `, String(e.data ?? ""));
     case "error":
-      return `[${c}] error   ${clip(typeof e.data === "string" ? e.data : String(e.message ?? ""))}`;
+      return full(`[${c}] error   `, typeof e.data === "string" ? e.data : String(e.message ?? ""));
     default: {
       const detail = typeof e.data === "string" ? e.data : "";
       return `[${c}] ${e.type.padEnd(7)} ${clip(detail)}`.trimEnd();
