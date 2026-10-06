@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 import { KiroAdapter } from '../src/adapters/kiro.js';
+import * as mitmMod from '../src/monitors/kiro-mitm.js';
 import { findKiroMitmPort, mitmdumpAvailable } from '../src/monitors/kiro-mitm.js';
 import { FakeChild, runCall, versionProbeSpawnFn, type FakeSpawnCall } from './helpers/fake-child.ts';
 import type { AgentEvent } from '../src/core/types.js';
@@ -38,6 +39,7 @@ function fakeMitmdump(readyDir: string): string {
 # argv: -p <port> -s <script>
 port="$2"
 if [ -n "$FAKE_MITMDUMP_PIDFILE" ]; then echo $$ > "$FAKE_MITMDUMP_PIDFILE"; fi
+echo "[00:00:00.000] HTTP(S) proxy listening at 127.0.0.1:$port."
 echo '${METERING_LINE}'
 touch "${readyDir}/ready.$port"
 sleep 30 &
@@ -248,6 +250,70 @@ describe('findKiroMitmPort', () => {
     } finally {
       for (const s of blockers) s.close();
     }
+  });
+});
+
+describe('findKiroMitmPort: wildcard holders (#114)', () => {
+  it('reports a port held on the wildcard address busy and picks another', async () => {
+    // mitmdump historically listened on *:port; on macOS a bind of the specific
+    // 127.0.0.1:port succeeds over such a holder, so the old probe said "free".
+    const holder = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      holder.once('error', reject);
+      holder.listen({ port: 8960, host: '::', ipv6Only: false }, resolve);
+    });
+    try {
+      const port = await findKiroMitmPort(8960, 8962);
+      assert.ok(port !== null && port !== 8960, `probe picked busy port 8960 (got ${port})`);
+    } finally {
+      holder.close();
+    }
+  });
+
+  it('skips ports other in-process runs already claimed', async () => {
+    const port = await findKiroMitmPort(8965, 8967, '127.0.0.1', new Set([8965]));
+    assert.ok(port !== null && port !== 8965);
+  });
+});
+
+describe('kiro MITM tap fails closed (#114)', () => {
+  for (const [id, label, body] of [
+    ['exit1', 'exits 1 immediately', 'exit 1'],
+    ['bind', 'reports a bind error and exits', 'echo "Error: [Errno 48] Address already in use" >&2; exit 1'],
+  ] as const) {
+    it(`mitmdump that ${label}: no tapEnv injected, warning emitted, run proceeds untapped`, async () => {
+      const envFile = join(dir, `untapped-${id}.env`);
+      process.env.FAKE_KIRO_ENV_FILE = envFile;
+      try {
+        const bad = writeExecutable(`bad-mitmdump-${id}.sh`, `#!/bin/sh\n${body}\n`);
+        const adapter = new KiroAdapter({ command: kiroCli, mitm: true, mitmdumpBin: bad });
+        const { result: handle, stderr } = await withCapturedStderr(() => adapter.launch({ prompt: 'untapped' }));
+        const events = await collect(handle);
+        assert.equal(await handle.wait(), 'success');
+        assert.match(stderr, /MITM tap skipped on port \d+ .*running without the credit\/token tap/);
+        const childEnv = readFileSync(envFile, 'utf8');
+        assert.doesNotMatch(childEnv, /^HTTPS_PROXY=/m);
+        assert.doesNotMatch(childEnv, /^SSL_CERT_FILE=/m);
+        assert.ok(!events.some((e) => e.type === 'usage'));
+        assert.ok(events.some((e) => e.type === 'message' && e.content === 'done'));
+      } finally {
+        delete process.env.FAKE_KIRO_ENV_FILE;
+      }
+    });
+  }
+
+  it('two concurrent tapped launches get distinct ports; claims are released on stop', async () => {
+    const run = async (name: string): Promise<string> => {
+      const envFile = join(dir, name);
+      const adapter = new KiroAdapter({ command: kiroCli, mitm: true, mitmdumpBin: mitmdump });
+      const handle = await adapter.launch({ prompt: 'c', env: { FAKE_KIRO_ENV_FILE: envFile } });
+      await collect(handle);
+      await handle.wait();
+      return readFileSync(envFile, 'utf8').match(/^HTTPS_PROXY=(.*)$/m)![1]!;
+    };
+    const [a, b] = await Promise.all([run('conc-a.env'), run('conc-b.env')]);
+    assert.notEqual(a, b, 'concurrent runs shared one tap port');
+    assert.equal(mitmMod.claimedKiroMitmPorts?.size ?? 0, 0, 'claimed ports leaked after stop');
   });
 });
 

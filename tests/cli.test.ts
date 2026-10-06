@@ -305,7 +305,7 @@ describe("harness cli", () => {
     const fakeMitmdump = path.join(tmpExtra, "fake-mitmdump.sh");
     await fs.writeFile(
       fakeMitmdump,
-      `#!/bin/sh\nport="$2"\necho '${meteringLine}'\ntouch "${tmpExtra}/ready.$port"\nsleep 30 &\nchild=$!\ntrap 'rm -f "${tmpExtra}/ready.$port"; kill "$child" 2>/dev/null; exit 0' TERM INT\nwait $!\n`,
+      `#!/bin/sh\nport="$2"\necho "HTTP(S) proxy listening at 127.0.0.1:$port."\necho '${meteringLine}'\ntouch "${tmpExtra}/ready.$port"\nsleep 30 &\nchild=$!\ntrap 'rm -f "${tmpExtra}/ready.$port"; kill "$child" 2>/dev/null; exit 0' TERM INT\nwait $!\n`,
     );
     await fs.chmod(fakeMitmdump, 0o755);
     const fakeKiroCli = path.join(tmpExtra, "fake-kiro-cli.sh");
