@@ -5,6 +5,6 @@ Node.js >= 18.19) and execs the vendored ach.mjs CLI bundle with full
 argument passthrough.
 """
 
-__version__ = "0.15.2"
+__version__ = "0.16.0"
 
 __all__ = ["__version__"]
