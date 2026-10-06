@@ -41,7 +41,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "ach": "./dist/cli/ach.js"
+    "ach": "dist/cli/ach.js"
   },
   "engines": {
     "node": ">=18.19"
