@@ -97,6 +97,9 @@ function statusPayload(rec: NonNullable<ReturnType<typeof readRunRecord>>): Reco
     elapsedMs: Math.max(0, Date.now() - rec.startedAt),
   };
   if (rec.exitStatus !== undefined) payload.exitStatus = rec.exitStatus;
+  // #113: a hermetic sync-back failure (runHermetic marks the record failed).
+  const syncError = rec.metadata?.hermeticSyncError;
+  if (syncError !== undefined) payload.error = syncError;
   return payload;
 }
 

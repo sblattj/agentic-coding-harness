@@ -13,7 +13,7 @@ import path from "node:path";
 
 import type { Driver } from "../core/driver.ts";
 import { patchRunRecord, registryDir, type RepeatMembership, type RunRecord } from "../core/registry.ts";
-import { HermeticSyncError, runHermetic, type RunHermeticOptions } from "../core/hermetic.ts";
+import { HermeticSyncError, runHermetic, type HermeticSyncErrorInfo, type RunHermeticOptions } from "../core/hermetic.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
 import { HarnessError, type RunResult, type RunSpec } from "../core/types.ts";
 import { runVerifier, type VerifyResult } from "../core/verify.ts";
@@ -59,6 +59,8 @@ export interface TrialOutcome {
   error?: string;
   /** HarnessError code of the throw (e.g. UNAVAILABLE → exit 20 under the ladder). */
   errorCode?: string;
+  /** #113: hermetic sync-back failure detail (code, message, keptDir, source) when the run itself settled. */
+  syncError?: HermeticSyncErrorInfo;
   repeat?: RepeatMembership;
   /** Registry annotation failed (record missing/unwritable) — surfaced as a warning. */
   annotateFailed?: boolean;

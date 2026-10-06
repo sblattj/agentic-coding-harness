@@ -47,7 +47,7 @@ import path from 'node:path';
 
 import type { Driver } from './driver.ts';
 import { findAncestorInstructions, type FindAncestorOptions } from './ancestor-instructions.ts';
-import { patchRunRecord } from './registry.ts';
+import { patchRunRecord, readRunRecord } from './registry.ts';
 import type { VerifyResult } from './verify.ts';
 import { HarnessError, type HermeticRunInfo, type RunResult, type RunSpec } from './types.ts';
 
@@ -302,6 +302,19 @@ export class HermeticSyncError extends HarnessError {
   partial?: { index: number; result?: RunResult; verify?: VerifyResult; annotateFailed?: boolean };
 }
 
+/** The error shape every surface attaches to a settled run whose sync-back
+ *  failed (#113): `ach run --json`, matrix cells/artifacts, MCP responses. */
+export interface HermeticSyncErrorInfo {
+  code: 'HERMETIC_SYNC_FAILED';
+  message: string;
+  keptDir: string;
+  source: string;
+}
+
+export function hermeticSyncErrorInfo(err: HermeticSyncError): HermeticSyncErrorInfo {
+  return { code: 'HERMETIC_SYNC_FAILED', message: err.message, keptDir: err.keptDir, source: err.source };
+}
+
 export interface RunHermeticOptions extends PrepareHermeticOptions {
   /** Registry state dir: the RunRecord gets `cwd` = original + `hermetic`. */
   stateDir?: string;
@@ -339,12 +352,22 @@ export async function runHermetic(
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     const agentNote = runError !== undefined ? ` (the run itself also failed: ${runError instanceof Error ? runError.message : String(runError)})` : '';
-    throw new HermeticSyncError(
+    const failure = new HermeticSyncError(
       `hermetic: syncing ${ws.dir} back to ${ws.source} failed: ${why}${agentNote}; the temp copy is KEPT at ${ws.base} because it holds the agent's edits`,
       ws.dir,
       ws.source,
       result,
     );
+    // #113: the registry record (what harness_run_status / jobs read) must not
+    // say plain success: mark it failed and attach the error.
+    if (opts.stateDir !== undefined && result !== undefined) {
+      const prior = readRunRecord(opts.stateDir, result.runId)?.metadata ?? {};
+      patchRunRecord(opts.stateDir, result.runId, {
+        status: 'error',
+        metadata: { ...prior, hermeticSyncError: hermeticSyncErrorInfo(failure) },
+      });
+    }
+    throw failure;
   }
   const warnings: string[] = [];
   try {

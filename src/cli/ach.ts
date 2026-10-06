@@ -29,7 +29,7 @@ import {
 } from "../core/types.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, type VerifyResult } from "../core/verify.ts";
 import { findAncestorInstructions, formatAncestorWarning } from "../core/ancestor-instructions.ts";
-import { formatHermeticLine, HermeticSyncError, type HermeticWorkspace } from "../core/hermetic.ts";
+import { formatHermeticLine, HermeticSyncError, hermeticSyncErrorInfo, type HermeticWorkspace } from "../core/hermetic.ts";
 import {
   formatRepeatGroupLine,
   formatStatsInline,
@@ -650,7 +650,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       const { result: settled, verify } = err.partial;
       for (const w of settled.warnings) process.stderr.write(`[warn] ${w}\n`);
       if (args.values.json) {
-        const out = { ...settled, ...(verify !== undefined ? { verify } : {}), error: { code: err.code, message, keptDir: err.keptDir, source: err.source } };
+        const out = { ...settled, ...(verify !== undefined ? { verify } : {}), error: hermeticSyncErrorInfo(err) };
         process.stdout.write(JSON.stringify(out, null, 2) + "\n");
       } else {
         process.stdout.write(runSummaryText(agent, settled, args.values.model, verify) + "\n");
