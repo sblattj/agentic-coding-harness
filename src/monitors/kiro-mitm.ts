@@ -489,27 +489,69 @@ export function writeAddonScript(dir: string = os.tmpdir()): string {
 // ---------------------------------------------------------------------------
 
 /**
- * First bindable TCP port in [from, to] on 127.0.0.1, or null when the whole
- * range is taken. Each candidate is bound and immediately released; a race
- * between release and mitmdump's own bind is possible but harmless (mitmdump
- * errors out, the tap yields no records, the run itself is unaffected).
+ * True when something already listens on `port` anywhere a loopback client
+ * (or our own mitmdump) could collide with. macOS lets a bind to the specific
+ * 127.0.0.1:port succeed while another process holds the wildcard *:port, so a
+ * single 127.0.0.1 bind proves nothing (#114). The port counts as busy when
+ * ANY of these says so: a bind of 127.0.0.1, `::` (dual-stack), or 0.0.0.0
+ * fails (exclusive, so no cluster sharing), or a TCP connect to 127.0.0.1 or
+ * ::1 succeeds (a listener we cannot see by binding).
+ */
+async function portBusy(port: number, host: string): Promise<boolean> {
+  const bindFails = (bindHost: string, ipv6Only?: boolean): Promise<boolean> =>
+    new Promise((resolve) => {
+      const srv = net.createServer();
+      srv.once('error', (err: NodeJS.ErrnoException) => {
+        // No IPv6 on this host is not "busy"; any other failure is.
+        resolve(!(bindHost === '::' && (err.code === 'EAFNOSUPPORT' || err.code === 'EADDRNOTAVAIL')));
+      });
+      srv.listen(
+        { port, host: bindHost, exclusive: true, ...(ipv6Only === undefined ? {} : { ipv6Only }) },
+        () => srv.close(() => resolve(false)),
+      );
+    });
+  const connects = (connectHost: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      const sock = net.connect({ port, host: connectHost });
+      const done = (hit: boolean): void => {
+        sock.destroy();
+        resolve(hit);
+      };
+      sock.setTimeout(500, () => done(false));
+      sock.once('connect', () => done(true));
+      sock.once('error', () => done(false));
+    });
+  const hosts = [...new Set([host, '127.0.0.1'])];
+  for (const h of hosts) if (await bindFails(h)) return true;
+  if (await bindFails('::', false)) return true;
+  if (await bindFails('0.0.0.0')) return true;
+  for (const h of ['127.0.0.1', '::1']) if (await connects(h)) return true;
+  return false;
+}
+
+/**
+ * First free TCP port in [from, to], or null when the whole range is taken.
+ * "Free" means free on every address a collision could happen on (see
+ * portBusy), not just `host`. `skip` holds ports other in-process runs have
+ * already claimed but whose mitmdump may not be listening yet. A race between
+ * the probe and mitmdump's own bind is still possible; startKiroMitm's
+ * readiness check (`ready`) catches it and the run goes untapped.
  */
 export async function findKiroMitmPort(
   from = 8900,
   to = 8999,
   host = '127.0.0.1',
+  skip: ReadonlySet<number> = new Set(),
 ): Promise<number | null> {
-  const canBind = (port: number): Promise<boolean> =>
-    new Promise((resolve) => {
-      const srv = net.createServer();
-      srv.once('error', () => resolve(false));
-      srv.listen(port, host, () => srv.close(() => resolve(true)));
-    });
   for (let port = from; port <= to; port++) {
-    if (await canBind(port)) return port;
+    if (skip.has(port)) continue;
+    if (!(await portBusy(port, host))) return port;
   }
   return null;
 }
+
+/** Ports claimed by taps this process has started and not yet stopped. */
+export const claimedKiroMitmPorts: Set<number> = new Set();
 
 let mitmdumpProbe: { bin: string; available: boolean } | null = null;
 
@@ -539,6 +581,12 @@ export interface KiroMitmHandle extends EventEmitter {
   port: number;
   child: ChildProcessByStdio<null, Readable, Readable>;
   scriptPath: string;
+  /**
+   * Resolves once THIS run's mitmdump reports it is listening; rejects if it
+   * exits, errors, reports a bind failure, or misses the deadline. Never
+   * rejects unhandled (a no-op catch is attached).
+   */
+  ready: Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -546,32 +594,75 @@ export interface KiroMitmOptions {
   scriptPath?: string;
   mitmdumpBin?: string;
   env?: Record<string, string>;
+  /** Startup deadline for `ready` in ms (default 8000). */
+  readyTimeoutMs?: number;
 }
+
+// mitmdump's startup banner: "HTTP(S) proxy listening at 127.0.0.1:8900."
+const LISTENING_RE = /proxy listening at/i;
+const BIND_FAIL_RE = /address already in use|errno 48|errno 98|eaddrinuse|cannot bind|permission denied/i;
 
 // Emits: 'record' (CanonicalTokenRecord), 'line' (raw stdout line),
 // 'stderr' (mitmdump log line), 'error' (spawn failure, e.g. mitmdump missing).
 export function startKiroMitm(port: number = DEFAULT_MITM_PORT, opts: KiroMitmOptions = {}): KiroMitmHandle {
   const scriptPath = opts.scriptPath ?? writeAddonScript();
   const bin = opts.mitmdumpBin ?? process.env.MITMDUMP_BIN ?? 'mitmdump';
-  const child = nodeSpawn(bin, ['-p', String(port), '-s', scriptPath], {
+  const child = nodeSpawn(bin, ['-p', String(port), '--listen-host', '127.0.0.1', '-s', scriptPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...(opts.env ?? {}) },
+    // PYTHONUNBUFFERED: with piped stdio mitmdump block-buffers its startup
+    // banner until exit, which would stall the readiness check.
+    env: { ...process.env, PYTHONUNBUFFERED: '1', ...(opts.env ?? {}) },
   });
   const handle = new EventEmitter() as KiroMitmHandle;
   handle.port = port;
   handle.child = child;
   handle.scriptPath = scriptPath;
 
+  // Readiness: the banner proves OUR mitmdump bound (the pinned 127.0.0.1
+  // bind can succeed even over a foreign wildcard listener on macOS, so the
+  // port probe is what rules that out; this catches everything else).
+  let settleReady: (err?: Error) => void = () => {};
+  handle.ready = new Promise<void>((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(
+      () => settleReady(new Error(`mitmdump did not report listening within ${opts.readyTimeoutMs ?? 8000}ms`)),
+      opts.readyTimeoutMs ?? 8000,
+    );
+    timer.unref();
+    settleReady = (err) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve();
+    };
+  });
+  handle.ready.catch(() => {});
+  const watch = (line: string): void => {
+    if (LISTENING_RE.test(line)) settleReady();
+    else if (BIND_FAIL_RE.test(line)) settleReady(new Error(`mitmdump bind failed: ${line.trim()}`));
+  };
+  child.once('exit', (code, signal) =>
+    settleReady(new Error(`mitmdump exited before listening (${signal ?? `code ${code}`})`)),
+  );
+
   const rl = createInterface({ input: child.stdout });
   rl.on('line', (line) => {
+    watch(line);
     handle.emit('line', line);
     const rec = parseMitmLine(line);
     if (rec) handle.emit('record', rec);
     else handle.emit('unparsed', line);
   });
   const rlErr = createInterface({ input: child.stderr });
-  rlErr.on('line', (line) => handle.emit('stderr', line));
-  child.on('error', (err) => handle.emit('error', err));
+  rlErr.on('line', (line) => {
+    watch(line);
+    handle.emit('stderr', line);
+  });
+  child.on('error', (err) => {
+    settleReady(err);
+    handle.emit('error', err);
+  });
 
   handle.stop = () =>
     new Promise((resolve) => {
