@@ -13,7 +13,7 @@ import path from "node:path";
 
 import type { Driver } from "../core/driver.ts";
 import { patchRunRecord, registryDir, type RepeatMembership, type RunRecord } from "../core/registry.ts";
-import { runHermetic, type RunHermeticOptions } from "../core/hermetic.ts";
+import { HermeticSyncError, runHermetic, type RunHermeticOptions } from "../core/hermetic.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
 import { HarnessError, type RunResult, type RunSpec } from "../core/types.ts";
 import { runVerifier, type VerifyResult } from "../core/verify.ts";
@@ -89,10 +89,42 @@ export interface RunOnceOptions {
 /** Verify + annotate one settled run. Throws only if driver.run (or the
  *  hermetic preparation / sync-back) throws. */
 export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
-  const result =
-    opts.hermetic !== undefined
-      ? await runHermetic(opts.driver, opts.agent, opts.spec, { ...opts.hermetic, stateDir: opts.stateDir })
-      : await opts.driver.run(opts.agent, opts.spec);
+  let result: RunResult;
+  try {
+    result =
+      opts.hermetic !== undefined
+        ? await runHermetic(opts.driver, opts.agent, opts.spec, { ...opts.hermetic, stateDir: opts.stateDir })
+        : await opts.driver.run(opts.agent, opts.spec);
+  } catch (err) {
+    // #113: sync-back failed but the run itself settled. Keep what it
+    // produced: grade --verify against the KEPT temp copy (the original
+    // workspace never received the edits), label the record, and hand the
+    // partial outcome to the caller on the error so `--json` can still emit it.
+    if (err instanceof HermeticSyncError && err.result !== undefined) {
+      const partial: TrialOutcome = { index: opts.repeat?.index ?? 0, result: err.result };
+      if (opts.repeat !== undefined) partial.repeat = opts.repeat;
+      if (opts.verify !== undefined) {
+        partial.verify = await runVerifier({
+          command: opts.verify.command,
+          cwd: err.keptDir,
+          env: opts.verify.env ?? process.env,
+          timeoutMs: opts.verify.timeoutMs,
+        });
+      }
+      const patch: Partial<RunRecord> = {
+        ...(opts.labels?.experiment !== undefined ? { experiment: opts.labels.experiment } : {}),
+        ...(opts.labels?.variant !== undefined ? { variant: opts.labels.variant } : {}),
+        ...(opts.labels?.cellId !== undefined ? { cellId: opts.labels.cellId } : {}),
+        ...(opts.repeat !== undefined ? { repeat: opts.repeat } : {}),
+        ...(partial.verify !== undefined ? { verify: partial.verify } : {}),
+      };
+      if (Object.keys(patch).length > 0 && !annotateRunRecord(opts.stateDir, err.result.runId, patch)) {
+        partial.annotateFailed = true;
+      }
+      err.partial = partial;
+    }
+    throw err;
+  }
   const outcome: TrialOutcome = { index: opts.repeat?.index ?? 0, result };
   if (opts.repeat !== undefined) outcome.repeat = opts.repeat;
   if (opts.verify !== undefined) {
@@ -152,6 +184,8 @@ export async function runRepeatGroup(opts: RepeatOptions): Promise<RepeatGroupRe
         outcome = await runOnce({ ...opts, spec: spec as RunSpec, repeat });
       } catch (err) {
         outcome = {
+          // #113: a hermetic sync failure still carries the settled run + verdict.
+          ...(err instanceof HermeticSyncError && err.partial !== undefined ? err.partial : {}),
           index,
           repeat,
           error: err instanceof Error ? err.message : String(err),

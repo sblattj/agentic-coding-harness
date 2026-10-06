@@ -163,6 +163,54 @@ describe("hermetic workspace (#106) — unit", () => {
     assert.deepEqual(ls(cleanRoot), []);
   });
 
+  // #113: read-only (0444) source files, e.g. git loose objects.
+  const roFile = (ws: string, name = "ro.txt"): string => {
+    const p = path.join(ws, name);
+    fs.writeFileSync(p, "ro\n");
+    fs.chmodSync(p, 0o444);
+    return p;
+  };
+  const modeOf = (p: string): number => fs.statSync(p).mode & 0o777;
+
+  it("#113: a read-only file only TOUCHED (mtime) in the copy syncs back without EACCES and stays 0444", () => {
+    const { ws } = homeWithWorkspace();
+    const src = roFile(ws);
+    const prepared = prepareHermeticWorkspace("claude", ws, { tempRoot: cleanRoot });
+    const later = new Date(Date.now() + 60_000);
+    fs.utimesSync(path.join(prepared.dir, "ro.txt"), later, later);
+    assert.doesNotThrow(() => syncBackHermeticWorkspace(prepared));
+    assert.equal(fs.readFileSync(src, "utf8"), "ro\n");
+    assert.equal(modeOf(src), 0o444);
+    disposeHermeticWorkspace(prepared);
+  });
+
+  it("#113: a read-only file with CHANGED contents syncs the new contents and keeps 0444", () => {
+    const { ws } = homeWithWorkspace();
+    const src = roFile(ws);
+    const prepared = prepareHermeticWorkspace("claude", ws, { tempRoot: cleanRoot });
+    const inCopy = path.join(prepared.dir, "ro.txt");
+    fs.chmodSync(inCopy, 0o644);
+    fs.writeFileSync(inCopy, "changed contents\n");
+    fs.chmodSync(inCopy, 0o444);
+    assert.deepEqual(syncBackHermeticWorkspace(prepared), { copied: 1, deleted: 0 });
+    assert.equal(fs.readFileSync(src, "utf8"), "changed contents\n");
+    assert.equal(modeOf(src), 0o444);
+    disposeHermeticWorkspace(prepared);
+  });
+
+  it("#113: a content-identical, mtime-only change is not copied (writable file too)", () => {
+    const { ws } = homeWithWorkspace();
+    roFile(ws);
+    const prepared = prepareHermeticWorkspace("claude", ws, { tempRoot: cleanRoot });
+    const later = new Date(Date.now() + 60_000);
+    fs.utimesSync(path.join(prepared.dir, "ro.txt"), later, later);
+    fs.utimesSync(path.join(prepared.dir, "keep.txt"), later, later);
+    const before = fs.statSync(path.join(ws, "keep.txt")).mtimeMs;
+    assert.deepEqual(syncBackHermeticWorkspace(prepared), { copied: 0, deleted: 0 });
+    assert.equal(fs.statSync(path.join(ws, "keep.txt")).mtimeMs, before, "destination untouched");
+    disposeHermeticWorkspace(prepared);
+  });
+
   it("a driver confined to the ORIGINAL workspace refuses the temp copy (WORKSPACE_ESCAPE), loudly", async () => {
     const { ws } = homeWithWorkspace();
     const state = path.join(root, `confine-state-${++seq}`);
@@ -184,14 +232,14 @@ describe("hermetic workspace (#106) — unit", () => {
 // ------------------------------------------------------------- end to end
 
 const SESSION = "hermetic-e2e-0001";
-function fakeClaude(dir: string): string {
+function fakeClaude(dir: string, extra: string[] = []): string {
   fs.mkdirSync(dir, { recursive: true });
   const init = `{"type":"system","subtype":"init","cwd":"/x","session_id":"${SESSION}","tools":[],"model":"claude-sonnet-4-5-20250929","permissionMode":"default","version":"2.0.14","output_style":"default"}`;
   const res = `{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"duration_api_ms":11,"num_turns":1,"result":"hi","session_id":"${SESSION}","total_cost_usd":0.0077,"usage":{"input_tokens":9,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":4,"service_tier":"standard"},"modelUsage":{"claude-sonnet-4-5-20250929":{"inputTokens":9,"cacheCreationInputTokens":0,"cacheReadInputTokens":0,"outputTokens":4,"reasoningTokens":0,"serviceTier":"standard","contextWindow":200000,"webSearchRequests":0,"costUSD":0.0077}},"permission_denials":[]}`;
   const bin = path.join(dir, "claude");
   fs.writeFileSync(
     bin,
-    ["#!/bin/sh", 'if [ "$1" = "--version" ]; then echo "2.0.14 (Claude Code)"; exit 0; fi', "pwd -P > touched.txt", "rm -f delete-me.txt", `echo '${init}'`, `echo '${res}'`, ""].join("\n"),
+    ["#!/bin/sh", 'if [ "$1" = "--version" ]; then echo "2.0.14 (Claude Code)"; exit 0; fi', "pwd -P > touched.txt", "rm -f delete-me.txt", ...extra, `echo '${init}'`, `echo '${res}'`, ""].join("\n"),
   );
   fs.chmodSync(bin, 0o755);
   return dir;
@@ -259,6 +307,32 @@ describe("ach run: ancestor instructions + --hermetic (#106) — end to end", ()
     assert.deepEqual(rec!.hermetic, { tempDir: ranIn, source: ws, avoided: [memory], synced: { copied: 1, deleted: 1 } });
     assert.equal(rec!.ancestorInstructions, undefined);
     assert.equal((rec!.verify as { status: string }).status, "pass");
+  });
+
+  it("#113: a failed sync-back still writes the --json run record (error attached, verify on the kept copy) and exits non-zero", () => {
+    const { home, ws } = homeWithWorkspace();
+    const state = path.join(root, `state-${++seq}`);
+    const breaking = fakeClaude(path.join(root, `breaking-shim-${seq}`), [
+      'echo agent-edit > src/edit.txt',
+      // Make the original's src/ a plain file so the sync-back cannot write src/edit.txt.
+      'rm -rf "$ACH_TEST_SRC/src"; echo "not a dir" > "$ACH_TEST_SRC/src"',
+    ]);
+    const env = envFor(home, state, { PATH: `${breaking}:${process.env.PATH ?? ""}`, ACH_TEST_SRC: ws });
+    const out = path.join(root, `out-${seq}.json`);
+    const r = runCli(["run", "--agent", "claude", "--hermetic", "--verify", "grep -q agent-edit src/edit.txt", "--json", "hi"], env, ws);
+    fs.writeFileSync(out, r.stdout);
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /HERMETIC_SYNC_FAILED|KEPT at/);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.exitStatus, "success");
+    assert.equal(j.error.code, "HERMETIC_SYNC_FAILED");
+    assert.match(j.error.message, /KEPT at/);
+    assert.ok(j.tokens.length > 0, "token usage preserved");
+    assert.equal(j.verify.status, "pass", "verify graded the kept temp copy");
+    const [rec] = records(state);
+    assert.equal((rec!.verify as { status: string }).status, "pass");
+    assert.ok((rec!.cwd as string).startsWith(cleanRoot + path.sep), "record cwd is the kept copy, where the run happened");
+    for (const k of ls(cleanRoot)) fs.rmSync(path.join(cleanRoot, k), { recursive: true, force: true });
   });
 
   it("--hermetic summary line (text mode)", () => {

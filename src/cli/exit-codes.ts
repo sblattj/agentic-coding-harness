@@ -125,6 +125,7 @@ export function repeatExitCode(
     if (o.result === undefined) {
       return opts.mode === "ladder" && o.errorCode === "UNAVAILABLE" ? EXIT_CODES.indeterminate : EXIT_CODES.error;
     }
+    if (o.error !== undefined) return EXIT_CODES.error; // #113: settled, but sync-back failed
     if (o.verify !== undefined && o.verify.status !== "pass") return EXIT_CODES.error;
     return runExitCode(o.result, opts);
   });

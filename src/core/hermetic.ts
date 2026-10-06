@@ -18,7 +18,11 @@
 //     so agents that derive a project name from the directory see the same one.
 //   * Sync-back is manifest-based: every entry of the copy is stat'ed right
 //     after the copy; afterwards an entry is written back when it is new or
-//     its type/size/mode/mtime/ctime/link target changed.
+//     its type/size/mode/mtime/ctime/link target changed. A regular file whose
+//     destination already holds identical bytes (same size + sha256) is NOT
+//     rewritten (loose-object stores "freshen" files by touching their mtime),
+//     and a write over a non-writable (0444) destination removes it first,
+//     then restores the entry's mode (#113).
 //   * Deletions PROPAGATE, but only for paths that existed in the copy's
 //     manifest: a file the agent deleted is deleted from the original; a file
 //     someone created in the original during the run is left alone.
@@ -36,6 +40,7 @@
 //     the original gitdir, so git commands the agent runs in the copy act on
 //     the original repository's index/refs. Sockets/FIFOs/devices are skipped.
 
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,6 +48,7 @@ import path from 'node:path';
 import type { Driver } from './driver.ts';
 import { findAncestorInstructions, type FindAncestorOptions } from './ancestor-instructions.ts';
 import { patchRunRecord } from './registry.ts';
+import type { VerifyResult } from './verify.ts';
 import { HarnessError, type HermeticRunInfo, type RunResult, type RunSpec } from './types.ts';
 
 /** Env override for the hermetic temp root (tests, or a TMPDIR under $HOME). */
@@ -109,6 +115,35 @@ function sameEntry(a: ManifestEntry, b: ManifestEntry): boolean {
     a.ctimeMs === b.ctimeMs &&
     a.link === b.link
   );
+}
+
+function sha256(file: string): string {
+  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+/** True when `to` is a regular file with the same size and bytes as `from`. */
+function sameContent(from: string, to: string, size: number): boolean {
+  try {
+    const st = fs.lstatSync(to);
+    if (!st.isFile() || st.size !== size) return false;
+    return sha256(from) === sha256(to);
+  } catch {
+    return false;
+  }
+}
+
+/** Copy over `to`, even when it is a read-only regular file (#113): copyFile
+ *  opens an existing destination for writing, so remove it first. */
+function copyOverFile(from: string, to: string, mode: number): void {
+  try {
+    fs.copyFileSync(from, to);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EACCES' && code !== 'EPERM') throw err;
+    fs.rmSync(to, { force: true });
+    fs.copyFileSync(from, to);
+  }
+  fs.chmodSync(to, mode);
 }
 
 export interface HermeticWorkspace {
@@ -232,8 +267,13 @@ export function syncBackHermeticWorkspace(ws: HermeticWorkspace): { copied: numb
     if (entry.kind === 'symlink') {
       fs.symlinkSync(entry.link!, to);
     } else {
-      fs.copyFileSync(from, to);
-      fs.chmodSync(to, entry.mode);
+      if (existing !== null && existing.isFile() && sameContent(from, to, entry.size)) {
+        // Identical bytes (mtime-only change): leave the destination alone;
+        // restore only a differing mode, and never count it as copied.
+        if ((existing.mode & 0o7777) !== entry.mode) fs.chmodSync(to, entry.mode);
+        continue;
+      }
+      copyOverFile(from, to, entry.mode);
     }
     copied++;
   }
@@ -242,6 +282,24 @@ export function syncBackHermeticWorkspace(ws: HermeticWorkspace): { copied: numb
 
 export function disposeHermeticWorkspace(ws: HermeticWorkspace): void {
   fs.rmSync(ws.base, { recursive: true, force: true });
+}
+
+/** HERMETIC_SYNC_FAILED, carrying what the run produced so callers can still
+ *  record it (#113): the agent's RunResult (when the driver did not throw),
+ *  the kept copy, and the original workspace. */
+export class HermeticSyncError extends HarnessError {
+  constructor(
+    message: string,
+    readonly keptDir: string,
+    readonly source: string,
+    readonly result?: RunResult,
+  ) {
+    super(message, 'HERMETIC_SYNC_FAILED');
+    this.name = 'HermeticSyncError';
+  }
+
+  /** Set by the CLI's runOnce: the settled run + its --verify verdict (graded on keptDir). */
+  partial?: { index: number; result?: RunResult; verify?: VerifyResult; annotateFailed?: boolean };
 }
 
 export interface RunHermeticOptions extends PrepareHermeticOptions {
@@ -281,9 +339,11 @@ export async function runHermetic(
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     const agentNote = runError !== undefined ? ` (the run itself also failed: ${runError instanceof Error ? runError.message : String(runError)})` : '';
-    throw new HarnessError(
+    throw new HermeticSyncError(
       `hermetic: syncing ${ws.dir} back to ${ws.source} failed: ${why}${agentNote}; the temp copy is KEPT at ${ws.base} because it holds the agent's edits`,
-      'HERMETIC_SYNC_FAILED',
+      ws.dir,
+      ws.source,
+      result,
     );
   }
   const warnings: string[] = [];
