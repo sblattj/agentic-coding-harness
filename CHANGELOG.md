@@ -2,6 +2,14 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.15.2] - 2026-10-06
+
+### Fixed
+
+- A hermetic sync-back failure no longer drops the run in `ach trial --matrix` or the MCP run tools (#113, completing the 0.15.1 fix for `ach run`). A matrix cell whose sync-back fails becomes an `error` row that keeps its `runId`, `exitStatus`, `verify` (graded on the kept temp copy) and `errorInfo: {code, message, keptDir, source}`, and the other cells still run. `harness_run` returns the full run with `error` attached instead of throwing. `harness_run_async` records the failure on the job, so `harness_run_status` reports it with usage and totals intact. The registry record of a run whose sync-back failed now has `status: "error"`.
+- Kiro runs in separate `ach` processes no longer race for a MITM tap port (#114). mitmdump now picks a free port itself (`--listen-port 0`), and ach reads the bound port from its startup line before injecting `HTTPS_PROXY`. Concurrent runs, in one process or many, each get their own working tap. The port probe is gone. If mitmdump does not report a port, the run still goes untapped with a warning.
+- The npm `bin` path is normalized to `dist/cli/ach.js` (the `npm pkg fix` form), which silences a publish warning.
+
 ## [0.15.1] - 2026-10-06
 
 ### Fixed
