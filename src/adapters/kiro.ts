@@ -77,7 +77,7 @@ import {
 } from './shared.ts';
 import { createKiroNormalizer, parseKiroStderrLine, parseKiroStderrNotice, type KiroNormalizer } from './kiro-events.ts';
 import { launchKiroAcp } from './kiro-acp-launch.ts';
-import { claimedKiroMitmPorts, findKiroMitmPort, mitmdumpAvailable, startKiroMitm, tapEnv, type KiroMitmHandle } from '../monitors/kiro-mitm.js';
+import { mitmdumpAvailable, startKiroMitm, tapEnv, type KiroMitmHandle } from '../monitors/kiro-mitm.js';
 
 export const KIRO_CAPABILITIES: AdapterCapabilities = {
   headless: true,
@@ -641,9 +641,6 @@ export function validateKiroProfile(spec: CoreRunSpec): AdapterProfileCheck {
  * JSONL parsed into canonical events via the shared runJsonlCli loop. Resume
  * with `--resume-id <sessionId>` / `--resume`.
  */
-/** Serializes the port probe+claim across concurrent in-process launches. */
-let mitmPortLock: Promise<void> = Promise.resolve();
-
 export class KiroAdapter implements CoreAgentAdapter {
   readonly id = 'kiro';
   readonly name = 'kiro';
@@ -878,8 +875,8 @@ export class KiroAdapter implements CoreAgentAdapter {
   }
 
   /**
-   * Start the tap: probe done, first bindable port in 8900-8999, mitmdump
-   * with the inline addon. Returns null (with a stderr warning) when the tap
+   * Start the tap: mitmdump with the inline addon on a kernel-chosen port
+   * (`-p 0`, real port parsed from its banner). Returns null (with a stderr warning) when the tap
    * is unavailable — the run proceeds untapped either way.
    */
   async #startMitmTap(onRecord: (rec: CoreTokenRecord) => void): Promise<KiroMitmHandle | null> {
@@ -889,26 +886,13 @@ export class KiroAdapter implements CoreAgentAdapter {
       );
       return null;
     }
-    // Probe+claim is one critical section: two launches probing concurrently
-    // would otherwise both see the same port free before either claims it.
-    const prev = mitmPortLock;
-    let unlock: () => void = () => {};
-    mitmPortLock = new Promise<void>((resolve) => (unlock = resolve));
-    let port: number | null;
-    try {
-      await prev;
-      port = await findKiroMitmPort(8900, 8999, '127.0.0.1', claimedKiroMitmPorts);
-      if (port !== null) claimedKiroMitmPorts.add(port);
-    } finally {
-      unlock();
-    }
-    if (port === null) {
-      process.stderr.write('[warn] kiro: no free port in 8900-8999 for the MITM tap; running without it\n');
-      return null;
-    }
+    // Let mitmdump pick the port (`-p 0`) and read the REAL one from its
+    // "proxy listening at" banner. A probe-then-bind scheme races between
+    // concurrent `ach` processes (both see the same port free, one loses the
+    // bind); the kernel's ephemeral allocation cannot hand out one port twice.
     let mitm: KiroMitmHandle | undefined;
     try {
-      mitm = startKiroMitm(port, { mitmdumpBin: this.#mitmdumpBin });
+      mitm = startKiroMitm(0, { mitmdumpBin: this.#mitmdumpBin });
       // Attach the record listener SYNCHRONOUSLY: startKiroMitm begins parsing
       // mitmdump stdout at once, and a record that lands before launch()
       // resumes from this await would otherwise be dropped on the floor.
@@ -917,22 +901,15 @@ export class KiroAdapter implements CoreAgentAdapter {
         process.stderr.write(`[warn] kiro: MITM tap failed: ${err.message}; continuing without tap records\n`);
       });
       // Fail closed: only hand out the handle (and so tapEnv) once THIS run's
-      // mitmdump confirmed it is listening. Otherwise kiro-cli would be
-      // pointed at a port someone else's proxy owns (#114).
+      // mitmdump confirmed it is listening, and then with ITS bound port (#114).
       await mitm.ready;
-      const origStop = mitm.stop.bind(mitm);
-      mitm.stop = async () => {
-        await origStop();
-        claimedKiroMitmPorts.delete(port);
-      };
       return mitm;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(
-        `[warn] kiro: MITM tap skipped on port ${port} (${msg}); running without the credit/token tap\n`,
+        `[warn] kiro: MITM tap skipped (${msg}); running without the credit/token tap\n`,
       );
       if (mitm) await mitm.stop().catch(() => {});
-      claimedKiroMitmPorts.delete(port);
       return null;
     }
   }

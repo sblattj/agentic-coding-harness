@@ -6,10 +6,8 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import net from 'node:net';
 import { KiroAdapter } from '../src/adapters/kiro.js';
-import * as mitmMod from '../src/monitors/kiro-mitm.js';
-import { findKiroMitmPort, mitmdumpAvailable } from '../src/monitors/kiro-mitm.js';
+import { mitmdumpAvailable } from '../src/monitors/kiro-mitm.js';
 import { FakeChild, runCall, versionProbeSpawnFn, type FakeSpawnCall } from './helpers/fake-child.ts';
 import type { AgentEvent } from '../src/core/types.js';
 
@@ -36,8 +34,10 @@ const METERING_LINE = JSON.stringify({
 function fakeMitmdump(readyDir: string): string {
   return `#!/bin/sh
 # fake mitmdump: print one meteringEvent line, mark ready, then sleep until SIGTERM.
-# argv: -p <port> -s <script>
-port="$2"
+# argv: -p 0 --listen-host 127.0.0.1 -s <script>. The adapter asks for port 0
+# (kernel-chosen); the real mitmdump then reports the port it bound in its
+# banner, so the fake invents a distinct one per process the same way.
+port=$((30000 + $$ % 30000))
 if [ -n "$FAKE_MITMDUMP_PIDFILE" ]; then echo $$ > "$FAKE_MITMDUMP_PIDFILE"; fi
 echo "[00:00:00.000] HTTP(S) proxy listening at 127.0.0.1:$port."
 echo '${METERING_LINE}'
@@ -144,9 +144,9 @@ describe('kiro MITM auto-tap (launch)', () => {
       assert.ok(events.some((e) => e.type === 'message' && e.content === 'done'), 'no reply message');
       assert.equal(handle.sessionId, 'sess-autotap-1');
 
-      // The kiro child env pointed at the tap (port from the 8900-8999 range).
+      // The kiro child env pointed at the tap (port parsed from the mitmdump banner).
       const childEnv = readFileSync(envFile, 'utf8');
-      assert.match(childEnv, /^HTTPS_PROXY=http:\/\/127\.0\.0\.1:89\d\d$/m);
+      assert.match(childEnv, /^HTTPS_PROXY=http:\/\/127\.0\.0\.1:[1-9]\d+$/m);
       assert.match(childEnv, /^SSL_CERT_FILE=/m);
 
       // The tap was stopped (graceful SIGTERM) before wait() resolved.
@@ -226,56 +226,6 @@ describe('kiro MITM auto-tap (launch)', () => {
   });
 });
 
-describe('findKiroMitmPort', () => {
-  it('returns the first bindable port in range, skipping taken ones', async () => {
-    const p1 = await findKiroMitmPort(8930, 8939);
-    assert.ok(p1 !== null && p1 >= 8930 && p1 <= 8939);
-    const blocker = net.createServer();
-    await new Promise<void>((resolve) => blocker.listen(p1, '127.0.0.1', resolve));
-    try {
-      const p2 = await findKiroMitmPort(8930, 8939);
-      assert.ok(p2 !== null && p2 >= 8930 && p2 <= 8939 && p2 !== p1);
-    } finally {
-      blocker.close();
-    }
-  });
-
-  it('returns null when the whole range is busy', async () => {
-    const blockers = [8950, 8951, 8952].map(() => net.createServer());
-    await Promise.all(
-      blockers.map((s, i) => new Promise<void>((resolve) => s.listen(8950 + i, '127.0.0.1', resolve))),
-    );
-    try {
-      assert.equal(await findKiroMitmPort(8950, 8952), null);
-    } finally {
-      for (const s of blockers) s.close();
-    }
-  });
-});
-
-describe('findKiroMitmPort: wildcard holders (#114)', () => {
-  it('reports a port held on the wildcard address busy and picks another', async () => {
-    // mitmdump historically listened on *:port; on macOS a bind of the specific
-    // 127.0.0.1:port succeeds over such a holder, so the old probe said "free".
-    const holder = net.createServer();
-    await new Promise<void>((resolve, reject) => {
-      holder.once('error', reject);
-      holder.listen({ port: 8960, host: '::', ipv6Only: false }, resolve);
-    });
-    try {
-      const port = await findKiroMitmPort(8960, 8962);
-      assert.ok(port !== null && port !== 8960, `probe picked busy port 8960 (got ${port})`);
-    } finally {
-      holder.close();
-    }
-  });
-
-  it('skips ports other in-process runs already claimed', async () => {
-    const port = await findKiroMitmPort(8965, 8967, '127.0.0.1', new Set([8965]));
-    assert.ok(port !== null && port !== 8965);
-  });
-});
-
 describe('kiro MITM tap fails closed (#114)', () => {
   for (const [id, label, body] of [
     ['exit1', 'exits 1 immediately', 'exit 1'],
@@ -290,7 +240,7 @@ describe('kiro MITM tap fails closed (#114)', () => {
         const { result: handle, stderr } = await withCapturedStderr(() => adapter.launch({ prompt: 'untapped' }));
         const events = await collect(handle);
         assert.equal(await handle.wait(), 'success');
-        assert.match(stderr, /MITM tap skipped on port \d+ .*running without the credit\/token tap/);
+        assert.match(stderr, /MITM tap skipped \(.*running without the credit\/token tap/);
         const childEnv = readFileSync(envFile, 'utf8');
         assert.doesNotMatch(childEnv, /^HTTPS_PROXY=/m);
         assert.doesNotMatch(childEnv, /^SSL_CERT_FILE=/m);
@@ -302,7 +252,7 @@ describe('kiro MITM tap fails closed (#114)', () => {
     });
   }
 
-  it('two concurrent tapped launches get distinct ports; claims are released on stop', async () => {
+  it('two concurrent tapped launches get distinct ports', async () => {
     const run = async (name: string): Promise<string> => {
       const envFile = join(dir, name);
       const adapter = new KiroAdapter({ command: kiroCli, mitm: true, mitmdumpBin: mitmdump });
@@ -313,7 +263,6 @@ describe('kiro MITM tap fails closed (#114)', () => {
     };
     const [a, b] = await Promise.all([run('conc-a.env'), run('conc-b.env')]);
     assert.notEqual(a, b, 'concurrent runs shared one tap port');
-    assert.equal(mitmMod.claimedKiroMitmPorts?.size ?? 0, 0, 'claimed ports leaked after stop');
   });
 });
 
