@@ -6,14 +6,22 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const version = process.argv[2];
 assert.match(version ?? '', /^\d+\.\d+\.\d+$/);
 const registry = `https://registry.npmjs.org/agentic-coding-harness/${version}`;
+// npm can hold a just-published version for ~8+ minutes before serving it
+// (v0.15.1 took 8). Wait up to NPM_WAIT_MINUTES (default 45) before failing.
+const waitMinutes = Number(process.env.NPM_WAIT_MINUTES ?? 45);
+assert.ok(Number.isFinite(waitMinutes) && waitMinutes >= 0, 'NPM_WAIT_MINUTES must be a non-negative number');
+const pollMs = Number(process.env.NPM_POLL_SECONDS ?? 30) * 1000;
+const deadline = Date.now() + waitMinutes * 60_000;
 let metadata;
-for (let attempt = 0; attempt < 30; attempt++) {
+for (;;) {
   const response = await fetch(registry, { signal: AbortSignal.timeout(30_000) });
   if (response.ok) { metadata = await response.json(); break; }
   if (response.status !== 404) throw new Error(`Registry returned ${response.status}`);
-  await new Promise(resolve => setTimeout(resolve, 10_000));
+  if (Date.now() + pollMs > deadline) break;
+  console.log(`npm ${version} not visible yet; retrying in ${pollMs / 1000}s`);
+  await new Promise(resolve => setTimeout(resolve, pollMs));
 }
-assert.equal(metadata?.version, version, `npm version ${version} is not published`);
+assert.equal(metadata?.version, version, `npm version ${version} is not published after ${waitMinutes} min`);
 const expectedUrl = `https://registry.npmjs.org/agentic-coding-harness/-/agentic-coding-harness-${version}.tgz`;
 assert.equal(metadata.dist.tarball, expectedUrl);
 const response = await fetch(expectedUrl, { signal: AbortSignal.timeout(30_000) });
