@@ -2,6 +2,14 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.16.1] - 2026-10-07
+
+### Fixed
+
+- `ach run --agent kiro --kiro-transport acp --resume <id>` no longer fails with `child already exited (code 0)` in phase `session/prompt`. The `session/load` request was sent without `cwd`, and kiro-cli (2.21.2 and 2.28.0) exits silently on that. Resume now does `initialize` → `session/load` (no `session/new`), always sends `cwd`, and drops the history kiro replays during the load. A load that fails stops the run with a `session/load` error carrying kiro's reason, instead of quietly starting a new session. Fixes #117.
+- A resumed kiro run (headless and ACP) no longer warns `credit sources disagree` and no longer over-reports tokens: the kiro session store, which holds every earlier run's turns, is now scoped to the turns the current run produced.
+- `ach dash` (and `stats`, `watch`, `import`) no longer warns about Claude Code's `<synthetic>` pseudo-model, used for locally generated messages such as "Not logged in". Those messages are non-billable: priced at $0, dropped by the Claude transcript reader, and never in a per-model breakdown. Repeated unknown-model pricing warnings now collapse into one line with a count (`pricing: unknown model "x" (alias "x") in 11 sessions; cost not computed`), so a genuinely unknown model still shows once. Fixes #116.
+
 ## [0.16.0] - 2026-10-06
 
 ### Added
