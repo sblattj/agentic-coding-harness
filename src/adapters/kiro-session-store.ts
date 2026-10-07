@@ -85,6 +85,53 @@ function sumMetering(v: unknown): number | null {
   return total;
 }
 
+function sumTurnCredits(turns: readonly KiroStoreTurn[]): number | null {
+  let total: number | null = null;
+  for (const t of turns) {
+    if (t.credits === null) continue;
+    total = (total ?? 0) + t.credits;
+  }
+  return total;
+}
+
+function lastTurnContextPercentage(turns: readonly KiroStoreTurn[]): number | undefined {
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const pct = turns[i]?.finalContextUsagePercentage ?? turns[i]?.contextUsagePercentage;
+    if (pct !== undefined) return pct;
+  }
+  return undefined;
+}
+
+/**
+ * Scope a store to the turns appended AFTER the first `priorTurnCount` ones.
+ * kiro's store is per SESSION: a resumed run finds every earlier run's turns
+ * in it, so credits/tokens summed over `turns` would over-report. Turns have no
+ * id or timestamp in the store, but the array is append-only, so the count read
+ * before the run is an exact boundary. `creditsTotal` and the context reading
+ * are recomputed over the kept turns; model / window stay session-level. A
+ * count of 0 (fresh session) returns the store unchanged. A count larger than
+ * the store (store shrank or was replaced) cannot be a boundary, so the whole
+ * store is kept rather than inventing an empty slice.
+ */
+export function sliceKiroSessionStore(
+  store: ParsedKiroSessionStore,
+  priorTurnCount: number,
+): ParsedKiroSessionStore {
+  if (!Number.isInteger(priorTurnCount) || priorTurnCount <= 0 || priorTurnCount > store.turns.length) {
+    return store;
+  }
+  const turns = store.turns.slice(priorTurnCount);
+  const lastContextUsagePercentage = lastTurnContextPercentage(turns);
+  const { lastContextUsagePercentage: _drop, ...rest } = store;
+  void _drop;
+  return {
+    ...rest,
+    turns,
+    creditsTotal: sumTurnCredits(turns),
+    ...(lastContextUsagePercentage !== undefined ? { lastContextUsagePercentage } : {}),
+  };
+}
+
 /**
  * Parse a kiro session-store document. Returns null for anything that is not a
  * recognizable store (wrong shape, no `session_state`); a store with zero turns
@@ -117,11 +164,7 @@ export function parseKiroSessionStore(json: unknown): ParsedKiroSessionStore | n
     });
   }
 
-  let creditsTotal: number | null = null;
-  for (const t of turns) {
-    if (t.credits === null) continue;
-    creditsTotal = (creditsTotal ?? 0) + t.credits;
-  }
+  const creditsTotal = sumTurnCredits(turns);
 
   const modelInfo = isRecord(state.rts_model_state) && isRecord(state.rts_model_state.model_info)
     ? state.rts_model_state.model_info
@@ -129,14 +172,7 @@ export function parseKiroSessionStore(json: unknown): ParsedKiroSessionStore | n
 
   // Latest context reading: walk backwards so a partially-written final turn
   // falls back to the previous complete one.
-  let lastContextUsagePercentage: number | undefined;
-  for (let i = turns.length - 1; i >= 0; i -= 1) {
-    const pct = turns[i]?.finalContextUsagePercentage ?? turns[i]?.contextUsagePercentage;
-    if (pct !== undefined) {
-      lastContextUsagePercentage = pct;
-      break;
-    }
-  }
+  let lastContextUsagePercentage = lastTurnContextPercentage(turns);
   if (lastContextUsagePercentage === undefined && meta && isRecord(meta.last_context_usage)) {
     lastContextUsagePercentage = num(meta.last_context_usage.percentage);
   }

@@ -8,6 +8,7 @@ import {
   locateKiroSessionStore,
   parseKiroSessionStore,
   readKiroSessionStore,
+  sliceKiroSessionStore,
 } from '../src/adapters/kiro-session-store.ts';
 
 // Real (sanitized) kiro session stores, one per probe run on kiro-cli 2.21.2.
@@ -141,5 +142,46 @@ describe('locateKiroSessionStore / readKiroSessionStore', () => {
     const missing = await readKiroSessionStore('gone', { dir });
     assert.equal(missing.ok, false);
     assert.match(missing.ok === false ? missing.reason : '', /no kiro session store/);
+  });
+});
+
+describe('sliceKiroSessionStore', () => {
+  const turn = (credits: number | null, pct?: number, input = 0) => ({
+    inputTokens: input,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    credits,
+    ...(pct !== undefined ? { finalContextUsagePercentage: pct } : {}),
+  });
+  const store = {
+    model: 'm',
+    contextWindowTokens: 200000,
+    turns: [turn(0.5, 10, 100), turn(0.25, 20, 5), turn(0.125, 30, 7)],
+    creditsTotal: 0.875,
+    lastContextUsagePercentage: 30,
+  };
+
+  it('keeps only turns after the prior count and recomputes credits and context', () => {
+    const s = sliceKiroSessionStore(store, 1);
+    assert.equal(s.turns.length, 2);
+    assert.equal(s.creditsTotal, 0.375);
+    assert.equal(s.lastContextUsagePercentage, 30);
+    assert.equal(s.model, 'm');
+    assert.equal(s.contextWindowTokens, 200000);
+    assert.equal(sliceKiroSessionStore(store, 2).creditsTotal, 0.125);
+  });
+
+  it('yields null credits and no context when nothing is new', () => {
+    const s = sliceKiroSessionStore(store, 3);
+    assert.equal(s.turns.length, 0);
+    assert.equal(s.creditsTotal, null);
+    assert.equal(s.lastContextUsagePercentage, undefined);
+  });
+
+  it('returns the store unchanged for a fresh session or an impossible boundary', () => {
+    assert.equal(sliceKiroSessionStore(store, 0), store);
+    assert.equal(sliceKiroSessionStore(store, 4), store);
+    assert.equal(sliceKiroSessionStore(store, -1), store);
   });
 });

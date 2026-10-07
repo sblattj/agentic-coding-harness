@@ -14,7 +14,7 @@ import { gitBranchInfo } from './git-branch.ts';
 import { runTotalsProvenance } from './provenance.ts';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
-import { readKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
+import { readKiroSessionStore, sliceKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
 import type { AdapterExit, AdapterProfileCheck, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec } from './types.js';
 import { HarnessError } from './types.js';
 import { assertInsideWorkspace } from './workspace.js';
@@ -386,6 +386,15 @@ export function createDriver(options: DriverOptions): Driver {
       // One try/catch spans the whole run lifecycle so the run-to-directory mode
       // (#6) can settle status.json on EVERY exit path: the settled path above
       // plus any throw (launch failure, event-stream crash, post-loop hooks).
+      // kiro resume: the session store holds EVERY run of the session, so record
+      // how many turns it had before this run and keep only the new ones after.
+      // Fresh runs (no resume id) skip this entirely.
+      let kiroPriorTurns: { id: string; count: number } | undefined;
+      if (agentName === 'kiro' && typeof parsed.resume === 'string' && parsed.resume !== '') {
+        const resumeBare = parsed.resume.startsWith('kiro-') ? parsed.resume.slice(5) : parsed.resume;
+        const prior = await readKiroSessionStore(resumeBare);
+        kiroPriorTurns = { id: resumeBare, count: prior.ok ? prior.store.turns.length : 0 };
+      }
       try {
         const handle = await adapter.launch(onOutput ? { ...launchSpec, onOutput } : launchSpec);
         const sessionId = handle.sessionId;
@@ -841,7 +850,11 @@ export function createDriver(options: DriverOptions): Driver {
           const bare = nativeSessionId?.startsWith('kiro-') === true ? nativeSessionId.slice(5) : nativeSessionId;
           const read = await readKiroSessionStore(bare);
           if (read.ok) {
-            sessionStore = read.store;
+            // Same session as the pre-run snapshot: drop the earlier runs' turns.
+            sessionStore =
+              kiroPriorTurns !== undefined && kiroPriorTurns.id === bare
+                ? sliceKiroSessionStore(read.store, kiroPriorTurns.count)
+                : read.store;
             // 2.21.x leaves kiro token records with model:'unknown' (the stream
             // never names a model). The session store does. Backfilling it here
             // is post-hoc: pricing already ran per event and is NOT redone, so

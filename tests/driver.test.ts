@@ -533,8 +533,11 @@ class KiroMockHandle implements AgentHandle {
 class KiroMockAdapter implements AgentAdapter {
   readonly name = 'kiro';
   lastHandle?: KiroMockHandle;
-  constructor(readonly sessionId: string) {}
+  lastSpec?: RunSpec;
+  constructor(readonly sessionId: string, readonly onLaunch?: () => void) {}
   async launch(spec: RunSpec): Promise<AgentHandle> {
+    this.lastSpec = spec;
+    this.onLaunch?.();
     const handle = new KiroMockHandle(this.sessionId, (spec as { kiroEvents?: KiroScripted[] }).kiroEvents ?? []);
     this.lastHandle = handle;
     return handle;
@@ -592,6 +595,79 @@ const kiroChunk = (): KiroScripted => ({ type: 'step', payload: { kind: 'chunk',
 const kiroTurnEnd = (): KiroScripted => ({
   type: 'step',
   payload: { kind: 'runFinished', countsAsTurn: false, status: 'ok' },
+});
+
+/** Haiku fixture with every turn replaced by `turns` (token counters + credits). */
+function kiroStoreJson(turns: Array<{ credits: number; input: number; output: number }>): string {
+  const doc = JSON.parse(kiroFixture);
+  const template = doc.session_state.conversation_metadata.user_turn_metadatas[0];
+  doc.session_state.conversation_metadata.user_turn_metadatas = turns.map((t) => ({
+    ...template,
+    input_token_count: t.input,
+    output_token_count: t.output,
+    metering_usage: [{ value: t.credits, unit: 'credit', unit_plural: 'credits' }],
+  }));
+  return JSON.stringify(doc);
+}
+
+describe('kiro resumed run scopes the session store to its own turns', () => {
+  const previousSessionsDir = process.env.KIRO_SESSIONS_DIR;
+  afterEach(() => {
+    if (previousSessionsDir === undefined) delete process.env.KIRO_SESSIONS_DIR;
+    else process.env.KIRO_SESSIONS_DIR = previousSessionsDir;
+  });
+
+  function setup(resume: 'resume' | undefined) {
+    const uuid = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const dir = mkdtempSync(join(tmpdir(), 'kiro-sessions-'));
+    const file = join(dir, `${uuid}.json`);
+    process.env.KIRO_SESSIONS_DIR = dir;
+    const prior = { credits: 0.5, input: 1000, output: 100 };
+    const fresh = { credits: FIXTURE_CREDITS, input: 7, output: 3 };
+    // Pre-run: the earlier run's turn only. The "agent" appends this run's turn.
+    writeFileSync(file, kiroStoreJson(resume !== undefined ? [prior] : []));
+    const adapter = new KiroMockAdapter(`kiro-${uuid}`, () =>
+      writeFileSync(file, kiroStoreJson(resume !== undefined ? [prior, fresh] : [fresh])),
+    );
+    const driver = createDriver({
+      adapters: { kiro: adapter },
+      stateDir: tmpStateDir(),
+      registry: { stateDir: tmpStateDir() },
+    });
+    return { driver, uuid, fresh };
+  }
+
+  it('reports only the new turn and no disagreement warning when resuming', async () => {
+    const r = setup('resume');
+    const result = await r.driver.run('kiro', {
+      prompt: 'ping',
+      resume: `kiro-${r.uuid}`,
+      kiroEvents: [kiroChunk(), kiroUsage(), kiroTurnEnd()],
+    });
+    assert.equal(result.exitStatus, 'success');
+    assert.equal(result.usage?.credits.value, FIXTURE_CREDITS);
+    assert.deepEqual(result.usage?.credits.sources, {
+      stream: FIXTURE_CREDITS,
+      'session-store': r.fresh.credits,
+    });
+    assert.ok(
+      !result.warnings.some((w) => /credit sources disagree/.test(w)),
+      `unexpected warnings: ${JSON.stringify(result.warnings)}`,
+    );
+    assert.equal(result.usage?.cost?.tokens?.inputTokens, r.fresh.input);
+    assert.equal(result.usage?.cost?.tokens?.outputTokens, r.fresh.output);
+  });
+
+  it('leaves a fresh (non-resume) run unscoped', async () => {
+    const r = setup(undefined);
+    const result = await r.driver.run('kiro', {
+      prompt: 'ping',
+      kiroEvents: [kiroChunk(), kiroUsage(), kiroTurnEnd()],
+    });
+    assert.equal(result.usage?.credits.value, FIXTURE_CREDITS);
+    assert.equal(result.usage?.cost?.tokens?.inputTokens, r.fresh.input);
+    assert.ok(!result.warnings.some((w) => /credit sources disagree/.test(w)));
+  });
 });
 
 describe('kiro usage truth', () => {
