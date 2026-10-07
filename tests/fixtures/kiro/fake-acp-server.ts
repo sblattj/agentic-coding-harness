@@ -32,6 +32,8 @@ export const SCENARIOS = [
   'slow-prompt',
   'ignore-sigterm',
   'fs-request',
+  'load-not-found',
+  'load-exit',
 ] as const;
 export type FakeAcpScenario = (typeof SCENARIOS)[number];
 
@@ -147,7 +149,30 @@ async function handle(req: Json): Promise<void> {
     }
 
     case 'session/load': {
-      respond(id, {});
+      // Mirrors kiro-cli 2.21.2 / 2.28.0 as measured 2026-10-07 (#117):
+      //  - no `cwd` in params: the process exits 0 with NO response and no stderr;
+      //  - unknown session: -32603 `Internal error` with the reason in `data`;
+      //  - otherwise: the session's history is replayed as `session/update`
+      //    notifications BEFORE the result, which carries `modes` + `models`
+      //    (the session/new shape without `sessionId`).
+      // `load-exit` forces that same silent death even with a cwd.
+      if (typeof params.cwd !== 'string' || scenario === 'load-exit') process.exit(0);
+      const sid = String(params.sessionId);
+      if (scenario === 'load-not-found') {
+        send({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal error', data: `Failed to start session: Session not found: ${sid}` },
+          id,
+        } as Json);
+        return;
+      }
+      emit([
+        { jsonrpc: '2.0', method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'REPLAYED-USER' } } } },
+        { jsonrpc: '2.0', method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'REPLAYED-HISTORY' } } } },
+      ]);
+      const { sessionId: _drop, ...result } = structuredClone(stepFor('session/new').result) as Json;
+      void _drop;
+      respond(id, result);
       return;
     }
 

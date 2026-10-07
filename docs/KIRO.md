@@ -15,7 +15,8 @@ and a fake ACP server (`tests/fixtures/kiro/fake-acp-server.ts`). No test spends
 | Wire | stream-json envelopes on stdout | newline-delimited JSON-RPC on stdio |
 | Model request | `--model` is forwarded; on 2.21.2 it is **accepted and ignored** (`[warn] failed to set model 'X': Method not found`, session store records `auto`) → `modelAck: unsupported`. A CLI that stays silent leaves it `unverified` | `initialize → session/new → session/set_model`; the ack (or its error) is recorded → `modelAck: acknowledged` / `rejected` |
 | Agent / effort / tools forwarding | forwarded as flags (`--agent`, `--effort`, `--trust-tools=…`); **not verified** — the chat transport never echoes them | forwarded as flags; mode verified from `session/new.modes` |
-| Native session id | sniffed from the first envelope carrying `data.sessionId` (`runStarted`) | `session/new` result |
+| Native session id | sniffed from the first envelope carrying `data.sessionId` (`runStarted`) | `session/new` result; on `--resume <id>`, the resumed `<id>` |
+| Resume (`--resume <id>`) | `--resume-id <id>` | `initialize → session/load <id>` (no `session/new`), then the prompt goes to `<id>`. A load that fails is a terminal `session/load` error; it never falls back to a new session |
 | What `result.kiro` reports | `{ cliVersion, transport: 'headless', requested, effective: { argv, trustFlag, … }, nativeSessionId, modelAck, configHash }` | `{ cliVersion, transport: 'acp', requested, effective, nativeSessionId, modelAck, configHash }` |
 
 Pick the ACP lane when you need the run to *prove* which agent and model it used. The headless
@@ -107,7 +108,14 @@ as an MCP failure.
   `clientCapabilities.terminal`. A silent initialize is a client bug, not a hung agent.
 - Initialize took 15–23 s locally (profile lookup retries), so the startup deadline defaults to
   60 s (`kiro.startupMs`), and a timeout names the failing phase (`spawn`, `initialize`, `session/new`,
-  `session/set_model`, `mcp`, `session/prompt`).
+  `session/load`, `session/set_model`, `mcp`, `session/prompt`).
+- `session/load` without `cwd` makes kiro-cli (2.21.2 and 2.28.0) **exit 0 with no response and no
+  stderr** (#117). The harness always sends `cwd` (the run's cwd, else the process cwd). An unknown
+  session id answers `-32603 Internal error` with the reason in `data`
+  (`Failed to start session: Session not found: <id>`), which the error message carries.
+- While `session/load` is in flight kiro replays the session's history as `session/update`
+  notifications. They are history, not this run's output, so the harness drops them (counted as
+  `replayedUpdates` on the handshake receipt).
 - Never pass `-v`; it logs to stdout and corrupts the JSON-RPC stream.
 - `session/prompt` resolves with `{stopReason}`; the harness surfaces it as the native stop reason.
 - Agent→client requests (permissions, fs, terminal) are answered by policy — permissions are

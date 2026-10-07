@@ -6,7 +6,11 @@
  * owns the ORDER of operations and the terminal-artifact contract:
  *
  *   spawn -> initialize -> session/new [-> session/set_model]
- *         -> [mcp gate] -> [session/load on resume] -> session/prompt -> close
+ *         -> [mcp gate] -> session/prompt -> close
+ *
+ * On `--resume <id>` `session/new` is replaced by `session/load <id>` (the ACP
+ * order for an existing session, #117); a load that fails is a terminal
+ * `session/load` error, never a silent switch to a new session.
  *
  * TERMINAL ARTIFACT RULE. `launch()` never throws for a protocol failure: the
  * driver must always receive a handle it can attach to and wait on. A failed
@@ -196,12 +200,16 @@ export async function launchKiroAcp(
     let exitCode = 1;
     try {
       client.start();
+      // On --resume the handshake does initialize -> session/load (no
+      // session/new): the receipt's sessionId IS the resumed one, and a load
+      // that fails or kills the child throws phase 'session/load' (#117).
       receipt = await client.handshake({
         cwd: spec.cwd ?? process.cwd(),
         mcpServers: (kiro.mcpServers ?? []) as unknown as AcpMcpServer[],
         ...(kiro.agent !== undefined ? { agent: kiro.agent } : {}),
         ...(spec.model !== undefined ? { model: spec.model } : {}),
         requireModelAck: kiro.requireModelAck ?? spec.model !== undefined,
+        ...(spec.resume !== undefined && spec.resume !== '' ? { resume: spec.resume } : {}),
       });
       sessionId = receipt.sessionId;
       // Feed the session id through the normalizer so its state and the
@@ -225,19 +233,13 @@ export async function launchKiroAcp(
         }
       }
 
-      if (spec.resume !== undefined && spec.resume !== '') {
-        try {
-          await client.loadSession(spec.resume, { ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}) });
-          sessionId = spec.resume;
-        } catch (err) {
-          // Not fatal: the handshake already created a fresh session, so the
-          // run continues there with the failure recorded.
-          emitHouse({
-            type: 'progress',
-            text: `[warn] kiro acp: session/load '${spec.resume}' failed (${errorMessage(err)}); continuing on the new session ${receipt.sessionId}`,
-          });
-          sessionId = receipt.sessionId;
-        }
+      if (client.exited) {
+        // Never send the prompt to a dead child: name the phase that left it dead.
+        throw new KiroAcpError(
+          receipt.resumed ? 'session/load' : 'session/new',
+          `child exited (code ${client.exitCode ?? 'null'}) before session/prompt`,
+          client.stderrTail(),
+        );
       }
 
       const result = await client.prompt(sessionId, spec.prompt);

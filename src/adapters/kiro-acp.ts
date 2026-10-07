@@ -72,6 +72,8 @@ export type KiroAcpPhase =
   | 'spawn'
   | 'initialize'
   | 'session/new'
+  /** `session/load` on `--resume` (#117): a load that errors or kills the child is fatal here. */
+  | 'session/load'
   | 'session/set_model'
   | 'session/prompt'
   /** Not a request phase: the MCP-startup gate in kiro-acp-launch.ts (PLAN § ACP client). */
@@ -121,6 +123,13 @@ export interface AcpNewSessionResult {
   [k: string]: unknown;
 }
 
+/**
+ * `session/load` result. Measured on kiro-cli 2.21.2 (2026-10-07): the same
+ * `modes` / `models` blocks as `session/new`, but no `sessionId` (the caller
+ * named it).
+ */
+export type AcpLoadSessionResult = Omit<AcpNewSessionResult, 'sessionId'>;
+
 export interface AcpInitializeResult {
   protocolVersion?: number;
   agentCapabilities?: { loadSession?: boolean; [k: string]: unknown };
@@ -164,7 +173,15 @@ export interface HandshakeReceipt {
   modelVerified: boolean;
   /** Methods of `_kiro.dev/mcp/*` and `_kiro.dev/webTools/*` notices seen during the handshake. */
   mcpNotices: string[];
-  durationsMs: { initialize: number; newSession: number; setModel: number; total: number };
+  /** True when the session came from `session/load` (resume) rather than `session/new`. */
+  resumed: boolean;
+  /**
+   * `session/update` notifications kiro replayed from the loaded session's
+   * history while `session/load` was in flight. They are history, not this
+   * run's output, so they are counted here and never reach `notifications`.
+   */
+  replayedUpdates: number;
+  durationsMs: { initialize: number; newSession: number; loadSession: number; setModel: number; total: number };
 }
 
 export interface HandshakeOptions {
@@ -173,6 +190,11 @@ export interface HandshakeOptions {
   agent?: string;
   model?: string;
   requireModelAck?: boolean;
+  /**
+   * Resume this existing session: `initialize` -> `session/load` (NO
+   * `session/new`), the ACP order for an existing session (#117).
+   */
+  resume?: string;
 }
 
 export interface KiroAcpClientOptions {
@@ -231,6 +253,9 @@ export class KiroAcpClient {
   #exited = false;
   #closePromise: Promise<number | null> | null = null;
   #exitWaiters: Array<(code: number | null) => void> = [];
+  /** Session whose history replay is being swallowed while its `session/load` is in flight. */
+  #replaySession: string | null = null;
+  #replayed = 0;
 
   pid: number | undefined;
   exitCode: number | null = null;
@@ -255,6 +280,11 @@ export class KiroAcpClient {
   /** Last lines the child wrote to stderr (bounded ring buffer). */
   stderrTail(lines = 20): string {
     return this.#stderrRing.slice(-lines).join('\n');
+  }
+
+  /** True once the child has exited (or failed to spawn). */
+  get exited(): boolean {
+    return this.#exited;
   }
 
   // -------------------------------------------------------------------------
@@ -415,6 +445,15 @@ export class KiroAcpClient {
       return;
     }
     if (typeof msg.method === 'string') {
+      if (
+        this.#replaySession !== null &&
+        msg.method === 'session/update' &&
+        (msg.params as { sessionId?: unknown } | undefined)?.sessionId === this.#replaySession
+      ) {
+        // History replay of a session being loaded: not this run's output.
+        this.#replayed++;
+        return;
+      }
       this.notifications.push({ method: msg.method, params: msg.params });
     }
   }
@@ -425,12 +464,15 @@ export class KiroAcpClient {
     if (!pending) return;
     this.#pending.delete(id);
     if (pending.timer) clearTimeout(pending.timer);
-    const err = msg.error as { code?: number; message?: string } | undefined;
+    const err = msg.error as { code?: number; message?: string; data?: unknown } | undefined;
     if (err) {
+      // kiro puts the real reason in `data` behind a generic message, e.g.
+      // `Internal error` + `Failed to start session: Session not found: <id>`.
+      const data = typeof err.data === 'string' && err.data !== '' ? `: ${err.data}` : '';
       pending.reject(
         new KiroAcpError(
           pending.phase,
-          `${pending.method} failed: ${err.message ?? 'unknown error'} (code ${err.code ?? '?'})`,
+          `${pending.method} failed: ${err.message ?? 'unknown error'}${data} (code ${err.code ?? '?'})`,
           this.stderrTail(),
           err,
         ),
@@ -544,17 +586,39 @@ export class KiroAcpClient {
     );
   }
 
-  /** The agent advertises `agentCapabilities.loadSession:true`. */
-  loadSession(
+  /**
+   * `session/load` — the agent advertises `agentCapabilities.loadSession:true`.
+   *
+   * `cwd` is ALWAYS sent. kiro-cli 2.21.2 and 2.28.0 answer a `session/load`
+   * without `cwd` by exiting 0 with no response and no stderr (#117), so it
+   * falls back to the spawn cwd and then to this process's cwd, the same
+   * directory the child was spawned in.
+   *
+   * While the request is in flight kiro replays the session's history as
+   * `session/update` notifications for `sessionId`; those are swallowed (and
+   * counted in `replayedCount`) so a resumed run never re-emits old turns.
+   */
+  async loadSession(
     sessionId: string,
     opts: { cwd?: string; mcpServers?: AcpMcpServer[] } = {},
-  ): Promise<unknown> {
-    return this.#request<unknown>(
-      'session/load',
-      { sessionId, cwd: opts.cwd ?? this.#cwd, mcpServers: opts.mcpServers ?? [] },
-      'session/new',
-      this.#startupMs,
-    );
+  ): Promise<AcpLoadSessionResult> {
+    this.#replaySession = sessionId;
+    try {
+      const result = await this.#request<AcpLoadSessionResult | null>(
+        'session/load',
+        { sessionId, cwd: opts.cwd ?? this.#cwd ?? process.cwd(), mcpServers: opts.mcpServers ?? [] },
+        'session/load',
+        this.#startupMs,
+      );
+      return result ?? {};
+    } finally {
+      this.#replaySession = null;
+    }
+  }
+
+  /** Number of history `session/update` notifications swallowed by `loadSession`. */
+  get replayedCount(): number {
+    return this.#replayed;
   }
 
   setModel(sessionId: string, modelId: string): Promise<unknown> {
@@ -589,9 +653,11 @@ export class KiroAcpClient {
   // -------------------------------------------------------------------------
 
   /**
-   * initialize → session/new → (session/set_model). Returns a receipt proving
+   * initialize → session/new → (session/set_model), or with `resume`:
+   * initialize → session/load → (session/set_model). Returns a receipt proving
    * what the agent actually acknowledged. Throws BEFORE any prompt when a
-   * requested agent or model was not honoured.
+   * requested agent or model was not honoured, or when the resumed session
+   * could not be loaded (phase `session/load`; never a silent new session).
    */
   async handshake(opts: HandshakeOptions): Promise<HandshakeReceipt> {
     const mcpNotices: string[] = [];
@@ -600,14 +666,42 @@ export class KiroAcpClient {
     };
     const unwatch = this.#watchNotifications(watch);
     const t0 = Date.now();
+    const resume = opts.resume !== undefined && opts.resume !== '' ? opts.resume : undefined;
+    const sessionPhase: KiroAcpPhase = resume !== undefined ? 'session/load' : 'session/new';
     try {
       const initStart = Date.now();
       const init = await this.initialize();
       const initializeMs = Date.now() - initStart;
 
-      const newStart = Date.now();
-      const session = await this.newSession({ cwd: opts.cwd, mcpServers: opts.mcpServers });
-      const newSessionMs = Date.now() - newStart;
+      let newSessionMs = 0;
+      let loadSessionMs = 0;
+      let session: AcpNewSessionResult;
+      if (resume !== undefined) {
+        if (init.agentCapabilities?.loadSession === false) {
+          throw new KiroAcpError(
+            'session/load',
+            `cannot resume '${resume}': the agent advertises agentCapabilities.loadSession:false`,
+            this.stderrTail(),
+          );
+        }
+        const loadStart = Date.now();
+        const loaded = await this.loadSession(resume, { cwd: opts.cwd, mcpServers: opts.mcpServers });
+        loadSessionMs = Date.now() - loadStart;
+        session = { ...loaded, sessionId: resume };
+      } else {
+        const newStart = Date.now();
+        session = await this.newSession({ cwd: opts.cwd, mcpServers: opts.mcpServers });
+        newSessionMs = Date.now() - newStart;
+      }
+      if (this.#exited) {
+        // Safety net (#117): a session the child cannot keep alive must fail
+        // HERE, naming the session phase, not later as a prompt to a dead child.
+        throw new KiroAcpError(
+          sessionPhase,
+          `child exited (code ${this.exitCode ?? 'null'}) right after ${sessionPhase}`,
+          this.stderrTail(),
+        );
+      }
 
       const currentModeId = session.modes?.currentModeId ?? null;
       const availableModes = session.modes?.availableModes ?? [];
@@ -616,7 +710,7 @@ export class KiroAcpClient {
 
       if (opts.agent && currentModeId !== opts.agent) {
         throw new KiroAcpError(
-          'session/new',
+          sessionPhase,
           `requested agent '${opts.agent}' is not the session mode (current '${currentModeId ?? 'none'}'); available: ${availableModes.map((m) => m.id).join(', ') || 'none'}`,
           this.stderrTail(),
         );
@@ -658,9 +752,12 @@ export class KiroAcpClient {
         agentVerified: opts.agent !== undefined && currentModeId === opts.agent,
         modelVerified,
         mcpNotices,
+        resumed: resume !== undefined,
+        replayedUpdates: this.#replayed,
         durationsMs: {
           initialize: initializeMs,
           newSession: newSessionMs,
+          loadSession: loadSessionMs,
           setModel: setModelMs,
           total: Date.now() - t0,
         },

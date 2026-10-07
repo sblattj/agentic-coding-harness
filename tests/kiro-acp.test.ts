@@ -26,7 +26,9 @@ type FakeAcpScenarioName =
   | 'mcp-fail'
   | 'crash-mid-prompt'
   | 'ignore-sigterm'
-  | 'fs-request';
+  | 'fs-request'
+  | 'load-not-found'
+  | 'load-exit';
 
 // ---------------------------------------------------------------------------
 // Harness: every test drives the scripted fake server, never the paid binary.
@@ -213,6 +215,84 @@ describe('KiroAcpClient handshake (fixture replay)', () => {
 
     const methods = logMethods(log).filter((m) => m !== '<response>');
     assert.deepEqual(methods, ['initialize', 'session/new', 'session/set_model', 'session/prompt']);
+  });
+
+  it('resume: initialize -> session/load -> set_model on the RESUMED id; history replay is swallowed (#117)', async () => {
+    const log = join(TMP, 'resume-order.log');
+    const client = makeClient('ok', { log });
+    const { seen, closed } = collectNotifications(client);
+    const RESUME = 'aaaaaaaa-1111-2222-3333-444444444444';
+    const receipt = await client.handshake({
+      cwd: TMP,
+      agent: NEW_RESULT.modes.currentModeId,
+      model: NEW_RESULT.models.currentModelId,
+      requireModelAck: true,
+      resume: RESUME,
+    });
+    assert.equal(receipt.sessionId, RESUME);
+    assert.equal(receipt.resumed, true);
+    assert.equal(receipt.replayedUpdates, 2);
+    assert.equal(receipt.agentVerified, true);
+    assert.equal(receipt.modelAck, 'acknowledged');
+    assert.equal(receipt.currentModelId, NEW_RESULT.models.currentModelId);
+    assert.equal(receipt.durationsMs.newSession, 0);
+    await client.close();
+    await closed;
+    const lines = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { method?: string; params?: { sessionId?: string; cwd?: string } });
+    const requests = lines.filter((m) => m.method !== undefined);
+    assert.deepEqual(requests.map((m) => m.method), ['initialize', 'session/load', 'session/set_model']);
+    assert.equal(requests[1]?.params?.cwd, TMP);
+    assert.equal(requests[2]?.params?.sessionId, RESUME);
+    assert.ok(
+      !seen.some((n) => n.method === 'session/update' && JSON.stringify(n.params).includes('REPLAYED-')),
+      'history replay must not reach the notification stream',
+    );
+  });
+
+  it('resume of an unknown session rejects with phase session/load and kiro\'s data reason', async () => {
+    const client = makeClient('load-not-found');
+    const err = await client.handshake({ cwd: TMP, resume: 'nope' }).then(
+      () => assert.fail('expected a rejection'),
+      (e: unknown) => e,
+    );
+    assert.ok(err instanceof KiroAcpError);
+    assert.equal(err.phase, 'session/load');
+    assert.match(err.message, /Session not found: nope/);
+    await client.close();
+  });
+
+  it('a child that dies during session/load rejects with phase session/load, not session/prompt', async () => {
+    // kiro exits 0 without answering a session/load it cannot take (#117).
+    const client = makeClient('load-exit');
+    const err = await client.handshake({ cwd: TMP, resume: 'x' }).then(
+      () => assert.fail('expected a rejection'),
+      (e: unknown) => e,
+    );
+    assert.ok(err instanceof KiroAcpError);
+    assert.equal(err.phase, 'session/load');
+    assert.match(err.message, /child exited \(code 0\) with session\/load in flight/);
+    assert.equal(client.exited, true);
+    await client.close();
+  });
+
+  it('loadSession with no cwd anywhere still sends one (kiro dies on a cwd-less load)', async () => {
+    const log = join(TMP, 'load-nocwd.log');
+    const client = new KiroAcpClient({
+      command: process.execPath,
+      args: SERVER_ARGV,
+      env: { FAKE_ACP_SCENARIO: 'ok', FAKE_ACP_STDIN_LOG: log },
+      startupMs: 15_000,
+      termGraceMs: 300,
+      killGraceMs: 300,
+    });
+    clients.push(client);
+    client.start();
+    await client.initialize();
+    const result = await client.loadSession('y');
+    assert.equal(typeof result, 'object');
+    await client.close();
+    const load = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { method?: string; params?: { cwd?: string } }).find((m) => m.method === 'session/load');
+    assert.equal(load?.params?.cwd, process.cwd());
   });
 
   for (const delayedConsumer of [false, true]) {
