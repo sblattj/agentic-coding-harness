@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -188,4 +190,14 @@ test("toCanonicalTokenRecord: bridges to the central src/core/types.ts shape", a
       timestampIso: "2026-09-09T12:00:02.000Z",
     },
   });
+});
+
+test("parseClaudeTranscript: drops Claude Code <synthetic> messages (issue #116)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ach-synth-"));
+  const path = join(dir, "s.jsonl");
+  const line = (id: string, model: string) =>
+    JSON.stringify({ type: "assistant", sessionId: "s1", timestamp: "2026-10-01T00:00:00Z", requestId: id, message: { id, model, usage: { input_tokens: 0, output_tokens: 0 } } });
+  writeFileSync(path, [line("a", "<synthetic>"), line("b", "claude-sonnet-5")].join("\n") + "\n");
+  const records = await parseClaudeTranscript(path);
+  assert.deepEqual(records.map((r) => r.model), ["claude-sonnet-5"]);
 });
