@@ -232,6 +232,73 @@ describe('launchKiroAcp — failure artifacts (no prompt is ever sent)', () => {
   });
 });
 
+function logMessages(path: string): Array<{ method?: string; params?: Record<string, unknown> }> {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { method?: string; params?: Record<string, unknown> });
+}
+
+describe('launchKiroAcp — resume (#117)', () => {
+  const RESUME = '5dafd2c0-4745-4849-8f64-4cdfff40e103';
+
+  it('resume does initialize -> session/load (no session/new) and prompts the RESUMED session', async () => {
+    const { events, status, handle, h } = await run(
+      'ok',
+      { resume: RESUME, kiro: { transport: 'acp', agent: 'dotai' } },
+      { log: true },
+    );
+    assert.equal(status, 'success', JSON.stringify(errors(events)));
+    assert.deepEqual(errors(events), []);
+    const methods = logMethods(h.log);
+    assert.deepEqual(methods.slice(0, 2), ['initialize', 'session/load'], `wire: ${methods.join(',')}`);
+    assert.ok(!methods.includes('session/new'), `a resume must not open a new session: ${methods.join(',')}`);
+    const prompt = logMessages(h.log).find((m) => m.method === 'session/prompt');
+    assert.equal(prompt?.params?.sessionId, RESUME);
+    // The emitted session event and the handle carry the resumed id.
+    const session = events.find((e) => e.type === 'session') as { sessionId?: string } | undefined;
+    assert.equal(session?.sessionId, RESUME);
+    assert.equal(handle.sessionId, RESUME);
+    assert.equal(handle.kiro()?.nativeSessionId, RESUME);
+    assert.equal((handle.kiro()?.effective as { agentVerified: boolean }).agentVerified, true);
+    // kiro replays the loaded history during session/load: that is not this run's output.
+    assert.ok(!JSON.stringify(events).includes('REPLAYED-'), 'history replay leaked into the run events');
+  });
+
+  it('resume with NO spec.cwd (the `ach run` path) still sends cwd on session/load and succeeds', async () => {
+    // kiro-cli 2.21.2/2.28.0 exit 0 with no response on a cwd-less session/load;
+    // before #117 that surfaced as "child already exited" in phase session/prompt.
+    const { events, status, h } = await run(
+      'ok',
+      { cwd: undefined, resume: RESUME, kiro: { transport: 'acp' } },
+      { log: true },
+    );
+    assert.equal(status, 'success', JSON.stringify(errors(events)));
+    assert.ok(!JSON.stringify(errors(events)).includes('session/prompt'));
+    const load = logMessages(h.log).find((m) => m.method === 'session/load');
+    assert.equal(load?.params?.cwd, process.cwd());
+  });
+
+  it('unknown session: one error naming phase session/load with kiro\'s reason, and NO prompt', async () => {
+    const { events, status, h } = await run(
+      'load-not-found',
+      { resume: '00000000-0000-0000-0000-000000000000', kiro: { transport: 'acp' } },
+      { log: true },
+    );
+    assert.equal(status, 'error');
+    const errs = errors(events);
+    assert.equal(errs.length, 1, 'exactly one terminal error artifact');
+    const msg = String((errs[0] as { message: string }).message);
+    assert.match(msg, /phase 'session\/load'/);
+    assert.match(msg, /Session not found: 00000000-0000-0000-0000-000000000000/);
+    const methods = logMethods(h.log);
+    assert.ok(!methods.includes('session/prompt'), `no prompt after a failed load: ${methods.join(',')}`);
+    assert.ok(!methods.includes('session/new'), 'a failed resume must not silently start a new session');
+  });
+});
+
 describe('launchKiroAcp — permissions and cancellation', () => {
   it('permission request surfaces as a clientRequest step and is DENIED by default', async () => {
     const h = harness('permission');
