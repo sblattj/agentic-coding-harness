@@ -75,6 +75,13 @@ const FALLBACK_PRICES: Record<string, ModelPrice> = {
   // no "unknown model" pricer warning, and no reuse of kiro's credits-only
   // carve-out below.
   'null': { input: 0, output: 0, cache_read: 0, cache_creation: 0 },
+  // Claude Code writes model "<synthetic>" on assistant messages it generates
+  // locally ("Not logged in", API error notices, "No response requested."):
+  // no model call happened, nothing is billable (issue #116). A zero-rate
+  // pseudo-model prices them $0 with no unknown-model warning, on both the
+  // single-model and per-model-breakdown paths. The Claude transcript reader
+  // also drops them at parse time so they never reach a breakdown.
+  '<synthetic>': { input: 0, output: 0, cache_read: 0, cache_creation: 0 },
 };
 
 /**
@@ -227,6 +234,22 @@ export function createPricer(costMapPath?: string): Pricer {
   // Preserve precedence: fallback < authoritative extract < external override.
   let prices = { ...FALLBACK_PRICES, ...BUNDLED_PRICES };
   const warnings: string[] = [];
+  // Unknown-model warnings are collapsed at drain (issue #116): one line per
+  // distinct (model, path) with the number of sessions it hit, instead of one
+  // line per priced record. Keyed by the single-occurrence text; the value
+  // counts distinct session ids, plus records that carried none.
+  const unknown = new Map<string, { model: string; alias: string; path: string; sessions: Set<string>; anon: number }>();
+  const noteUnknown = (model: string, path: string, sessionId: string | null | undefined): void => {
+    const alias = resolveAlias(model);
+    const key = `${model}\0${path}`;
+    let e = unknown.get(key);
+    if (!e) {
+      e = { model, alias, path, sessions: new Set(), anon: 0 };
+      unknown.set(key, e);
+    }
+    if (sessionId) e.sessions.add(sessionId);
+    else e.anon++;
+  };
 
   // An explicit costMapPath wins; otherwise AGENTIC_CODING_HARNESS_PRICING_OVERRIDE
   // names a local override file. A missing override file is a no-op
@@ -311,9 +334,7 @@ export function createPricer(costMapPath?: string): Pricer {
         }
         const p = lookup(s.model);
         if (!p) {
-          warnings.push(
-            `pricing: unknown model "${s.model}" (alias "${resolveAlias(s.model)}") in per-model breakdown; cost not computed`,
-          );
+          noteUnknown(s.model, ' in per-model breakdown', rec.sessionId);
           return NaN;
         }
         total +=
@@ -346,7 +367,7 @@ export function createPricer(costMapPath?: string): Pricer {
     }
     const p = lookup(model);
     if (!p) {
-      warnings.push(`pricing: unknown model "${model}" (alias "${resolveAlias(model)}"); cost not computed`);
+      noteUnknown(model, '', rec.sessionId);
       return NaN;
     }
     // Cache-aware, per 1M: each token class billed exactly once at its own
@@ -365,7 +386,13 @@ export function createPricer(costMapPath?: string): Pricer {
     resolveAlias,
     drainWarnings(): string[] {
       const out = warnings.splice(0, warnings.length);
-      return out;
+      for (const e of unknown.values()) {
+        const n = e.sessions.size + e.anon;
+        const head = `pricing: unknown model "${e.model}" (alias "${e.alias}")${e.path}`;
+        out.push(n <= 1 ? `${head}; cost not computed` : `${head} in ${n} ${e.anon === 0 ? 'sessions' : 'records'}; cost not computed`);
+      }
+      unknown.clear();
+      return [...new Set(out)];
     },
   };
 }

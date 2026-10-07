@@ -1068,7 +1068,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
         const cacheWriteTokens = Math.max(0, value.cacheWrite - (before?.cacheWrite ?? 0));
         const cacheWrite1hTokens = Math.max(0, value.cacheWrite1h - (before?.cacheWrite1h ?? 0));
         if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) continue;
-        const priced = value.model ? pricer.price({ model: value.model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens }) : NaN;
+        const priced = value.model ? pricer.price({ model: value.model, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens }) : NaN;
         bump({ agent: value.agent, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
           ...(Number.isFinite(priced) ? { costUsd: priced } : {}) });
       }

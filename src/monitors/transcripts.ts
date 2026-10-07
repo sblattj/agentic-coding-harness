@@ -138,6 +138,8 @@ export async function parseClaudeTranscript(
     const rec = line.data;
     const msg = rec.message;
     if (rec.type !== "assistant" || !msg?.usage) continue;
+    // Claude Code's locally generated messages (issue #116) carry no billable usage.
+    if (msg.model === "<synthetic>") continue;
     const usage = msg.usage;
     const key = `${msg.id ?? ""}\u0000${rec.requestId ?? ""}`;
     byKey.set(key, {

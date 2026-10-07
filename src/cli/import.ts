@@ -174,7 +174,7 @@ export function buildImportedRecord(agent: string, acc: SessionAcc, pricer: Pric
     if (cwd === undefined && r.cwd) cwd = r.cwd;
     if (r.model) models.set(r.model, (models.get(r.model) ?? 0) + 1);
     const price = r.model
-      ? pricer.price({ model: r.model, inputTokens: r.input, outputTokens: r.output, cacheReadTokens: r.cacheRead, cacheWriteTokens: r.cacheWrite, ...(r.cacheWrite1h !== undefined ? { cacheWrite1hTokens: r.cacheWrite1h } : {}) })
+      ? pricer.price({ model: r.model, sessionId: r.sessionId, inputTokens: r.input, outputTokens: r.output, cacheReadTokens: r.cacheRead, cacheWriteTokens: r.cacheWrite, ...(r.cacheWrite1h !== undefined ? { cacheWrite1hTokens: r.cacheWrite1h } : {}) })
       : NaN;
     if (Number.isFinite(price)) cost += price;
     else unpriced++;

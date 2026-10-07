@@ -118,6 +118,62 @@ describe('unknown models', () => {
   });
 });
 
+describe('<synthetic> and collapsed unknown-model warnings (issue #116)', () => {
+  const multi = (models: unknown[]): CanonicalTokenRecord => ({
+    ...rec('claude-haiku-4-5-20251001', 10, 10),
+    extra: { raw: { models } },
+  });
+  it('<synthetic> is a non-billable pseudo-model: $0, no warning, on both paths', () => {
+    const p = createPricer();
+    assert.equal(p.price(rec('<synthetic>', 10, 10)), 0);
+    assert.equal(
+      p.price(
+        multi([
+          { model: '<synthetic>', input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+          { model: 'claude-haiku-4-5-20251001', input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 1 },
+        ]),
+      ),
+      1,
+    );
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+
+  it('the same unknown model across N sessions collapses to one line with the count', () => {
+    const p = createPricer();
+    for (let i = 0; i < 5; i++) {
+      // two records per session: still 5 sessions
+      p.price({ ...rec('mystery-model-v9', 1, 1), sessionId: `s${i}` });
+      p.price({ ...rec('mystery-model-v9', 1, 1), sessionId: `s${i}` });
+    }
+    const warnings = p.drainWarnings();
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /unknown model "mystery-model-v9".* in 5 sessions/);
+    assert.deepEqual(p.drainWarnings(), []);
+  });
+
+  it('records without a session id count as records; one occurrence keeps the old text', () => {
+    const p = createPricer();
+    p.price(rec('mystery-a', 1, 1));
+    p.price(rec('mystery-b', 1, 1));
+    p.price(rec('mystery-b', 1, 1));
+    const w = p.drainWarnings();
+    assert.equal(w.length, 2);
+    assert.equal(w[0], 'pricing: unknown model "mystery-a" (alias "mystery-a"); cost not computed');
+    assert.match(w[1]!, /unknown model "mystery-b".* in 2 records/);
+  });
+
+  it('two different unknown models give two lines', () => {
+    const p = createPricer();
+    p.price({ ...rec('mystery-a', 1, 1), sessionId: 's1' });
+    p.price({ ...rec('mystery-b', 1, 1), sessionId: 's1' });
+    p.price({ ...rec('mystery-a', 1, 1), sessionId: 's2' });
+    const w = p.drainWarnings();
+    assert.equal(w.length, 2);
+    assert.ok(w.some((x) => /"mystery-a".* in 2 sessions/.test(x)));
+    assert.ok(w.some((x) => /"mystery-b"/.test(x) && !/ in \d+ /.test(x)));
+  });
+});
+
 describe('credit-metered records (kiro v2 MITM tap carriers)', () => {
   // Real kiro v2 shape: the wire exposes no model id, so parseMitmLine() omits
   // model (driver fills the 'unknown' sentinel) and the metering signal rides
