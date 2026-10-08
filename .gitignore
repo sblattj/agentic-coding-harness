@@ -12,3 +12,6 @@ trials/**/opencode-config-*/
 # `ach trial --matrix` resume state next to the example plan (#56).
 examples/*.ledger.jsonl
 examples/*.work/
+
+# Python bytecode
+__pycache__/
