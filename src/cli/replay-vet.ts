@@ -35,6 +35,9 @@ export interface PullData {
   baseRef: string;
   headRef: string;
   mergeCommitSha: string | null;
+  /** PR head commit and number of commits in the PR (the pulls API's `commits`). */
+  headSha?: string;
+  commitCount?: number;
   changedFiles: number;
   additions: number;
   deletions: number;
@@ -80,6 +83,8 @@ export const ghFetcher: PrFetcher = {
       baseRef: p.base?.ref ?? "",
       headRef: p.head?.ref ?? "",
       mergeCommitSha: p.merge_commit_sha ?? null,
+      headSha: p.head?.sha,
+      commitCount: p.commits,
       changedFiles: p.changed_files ?? 0,
       additions: p.additions ?? 0,
       deletions: p.deletions ?? 0,
@@ -151,7 +156,7 @@ export interface VetOptions {
 export interface VetResult {
   pr: { number: number; repo: string; url?: string; title: string; trunk: string; baseRef: string; headRef: string; createdAt: string; mergedAt: string | null };
   workItem: { id: string | null; source: "title" | "branch" | "body" | null; candidates: string[]; rebuildFromPr: boolean; prCreatedAt: string };
-  merge: { sha: string | null; kind: "squash" | "merge-commit" | "unknown"; parents: number | null; clone: string | null };
+  merge: { sha: string | null; kind: "squash" | "rebase" | "merge-commit" | "unknown"; parents: number | null; clone: string | null };
   base: { sha: string | null; clone: string | null };
   diffStat: string | null;
   checks: VetCheck[];
@@ -257,7 +262,30 @@ export async function vetPr(opts: VetOptions, fetcher: PrFetcher): Promise<VetRe
       const n = parents ? parents.length - 1 : 0;
       kind = n === 1 ? "squash" : n >= 2 ? "merge-commit" : "unknown";
       baseSha = parents && parents.length > 1 ? parents[1]! : null;
-      if (n === 1) add("merge-kind", "pass", "single parent: squash (or rebase) merge; base is that parent");
+      if (n === 1) {
+        // One parent: squash or rebase. A single-commit PR cannot be told apart (both give one
+        // commit with the PR's content). With >1 commits and the PR head present locally, compare
+        // the merge commit with the head (below).
+        const commits = pull.commitCount ?? 0;
+        const treeOf = (c: string, r: string) => git(c, ["rev-parse", `${r}^{tree}`]);
+        const headTree = commits > 1 && pull.headSha && hasCommit(mergeClone, pull.headSha) ? treeOf(mergeClone, pull.headSha) : null;
+        if (commits > 1 && headTree?.ok) {
+          // A squash on an unchanged trunk also has the head's tree, so the tree alone proves
+          // nothing: a rebase additionally keeps the commit's author date and subject; GitHub's
+          // squash commit gets a fresh author date and the PR title as subject.
+          const stamp = (r: string) => git(mergeClone!, ["log", "-1", "--format=%at%x00%s", r]).out;
+          const same = headTree.out === treeOf(mergeClone, mergeSha).out && stamp(mergeSha) === stamp(pull.headSha!);
+          kind = same ? "rebase" : "squash";
+          if (same) {
+            // N rebased commits sit on trunk: the real base is the commit before the first of them.
+            const b = git(mergeClone, ["rev-parse", `${mergeSha}~${commits}`]);
+            if (b.ok) baseSha = b.out;
+          }
+          add("merge-kind", "pass", same ? `single parent and ${commits} PR commits whose head tree, author date and subject equal the merge commit's: rebase merge; base is ${commits} commits before the merge commit` : `single parent and ${commits} PR commits collapsed into one: squash merge; base is that parent`);
+        } else {
+          add("merge-kind", "pass", `single parent: squash${commits > 1 ? " or rebase (PR head commit not in the clone, so they cannot be told apart)" : " (or a single-commit rebase)"}; base is that parent`);
+        }
+      }
       else if (n >= 2) add("merge-kind", "pass", `${n} parents: merge commit; base is the first parent (trunk before the merge)`);
       else add("merge-kind", "warn", "merge commit has no parent (root commit); cannot derive a base");
       if (baseSha !== null) {
