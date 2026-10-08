@@ -18,6 +18,7 @@ import {
   copilotArgs,
   copilotEventsPath,
   copilotSandboxArgs,
+  copilotUnknownToolWarnings,
   copilotUnsupportedSandbox,
   copilotUsageEvents,
   createCopilotLineParser,
@@ -339,6 +340,41 @@ describe('argv, sandbox and stderr classification', () => {
     assert.equal(copilotUnsupportedSandbox({ permissionMode: 'plan' }).length, 0);
     assert.match(copilotUnsupportedSandbox({ permissionMode: 'ask' })[0]!.message, /treated as 'dontAsk'/);
     assert.match(copilotUnsupportedSandbox({ permissionMode: 'acceptEdits' })[0]!.message, /no permission mode 'acceptEdits'/);
+  });
+
+  it('warns when a sandbox tool name is not a copilot tool (shell restricts nothing)', () => {
+    const w = copilotUnknownToolWarnings({ disallowedTools: ['view', 'shell'] });
+    assert.equal(w.length, 1);
+    assert.equal(w[0]!.field, 'sandbox.disallowedTools');
+    assert.match(w[0]!.message, /tool "shell" in --disallowed-tools .* restricts nothing \(did you mean "bash"\?\)/);
+    assert.match(w[0]!.message, /Built-ins: bash, /);
+    assert.match(copilotUnknownToolWarnings({ disallowedTools: ['Read'] })[0]!.message, /did you mean "view"/);
+    assert.match(copilotUnknownToolWarnings({ disallowedTools: ['frobnicate'] })[0]!.message, /restricts nothing\. Built-ins/);
+  });
+
+  it('does not warn for copilot built-ins, MCP-style or permission-pattern names', () => {
+    assert.deepEqual(copilotUnknownToolWarnings({ allowedTools: ['view', 'grep', 'glob'], disallowedTools: ['bash', 'web_fetch', 'read_bash'] }), []);
+    assert.deepEqual(copilotUnknownToolWarnings({ allowedTools: ['github-mcp-server-search_code', 'MyMCP(tool)', 'shell(git:*)'] }), []);
+    assert.deepEqual(copilotUnknownToolWarnings(undefined), []);
+  });
+
+  it('warns that the model gets no tools when every allowed name is unknown', () => {
+    const w = copilotUnknownToolWarnings({ allowedTools: ['read'] });
+    assert.ok(w.some((x) => /tool "read" in --allowed-tools.*did you mean "view"/.test(x.message)));
+    assert.ok(w.some((x) => /no tools/.test(x.message)));
+    // Mixed list: per-name warning only, not the no-tools one.
+    const mixed = copilotUnknownToolWarnings({ allowedTools: ['read', 'view'] });
+    assert.equal(mixed.length, 1);
+    assert.ok(!mixed.some((x) => /no tools/.test(x.message)));
+  });
+
+  it('keeps passing unknown names through to the flags (warn, do not drop)', () => {
+    assert.deepEqual(copilotSandboxArgs({ disallowedTools: ['shell'] }), ['--allow-all-tools', '--excluded-tools=shell']);
+  });
+
+  it('validateProfile surfaces the unknown-tool warning', () => {
+    const r = new CopilotAdapter({ command: 'copilot' }).validateProfile({ agent: 'copilot', prompt: 'x', sandbox: { disallowedTools: ['shell'] } } as never);
+    assert.ok(r.warnings.some((x) => /did you mean "bash"/.test(x.message)));
   });
 
   it('classifies the two authentication failures observed on 1.0.93', () => {
