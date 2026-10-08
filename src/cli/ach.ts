@@ -249,11 +249,15 @@ usage:
                  interruption; see docs/TRIALS.md)
   ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N]
                 [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json] [--hermetic]
+                [--permission-mode <mode>] [--allowed-tools <list>]... [--disallowed-tools <list>]...
+                [--mcp-config <path|json>]
                 (bundled self-verifying tasks as a matrix; default agents = every
                  installed CLI, missing ones skipped with a reason; experiment
                  suite/core, variant agent:model; HTML report next to the ledger in
                  <stateDir>/suites/; --hermetic runs each cell's agent in a clean
-                 temp copy, as for ach run)
+                 temp copy, as for ach run; the four sandbox flags work as for ach run and
+                 become the plan-level sandbox: per-cell drop warnings, listed in --dry-run
+                 --json, recorded on every ledger row, not part of the cell identity)
   ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
                 (--since/--last: print history newer than the bound on startup;
                  --dir is an alias of --transcript-dir here)

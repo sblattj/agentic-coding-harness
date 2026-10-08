@@ -12,6 +12,7 @@ import { after, before, describe, it } from "node:test";
 
 import { readLedger } from "../src/cli/trial-matrix.ts";
 import {
+  buildSuitePlan,
   bundledTasksDir,
   listSuiteTasks,
   resolveTasksDir,
@@ -262,5 +263,58 @@ describe("ach trial --suite (CLI, null agent)", () => {
       assert.match(r.stderr, re, args.join(" "));
     }
     assert.deepEqual(scanRunRecords(state).records, []);
+  });
+});
+
+describe("suite sandbox flags (#13)", () => {
+  const suiteArgs = ["trial", "--suite", "core", "--agent", "null", "--task", "py-slugify", "--dry-run"];
+
+  it("buildSuitePlan: a policy becomes plan.sandbox; none leaves no sandbox key", () => {
+    const base = { suite: "core", tasks: bundled.slice(0, 1), agents: ["null"] };
+    const withPolicy = buildSuitePlan({ ...base, sandbox: { permissionMode: "acceptEdits", allowedTools: ["Bash", "Read"] } });
+    assert.deepEqual(withPolicy.sandbox, { permissionMode: "acceptEdits", allowedTools: ["Bash", "Read"] });
+    const without = buildSuitePlan(base);
+    assert.equal("sandbox" in without, false);
+  });
+
+  it("--dry-run --json lists the resolved sandbox on every cell and the drop warnings", () => {
+    const { state, home } = scratch("sbx");
+    const env = { AGENTIC_CODING_HARNESS_STATE_DIR: state, HOME: home };
+    const r = runCli(
+      [...suiteArgs, "--json", "--permission-mode", "acceptEdits", "--allowed-tools", "Bash,Read", "--allowed-tools", "Edit", "--disallowed-tools", "WebFetch", "--mcp-config", '{"mcpServers":{"s":{"command":"x"}}}'],
+      env,
+    );
+    assert.equal(r.code, 0, r.stderr);
+    const out = JSON.parse(r.stdout) as { cells: { sandbox?: Record<string, unknown> }[]; sandboxWarnings?: string[] };
+    assert.ok(out.cells.length > 0);
+    for (const c of out.cells) {
+      assert.equal(c.sandbox?.permissionMode, "acceptEdits");
+      assert.deepEqual(c.sandbox?.allowedTools, ["Bash", "Read", "Edit"]);
+      assert.deepEqual(c.sandbox?.disallowedTools, ["WebFetch"]);
+      assert.match(String(c.sandbox?.mcpConfig), /inline JSON/);
+    }
+    // the null adapter honors none of the four fields
+    assert.ok((out.sandboxWarnings ?? []).some((w) => /sandbox\.permissionMode .*'null'/.test(w)), JSON.stringify(out.sandboxWarnings));
+  });
+
+  it("control: without flags the dry-run cells carry no sandbox and there are no warnings", () => {
+    const { state, home } = scratch("nosbx");
+    const r = runCli([...suiteArgs, "--json"], { AGENTIC_CODING_HARNESS_STATE_DIR: state, HOME: home });
+    assert.equal(r.code, 0, r.stderr);
+    const out = JSON.parse(r.stdout) as { cells: Record<string, unknown>[]; sandboxWarnings?: string[] };
+    assert.ok(out.cells.length > 0);
+    assert.ok(out.cells.every((c) => !("sandbox" in c)));
+    assert.equal(out.sandboxWarnings, undefined);
+  });
+
+  it("usage errors: bad --mcp-config JSON; sandbox flags with --matrix", () => {
+    const { state, home } = scratch("sbxerr");
+    const env = { AGENTIC_CODING_HARNESS_STATE_DIR: state, HOME: home };
+    const bad = runCli([...suiteArgs, "--mcp-config", "{not json"], env);
+    assert.notEqual(bad.code, 0, bad.stderr);
+    assert.match(bad.stderr, /--mcp-config looks like inline JSON but does not parse/);
+    const m = runCli(["trial", "--matrix", "x.json", "--permission-mode", "ask"], env);
+    assert.notEqual(m.code, 0);
+    assert.match(m.stderr, /--permission-mode applies to --suite only/);
   });
 });
