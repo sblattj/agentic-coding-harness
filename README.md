@@ -161,6 +161,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   [docs/KIRO.md](docs/KIRO.md).
 - **Run registry + `ach dash`** — live TUI over `<stateDir>/runs` (redraws 2×/s, ANSI status
   glyphs, totals footer); `--json` dumps RunRecords for tools, `--all` widens past the last hour.
+- **Run queue** — `ach queue run plan.txt --max-concurrent 4` launches plan-file slices as detached `ach run` processes, capped by the live runs on the whole machine, with `pre`/`post` hooks, per-slice logs and a state file; see [docs/QUEUE.md](docs/QUEUE.md).
 - **MCP server** — `ach mcp` (stdio JSON-RPC; `ach serve` for streamable HTTP), 10 tools (`harness_run{,_async,_status,_events,_cancel}`, `harness_kiro_preflight`, `report/emit/stats/agents`) so any MCP
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
 - **Emitters** — ATIF v1.7 trajectories (self-validating), OpenTelemetry `gen_ai` spans, Langfuse via OTLP.
@@ -310,7 +311,9 @@ ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 ach report <trials-dir> [--out path]           # single-file HTML comparison
-ach dash [--json] [--all] [--state-dir <stateDir>]   # live run dashboard; q quits
+ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section); q quits
+ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-file run queue, <= N live
+            # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
 ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
             (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
              framing tolerated; same 10 tools and gateway flags as `ach serve`)
@@ -701,6 +704,8 @@ const { result } = await runToDirectory({
 - **`/compare`** — sortable rollup table over all runs, grouped by experiment×variant or
   workflow×agent (`GET /api/compare?by=…` returns the rows as JSON: `runs`, `avgTotalTokens`,
   `avgCostUsd`, `avgDurationMs`, `successRate` per group).
+- **`/queues`** (+ `GET /api/queues`) — queued / running / done per slice for every `ach queue run`
+  queue that is running or ended in the last 24 h ([docs/QUEUE.md](docs/QUEUE.md)). Token-gated when `--token` is set.
 - **`/health`** — liveness plus the configured run source and whether it is healthy
   (`source`, `sourceHealthy`).
 
