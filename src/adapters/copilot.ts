@@ -603,6 +603,77 @@ export function copilotSandboxArgs(sandbox: SandboxPolicy | undefined): string[]
   return args;
 }
 
+/**
+ * Copilot's built-in tool names, read from the tool list copilot 1.0.94 logs
+ * for a headless run (`--log-level all`, the `"tools": [...]` block; the model
+ * was also asked to list them). write_bash and ask_user are not in that list
+ * (ask_user is only named in the system prompt; write_bash is read_bash's
+ * documented sibling), so they are allowed here to avoid a false warning.
+ */
+export const COPILOT_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
+  'bash', 'read_bash', 'write_bash', 'stop_bash', 'list_bash',
+  'view', 'create', 'edit', 'glob', 'grep',
+  'web_fetch', 'fetch_copilot_cli_documentation', 'search_code_subagent',
+  'skill', 'task', 'read_agent', 'list_agents', 'write_agent',
+  'run_dynamic_workflow', 'dynamic_workflows_manage',
+  'sql', 'session_store_sql', 'ask_user',
+]);
+
+/** Common names from other agents -> the copilot built-in that does the job. */
+const COPILOT_TOOL_ALIASES: Readonly<Record<string, string>> = {
+  shell: 'bash', bash: 'bash', read: 'view', write: 'create', edit: 'edit',
+  webfetch: 'web_fetch', glob: 'glob', grep: 'grep', task: 'task',
+};
+
+/**
+ * True when a name cannot be judged a typo: copilot's permission syntax
+ * `kind(arg)` (e.g. `shell(git:*)`, `MyMCP(tool)`) or an MCP tool, which copilot
+ * registers as `<server>-<tool>` (e.g. `github-mcp-server-search_code`).
+ * Built-ins never contain `(`, `-`, `*` or `/`.
+ */
+function isCopilotExtensionToolName(name: string): boolean {
+  return name.includes('(') || name.includes('-') || name.includes('*') || name.includes('/');
+}
+
+/**
+ * Warnings for allowedTools/disallowedTools names copilot does not know. Copilot
+ * silently ignores an unknown name (observed 1.0.94: `--excluded-tools=shell`
+ * blocked nothing; `--available-tools=read` left the model no tools), so a
+ * cross-agent name like `shell` or `read` would otherwise look like a working
+ * restriction. Names are still passed through (MCP/custom tools are legitimate).
+ */
+export function copilotUnknownToolWarnings(sandbox: SandboxPolicy | undefined): AdapterProfileIssue[] {
+  const out: AdapterProfileIssue[] = [];
+  const builtins = [...COPILOT_BUILTIN_TOOLS].join(', ');
+  const unknown = (names: string[] | undefined): string[] =>
+    (names ?? []).filter((n) => !COPILOT_BUILTIN_TOOLS.has(n) && !isCopilotExtensionToolName(n));
+  const hint = (n: string): string => {
+    const alias = COPILOT_TOOL_ALIASES[n.toLowerCase()];
+    return alias !== undefined ? ` (did you mean "${alias}"?)` : '';
+  };
+  for (const n of unknown(sandbox?.disallowedTools)) {
+    out.push({
+      field: 'sandbox.disallowedTools',
+      message: `copilot: tool "${n}" in --disallowed-tools is not a copilot built-in tool, so it restricts nothing${hint(n)}. Built-ins: ${builtins}`,
+    });
+  }
+  const allowed = sandbox?.allowedTools ?? [];
+  const badAllowed = unknown(allowed);
+  for (const n of badAllowed) {
+    out.push({
+      field: 'sandbox.allowedTools',
+      message: `copilot: tool "${n}" in --allowed-tools is not a copilot built-in tool, so it enables nothing${hint(n)}. Built-ins: ${builtins}`,
+    });
+  }
+  if (allowed.length > 0 && badAllowed.length === allowed.length) {
+    out.push({
+      field: 'sandbox.allowedTools',
+      message: 'copilot: every name in --allowed-tools is unknown to copilot, so the model will have no tools and the run will do nothing',
+    });
+  }
+  return out;
+}
+
 /** SandboxPolicy fields copilot cannot honour (see copilotSandboxArgs). */
 export function copilotUnsupportedSandbox(sandbox: SandboxPolicy | undefined): AdapterProfileIssue[] {
   const mode = sandbox?.permissionMode;
@@ -670,7 +741,7 @@ export class CopilotAdapter implements AgentAdapter, CoreAgentAdapter {
    */
   validateProfile(spec: CoreRunSpec): AdapterProfileCheck {
     const common = validateCliSessionProfile(spec);
-    return { ...common, warnings: [...common.warnings, ...copilotUnsupportedSandbox(spec.sandbox)] };
+    return { ...common, warnings: [...common.warnings, ...copilotUnsupportedSandbox(spec.sandbox), ...copilotUnknownToolWarnings(spec.sandbox)] };
   }
 
   /** Driver contract (src/core/driver.ts): launch one run for a RunSpec. */

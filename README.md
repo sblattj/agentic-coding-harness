@@ -426,6 +426,9 @@ tools does not stall on an approval prompt, and you do not hand-assemble `--extr
   `on-failure`, gemini `yolo`).
 - `--allowed-tools <list>` / `--disallowed-tools <list>`: repeatable AND comma-separated;
   occurrences concatenate. Commas inside parentheses are kept, so `'Bash(git log:*)'` is one tool.
+  Tool names are agent-native (copilot: `bash`, `view`, `create`, `edit`, `grep`, `glob`, ...; claude: `Bash`,
+  `Read`, ...), not translated; copilot silently ignores a name it does not know, so `ach` prints a `[warn]`
+  for a copilot tool name that is not a built-in (with a "did you mean" hint) while still passing it through.
 - `--mcp-config <path|json>`: given once. A value starting with `{` is parsed as inline JSON,
   anything else is a file path passed verbatim.
 
