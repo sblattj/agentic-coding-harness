@@ -99,12 +99,14 @@ const INSTALL_HINT: Record<AgentName, string> = {
   kiro: "install kiro-cli or point KIRO_CLI_BIN at it",
   "kiro-ide": "install Kiro IDE (macOS: `brew install --cask kiro`) or pass --kiro-ide-bin",
   copilot: "install GitHub Copilot CLI (npm i -g @github/copilot) or point COPILOT_CLI_BIN at it",
+  cursor: "install the Cursor CLI (brew install --cask cursor-cli) or point CURSOR_AGENT_BIN at cursor-agent",
   prime: "install Prime Agent (curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh; releases: https://github.com/PrimeIntellect-ai/prime-agent/releases/latest) or put `prime-agent` on PATH",
 };
 
 /** The binary each agent's adapter spawns, when it differs from the agent name. */
 const AGENT_BINARY: Partial<Record<AgentName, string>> = {
   prime: "prime-agent",
+  cursor: "cursor-agent",
 };
 
 /** Credential env vars each adapter's CLI reads (mirrors PROVIDER_CREDENTIAL_ENV_VARS in adapters/shared.ts). */
@@ -117,6 +119,7 @@ const AUTH_ENV: Record<AgentName, string[]> = {
   "kiro-ide": [],
   prime: ["PRIME_API_KEY"],
   copilot: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
+  cursor: ["CURSOR_API_KEY"],
   null: [],
 };
 
@@ -492,6 +495,16 @@ async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv): Promise<Doct
         "run `copilot login`, set COPILOT_GITHUB_TOKEN, or run `gh auth login`",
       );
     }
+    case "cursor":
+      // No CURSOR_API_KEY (handled above). A `cursor-agent login` is stored by
+      // the CLI; `cursor-agent status` prints "Not logged in" with exit 0
+      // (observed, 2026.10.01), but doctor sends nothing and spawns nothing
+      // for auth, so a stored login is not checkable here.
+      return mk(
+        "unproven",
+        `no ${names.join(" / ")} in env; a stored \`cursor-agent login\` is not checkable offline (\`cursor-agent status\` says "Not logged in" when there is none)`,
+        "run `cursor-agent login` or set CURSOR_API_KEY; `ach run --agent cursor` runs the same status check and fails fast with a specific error",
+      );
     case "kiro":
       // Kiro's real auth check is the preflight's `kiro-cli whoami`; this path
       // only runs when the binary is missing.
@@ -528,6 +541,11 @@ function checkModel(agent: AgentName, model: string | undefined): DoctorCheck {
     // The Copilot service resolves the model; cost is the CLI's AIU telemetry,
     // never the pricing table, so "not in the table" says nothing here.
     return { ...base, status: "unproven", detail: `'${model}' is resolved by the Copilot service (not checkable offline); cost comes from AIU telemetry, not the pricing table` };
+  }
+  if (agent === "cursor") {
+    // Cursor resolves the model server-side (`cursor-agent models`); a cost is the
+    // CLI's stated figure, else computed only when the model is in the pricing table.
+    return { ...base, status: "unproven", detail: `'${model}' is resolved by Cursor (not checkable offline); cost is the CLI's stated figure, else computed from tokens only if the model is in the pricing table` };
   }
   const alias = resolveAlias(model);
   const family = MODEL_FAMILY[agent];
@@ -620,6 +638,12 @@ async function scanMcp(agent: AgentName, env: NodeJS.ProcessEnv, cwd: string): P
       await jsonSource(path.join(ch, "mcp-config.json"), "mcpServers");
       break;
     }
+    case "cursor":
+      // Cursor CLI MCP servers: ~/.cursor/mcp.json (mcpServers key) is Cursor's
+      // documented user config; UNVERIFIED against a populated file.
+      await jsonSource(path.join(home, ".cursor", "mcp.json"), "mcpServers");
+      await jsonSource(path.join(cwd, ".cursor", "mcp.json"), "mcpServers");
+      break;
     case "prime":
       // `prime-agent mcp add` writes user servers to settings.json mcpServers
       // (observed, prime-agent 0.9.8).
@@ -1072,7 +1096,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         });
       }
       if (agent === "kiro") return checkKiro({ ...options, env, cwd, versionTimeoutMs });
-      const bin = await checkBinary(agent, agent === "copilot" && env.COPILOT_CLI_BIN ? env.COPILOT_CLI_BIN : (AGENT_BINARY[agent] ?? agent), env, cwd, versionTimeoutMs);
+      const bin = await checkBinary(agent, agent === "copilot" && env.COPILOT_CLI_BIN ? env.COPILOT_CLI_BIN : agent === "cursor" && env.CURSOR_AGENT_BIN ? env.CURSOR_AGENT_BIN : (AGENT_BINARY[agent] ?? agent), env, cwd, versionTimeoutMs);
       return [...bin.checks, await checkAuth(agent, env), checkModel(agent, options.model), await checkMcp(agent, env, cwd)];
     }),
   );

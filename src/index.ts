@@ -73,6 +73,7 @@ export { GeminiAdapter } from './adapters/gemini.ts';
 export { PrimeAdapter } from './adapters/prime.ts';
 export { KiroIdeAdapter } from './adapters/kiro-ide.ts';
 export { CopilotAdapter } from './adapters/copilot.ts';
+export { CursorAdapter } from './adapters/cursor.ts';
 export { OpenCodeAdapter } from './adapters/opencode.ts';
 // --- custom agents (#37 command templates, #38 agents.d descriptors) ---
 export {
