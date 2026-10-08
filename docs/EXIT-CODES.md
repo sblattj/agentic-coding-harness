@@ -120,3 +120,7 @@ esac
 ach stats --days 1 --json --exit-codes ladder > usage.json
 [ $? -eq 30 ] && exit 0                      # nothing ran today
 ```
+
+## `ach replay vet`
+
+One extra code, outside the run ladder: `40` means a replay-vet check failed (`0` pass or warn, `1` usage or `gh` error). See [REPLAY.md](REPLAY.md).
