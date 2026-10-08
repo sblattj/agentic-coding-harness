@@ -2,6 +2,25 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.17.0] - 2026-10-08
+
+### Added
+
+- `copilot` agent (#23): `ach run --agent copilot` drives the GitHub Copilot CLI headlessly (`COPILOT_CLI_BIN` overrides the binary). The four sandbox fields map to Copilot flags (`--available-tools`, `--excluded-tools`, `--additional-mcp-config` and the permission modes). Copilot session logs are also a native transcript source, so `ach stats`, `ach watch` and `ach dash` meter Copilot sessions that ach did not launch.
+- `cursor` agent (#24): `ach run --agent cursor` drives the Cursor CLI (`cursor-agent --print --output-format stream-json`; `CURSOR_AGENT_BIN`, `--resume <chatId>`). A `cursor-agent status` preflight fails an unauthenticated CLI with a specific error ("Run `cursor-agent login`, or set CURSOR_API_KEY") and records the run `unavailable`. Cost is the CLI's stated figure when it gives one (provenance `reported`), otherwise it is computed from the CLI's reported tokens with a warning (`computed`), otherwise n/a. `--permission-mode dontAsk|plan|ask` is honoured; the other sandbox fields are reported as not applied. The stream shapes come from Cursor's docs and have not yet been checked against an authenticated CLI.
+- Sandbox flags on `ach run` (#13): `--permission-mode`, `--allowed-tools`, `--disallowed-tools` (repeatable, comma-separated) and `--mcp-config` (a file path, or inline JSON starting with `{`, which is redacted in output). The resolved policy prints as a `[sandbox]` header line and is added to `--json`. Each field an agent cannot honour prints a `[warn]` naming it (see the README table). `--evidence-dir` writes a metrics-only `metrics.json` sidecar (`metrics-<i>.json` with `--repeat`) with the sandbox, totals and provenance, and no prompt text.
+- The same sandbox policy on every other surface (#13): matrix plans accept `sandbox` at plan, agent-entry and task level, merged per field; `ach trial --suite` takes the four flags; the MCP `harness_run` and `harness_run_async` tools take a `sandbox` object. A sandbox is recorded on ledger rows but is not part of cell identity, so use a new `--ledger` to compare policies.
+- `ach queue` (#115): `ach queue run <plan>` launches a plan's slices as detached `ach run` processes, keeping the live `ach run` count on the machine at or below `--max-concurrent`, with `--max-hours`, per-slice `--pre`/`--post` hooks, `--resume <queueId>`, `--dry-run` and `--notify`. `ach queue status` reports progress. Exit codes: 0 drained, 1 a slice failed, 40 `--max-hours` reached, 130 interrupted. See docs/QUEUE.md.
+- Queues on the dashboard (#115): `ach dash --json --queues` prints `{records, queues}` (plain `--json` is still a bare array), and the web dashboard serves `GET /api/queues` and a `/queues` page, both behind the dashboard token.
+- `ach replay vet <pr>` (#115): read-only checks for whether a merged PR makes a usable replay case. It checks merged/approved state, whether the diff matches, rebase-vs-squash merges, test and ticket heuristics, and whether a fallback clone (for example a release branch) holds the commits. It prints a draft case entry and exits 40 on a failing verdict. `--json` is supported. See docs/REPLAY.md.
+- Context-diet kit (#118): `context-diet/ablate.sh` measures how many startup tokens each component (skills, MCP, instructions, tool set) adds to a Claude Code session. `skill-usage.py` reports which skills are actually used, `skill-lint.py` flags descriptions over the 600-character cap, and `agents/lean.md` is a 6-tool subagent. `context-diet/ab/` is a skill-trigger A/B pipeline (mine, filter, make arms, run, report) over prompts mined from your own transcripts. It bills the subscription, not `ANTHROPIC_API_KEY`. See docs/CONTEXT-DIET.md.
+
+### Changed
+
+- `cursor` is now both a launch agent and the read-only Cursor IDE transcript source; `ach run --agent cursor` no longer fails with `READ_ONLY_SOURCE` (`amp`, `goose` and `qwen` still do).
+- Kiro credits and Copilot AI credits are different units and are no longer summed: once a Copilot figure is present, totals name each vendor (`credits (kiro) 12.30cr · AI credits (copilot) 4.00cr`).
+- docs/EXIT-CODES.md has a new section for commands outside the run ladder. Exit code 40 means `--max-hours` reached for `ach queue run`, and a failing verdict for `ach replay vet`.
+
 ## [0.16.1] - 2026-10-07
 
 ### Fixed
