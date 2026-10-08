@@ -24,6 +24,8 @@ import type { RunSource } from "./run-source.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
 import { deriveRunObservability } from "./derive.ts";
 import { createFrameAnnotator, type ContextFrame, type FrameAnnotator } from "./context-frames.ts";
+import { collectQueueViews } from "../core/queue-view.ts";
+import { renderQueuesPage } from "./queues.ts";
 import { PtyManager } from "./pty-manager.ts";
 
 export interface WebServerOptions {
@@ -481,6 +483,20 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           const asset = await readAsset(`vendor/${rel}`);
           if (asset === null) return notFound(res);
           return res.writeHead(200, { "content-type": vendorContentType(rel) }).end(asset);
+        }
+
+        // Queue panel (#115). Unlike /api/runs this IS token-gated when a token
+        // is configured: queue state carries plan paths and working directories.
+        if (get && (pathname === "/api/queues" || pathname === "/queues")) {
+          if (opts.token !== undefined) {
+            const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
+            if (url.searchParams.get("token") !== opts.token && bearer !== opts.token) return jsonError(res, 401, "unauthorized");
+          }
+          const queues = collectQueueViews(opts.stateDir);
+          if (pathname === "/api/queues") return sendJson(res, 200, { queues });
+          return res
+            .writeHead(200, { "content-type": "text/html; charset=utf-8" })
+            .end(renderQueuesPage(queues, opts.token !== undefined ? { token: opts.token } : {}));
         }
 
         if (get && pathname === "/api/runs") {

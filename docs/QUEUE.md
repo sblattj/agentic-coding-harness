@@ -86,6 +86,24 @@ smoke       .                null   -      prompts/hello.md
 `ach queue status [<id>]` prints the table for the given (default: most recent) queue; `--all` lists
 queues, `--json` emits the state file(s).
 
+## Watching a queue
+
+- **`ach queue status [<id>]`** — table for one queue (`--all`, `--json`).
+- **`ach dash`** — a "Queues" section appears under the run table when a queue is `running`, or ended
+  within the last **24 hours** (`QUEUE_RECENT_HOURS` in `src/core/queue-view.ts`). One summary line per
+  queue (`id`, phase, queued/running/done/failed counts, `pre-failed` when non-zero, cap, time left to
+  the `--max-hours` deadline, or time since it ended), then a row per slice: label, `agent/model`,
+  status, run ids (first 8 chars) or pid, elapsed. A `running` queue whose `queuePid` is gone shows
+  phase `DIED` in red with `ach queue run --resume <id>`.
+  `ach dash --json` is unchanged (a bare array of run records); `ach dash --json --queues` instead emits
+  `{ "records": [...], "queues": [...] }`, each queue being the state file plus `counts`, `died`,
+  `displayPhase`, `timeLeftMs`, `endedAgoMs?`, `resumeHint?` and per-slice `elapsedMs?`.
+- **`ach web`** — `GET /api/queues` returns `{ "queues": [...] }` (same objects and same visibility window
+  as the dash JSON), and `GET /queues` is a server-rendered, auto-refreshing (5 s) page linked from the
+  nav of every page. Both require the dashboard token (`?token=` or `Authorization: Bearer`) when
+  `--token` is set, unlike `/api/runs`, because queue state carries plan paths and working directories.
+  All text on the page is HTML-escaped (labels come from plan files).
+
 ## State file schema
 
 Defined with zod in `src/core/queue-state.ts` (`QueueStateSchema`, `QueueState`, `SliceState`,

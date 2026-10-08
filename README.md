@@ -299,7 +299,7 @@ ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 ach report <trials-dir> [--out path]           # single-file HTML comparison
-ach dash [--json] [--all] [--state-dir <stateDir>]   # live run dashboard; q quits
+ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section); q quits
 ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-file run queue, <= N live
             # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
 ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
@@ -644,6 +644,8 @@ const { result } = await runToDirectory({
 - **`/compare`** — sortable rollup table over all runs, grouped by experiment×variant or
   workflow×agent (`GET /api/compare?by=…` returns the rows as JSON: `runs`, `avgTotalTokens`,
   `avgCostUsd`, `avgDurationMs`, `successRate` per group).
+- **`/queues`** (+ `GET /api/queues`) — queued / running / done per slice for every `ach queue run`
+  queue that is running or ended in the last 24 h ([docs/QUEUE.md](docs/QUEUE.md)). Token-gated when `--token` is set.
 - **`/health`** — liveness plus the configured run source and whether it is healthy
   (`source`, `sourceHealthy`).
 
