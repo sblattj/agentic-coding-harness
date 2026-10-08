@@ -148,6 +148,7 @@ describe('kiro MITM auto-tap (launch)', () => {
       const childEnv = readFileSync(envFile, 'utf8');
       assert.match(childEnv, /^HTTPS_PROXY=http:\/\/127\.0\.0\.1:[1-9]\d+$/m);
       assert.match(childEnv, /^SSL_CERT_FILE=/m);
+      assert.match(childEnv, /^NODE_EXTRA_CA_CERTS=/m);
 
       // The tap was stopped (graceful SIGTERM) before wait() resolved.
       const pid = Number(readFileSync(pidFile, 'utf8').trim());
@@ -244,6 +245,7 @@ describe('kiro MITM tap fails closed (#114)', () => {
         const childEnv = readFileSync(envFile, 'utf8');
         assert.doesNotMatch(childEnv, /^HTTPS_PROXY=/m);
         assert.doesNotMatch(childEnv, /^SSL_CERT_FILE=/m);
+        assert.doesNotMatch(childEnv, /^NODE_EXTRA_CA_CERTS=/m);
         assert.ok(!events.some((e) => e.type === 'usage'));
         assert.ok(events.some((e) => e.type === 'message' && e.content === 'done'));
       } finally {

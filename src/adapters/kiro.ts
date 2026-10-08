@@ -41,7 +41,7 @@
 // Token metering: kiro-cli's own stream-json usage events are under-documented;
 // the reliable source is the MITM tap in src/monitors/kiro-mitm.ts. launch()
 // auto-starts it (default when mitmdump is on PATH), routes the child through
-// the proxy (HTTPS_PROXY/SSL_CERT_FILE via tapEnv), and interleaves the tap's
+// the proxy (HTTPS_PROXY/SSL_CERT_FILE/NODE_EXTRA_CA_CERTS via tapEnv), and interleaves the tap's
 // credit/token records with the stdout events.
 //
 // TODO-MERGE: the `step` variant below is a kiro-specific extension of
@@ -179,9 +179,6 @@ export function buildKiroArgs(spec: KiroRunSpec): string[] {
     '--no-interactive',
     '--output-format',
     'stream-json',
-    // TODO(v3): `--v3` fails through the MITM tap — v3's model-catalog fetch
-    // to management.us-east-1.kiro.dev dies under mitmproxy with
-    // ModelRegistryUnavailableError. v2 verified working through the tap.
     '--agent-engine',
     kiro.engine ?? KIRO_DEFAULT_ENGINE,
   ];
