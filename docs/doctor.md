@@ -9,8 +9,8 @@ into a run.
 ach doctor [--agent A] [--model M] [--cwd DIR] [--claude-default-config] [--json]
 ```
 
-With no `--agent` it checks all eight adapters (claude, opencode, kiro, codex,
-gemini, prime, kiro-ide, copilot). `--model` needs `--agent` because a model belongs to one adapter.
+With no `--agent` it checks all nine adapters (claude, opencode, kiro, codex,
+gemini, prime, kiro-ide, copilot, cursor). `--model` needs `--agent` because a model belongs to one adapter.
 The exit code is 0 when no check failed and 1 when any check failed. An
 `unproven` check does not fail the run.
 
@@ -36,6 +36,7 @@ Every check is `verified`, `failed`, or `unproven`, the same vocabulary as
 | gemini | `auth` | `GEMINI_API_KEY` / `GOOGLE_API_KEY`, or a `GOOGLE_APPLICATION_CREDENTIALS` file that exists, or `~/.gemini/oauth_creds.json`, or gcloud ADC. |
 | opencode | `auth` | A provider key in env, or `$XDG_DATA_HOME/opencode/auth.json` (provider names are listed, keys are not). With neither, the check is `unproven` because opencode can run keyless or local providers. |
 | copilot | `auth` | A token env var (`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) or a BYOK provider (`COPILOT_PROVIDER_BASE_URL`, where AIU cost is absent). Otherwise `unproven`: copilot falls back to a stored `/login` or the gh CLI login, and neither proves Copilot entitlement offline. Binary override: `COPILOT_CLI_BIN`. `--model` is `unproven`: the service resolves it and cost is AIU-metered, not looked up in the pricing table. |
+| cursor | `auth` | `CURSOR_API_KEY` is `verified`. Otherwise `unproven`: a stored `cursor-agent login` is not checkable offline (`cursor-agent status` prints "Not logged in" with exit 0 when there is none; `ach run` runs that check itself). Binary override: `CURSOR_AGENT_BIN`. `--model` is `unproven`: Cursor resolves it. MCP servers are read from `~/.cursor/mcp.json` and `<cwd>/.cursor/mcp.json` (`mcpServers` key, UNVERIFIED). |
 | prime | `auth` | `PRIME_API_KEY`, or `~/.prime/agent/auth.json` holds a key, or `~/.prime/agent/models.json` defines a provider with an `apiKey`. Sign in with `/login` inside interactive `prime-agent`. |
 | kiro-ide | `binary`, `cdp`, `chat`, ... | Read-only rows over CDP (never sends input): the Kiro IDE binary exists, the CDP endpoint answers (`--kiro-ide-cdp host:port`, `--kiro-ide-port`, `--kiro-ide-bin`; default `127.0.0.1:9222`), and the signed-in chat input is present. A non-loopback endpoint is flagged, since CDP is remote code execution on the IDE host. No `auth`/`model`/`mcp` rows: the IDE holds its own sign-in and reports credits, not tokens. |
 | kiro | `auth` | `kiro-cli whoami` succeeds (deep). Identities are masked. |

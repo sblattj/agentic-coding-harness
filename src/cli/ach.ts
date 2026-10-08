@@ -142,7 +142,7 @@ version: ${VERSION}
 
 usage:
   ach --version | -v        print the harness version
-  ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|null> [--model M] [--resume SID]
+  ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               [--budget-alerts 0.5,0.8,1.0] [--warn-at 0.5,0.8,0.95] [--on-budget abort|warn]
                 (threshold alerts warn once per crossing, never abort; fractions in (0,1];
@@ -186,6 +186,12 @@ usage:
                          Cost is the CLI's own AIU telemetry at 1 AIU = $0.01 (shown as USD and as
                          credits); when the telemetry is missing the cost is n/a, never estimated
                          from tokens. --resume continues a session (usage is this run's share only)
+              cursor: Cursor CLI agent (cursor-agent, brew cask cursor-cli; binary override
+                         CURSOR_AGENT_BIN). Needs "cursor-agent login" or CURSOR_API_KEY; an
+                         unauthenticated CLI fails fast with a specific error (run recorded unavailable).
+                         Cost is the CLI's own stated figure when its result carries one, else
+                         computed from its reported tokens, else n/a (never estimated).
+                         The Cursor IDE store is still metered by: ach stats --agent cursor.
   ach run --agent custom --template '<cmd {prompt}>' [--prompt-stdin] [--template-shell] [--model M] "<prompt>"
               any CLI via a template; placeholders {prompt} {model} {workspace} (= cwd).
               The template is split argv-style and spawned WITHOUT a shell: the prompt

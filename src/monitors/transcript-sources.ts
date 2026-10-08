@@ -13,6 +13,7 @@ import { parseCursorDb } from "./cursor.ts";
 import { parseAmpThread } from "./amp.ts";
 import { parseGooseDb } from "./goose.ts";
 import { parseQwenChat } from "./qwen.ts";
+import { isKnownAgent } from "../core/types.ts";
 
 export interface TranscriptSource {
   /** Agent label stamped on every record (also the `--agent` filter value). */
@@ -56,10 +57,13 @@ export const TRANSCRIPT_SOURCES: readonly TranscriptSource[] = [
   },
 ];
 
-export type TranscriptOnlyAgent = "amp" | "goose" | "qwen" | "cursor";
+export type TranscriptOnlyAgent = "amp" | "goose" | "qwen";
 
 export function isTranscriptOnlyAgent(a: string): a is TranscriptOnlyAgent {
-  return TRANSCRIPT_SOURCES.some((s) => s.agent === a);
+  // `cursor` is both: the IDE store is a read-only transcript source AND
+  // `cursor-agent` is a launch adapter (core AGENTS). A name that is a known
+  // launch agent is never "transcript only" (same shape as `prime`).
+  return !isKnownAgent(a) && TRANSCRIPT_SOURCES.some((s) => s.agent === a);
 }
 
 /** Error text for `ach run --agent <read-only source>`. */
