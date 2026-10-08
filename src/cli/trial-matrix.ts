@@ -31,6 +31,7 @@ import { z } from "zod";
 import { createDriver, defaultAdapters, type Driver } from "../core/driver.ts";
 import { createPricer, type Pricer } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
+import { sandboxFromFlags } from "./run-sandbox.ts";
 import { describeSandbox, mergeSandbox, SandboxInputSchema, sandboxDropWarnings } from "../core/sandbox-policy.ts";
 import { HarnessError, isKnownAgent, type AgentAdapter, type RunSpec, type SandboxPolicy } from "../core/types.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, runVerifier, type VerifyStatus } from "../core/verify.ts";
@@ -961,7 +962,7 @@ export function formatMatrixSummary(s: MatrixSummary): string {
 }
 
 /** Flags only `--suite` accepts (#51); rejected with `--matrix`. */
-const SUITE_ONLY_FLAGS = ["task", "agent", "model", "repeat", "tasks-dir"] as const;
+const SUITE_ONLY_FLAGS = ["task", "agent", "model", "repeat", "tasks-dir", "permission-mode", "allowed-tools", "disallowed-tools", "mcp-config"] as const;
 
 /**
  * `ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]`
@@ -984,6 +985,11 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       ledger: { type: "string" },
       json: { type: "boolean", default: false },
       hermetic: { type: "boolean", default: false },
+      // #13: the `ach run` SandboxPolicy flags; --suite only (a plan carries `sandbox` itself).
+      "permission-mode": { type: "string" },
+      "allowed-tools": { type: "string", multiple: true },
+      "disallowed-tools": { type: "string", multiple: true },
+      "mcp-config": { type: "string", multiple: true },
     },
     allowPositionals: false,
   });
@@ -994,7 +1000,9 @@ export async function cmdTrial(rest: string[]): Promise<number> {
   }
   if (suite !== undefined) {
     const { runSuiteCli } = await import("./trial-suite.ts");
+    const sandbox = sandboxFromFlags(args.values);
     return runSuiteCli({
+      ...(sandbox !== undefined ? { sandbox } : {}),
       suite,
       tasks: args.values.task ?? [],
       agents: args.values.agent ?? [],

@@ -334,6 +334,11 @@ sandbox flags"): an optional `sandbox` object with `permissionMode`, `allowedToo
   The support table is the one in the README.
 - The resolved policy is recorded as `sandbox` on every ledger row and on every `--dry-run --json`
   cell. Inline MCP JSON appears as `<inline JSON, N bytes>` because it can carry credentials.
+- The policy is not part of the cell identity: `cellId` and `variant` do not include it, so a
+  re-run with a different policy skips cells that already have a verdict. Use a new `--ledger`
+  (or a new `experiment`) to compare policies.
+- `ach trial --suite core --permission-mode acceptEdits --allowed-tools Bash,Read,Edit` sets the
+  plan-level `sandbox` of the generated suite plan; everything above applies unchanged.
 
 ### Plan schema
 
@@ -497,9 +502,11 @@ and the exit code all behave as described above.
 | `--repeat N` | the plan's `trials`: N fresh cells per agent x task x model |
 | `--tasks-dir DIR` | use another task tree with the same layout instead of the bundled one |
 | `--ledger PATH` | ledger path; the default is `<stateDir>/suites/<suite>.ledger.jsonl` |
+| `--permission-mode M`, `--allowed-tools L`, `--disallowed-tools L`, `--mcp-config P\|JSON` | the `ach run` sandbox flags (README: "Permission and sandbox flags"), same semantics. They become the plan-level `sandbox` of the generated plan |
 
-`--task`, `--repeat` and `--tasks-dir` apply to `--suite` only; with `--matrix`
-the plan carries them. There is no run-level `--effort` flag; the kiro-only
+`--task`, `--repeat`, `--tasks-dir` and the four sandbox flags apply to `--suite` only; with
+`--matrix` the plan carries them (a plan-level, agent-entry or task `sandbox`, see "Sandbox
+policy in a plan"). There is no run-level `--effort` flag; the kiro-only
 `--kiro-effort` is not a suite axis.
 
 **Agents that are not installed are skipped, not failed.** The suite checks for
