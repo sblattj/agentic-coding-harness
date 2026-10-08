@@ -16,7 +16,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { stateDir as defaultStateDir } from "../core/store.ts";
-import { AGENTS, HarnessError, isKnownAgent } from "../core/types.ts";
+import { formatSandboxHeader } from "../core/sandbox-policy.ts";
+import { AGENTS, HarnessError, isKnownAgent, type SandboxPolicy } from "../core/types.ts";
 import { agentCliAvailability } from "../mcp/tools-run.ts";
 import { writeComparisonReport } from "./report.ts";
 import {
@@ -173,6 +174,8 @@ export function buildSuitePlan(o: {
   agents: readonly string[];
   models?: readonly string[];
   trials?: number;
+  /** #13: plan-level sandbox policy (the `ach run` flags); omitted → no `sandbox` key. */
+  sandbox?: SandboxPolicy;
 }): MatrixPlan {
   return parseMatrixPlan(
     {
@@ -181,6 +184,7 @@ export function buildSuitePlan(o: {
       tasks: o.tasks.map((t) => ({ dir: t.task.dir! })),
       ...(o.models !== undefined && o.models.length > 0 ? { models: [...o.models] } : {}),
       ...(o.trials !== undefined ? { trials: o.trials } : {}),
+      ...(o.sandbox !== undefined ? { sandbox: o.sandbox } : {}),
     },
     `suite ${o.suite}`,
   );
@@ -230,6 +234,8 @@ export interface SuiteCliOptions {
   json: boolean;
   /** #106: run every cell in a hermetic temp copy (src/core/hermetic.ts). */
   hermetic?: boolean;
+  /** #13: sandbox policy from the `--permission-mode` / `--allowed-tools` / `--disallowed-tools` / `--mcp-config` flags. */
+  sandbox?: SandboxPolicy;
   /** Tests: the agent-availability probe. */
   probe?: (name: string) => { command: string | null; available: boolean };
 }
@@ -289,11 +295,13 @@ export async function runSuiteCli(o: SuiteCliOptions): Promise<number> {
     agents: selection.run,
     models: o.models,
     ...(trials !== undefined ? { trials } : {}),
+    ...(o.sandbox !== undefined ? { sandbox: o.sandbox } : {}),
   });
   if (!o.json) {
     process.stderr.write(
       `suite      ${suite}: ${tasks.length} task(s) × ${selection.run.length} agent(s) [${selection.run.join(", ")}] from ${tasksDir}\n`,
     );
+    if (o.sandbox !== undefined) process.stderr.write(formatSandboxHeader(o.sandbox) + "\n");
   }
   return executeMatrixCli({
     plan,

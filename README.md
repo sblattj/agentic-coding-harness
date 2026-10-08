@@ -313,6 +313,7 @@ ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--jso
             # resumable agents x tasks x models x trials grid; re-run the same command
             # after an interruption and finalized cells are skipped (docs/TRIALS.md)
 ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--tasks-dir DIR] [--ledger PATH]
+            [--permission-mode M] [--allowed-tools L] [--disallowed-tools L] [--mcp-config PATH|JSON]
             # bundled task suite; missing agent CLIs skipped; HTML report next to the ledger
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach preflight --agent kiro-ide [--kiro-ide-cdp host:port] [--json]  # read-only CDP rows, same as doctor
@@ -450,7 +451,8 @@ ach run --agent claude --permission-mode bypassPermissions \
   --allowed-tools 'Bash,Read,Edit' --mcp-config ./mcp.json "prompt"
 ```
 
-The same policy is available on the other two surfaces. `ach trial --matrix` plans take an
+The same policy is available on the other surfaces. `ach trial --suite` takes the four flags
+directly (they become the generated plan's `sandbox`); `ach trial --matrix` plans take an
 optional `sandbox` object at plan level, per agent entry and per task (see
 [docs/TRIALS.md](docs/TRIALS.md#sandbox-policy-in-a-plan)); the MCP `harness_run` and
 `harness_run_async` tools take a `sandbox` input object (see [docs/MCP.md](docs/MCP.md)). Both
