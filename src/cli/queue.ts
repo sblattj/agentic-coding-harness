@@ -3,6 +3,7 @@
 // src/core/queue-engine.ts; the state-file contract in src/core/queue-state.ts.
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
@@ -75,7 +76,37 @@ export function liveRunPidsIn(dirs: readonly string[], now = Date.now()): Set<nu
 export function selfArgv(args: string[]): { cmd: string; args: string[] } {
   const script = process.argv[1];
   const compiled = script === undefined || script.startsWith("/$bunfs/") || script.startsWith("B:/~BUN/");
-  return { cmd: process.execPath, args: compiled ? args : [...process.execArgv, script, ...args] };
+  return { cmd: process.execPath, args: compiled ? args : [...absoluteExecArgv(process.execArgv), script, ...args] };
+}
+
+const MODULE_FLAGS = new Set(["--import", "--loader", "--experimental-loader", "--require", "-r"]);
+const isBare = (spec: string): boolean => !/^(\.{1,2}\/|\/|[A-Za-z]:[\\/]|file:|data:|node:)/.test(spec);
+
+/** execArgv with bare module specifiers (`--import tsx`) made absolute. Node resolves
+ *  them from the process cwd, and a slice runs in its own cwd, where `tsx` is usually
+ *  not installed. `--require` resolves from `cwd` (what Node did for the queue itself);
+ *  ESM flags resolve from this module, since a parent URL for import.meta.resolve needs
+ *  an experimental flag. A specifier that cannot be resolved is left as is. */
+export function absoluteExecArgv(execArgv: readonly string[], cwd: string = process.cwd()): string[] {
+  const resolve = (flag: string, spec: string): string => {
+    if (!isBare(spec)) return spec;
+    try {
+      if (flag === "--require" || flag === "-r") return createRequire(path.join(cwd, "noop.js")).resolve(spec);
+      return import.meta.resolve(spec);
+    } catch {
+      return spec;
+    }
+  };
+  const out: string[] = [];
+  for (let i = 0; i < execArgv.length; i++) {
+    const a = execArgv[i]!;
+    const eq = a.indexOf("=");
+    const flag = eq > 0 ? a.slice(0, eq) : a;
+    if (MODULE_FLAGS.has(flag) && eq > 0) out.push(`${flag}=${resolve(flag, a.slice(eq + 1))}`);
+    else if (MODULE_FLAGS.has(a) && i + 1 < execArgv.length) out.push(a, resolve(a, execArgv[++i]!));
+    else out.push(a);
+  }
+  return out;
 }
 
 /** The `ach run` argument vector for a slice, prompt included. */
