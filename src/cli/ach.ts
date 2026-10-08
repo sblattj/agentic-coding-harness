@@ -122,6 +122,7 @@ import { alertFlagsToBudget } from "./alerts.ts";
 import { cmdStatus } from "./status.ts";
 import { cmdStatusline } from "./statusline.ts";
 import { cmdQuota } from "./quota.ts";
+import { cmdQueue, QUEUE_USAGE } from "./queue.ts";
 import { cmdArchive, statsMachineRecords, statsScanOptions, warehouseStateRecords } from "./archive.ts";
 import {
   cmdAgents,
@@ -315,6 +316,7 @@ usage:
                 runs get a pace row: $/h + tok/min over 15m/1h, budget ETA;
                 QUOTA column shows vendor-reported headroom per agent;
                 --dir is an alias of --state-dir here)
+${QUEUE_USAGE}
   ach quota [--json] [--agent A]
                 (vendor-reported subscription headroom per agent: window, used,
                  time remaining, % left; n/a where the vendor reports nothing)
@@ -1705,7 +1707,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial",
+  "trial", "queue",
 ]);
 
 /**
@@ -1789,6 +1791,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdMcp(rest);
     case "quota":
       return cmdQuota(rest);
+    case "queue":
+      return cmdQueue(rest);
     case "agents":
       return cmdAgents(rest);
     case "help":

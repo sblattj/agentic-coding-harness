@@ -120,3 +120,5 @@ esac
 ach stats --days 1 --json --exit-codes ladder > usage.json
 [ $? -eq 30 ] && exit 0                      # nothing ran today
 ```
+
+`ach queue run` has its own process exit codes (0 drained, 1 a slice failed, 40 `--max-hours` expired, 130 interrupted); they do not use this ladder. See [QUEUE.md](QUEUE.md#exit-codes).
