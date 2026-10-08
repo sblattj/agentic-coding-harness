@@ -379,6 +379,8 @@ export type KiroLaneEvent = KiroEvent | KiroMitmUsageEvent;
  * records are NOT token records: they are credits-only evidence.
  */
 export function tapTokensAvailable(rec: CoreTokenRecord): boolean {
+  // parseMitmLine marks frames without a tokenUsage object (kiro-cli 2.28.0).
+  if (rec.extra?.tokensAvailable === false) return false;
   return (
     num(rec.inputTokens) !== 0 ||
     num(rec.outputTokens) !== 0 ||

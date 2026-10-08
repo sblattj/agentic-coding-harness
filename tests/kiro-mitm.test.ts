@@ -9,6 +9,9 @@ import {
   parseMitmLine,
   writeAddonScript,
 } from '../src/monitors/kiro-mitm.js';
+import { mitmRecordToUsageEvent } from '../src/adapters/kiro.js';
+import { computeUsageAvailability } from '../src/core/usage-availability.js';
+import type { CanonicalTokenRecord } from '../src/core/types.js';
 
 const TOKEN_USAGE = {
   uncachedInputTokens: 1200,
@@ -124,5 +127,112 @@ describe('kiro-mitm python addon selftest', () => {
     assert.equal(rec.extra?.totalTokens, 5310);
     const credits = rec.extra?.credits;
     assert.ok(typeof credits === 'number' && Math.abs(credits - 0.42) < 1e-9);
+  });
+});
+
+// Issue #121: raw kiro-cli 2.28.0 turn. No frame carries tokenUsage; context
+// arrives on its own contextUsageEvent; credits on meteringEvent.usage.
+const KIRO_228_FRAMES: Array<[string, Record<string, unknown>]> = [
+  ['initial', { conversationId: '' }],
+  ['metadataEvent', { stopReason: 'END_TURN' }],
+  ['contextUsageEvent', { contextUsagePercentage: 6.01140022277832 }],
+  ['meteringEvent', { unit: 'credit', unitPlural: 'credits', usage: 0.13357169761194032 }],
+];
+const KIRO_228_STREAM = Buffer.concat(
+  KIRO_228_FRAMES.map(([t, o]) => buildEventStreamFrame(t, Buffer.from(JSON.stringify(o)))),
+);
+
+function tsRecords(): CanonicalTokenRecord[] {
+  return parseEventStreamFrames(KIRO_228_STREAM)
+    .map((f) => frameToMitmLine(f))
+    .filter((l) => l !== null)
+    .map((l) => parseMitmLine(JSON.stringify(l)))
+    .filter((r): r is CanonicalTokenRecord => r !== null);
+}
+
+function pyLines(): string[] {
+  const out = execFileSync('python3', [writeAddonScript(), '--selftest', KIRO_228_STREAM.toString('hex')], {
+    encoding: 'utf8',
+  });
+  return out.split('\n').filter((l) => l.startsWith('{'));
+}
+
+function assertKiro228(recs: CanonicalTokenRecord[]): void {
+  assert.ok(recs.length >= 2, `expected context + metering records, got ${recs.length}`);
+  for (const r of recs) {
+    assert.equal(r.extra?.tokensAvailable, false, `record ${String(r.extra?.event)} must be flagged unavailable`);
+  }
+  const ctx = recs.find((r) => r.extra?.event === 'contextUsageEvent');
+  assert.equal(ctx?.extra?.contextUsagePercentage, 6.01140022277832);
+  const metering = recs.find((r) => r.extra?.event === 'meteringEvent');
+  assert.equal(metering?.extra?.credits, 0.13357169761194032);
+  // the stopReason-only metadataEvent carries nothing: no fake record
+  assert.equal(recs.find((r) => r.extra?.event === 'metadataEvent'), undefined);
+  assert.equal(recs.find((r) => r.extra?.event === 'initial'), undefined);
+}
+
+describe('kiro 2.28.0 turn without tokenUsage (#121)', () => {
+  const hasPython = python3Available();
+
+  it('TS path: contextUsageEvent captured, tokens flagged unavailable, credits kept', () => {
+    assertKiro228(tsRecords());
+  });
+
+  it('python addon: same records as the TS path', { skip: hasPython ? false : 'python3 not available' }, () => {
+    const py = pyLines().map((l) => parseMitmLine(l)).filter((r): r is CanonicalTokenRecord => r !== null);
+    assertKiro228(py);
+    const strip = (r: CanonicalTokenRecord) => ({
+      event: r.extra?.event,
+      ctx: r.extra?.contextUsagePercentage,
+      credits: r.extra?.credits,
+      avail: r.extra?.tokensAvailable,
+    });
+    assert.deepEqual(py.map(strip), tsRecords().map(strip));
+  });
+
+  it('run usage: tokens unavailable, credits and context available', () => {
+    for (const recs of [tsRecords(), ...(hasPython ? [pyLines().map((l) => parseMitmLine(l)!)] : [])]) {
+      // raw parser output AND the adapter carrier the driver actually sees
+      for (const tokens of [recs, recs.map((r) => mitmRecordToUsageEvent(r).mitmRecord)]) {
+        const { usage } = computeUsageAvailability({
+          agent: 'kiro',
+          tokens,
+          totalCost: 0,
+          pricerPriced: false,
+        });
+        assert.equal(usage.tokens.available, false);
+        assert.equal(usage.credits.available, true);
+        assert.equal(usage.credits.value, 0.13357169761194032);
+        assert.equal(usage.context?.available, true);
+        assert.equal(usage.context?.percentage, 6.01140022277832);
+        assert.equal(usage.cost?.tokens, undefined);
+      }
+    }
+  });
+
+  it('control: frames that carry tokenUsage stay real and are not flagged', () => {
+    const payload = Buffer.from(JSON.stringify({ tokenUsage: TOKEN_USAGE }));
+    const [f] = parseEventStreamFrames(buildEventStreamFrame('metadataEvent', payload));
+    const rec = parseMitmLine(JSON.stringify(frameToMitmLine(f)));
+    assert.ok(rec);
+    assert.equal(rec.inputTokens, 1200);
+    assert.notEqual(rec.extra?.tokensAvailable, false);
+    const { usage } = computeUsageAvailability({
+      agent: 'kiro',
+      tokens: [mitmRecordToUsageEvent(rec).mitmRecord],
+      totalCost: 0,
+      pricerPriced: false,
+    });
+    assert.equal(usage.tokens.available, true);
+  });
+
+  it('a lone contextUsageEvent or meteringEvent frame never yields a zero-token record', () => {
+    for (const [t, o] of [KIRO_228_FRAMES[2], KIRO_228_FRAMES[3]]) {
+      const [f] = parseEventStreamFrames(buildEventStreamFrame(t, Buffer.from(JSON.stringify(o))));
+      const line = frameToMitmLine(f);
+      assert.ok(line);
+      assert.equal(line.tokenUsage, null);
+      assert.equal(parseMitmLine(JSON.stringify(line))?.extra?.tokensAvailable, false);
+    }
   });
 });
