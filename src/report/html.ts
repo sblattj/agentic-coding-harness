@@ -384,7 +384,10 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
           ? [
               r.credits === null
                 ? NA_CELL
-                : `<td data-v="${r.credits}" class="num">${fmtInt(r.credits)}</td>`,
+                : r.agent === "copilot"
+                  ? // AIU ("AI credits", $0.01 each) are fractional and a different unit from kiro credits (#23).
+                    `<td data-v="${r.credits}" class="num" title="Copilot AI credits (AIU), not kiro credits">${r.credits.toFixed(2)} AIU</td>`
+                  : `<td data-v="${r.credits}" class="num">${fmtInt(r.credits)}</td>`,
             ]
           : []),
         ...(showContext ? [contextCell(r)] : []),

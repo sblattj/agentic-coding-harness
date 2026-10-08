@@ -98,6 +98,7 @@ const INSTALL_HINT: Record<AgentName, string> = {
   null: "built-in offline adapter; no installation needed",
   kiro: "install kiro-cli or point KIRO_CLI_BIN at it",
   "kiro-ide": "install Kiro IDE (macOS: `brew install --cask kiro`) or pass --kiro-ide-bin",
+  copilot: "install GitHub Copilot CLI (npm i -g @github/copilot) or point COPILOT_CLI_BIN at it",
   prime: "install Prime Agent (curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh; releases: https://github.com/PrimeIntellect-ai/prime-agent/releases/latest) or put `prime-agent` on PATH",
 };
 
@@ -115,6 +116,7 @@ const AUTH_ENV: Record<AgentName, string[]> = {
   kiro: ["KIRO_API_KEY"],
   "kiro-ide": [],
   prime: ["PRIME_API_KEY"],
+  copilot: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
   null: [],
 };
 
@@ -462,6 +464,34 @@ async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv): Promise<Doct
         "run `prime-agent` and use /login, set PRIME_API_KEY, or add a provider with an apiKey to ~/.prime/agent/models.json",
       );
     }
+    case "copilot": {
+      // No token env var (handled above). Copilot CLI then falls back to a
+      // stored `/login`, or to the gh CLI's login (observed, 1.0.93: with no
+      // env token it authenticated as gh's active account). Neither is
+      // checkable offline, and a login can still lack Copilot entitlement
+      // ("Access denied by policy settings", observed), so nothing here is
+      // `verified`.
+      const byok = env.COPILOT_PROVIDER_BASE_URL;
+      if (byok !== undefined && byok !== "") {
+        return mk(
+          "verified",
+          "COPILOT_PROVIDER_BASE_URL set: bring-your-own-key provider, no GitHub login needed (Copilot AIU telemetry is absent under BYOK: run cost is n/a)",
+        );
+      }
+      const ghDir = env.GH_CONFIG_DIR && env.GH_CONFIG_DIR !== "" ? env.GH_CONFIG_DIR : path.join(home, ".config", "gh");
+      if (await exists(path.join(ghDir, "hosts.yml"))) {
+        return mk(
+          "unproven",
+          `no token env var; ${path.join(ghDir, "hosts.yml")} shows a gh CLI login, which copilot falls back to (whether that account has Copilot access is not checkable offline)`,
+          "if runs report 'Access denied by policy settings', the account has no Copilot access: see https://github.com/settings/copilot",
+        );
+      }
+      return mk(
+        "unproven",
+        `no ${names.join(" / ")} in env and no gh CLI login found; a copilot /login stored in the OS keychain is not checkable offline`,
+        "run `copilot login`, set COPILOT_GITHUB_TOKEN, or run `gh auth login`",
+      );
+    }
     case "kiro":
       // Kiro's real auth check is the preflight's `kiro-cli whoami`; this path
       // only runs when the binary is missing.
@@ -493,6 +523,11 @@ function checkModel(agent: AgentName, model: string | undefined): DoctorCheck {
   }
   if (agent === "opencode" && !model.includes("/")) {
     return { ...base, status: "failed", detail: `'${model}' is not provider/model`, hint: "opencode models are 'provider/model', e.g. anthropic/claude-sonnet-4" };
+  }
+  if (agent === "copilot") {
+    // The Copilot service resolves the model; cost is the CLI's AIU telemetry,
+    // never the pricing table, so "not in the table" says nothing here.
+    return { ...base, status: "unproven", detail: `'${model}' is resolved by the Copilot service (not checkable offline); cost comes from AIU telemetry, not the pricing table` };
   }
   const alias = resolveAlias(model);
   const family = MODEL_FAMILY[agent];
@@ -577,6 +612,14 @@ async function scanMcp(agent: AgentName, env: NodeJS.ProcessEnv, cwd: string): P
       await jsonSource(path.join(home, ".gemini", "settings.json"), "mcpServers");
       await jsonSource(path.join(cwd, ".gemini", "settings.json"), "mcpServers");
       break;
+    case "copilot": {
+      // `copilot mcp` servers live in <COPILOT_HOME>/mcp-config.json
+      // (copilot --help: "config from ~/.copilot/mcp-config.json"); the
+      // mcpServers key is UNVERIFIED against a populated file.
+      const ch = env.COPILOT_HOME && env.COPILOT_HOME !== "" ? env.COPILOT_HOME : path.join(home, ".copilot");
+      await jsonSource(path.join(ch, "mcp-config.json"), "mcpServers");
+      break;
+    }
     case "prime":
       // `prime-agent mcp add` writes user servers to settings.json mcpServers
       // (observed, prime-agent 0.9.8).
@@ -1029,7 +1072,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         });
       }
       if (agent === "kiro") return checkKiro({ ...options, env, cwd, versionTimeoutMs });
-      const bin = await checkBinary(agent, AGENT_BINARY[agent] ?? agent, env, cwd, versionTimeoutMs);
+      const bin = await checkBinary(agent, agent === "copilot" && env.COPILOT_CLI_BIN ? env.COPILOT_CLI_BIN : (AGENT_BINARY[agent] ?? agent), env, cwd, versionTimeoutMs);
       return [...bin.checks, await checkAuth(agent, env), checkModel(agent, options.model), await checkMcp(agent, env, cwd)];
     }),
   );

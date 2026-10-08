@@ -42,8 +42,8 @@ in the same fields.
 | surface | number | class | notes |
 |---|---|---|---|
 | RunRecord `totals` | `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens` | reported | Absent when `usage.tokens.available === false` (renders `n/a`). |
-| RunRecord `totals` | `costUsd` | computed, or reported | `computed` is pricer math. `reported` applies only when every priced record was a multi-model record whose slices carried CLI-reported `costUsd` (`totals.costSource`). A blend of both is `computed`. Absent when `usage.usd.available === false`. |
-| RunRecord `totals` | `credits` | reported | Vendor metering (kiro). |
+| RunRecord `totals` | `costUsd` | computed, or reported | `computed` is pricer math. `reported` applies only when every priced record was a multi-model record whose slices carried CLI-reported `costUsd` (`totals.costSource`). A blend of both is `computed`. A vendor-metered record (copilot: the CLI's `totalNanoAiu` at $0.01 per AIU, marked `extra.vendorMetered`) is also `reported` and is never priced from tokens; with no AIU stated it is unpriced, not estimated. Absent when `usage.usd.available === false`. |
+| RunRecord `totals` | `credits` | reported | Vendor metering (kiro; copilot AIU, where 1 AIU = 1 AI credit = $0.01). |
 | RunRecord `totals` | `contextTokens` | estimated | Derived occupancy, not billed tokens. |
 | `ach dash` table | IN / OUT / CACHE | reported | CACHE is read + write. `n/a` when unavailable. |
 | `ach dash` table | COST | per `totals.provenance.costUsd` | `*` when computed. |

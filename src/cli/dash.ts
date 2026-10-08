@@ -19,6 +19,7 @@ import { collectQuota, dashQuotaCell, type QuotaRow } from "../core/quota.ts";
 import { markerFor, PROVENANCE_LEGEND, PROVENANCE_MARKER, provenanceOf } from "../core/provenance.ts";
 
 import { collectQueueViews, fmtDuration, queueSummaryLine, sliceDetail, QUEUE_RECENT_HOURS, type QueueView } from "../core/queue-view.ts";
+import { CreditTotals, creditUnitOfAgent } from "../core/credit-units.ts";
 import { transcriptView } from "./transcript-view.ts";
 
 const REDRAW_MS = 500;
@@ -176,8 +177,8 @@ function footer(visible: RunRecord[]): string {
   let input = 0;
   let output = 0;
   let cost = 0;
-  let credits = 0;
-  let hasCredits = false;
+  // Per-unit: kiro credits and copilot AIU are different units (#23).
+  const credits = new CreditTotals();
   // A sum with any computed part is itself computed (issue #33).
   let costComputed = false;
   for (const r of visible) {
@@ -193,8 +194,7 @@ function footer(visible: RunRecord[]): string {
       if (provenanceOf(r).costUsd === "computed") costComputed = true;
     }
     if (t?.credits !== undefined) {
-      credits += t.credits;
-      hasCredits = true;
+      credits.add(creditUnitOfAgent(r.agent), t.credits);
     }
   }
   const parts = [
@@ -203,7 +203,7 @@ function footer(visible: RunRecord[]): string {
     `out ${compact(output)}`,
     `cost ${fmtCost(cost)}${costComputed ? PROVENANCE_MARKER.computed : ""}`,
   ];
-  if (hasCredits) parts.push(`credits ${fmtCredits(credits)}`);
+  if (!credits.isEmpty) parts.push(credits.format((n) => fmtCredits(n)));
   parts.push("q quit");
   return parts.join("  ");
 }

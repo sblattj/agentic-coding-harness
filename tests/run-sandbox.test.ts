@@ -98,6 +98,7 @@ describe("sandboxDroppedFields (per-adapter honor table)", () => {
   test("claude and gemini honor everything", () => {
     assert.deepEqual(sandboxDroppedFields("claude", all), []);
     assert.deepEqual(sandboxDroppedFields("gemini", all), []);
+    assert.deepEqual(sandboxDroppedFields("copilot", all), []);
   });
   test("codex keeps only permissionMode", () => {
     assert.deepEqual(sandboxDroppedFields("codex", all), ["allowedTools", "disallowedTools", "mcpConfig"]);

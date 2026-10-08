@@ -212,6 +212,33 @@ describe("runDoctor — per-agent checks", () => {
     assert.match(check(badGac, "gemini", "auth").detail, /GOOGLE_APPLICATION_CREDENTIALS/);
   });
 
+  it("copilot: binary honours COPILOT_CLI_BIN; auth via token env or BYOK, else unproven (never verified offline); model is not table-checked; MCP from COPILOT_HOME", async () => {
+    const w = await world();
+    await fakeBin(w, "copilot", 'echo "GitHub Copilot CLI 1.0.93."');
+    const base = { agents: ["copilot" as const], cwd: w.cwd, stateDir: w.state };
+    const none = await runDoctor({ ...base, env: w.env });
+    assert.equal(check(none, "copilot", "binary").status, "verified");
+    assert.match(check(none, "copilot", "version").detail, /1\.0\.93/);
+    assert.equal(check(none, "copilot", "auth").status, "unproven");
+    assert.match(check(none, "copilot", "auth").hint ?? "", /copilot login.*COPILOT_GITHUB_TOKEN.*gh auth login/);
+    const tok = await runDoctor({ ...base, env: { ...w.env, COPILOT_GITHUB_TOKEN: "ghp_SECRET" } });
+    assert.equal(check(tok, "copilot", "auth").status, "verified");
+    assert.doesNotMatch(JSON.stringify(tok), /ghp_SECRET/);
+    const byok = await runDoctor({ ...base, env: { ...w.env, COPILOT_PROVIDER_BASE_URL: "http://127.0.0.1:1/v1" } });
+    assert.match(check(byok, "copilot", "auth").detail, /BYOK/);
+    const withModel = await runDoctor({ ...base, model: "gpt-5.4", env: w.env });
+    assert.equal(check(withModel, "copilot", "model").status, "unproven");
+    assert.match(check(withModel, "copilot", "model").detail, /AIU telemetry, not the pricing table/);
+    const ch = path.join(w.home, "chome");
+    await fs.mkdir(ch, { recursive: true });
+    await fs.writeFile(path.join(ch, "mcp-config.json"), JSON.stringify({ mcpServers: { s: { command: "no-such-mcp-cmd" } } }));
+    const mcp = await runDoctor({ ...base, env: { ...w.env, COPILOT_HOME: ch } });
+    assert.equal(check(mcp, "copilot", "mcp").status, "failed");
+    const missing = await runDoctor({ ...base, env: { ...w.env, PATH: "/nonexistent" } });
+    assert.equal(check(missing, "copilot", "binary").status, "failed");
+    assert.match(check(missing, "copilot", "binary").hint ?? "", /npm i -g @github\/copilot/);
+  });
+
   it("prime: binary is prime-agent; auth via PRIME_API_KEY, auth.json, or a models.json provider apiKey; MCP from settings.json", async () => {
     const w = await world();
     await fakeBin(w, "prime-agent", 'echo "0.9.8"');

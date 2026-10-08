@@ -1,0 +1,21 @@
+{
+  "totalPremiumRequestCost": 0,
+  "totalUserRequests": 1,
+  "totalNanoAiu": 3000000000,
+  "totalApiDurationMs": 1600,
+  "sessionStartTime": "2026-01-02T03:04:05.000Z",
+  "codeChanges": { "linesAdded": 0, "linesRemoved": 0, "filesModifiedCount": 0, "filesModified": [] },
+  "modelMetrics": {
+    "gpt-5": {
+      "requests": { "count": 2, "cost": 0 },
+      "usage": { "inputTokens": 1000, "outputTokens": 50, "cacheReadTokens": 600, "cacheWriteTokens": 0 },
+      "totalNanoAiu": 2500000000
+    },
+    "claude-haiku-4.5": {
+      "requests": { "count": 1, "cost": 0 },
+      "usage": { "inputTokens": 200, "outputTokens": 10, "cacheReadTokens": 0, "cacheWriteTokens": 0 },
+      "totalNanoAiu": 500000000
+    }
+  },
+  "currentModel": "gpt-5"
+}

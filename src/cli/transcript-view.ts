@@ -12,7 +12,7 @@ export async function transcriptView(dir: string, runs: RunRecord[], scan: ScanO
   const claimed = new Set(runs.filter((r) => r.sessionId).map((r) => `${r.agent}\0${r.sessionId}`));
   const rows = new Map<string, RunRecord>();
   const pricer = createPricer();
-  const add = (agent: string, session: string | null, origin: string, ts: string | null, input: number, output: number, read: number, write: number, cost: number | undefined, reported: boolean): void => {
+  const add = (agent: string, session: string | null, origin: string, ts: string | null, input: number, output: number, read: number, write: number, cost: number | undefined, reported: boolean, credits?: number): void => {
     const key = `${agent}\0${session ?? origin}`;
     if (claimed.has(key)) return; // native transcripts mirror harness-owned sessions
     const time = ts ? Date.parse(ts) : NaN;
@@ -32,10 +32,17 @@ export async function transcriptView(dir: string, runs: RunRecord[], scan: ScanO
     r.totals!.inputTokens += input; r.totals!.outputTokens += output;
     r.totals!.cacheReadTokens += read; r.totals!.cacheWriteTokens += write;
     r.totals!.costUsd += cost ?? 0;
+    if (credits !== undefined) r.totals!.credits = (r.totals!.credits ?? 0) + credits;
     if (cost === undefined) r.usage!.usd.available = false;
     if (cost !== undefined) r.totals!.costSource = !reported || r.totals!.costSource === 'computed' ? 'computed' : 'reported';
   };
   for await (const r of scanAll(scan)) {
+    // Vendor-metered (copilot AIU): the stated USD or nothing, never token math.
+    if (r.extra?.vendorMetered === true) {
+      const aiu = typeof r.extra.credits === 'number' ? r.extra.credits : undefined;
+      add(r.agent, r.sessionId, r.sourcePath ?? '', r.timestamp, r.input, r.output, r.cacheRead, r.cacheWrite, r.costUsd, true, aiu);
+      continue;
+    }
     const price = r.model ? pricer.price({ model: r.model, sessionId: r.sessionId, inputTokens: r.input, outputTokens: r.output, cacheReadTokens: r.cacheRead, cacheWriteTokens: r.cacheWrite, ...(r.cacheWrite1h !== undefined ? { cacheWrite1hTokens: r.cacheWrite1h } : {}) }) : NaN;
     add(r.agent, r.sessionId, r.sourcePath ?? '', r.timestamp, r.input, r.output, r.cacheRead, r.cacheWrite, Number.isFinite(price) ? price : undefined, false);
   }
