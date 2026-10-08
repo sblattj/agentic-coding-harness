@@ -560,7 +560,7 @@ describe('ach run / ach stats through the real CLI entrypoint', () => {
     const run = invoke(e, ['run', '--agent', 'copilot', '--model', 'gpt-5', 'list the files'], dirs.cwd);
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /^cost\s+\$0\.0300$/m);
-    assert.match(run.stdout, /^credits\s+3\.00$/m);
+    assert.match(run.stdout, /^AI credits \(copilot\) 3\.00$/m);
     assert.match(run.stdout, /^exit\s+success$/m);
     const ctl = invoke(e, ['run', '--agent', 'null', 'hi'], dirs.cwd);
     assert.equal(ctl.status, 0, ctl.stderr);
