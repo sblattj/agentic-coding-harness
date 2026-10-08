@@ -273,3 +273,25 @@ describe('report availability summary', () => {
     assert.match(html, /st-unavailable/);
   });
 });
+
+describe('classifyUnavailable: auth failure event (claude not logged in)', () => {
+  const msg: AgentEvent = { type: 'message', agent: 'claude', content: 'Not logged in', timestamp: 1 } as AgentEvent;
+  it('an auth_failed error event settles unavailable with the hint, even after activity', () => {
+    const auth = {
+      type: 'error',
+      agent: 'claude',
+      message: 'claude: not logged in for this run. fix it',
+      data: { kind: 'auth_failed' },
+      timestamp: 2,
+    } as AgentEvent;
+    assert.equal(classifyUnavailable({ adapterExit: 'error', events: [msg, auth] }), 'claude: not logged in for this run. fix it');
+  });
+  it('a generic error after activity is still null', () => {
+    const generic = { type: 'error', agent: 'claude', message: 'claude exited 1', data: { exitCode: 1 }, timestamp: 2 } as AgentEvent;
+    assert.equal(classifyUnavailable({ adapterExit: 'error', events: [msg, generic] }), null);
+  });
+  it('an auth_failed event does not override a non-error exit', () => {
+    const auth = { type: 'error', agent: 'claude', message: 'x', data: { kind: 'auth_failed' }, timestamp: 2 } as AgentEvent;
+    assert.equal(classifyUnavailable({ adapterExit: 'success', events: [msg, auth] }), null);
+  });
+});

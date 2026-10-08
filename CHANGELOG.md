@@ -2,6 +2,12 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [Unreleased]
+
+### Fixed
+
+- `ach run --agent claude` on a keychain-login Mac with no `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` ended `error` with no reason. The adapter now recognises the CLI's "Not logged in" stream, emits one error event naming the fix (set a token or API key, or pass `--claude-default-config`), and the run settles `unavailable` like an unauthenticated Cursor run.
+
 ## [0.17.0] - 2026-10-08
 
 ### Added
