@@ -15,3 +15,4 @@ examples/*.work/
 
 # Python bytecode
 __pycache__/
+.*.bun-build
