@@ -216,6 +216,18 @@ function modelSlices(rec: CanonicalTokenRecord): ModelUsageSlice[] | null {
 }
 
 /**
+ * A record whose cost is metered by the vendor in its own units (Copilot CLI:
+ * AIU, converted at a fixed rate by the adapter) and stated on `costUsd`.
+ * `extra.vendorMetered === true` is the producer's claim that token math is
+ * NOT a valid cost for this record: the pricer returns the stated `costUsd`,
+ * or NaN (unpriced) when there is none — it never prices the tokens, even
+ * when the model name is in the price table.
+ */
+export function isVendorMetered(rec: Pick<CanonicalTokenRecord, 'extra'>): boolean {
+  return (rec.extra as { vendorMetered?: unknown } | undefined)?.vendorMetered === true;
+}
+
+/**
  * Which cost paths the default `Pricer.price` takes for this record:
  * `reported` when at least one multi-model slice carries a CLI-reported
  * costUsd (summed verbatim), `computed` when any part is token × price math.
@@ -223,6 +235,7 @@ function modelSlices(rec: CanonicalTokenRecord): ModelUsageSlice[] | null {
  * own top-level costUsd). The driver uses this to label RunRecord totals.
  */
 export function pricedSources(rec: CanonicalTokenRecord): { reported: boolean; computed: boolean } {
+  if (isVendorMetered(rec)) return { reported: true, computed: false };
   const slices = modelSlices(rec);
   if (!slices) return { reported: false, computed: true };
   const reported = slices.some((s) => s.costUsd !== undefined);
@@ -304,6 +317,11 @@ export function createPricer(costMapPath?: string): Pricer {
   return {
     price(rec: CanonicalTokenRecord, opts?: PriceOptions): number {
     const computedOnly = opts?.computedOnly === true;
+    // Vendor-metered record (copilot AIU): the stated cost or nothing. A
+    // computed-only call (pure token math) has no valid answer for it.
+    if (isVendorMetered(rec)) {
+      return !computedOnly && typeof rec.costUsd === 'number' && Number.isFinite(rec.costUsd) ? rec.costUsd : NaN;
+    }
     // Multi-model record (claude runs route sub-agent/probe turns through a
     // second model): the aggregate token counts mix models, so pricing them
     // at any single model's rates is wrong — observed a haiku-labeled

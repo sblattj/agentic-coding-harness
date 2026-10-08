@@ -142,7 +142,7 @@ version: ${VERSION}
 
 usage:
   ach --version | -v        print the harness version
-  ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|null> [--model M] [--resume SID]
+  ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               [--budget-alerts 0.5,0.8,1.0] [--warn-at 0.5,0.8,0.95] [--on-budget abort|warn]
                 (threshold alerts warn once per crossing, never abort; fractions in (0,1];
@@ -180,6 +180,12 @@ usage:
                          [--kiro-ide-user-data-dir DIR] [--kiro-ide-no-new-session]
                          (--kiro-ide-cdp attaches to a running IDE instead of launching one;
                           Autopilot must be on; usd budgets are not enforceable)
+              copilot: GitHub Copilot CLI (copilot, npm @github/copilot; binary override
+                         COPILOT_CLI_BIN). Needs a GitHub login with Copilot access: copilot login,
+                         COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN, or gh auth login.
+                         Cost is the CLI's own AIU telemetry at 1 AIU = $0.01 (shown as USD and as
+                         credits); when the telemetry is missing the cost is n/a, never estimated
+                         from tokens. --resume continues a session (usage is this run's share only)
   ach run --agent custom --template '<cmd {prompt}>' [--prompt-stdin] [--template-shell] [--model M] "<prompt>"
               any CLI via a template; placeholders {prompt} {model} {workspace} (= cwd).
               The template is split argv-style and spawned WITHOUT a shell: the prompt
