@@ -30,7 +30,10 @@ test('public dash projects meter-only taps and transcripts, state-only excludes 
     assert.equal(rows.reduce((n: number, r: any) => n+r.totals.inputTokens, 0), 112);
     assert.deepEqual(JSON.parse(f.run('dash', '--json', '--state-only').stdout), []);
     assert.equal(existsSync(join(f.state, 'runs')), false);
-    const cursor = f.run('run', '--agent', 'cursor', 'hello'); assert.notEqual(cursor.status, 0); assert.match(cursor.stderr, /read-only transcript source/);
+    const amp = f.run('run', '--agent', 'amp', 'hello'); assert.notEqual(amp.status, 0); assert.match(amp.stderr, /read-only transcript source/);
+    // cursor is launchable (#24): with a missing binary the failure is the adapter's, not READ_ONLY_SOURCE.
+    const cursor = spawnSync(process.execPath, [...loaderArgs, cli, 'run', '--agent', 'cursor', 'hello'], { cwd: f.home, env: { ...f.env, CURSOR_API_KEY: '', CURSOR_AGENT_BIN: join(f.home, 'no-such-cursor-agent') }, encoding: 'utf8', timeout: 15000 });
+    assert.notEqual(cursor.status, 0); assert.doesNotMatch(cursor.stderr, /read-only transcript source/); assert.match(cursor.stderr + cursor.stdout, /cursor: could not start/);
   } finally { rmSync(f.home, { recursive: true, force: true }); }
 });
 test('public stats distinguishes transcript and state totals after filtering', () => {
