@@ -29,6 +29,8 @@ const AGENT_DEFAULT_MODELS: Record<(typeof AGENTS)[number], string> = {
   'kiro-ide': 'claude-sonnet-4-5',
   // copilot cost is vendor-metered AIU, never priced from tokens; a priceable stand-in keeps the table total.
   copilot: 'claude-sonnet-5',
+  // cursor: a stated cost is kept as-is; tokens-only runs are priced by the table under the model the CLI reports.
+  cursor: 'claude-sonnet-5',
   null: 'null',
 };
 

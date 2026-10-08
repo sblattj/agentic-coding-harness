@@ -26,6 +26,7 @@ import { GeminiAdapter } from '../adapters/gemini.js';
 import { PrimeAdapter } from '../adapters/prime.js';
 import { KiroIdeAdapter } from '../adapters/kiro-ide.js';
 import { CopilotAdapter } from '../adapters/copilot.js';
+import { CursorAdapter } from '../adapters/cursor.js';
 import { NullAdapter } from '../adapters/null.js';
 import { takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
@@ -183,7 +184,7 @@ export interface Driver {
   installSignalAbort(runId: string, signals?: readonly NodeJS.Signals[]): () => void;
 }
 
-const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'prime', 'kiro-ide', 'copilot', 'null'] as const;
+const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'prime', 'kiro-ide', 'copilot', 'cursor', 'null'] as const;
 
 /** Default signals wired by installSignalAbort (#11). */
 const ABORT_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
@@ -215,6 +216,7 @@ export async function defaultAdapters(): Promise<Record<string, AgentAdapter>> {
     prime: () => new PrimeAdapter(),
     'kiro-ide': () => new KiroIdeAdapter(),
     copilot: () => new CopilotAdapter(),
+    cursor: () => new CursorAdapter(),
     null: () => new NullAdapter(),
   };
   for (const name of ADAPTER_MODULE_NAMES) {

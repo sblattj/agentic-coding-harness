@@ -21,6 +21,7 @@ import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
 import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
 import { PRIME_CAPABILITIES } from "../adapters/prime.ts";
 import { COPILOT_CAPABILITIES } from "../adapters/copilot.ts";
+import { CURSOR_CAPABILITIES } from "../adapters/cursor.ts";
 import { NULL_CAPABILITIES } from "../adapters/null.ts";
 import { describeSandbox, SandboxInputSchema, sandboxDropWarnings } from "../core/sandbox-policy.ts";
 import { checkCwd, filterExtraArgs, type GatewayConfig } from "../serve/gateway.ts";
@@ -182,6 +183,8 @@ function agentInfo(name: string): { command: string | null; capabilities?: Adapt
       return { command: "prime-agent", capabilities: PRIME_CAPABILITIES };
     case "copilot":
       return { command: process.env.COPILOT_CLI_BIN ?? "copilot", capabilities: COPILOT_CAPABILITIES };
+    case "cursor":
+      return { command: process.env.CURSOR_AGENT_BIN ?? "cursor-agent", capabilities: CURSOR_CAPABILITIES };
     case "null":
       return { command: null, capabilities: NULL_CAPABILITIES };
     default:
@@ -240,7 +243,7 @@ export function registerRunTools(
   server.registerTool({
     name: "harness_run",
     description:
-      "Run one harness agent (claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot) with a prompt and optional model/cwd/budget/turn limits and sandbox policy (permissionMode/allowedTools/disallowedTools/mcpConfig; fields the agent cannot honor are dropped and listed in warnings); resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
+      "Run one harness agent (claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor) with a prompt and optional model/cwd/budget/turn limits and sandbox policy (permissionMode/allowedTools/disallowedTools/mcpConfig; fields the agent cannot honor are dropped and listed in warnings); resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
     inputSchema: {
       type: "object",
       properties: {
