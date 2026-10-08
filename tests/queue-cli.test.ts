@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { readQueueState, listQueueStates } from "../src/core/queue-state.ts";
 import { scanRunRecords } from "../src/core/registry.ts";
+import { absoluteExecArgv } from "../src/cli/queue.ts";
 
 // Real processes: `ach queue run` against a temp state dir, with the
 // `custom` agent running `sleep` (a long-lived detached child) and the null
@@ -103,5 +104,17 @@ describe("ach queue (real processes)", () => {
     assert.equal(s.status, 0);
     assert.match(s.stdout, /slow\s+done/);
     assert.match(s.stdout, /fast\s+done/);
+  });
+});
+
+describe("absoluteExecArgv", () => {
+  it("makes bare --import/--require specifiers absolute so a slice cwd cannot break them", () => {
+    const out = absoluteExecArgv(["--import", "tsx", "--require=tsx/cjs", "--import", "./local.mjs", "--no-warnings"], process.cwd());
+    assert.match(out[1]!, /^file:\/\/.*\/tsx\//);
+    assert.match(out[2]!, /^--require=\/.*tsx/);
+    assert.deepEqual(out.slice(3), ["--import", "./local.mjs", "--no-warnings"]);
+  });
+  it("leaves an unresolvable specifier unchanged", () => {
+    assert.deepEqual(absoluteExecArgv(["--import", "no-such-pkg-ach-test"]), ["--import", "no-such-pkg-ach-test"]);
   });
 });
