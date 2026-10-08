@@ -265,7 +265,8 @@ describe("transcript source registry", () => {
     assert.ok(isTranscriptOnlyAgent("goose"));
     assert.ok(isTranscriptOnlyAgent("qwen"));
     assert.ok(!isTranscriptOnlyAgent("claude"));
-    assert.ok(isTranscriptOnlyAgent("cursor"));
+    // cursor keeps its IDE source but is also a launch adapter (core AGENTS), so it is not transcript-ONLY (#24).
+    assert.ok(!isTranscriptOnlyAgent("cursor"));
   });
 
   it("default roots are per-OS paths under the given home", () => {

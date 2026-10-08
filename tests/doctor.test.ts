@@ -239,6 +239,29 @@ describe("runDoctor — per-agent checks", () => {
     assert.match(check(missing, "copilot", "binary").hint ?? "", /npm i -g @github\/copilot/);
   });
 
+  it("cursor: binary honours CURSOR_AGENT_BIN; auth via CURSOR_API_KEY, else unproven (a stored login is not checkable offline); model is not table-checked; MCP from ~/.cursor/mcp.json", async () => {
+    const w = await world();
+    await fakeBin(w, "cursor-agent", 'echo "2026.10.01-stub"');
+    const base = { agents: ["cursor" as const], cwd: w.cwd, stateDir: w.state };
+    const none = await runDoctor({ ...base, env: w.env });
+    assert.equal(check(none, "cursor", "binary").status, "verified");
+    assert.match(check(none, "cursor", "version").detail, /2026\.10\.01/);
+    assert.equal(check(none, "cursor", "auth").status, "unproven");
+    assert.match(check(none, "cursor", "auth").hint ?? "", /cursor-agent login.*CURSOR_API_KEY/);
+    const tok = await runDoctor({ ...base, env: { ...w.env, CURSOR_API_KEY: "key_SECRET" } });
+    assert.equal(check(tok, "cursor", "auth").status, "verified");
+    assert.doesNotMatch(JSON.stringify(tok), /key_SECRET/);
+    const withModel = await runDoctor({ ...base, model: "gpt-5", env: w.env });
+    assert.equal(check(withModel, "cursor", "model").status, "unproven");
+    await fs.mkdir(path.join(w.home, ".cursor"), { recursive: true });
+    await fs.writeFile(path.join(w.home, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { s: { command: "no-such-mcp-cmd" } } }));
+    const mcp = await runDoctor({ ...base, env: w.env });
+    assert.equal(check(mcp, "cursor", "mcp").status, "failed");
+    const missing = await runDoctor({ ...base, env: { ...w.env, PATH: "/nonexistent" } });
+    assert.equal(check(missing, "cursor", "binary").status, "failed");
+    assert.match(check(missing, "cursor", "binary").hint ?? "", /brew install --cask cursor-cli/);
+  });
+
   it("prime: binary is prime-agent; auth via PRIME_API_KEY, auth.json, or a models.json provider apiKey; MCP from settings.json", async () => {
     const w = await world();
     await fakeBin(w, "prime-agent", 'echo "0.9.8"');

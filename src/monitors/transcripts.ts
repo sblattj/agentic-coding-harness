@@ -24,7 +24,7 @@ import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
 import { isPrimeSessionFile, parsePrimeSession } from "./prime.ts";
 import { copilotSessionStateRoot, isCopilotEventsFile, parseCopilotSession } from "./copilot.ts";
-import { TRANSCRIPT_SOURCES, type TranscriptOnlyAgent } from "./transcript-sources.ts";
+import { TRANSCRIPT_SOURCES, type TranscriptSourceAgent } from "./transcript-sources.ts";
 
 // ---------------------------------------------------------------------------
 // Canonical record
@@ -384,7 +384,7 @@ export interface ScanOptions {
   copilotDir?: string;
   /** Root overrides for the read-only sources in TRANSCRIPT_SOURCES
    * (amp/goose/qwen); an omitted agent uses its defaultRoots(homedir()). */
-  sourceRoots?: Partial<Record<TranscriptOnlyAgent, string[]>>;
+  sourceRoots?: Partial<Record<TranscriptSourceAgent, string[]>>;
 }
 
 export async function walkFiles(
@@ -473,7 +473,7 @@ export function transcriptSources(opts: ScanOptions = {}): TranscriptSource[] {
       parse: src.parse,
     })),
     ...TRANSCRIPT_SOURCES.flatMap((src) =>
-      (opts.sourceRoots?.[src.agent as TranscriptOnlyAgent] ?? src.defaultRoots(homedir())).map((dir) => ({ ...src, dir }))),
+      (opts.sourceRoots?.[src.agent as TranscriptSourceAgent] ?? src.defaultRoots(homedir())).map((dir) => ({ ...src, dir }))),
   ];
 }
 
@@ -487,7 +487,7 @@ export function scanOptionsForRoot(root: string): Required<ScanOptions> {
     ...native,
     // #22 read-only sources resolve under the same home-shaped root.
     sourceRoots: Object.fromEntries(TRANSCRIPT_SOURCES.map((src) => [src.agent, src.defaultRoots(root)])) as Partial<
-      Record<TranscriptOnlyAgent, string[]>
+      Record<TranscriptSourceAgent, string[]>
     >,
   };
 }

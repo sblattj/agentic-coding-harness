@@ -88,7 +88,9 @@ const HONORED: Record<string, readonly PolicyField[]> = {
 
 /** Policy fields set on `policy` that `agent` will silently drop. */
 export function sandboxDroppedFields(agent: string, policy: SandboxPolicy, opts: { kiroToolsSet?: boolean } = {}): PolicyField[] {
-  if (agent === "prime") return []; // the adapter's own validateProfile warns
+  // prime and cursor: the adapter's own validateProfile warns (cursor honours
+  // permissionMode only; cursorUnsupportedSandbox names each dropped field).
+  if (agent === "prime" || agent === "cursor") return [];
   const honored = new Set<PolicyField>(HONORED[agent] ?? []);
   if (agent === "kiro" && opts.kiroToolsSet) honored.delete("allowedTools"); // native --kiro-tools wins
   const set: PolicyField[] = [];

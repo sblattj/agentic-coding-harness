@@ -13,7 +13,7 @@
 
 ## Highlights
 
-- **One CLI, six agents (plus the Kiro IDE)** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` adapters (plus `copilot` for GitHub Copilot CLI, and `kiro-ide`, which drives the Kiro desktop app over CDP) normalize six different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
+- **One CLI, six agents (plus the Kiro IDE)** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` adapters (plus `copilot` for GitHub Copilot CLI, `cursor` for the Cursor CLI agent, and `kiro-ide`, which drives the Kiro desktop app over CDP) normalize six different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
 - **Cost math you can defend** — cache-aware accounting verified against each CLI's own ground truth (Claude session JSONL, Kiro session files, provider-reported `costUSD`); LiteLLM pricing, and unpriced models are marked unavailable rather than silently assigned a price.
 - **Live agent runs dashboard** — `ach dash` redraws 2×/s in the terminal; `ach web` (port 8399) grids every run with a browser terminal you can type into — PTY per run, vendored xterm.js, zero CDN.
 - **Terminal replay** — every run renders to an asciinema-format `.cast`, so you can scrub what the agent did and when.
@@ -137,7 +137,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 
 ## What it does: token metering, verified cost tracking, and run artifacts for six agents
 
-- **Seven CLI adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes) — plus `copilot` (GitHub Copilot CLI, below) and `kiro-ide`, which drives the Kiro IDE desktop app over CDP (see "Kiro IDE (desktop app)").
+- **Eight CLI adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes) — plus `copilot` (GitHub Copilot CLI, below), `cursor` (Cursor CLI agent, below) and `kiro-ide`, which drives the Kiro IDE desktop app over CDP (see "Kiro IDE (desktop app)").
 - **Prime Agent** — `ach run --agent prime` drives `prime-agent -p --mode json`; `--model`
   passes through verbatim (`<provider>/<model>`). Usage is counted per assistant message plus
   the subagent (`rlm.spawn`) sessions read from `~/.prime/agent/session-artifacts/`; a
@@ -154,6 +154,18 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   still show: ach never estimates a Copilot cost from token math. `--resume SID` bills only the resumed
   run's share of the cumulative session. See [docs/transcript-adapters.md](docs/transcript-adapters.md)
   for where the telemetry lives and what is verified. No vendor quota source.
+- **Cursor CLI agent** — `ach run --agent cursor` drives `cursor-agent --print --output-format stream-json
+  --trust --force -- <prompt>` (binary override: `CURSOR_AGENT_BIN`; `--resume <chatId>` continues a chat).
+  **Auth prerequisite:** `cursor-agent login` or `CURSOR_API_KEY`. Before launching, ach runs
+  `cursor-agent status`; an unauthenticated CLI fails fast with a specific `cursor: not authenticated`
+  error and the run is recorded `unavailable` (the CLI itself reports "Authentication required" on a run
+  and "Not logged in" on `status`, both with no token spent). Cost follows the usual honesty rule: the
+  CLI's own stated cost when its result carries one (`reported`), else computed from the tokens its
+  result reports (`computed`, with a warning), else `n/a` with a warning: ach never estimates a Cursor
+  cost from text length. `cursor` is also the name of the read-only Cursor IDE monitor, which
+  `ach stats --agent cursor` keeps reading (separate store, no double count). Which usage fields a
+  live CLI really emits is UNVERIFIED; see [docs/transcript-adapters.md](docs/transcript-adapters.md).
+  No vendor quota source.
 - **Unified events, cache-aware tokens** — one `AgentEvent` stream, one canonical token record;
   per-agent double-counting traps handled ([docs/TOKEN-COUNTING.md](docs/TOKEN-COUNTING.md)).
 - **LiteLLM multi-model pricing** — bundled LiteLLM extract, external cost-map override;
@@ -285,7 +297,7 @@ estimates; quota output uses provider-reported values when available.
 ## CLI
 
 ```sh
-ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|null|custom|descriptor> [--model M] [--resume SID]
+ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor|null|custom|descriptor> [--model M] [--resume SID]
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
             [--extra-args 'a b']... [--extra-arg TOKEN]...   # see "Passing extra CLI args"
@@ -424,6 +436,7 @@ tools does not stall on an approval prompt, and you do not hand-assemble `--extr
 | kiro | no | yes (becomes `--kiro-tools`; `--kiro-tools` wins) | no | no (use `--kiro-mcp-server`) |
 | prime | no | yes | no | no |
 | copilot | `dontAsk`/`ask` (all tools pre-approved), `plan`, `interactive`, `autopilot` | yes (`--available-tools`) | yes (`--excluded-tools`) | yes (`--additional-mcp-config`) |
+| cursor | `dontAsk` (`--force`), `plan`, `ask` (`--mode`) | no (permissions live in `~/.cursor/cli-config.json`) | no | no (use `.cursor/mcp.json`) |
 | opencode, kiro-ide, null, `custom`, agents.d | no | no | no | no |
 
 A flag the chosen agent cannot honor prints `[warn] --<flag> is not supported by agent
@@ -471,7 +484,7 @@ own project memory and are not listed.
 | gemini | `GEMINI.md` | up to the git root; none without one |
 | prime | `AGENTS.md`, `CLAUDE.md` | every ancestor, up to `/` (it does not stop at the git root) |
 | copilot | `AGENTS.md`, `CLAUDE.md` | up to the git root; none without one |
-| opencode, kiro, null, custom | none checked | |
+| opencode, kiro, cursor, null, custom | none checked | |
 
 When the list is non-empty, `ach run` prints a `[warn]` block naming every file on
 stderr. The run summary gains an `ancestors` line, and the RunRecord and the `--json`

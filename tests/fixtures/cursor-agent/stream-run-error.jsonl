@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/synthetic","session_id":"__SID__","model":"Claude 4 Sonnet","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"list the files"}]},"session_id":"__SID__"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will list the files."}]},"session_id":"__SID__"}
+{"type":"tool_call","subtype":"started","call_id":"call_1","tool_call":{"readToolCall":{"args":{"path":"README.md"}}},"session_id":"__SID__"}
+{"type":"tool_call","subtype":"completed","call_id":"call_1","tool_call":{"readToolCall":{"args":{"path":"README.md"},"result":{"success":{"content":"# demo","totalLines":1}}}},"session_id":"__SID__"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done: one file."}]},"session_id":"__SID__"}
+{"type":"result","subtype":"error","is_error":true,"duration_ms":4100,"duration_api_ms":3900,"result":"model unavailable","session_id":"__SID__","request_id":"req-synthetic-1"}
