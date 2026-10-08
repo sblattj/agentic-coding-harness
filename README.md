@@ -1,6 +1,6 @@
-# agentic-coding-harness — cost tracking and observability for Claude Code, Codex CLI, Gemini CLI, OpenCode, Kiro, and Prime Agent
+# agentic-coding-harness — cost tracking and observability for Claude Code, Codex CLI, Gemini CLI, OpenCode, Kiro, Prime Agent, and GitHub Copilot CLI
 
-**Agents hide the burn. `ach` runs, watches, and meters Claude Code, Codex CLI, Gemini CLI, OpenCode, Kiro, and Prime Agent from one CLI — agent cost tracking whose numbers verify against each CLI's own records.**
+**Agents hide the burn. `ach` runs, watches, and meters Claude Code, Codex CLI, Gemini CLI, OpenCode, Kiro, Prime Agent, and GitHub Copilot CLI from one CLI — agent cost tracking whose numbers verify against each CLI's own records.**
 
 <p>
   <a href="https://www.npmjs.com/package/agentic-coding-harness"><img alt="npm version" src="https://img.shields.io/npm/v/agentic-coding-harness"></a>
@@ -127,7 +127,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 
 ## What it does: token metering, verified cost tracking, and run artifacts for six agents
 
-- **Six CLI adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes) — plus `copilot` (GitHub Copilot CLI, below) and `kiro-ide`, which drives the Kiro IDE desktop app over CDP (see "Kiro IDE (desktop app)").
+- **Seven CLI adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes) — plus `copilot` (GitHub Copilot CLI, below) and `kiro-ide`, which drives the Kiro IDE desktop app over CDP (see "Kiro IDE (desktop app)").
 - **Prime Agent** — `ach run --agent prime` drives `prime-agent -p --mode json`; `--model`
   passes through verbatim (`<provider>/<model>`). Usage is counted per assistant message plus
   the subagent (`rlm.spawn`) sessions read from `~/.prime/agent/session-artifacts/`; a
@@ -605,7 +605,7 @@ semantics. An optional second argument overrides the wired signals
 (`driver.installSignalAbort(runId, ['SIGHUP'])`).
 
 Exported: `createDriver`, `defaultAdapters`, `runToDirectory`, `ClaudeCodeAdapter`, `KiroAdapter`,
-`CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `PrimeAdapter`, `VERSION`, plus the run-record API —
+`CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `PrimeAdapter`, `CopilotAdapter`, `VERSION`, plus the run-record API —
 `RunRecordSchema`, `CanonicalTokenRecordSchema`, `ExternalRunFeedSchema`, `writeRunRecord`,
 `readRunRecord`, `listRunIds`, `listRunRecords`, `registryDir`, and the `RunRecord` /
 `CanonicalTokenRecord` / `ExternalRunFeed` / `RunSource` types. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
