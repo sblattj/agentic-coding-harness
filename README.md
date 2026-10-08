@@ -294,6 +294,9 @@ ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <
 ach verify-run <runId|runDir> [--json] [--records] [--state-dir <stateDir>]
             # prove the run's hash-chained event log + sealed totals are untouched
             # exit 0 intact, 2 tampered, 3 unsealed (legacy), 4 open (never sealed)
+ach replay vet <pr-number|pr-url> [--repo owner/name] [--clone PATH] [--fallback-clone PATH]... [--json]
+            # read-only vetting of a merged PR as a replay case: merged/approved/trunk/tests/ticket,
+            # merge + base commits in the clone, squash vs merge; exit 0 pass/warn, 40 fail (docs/REPLAY.md)
 ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
@@ -711,7 +714,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 
 - [Cost modes and provenance](docs/PROVENANCE.md), [billing blocks and plan estimates](docs/USAGE-WINDOWS.md), [quota headroom](docs/QUOTA.md).
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
-- [Verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
+- [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
 - [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — adapter pattern (headless / ACP / tmux lanes),
   token taps, canonical token record, ATIF, OTel transport, state manifests, data-flow diagram.
