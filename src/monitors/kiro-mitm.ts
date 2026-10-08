@@ -33,7 +33,9 @@ import type { CanonicalTokenRecord } from '../core/types.js';
 
 export const DEFAULT_MITM_PORT = 8888;
 
-export const METADATA_EVENTS = ['messageMetadataEvent', 'metadataEvent', 'meteringEvent'] as const;
+// contextUsageEvent (kiro-cli 2.28.0) carries contextUsagePercentage on its own
+// frame, apart from metadataEvent/meteringEvent.
+export const METADATA_EVENTS = ['messageMetadataEvent', 'metadataEvent', 'meteringEvent', 'contextUsageEvent'] as const;
 
 export interface TokenUsage {
   uncachedInputTokens: number;
@@ -45,7 +47,8 @@ export interface TokenUsage {
 
 export interface MitmEmitLine {
   event: string;
-  tokenUsage: TokenUsage;
+  /** null when the frame carried no tokenUsage object (tokens unavailable, not zero). */
+  tokenUsage: TokenUsage | null;
   credits: number | string | null;
   contextUsagePercentage: number | null;
   ts: number;
@@ -235,6 +238,14 @@ function toNumOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+const TOKEN_KEYS = ['uncachedInputTokens', 'cacheReadInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens', 'total'];
+
+// A tokenUsage object only counts when it carries at least one token field; a
+// missing/empty one means "tokens unavailable", never zeros.
+function hasTokenUsage(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && TOKEN_KEYS.some((k) => k in (v as object));
+}
+
 function normalizeTokenUsage(tu: Record<string, unknown>): TokenUsage {
   return {
     uncachedInputTokens: toNum(tu.uncachedInputTokens),
@@ -257,12 +268,17 @@ export function frameToMitmLine(frame: EventStreamFrame, ts = Date.now() / 1000,
   }
   if (typeof obj !== 'object' || obj === null) return null;
   const o = obj as Record<string, unknown>;
-  const tu = (o.tokenUsage ?? {}) as Record<string, unknown>;
+  const tokenUsage = hasTokenUsage(o.tokenUsage) ? normalizeTokenUsage(o.tokenUsage) : null;
+  // meteringEvent (2.28.0) states its charge as `usage`
+  const credits = (o.credits ?? o.usage ?? o.units ?? null) as number | string | null;
+  const contextUsagePercentage = toNumOrNull(o.contextUsagePercentage ?? o.contextUsage);
+  // A frame with nothing we track (e.g. metadataEvent {stopReason}) emits nothing.
+  if (tokenUsage === null && credits === null && contextUsagePercentage === null) return null;
   return {
     event: frame.eventType,
-    tokenUsage: normalizeTokenUsage(tu),
-    credits: (o.credits ?? o.units ?? null) as number | string | null,
-    contextUsagePercentage: toNumOrNull(o.contextUsagePercentage ?? o.contextUsage),
+    tokenUsage,
+    credits,
+    contextUsagePercentage,
     ts,
     ...(url ? { url } : {}),
   };
@@ -282,11 +298,15 @@ export function parseMitmLine(line: string, now = Date.now()): CanonicalTokenRec
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
   const o = parsed as Record<string, unknown>;
   if (typeof o.event !== 'string' || o.event.length === 0) return null;
-  const tu = (o.tokenUsage ?? {}) as Record<string, unknown>;
-  const hasTokenFields = ['uncachedInputTokens', 'cacheReadInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens'].some(
-    (k) => k in tu,
-  );
-  if (!hasTokenFields && o.credits === undefined && o.contextUsagePercentage === undefined) return null;
+  const hasTokenFields = hasTokenUsage(o.tokenUsage);
+  const tu = (hasTokenFields ? o.tokenUsage : {}) as Record<string, unknown>;
+  if (
+    !hasTokenFields &&
+    (o.credits === undefined || o.credits === null) &&
+    (o.contextUsagePercentage === undefined || o.contextUsagePercentage === null)
+  ) {
+    return null;
+  }
   const timestamp = typeof o.ts === 'number' && Number.isFinite(o.ts) ? Math.round(o.ts * 1000) : now;
   const extra: Record<string, unknown> = {
     event: o.event,
@@ -295,6 +315,9 @@ export function parseMitmLine(line: string, now = Date.now()): CanonicalTokenRec
     contextUsagePercentage: toNumOrNull(o.contextUsagePercentage ?? o.contextUsage),
     raw: o,
   };
+  // No tokenUsage object on the frame (kiro-cli 2.28.0): the zeros below are
+  // placeholders, not a measured zero-token turn. Reuse the existing veto.
+  if (!hasTokenFields) extra.tokensAvailable = false;
   if (typeof o.url === 'string') extra.url = o.url;
   return {
     agent: 'kiro',
@@ -315,7 +338,7 @@ export function parseMitmLine(line: string, now = Date.now()): CanonicalTokenRec
 export const KIRO_MITM_ADDON = String.raw`"""kiro-mitm addon: AWS EventStream token tap for kiro-cli traffic.
 
 Loaded by mitmdump (-s). Prints one JSON line per metering/metadata frame:
-{"event": ..., "tokenUsage": {...}, "credits": ..., "contextUsagePercentage": ..., "ts": ..., "url": ...}
+{"event": ..., "tokenUsage": {...} or null (frame had none), "credits": ..., "contextUsagePercentage": ..., "ts": ..., "url": ...}
 
 Direct run supports a selftest: python3 <this file> --selftest <hex-encoded frame>
 """
@@ -339,7 +362,20 @@ WATCH_RE = re.compile(
     r"|runtime\.[^/?#]*\.kiro\.dev)"
 )
 
-METADATA_EVENTS = ("messageMetadataEvent", "metadataEvent", "meteringEvent")
+METADATA_EVENTS = (
+    "messageMetadataEvent",
+    "metadataEvent",
+    "meteringEvent",
+    "contextUsageEvent",
+)
+TOKEN_KEYS = (
+    "uncachedInputTokens",
+    "cacheReadInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "totalTokens",
+    "total",
+)
 
 
 def _parse_headers(blob):
@@ -437,20 +473,28 @@ def handle_frames(data, url=""):
             continue
         if not isinstance(obj, dict):
             continue
-        tu = obj.get("tokenUsage") or {}
-        line = {
-            "event": event_type,
-            "tokenUsage": {
+        tu = obj.get("tokenUsage")
+        # No tokenUsage object (kiro-cli 2.28.0): emit null = tokens unavailable,
+        # never zeros that read as a real zero-token turn.
+        if isinstance(tu, dict) and any(k in tu for k in TOKEN_KEYS):
+            token_usage = {
                 "uncachedInputTokens": int(_num(tu.get("uncachedInputTokens"))),
                 "cacheReadInputTokens": int(_num(tu.get("cacheReadInputTokens"))),
                 "cacheWriteInputTokens": int(_num(tu.get("cacheWriteInputTokens"))),
                 "outputTokens": int(_num(tu.get("outputTokens"))),
                 "totalTokens": int(_num(tu.get("totalTokens", tu.get("total")))),
-            },
-            "credits": obj.get("credits", obj.get("usage", obj.get("units"))),
-            "contextUsagePercentage": obj.get(
-                "contextUsagePercentage", obj.get("contextUsage")
-            ),
+            }
+        else:
+            token_usage = None
+        credits = obj.get("credits", obj.get("usage", obj.get("units")))
+        context = obj.get("contextUsagePercentage", obj.get("contextUsage"))
+        if token_usage is None and credits is None and context is None:
+            continue
+        line = {
+            "event": event_type,
+            "tokenUsage": token_usage,
+            "credits": credits,
+            "contextUsagePercentage": context,
             "ts": time.time(),
         }
         if url:

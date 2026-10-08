@@ -122,7 +122,7 @@ headless run plus kiro's own session store for two probe runs. Fixtures:
 
 | Source | Token fields it exposes | Value observed |
 |---|---|---|
-| MITM tap — `metadataEvent` / `meteringEvent` frames | `tokenUsage.{uncachedInputTokens,cacheReadInputTokens,cacheWriteInputTokens,outputTokens,totalTokens}` | **all `0`** |
+| MITM tap — `metadataEvent` / `meteringEvent` frames | `tokenUsage.{uncachedInputTokens,cacheReadInputTokens,cacheWriteInputTokens,outputTokens,totalTokens}` | **all `0`** on 2.21.x; on 2.28.0 no frame carries `tokenUsage` at all (tap records get `extra.tokensAvailable = false`; context % arrives on `contextUsageEvent`, credits on `meteringEvent.usage`) |
 | Session store — `session_state.conversation_metadata.user_turn_metadatas[i]` | `input_token_count`, `output_token_count`, `cache_read_input_token_count`, `cache_write_input_token_count` | **all `0`** |
 | Stream / ACP `metadata` frames | *(no token field at all)* | — |
 
