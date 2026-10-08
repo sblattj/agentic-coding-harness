@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { countsAsTurn } from "../core/driver.ts";
 import { HarnessError, type RunResult, type SandboxPolicy, SandboxPolicySchema } from "../core/types.ts";
+import { describeSandbox } from "../core/sandbox-policy.ts";
 import { VERSION } from "../version.ts";
 
 /** Raw option values parseArgs hands over (all optional, tool lists repeatable). */
@@ -92,72 +93,10 @@ export function sandboxFromFlags(v: SandboxFlagValues): SandboxPolicy | undefine
   return SandboxPolicySchema.parse(policy) as SandboxPolicy;
 }
 
-type PolicyField = "permissionMode" | "allowedTools" | "disallowedTools" | "mcpConfig";
-
-/**
- * Which CLI-exposed policy fields each launchable agent honors (read from the
- * adapters, see SandboxPolicy doc in src/core/types.ts):
- * claude + gemini all four (claudeSandboxArgs, geminiSandboxArgs); codex
- * permissionMode only (codexSandboxArgs); kiro allowedTools only, folded into
- * kiro.tools (applySandboxToKiroSpec); prime allowedTools only (primeSandboxArgs;
- * prime also warns for the rest itself through validateProfile, so it is
- * skipped here to avoid a duplicate line); opencode, kiro-ide, null and
- * custom/agents.d agents honor none of the four (only scrubEnv, which these
- * flags do not set).
- */
-const HONORED: Record<string, readonly PolicyField[]> = {
-  claude: ["permissionMode", "allowedTools", "disallowedTools", "mcpConfig"],
-  gemini: ["permissionMode", "allowedTools", "disallowedTools", "mcpConfig"],
-  codex: ["permissionMode"],
-  kiro: ["allowedTools"],
-};
-
-/** Policy fields set on `policy` that `agent` will silently drop. */
-export function sandboxDroppedFields(agent: string, policy: SandboxPolicy, opts: { kiroToolsSet?: boolean } = {}): PolicyField[] {
-  if (agent === "prime") return []; // the adapter's own validateProfile warns
-  const honored = new Set<PolicyField>(HONORED[agent] ?? []);
-  if (agent === "kiro" && opts.kiroToolsSet) honored.delete("allowedTools"); // native --kiro-tools wins
-  const set: PolicyField[] = [];
-  if (policy.permissionMode !== undefined) set.push("permissionMode");
-  if (policy.allowedTools?.length) set.push("allowedTools");
-  if (policy.disallowedTools?.length) set.push("disallowedTools");
-  if (policy.mcpConfig !== undefined) set.push("mcpConfig");
-  return set.filter((f) => !honored.has(f));
-}
-
-/** One stderr warning per dropped field, naming the field and the agent. */
-export function sandboxDropWarnings(agent: string, policy: SandboxPolicy, opts: { kiroToolsSet?: boolean } = {}): string[] {
-  return sandboxDroppedFields(agent, policy, opts).map(
-    (f) => `--${flagFor(f)} is not supported by agent '${agent}' and was dropped (sandbox.${f} has no effect; use --extra-arg for the agent's native flag)`,
-  );
-}
-
-function flagFor(f: PolicyField): string {
-  return f === "permissionMode" ? "permission-mode" : f === "allowedTools" ? "allowed-tools" : f === "disallowedTools" ? "disallowed-tools" : "mcp-config";
-}
-
-/**
- * Display/commit-safe form of a policy: inline MCP JSON may carry tokens in
- * server env/headers, so it is replaced by a size marker; a path stays.
- */
-export function describeSandbox(policy: SandboxPolicy): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  if (policy.permissionMode !== undefined) out.permissionMode = policy.permissionMode;
-  if (policy.allowedTools !== undefined) out.allowedTools = policy.allowedTools;
-  if (policy.disallowedTools !== undefined) out.disallowedTools = policy.disallowedTools;
-  if (policy.mcpConfig !== undefined) {
-    out.mcpConfig = typeof policy.mcpConfig === "string" ? policy.mcpConfig : `<inline JSON, ${JSON.stringify(policy.mcpConfig).length} bytes>`;
-  }
-  if (policy.scrubEnv !== undefined) out.scrubEnv = policy.scrubEnv;
-  return out;
-}
-
-/** Run-header line, e.g. `sandbox: permissionMode=bypassPermissions allowedTools=Bash,Read`. */
-export function formatSandboxHeader(policy: SandboxPolicy): string {
-  const d = describeSandbox(policy);
-  const parts = Object.entries(d).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : String(v)}`);
-  return `[sandbox] ${parts.join(" ")}`;
-}
+// The dropped-field table, warning text and redacted display form are shared with
+// the matrix and MCP surfaces (src/core/sandbox-policy.ts); re-exported here so
+// `ach run` callers and tests keep their import path.
+export { describeSandbox, formatSandboxHeader, sandboxDroppedFields, sandboxDropWarnings } from "../core/sandbox-policy.ts";
 
 // ------------------------------------------------------------ evidence sidecar
 

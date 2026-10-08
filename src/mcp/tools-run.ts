@@ -21,6 +21,7 @@ import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
 import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
 import { PRIME_CAPABILITIES } from "../adapters/prime.ts";
 import { NULL_CAPABILITIES } from "../adapters/null.ts";
+import { describeSandbox, SandboxInputSchema, sandboxDropWarnings } from "../core/sandbox-policy.ts";
 import { checkCwd, filterExtraArgs, type GatewayConfig } from "../serve/gateway.ts";
 import { HermeticSyncError, hermeticSyncErrorInfo, runHermetic, type HermeticSyncErrorInfo } from "../core/hermetic.ts";
 import type { RunResult } from "../core/types.ts";
@@ -49,7 +50,32 @@ export const RunArgsSchema = z.object({
   kiroIde: KiroIdeConfigSchema.optional(),
   /** #106: run in a hermetic temp copy of cwd (src/core/hermetic.ts). */
   hermetic: z.boolean().optional(),
+  /** #13: typed sandbox policy, the same four fields as the `ach run` flags. */
+  sandbox: SandboxInputSchema.optional(),
 });
+
+/** JSON Schema for the `sandbox` tool param (#13) — shared by harness_run and harness_run_async. */
+export const SANDBOX_INPUT_SCHEMA = {
+  type: "object",
+  description:
+    "Typed sandbox/permission policy, the same four fields as `ach run --permission-mode/--allowed-tools/--disallowed-tools/--mcp-config`. A field the chosen agent cannot honor is dropped and reported in the result's `warnings` (claude and gemini take all four, codex permissionMode only, kiro and prime allowedTools only).",
+  additionalProperties: false,
+  properties: {
+    permissionMode: { type: "string", description: "'ask' and 'dontAsk' are portable; any other value is the agent's native mode (claude bypassPermissions/acceptEdits, codex on-failure, gemini yolo)" },
+    allowedTools: { type: "array", items: { type: "string" }, description: "Tool allowlist, one tool name or pattern per item (e.g. 'Bash', 'Bash(git log:*)')" },
+    disallowedTools: { type: "array", items: { type: "string" }, description: "Tool denylist, one tool name or pattern per item" },
+    mcpConfig: {
+      description: "MCP server config: a file path, or an inline object (a string starting with '{' is parsed as inline JSON). Inline JSON is redacted in the echoed `sandbox`.",
+      oneOf: [{ type: "string" }, { type: "object", additionalProperties: true }],
+    },
+  },
+} as const;
+
+/** Result additions for a call that set a sandbox: dropped-field warnings plus the redacted policy echo. */
+export function sandboxResultParts(agent: string, sandbox: z.infer<typeof RunArgsSchema>["sandbox"]): { warnings: string[]; echo?: Record<string, unknown> } {
+  if (sandbox === undefined) return { warnings: [] };
+  return { warnings: sandboxDropWarnings(agent, sandbox, { style: "field" }), echo: describeSandbox(sandbox) };
+}
 
 /** JSON Schema for the `kiroIde` tool param (issue #110) — shared by harness_run
  *  and harness_run_async. */
@@ -185,6 +211,7 @@ export function toRunSpec(
     ...(a.extraArgs !== undefined ? { extraArgs: extraArgsAllowed } : {}),
     ...(a.kiro !== undefined ? { kiro: a.kiro } : {}),
     ...(a.kiroIde !== undefined ? { kiroIde: a.kiroIde } : {}),
+    ...(a.sandbox !== undefined ? { sandbox: a.sandbox } : {}),
   };
 }
 
@@ -210,7 +237,7 @@ export function registerRunTools(
   server.registerTool({
     name: "harness_run",
     description:
-      "Run one harness agent (claude|opencode|kiro|codex|gemini|prime|kiro-ide) with a prompt and optional model/cwd/budget/turn limits; resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
+      "Run one harness agent (claude|opencode|kiro|codex|gemini|prime|kiro-ide) with a prompt and optional model/cwd/budget/turn limits and sandbox policy (permissionMode/allowedTools/disallowedTools/mcpConfig; fields the agent cannot honor are dropped and listed in warnings); resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
     inputSchema: {
       type: "object",
       properties: {
@@ -225,6 +252,7 @@ export function registerRunTools(
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
         kiro: KIRO_INPUT_SCHEMA,
         kiroIde: KIRO_IDE_INPUT_SCHEMA,
+        sandbox: SANDBOX_INPUT_SCHEMA,
         hermetic: {
           type: "boolean",
           description:
@@ -276,13 +304,16 @@ export function registerRunTools(
         result = err.result;
         syncError = hermeticSyncErrorInfo(err);
       }
+      const sb = sandboxResultParts(a.agent, a.sandbox);
       const extraWarnings = [
+        ...sb.warnings,
         ...(result.ancestorInstructions !== undefined && result.ancestorInstructions.length > 0
           ? [ancestorWarningLine(a.agent, result.ancestorInstructions)]
           : []),
         ...(strippedWarning !== undefined ? [strippedWarning] : []),
       ];
-      const out = extraWarnings.length === 0 ? result : { ...result, warnings: [...result.warnings, ...extraWarnings] };
+      const withWarnings = extraWarnings.length === 0 ? result : { ...result, warnings: [...result.warnings, ...extraWarnings] };
+      const out = sb.echo !== undefined ? { ...withWarnings, sandbox: sb.echo } : withWarnings;
       return syncError === undefined ? out : { ...out, error: syncError };
     },
   });

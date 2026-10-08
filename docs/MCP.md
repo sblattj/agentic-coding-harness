@@ -82,6 +82,7 @@ Run one task on one agent. Each run is persisted to `<stateDir>/runs/<runId>.jso
 | maxTurns | number | no | turn cap |
 | extraArgs | string[] | no | passthrough CLI flags |
 | kiro | object | no | Kiro-only config (see below); ignored by other agents |
+| sandbox | object | no | typed permission policy (see below) |
 
 `kiro` accepts: `transport` (`headless` \| `acp`), `agent` (native agent / ACP
 mode id), `engine` (`v1` \| `v2` \| `v3`), `effort` (`low` \| `medium` \|
@@ -92,6 +93,18 @@ to `session/new`), `startupMs` (number, default 60000) and `requireModelAck`
 (boolean). Unknown keys are rejected by name.
 
 The same `kiro` object is accepted by `harness_run_async` (docs/TOOLHIVE.md).
+
+`sandbox` carries the same four fields as the `ach run` flags `--permission-mode`,
+`--allowed-tools`, `--disallowed-tools` and `--mcp-config`: `permissionMode` (string; `ask` and
+`dontAsk` are portable, anything else is the agent's native mode), `allowedTools` (string[]),
+`disallowedTools` (string[]) and `mcpConfig` (a file path, or an inline object; a string starting
+with `{` is parsed as inline JSON). Unknown keys, empty lists and an empty `permissionMode` are
+rejected as `invalid harness_run arguments: bad field 'sandbox...'`. The support table is in the
+README ("Permission and sandbox flags"): a field the agent cannot honor is dropped, and the result's
+`warnings` array gains `sandbox.<field> is not supported by agent '<agent>' and was dropped ...`
+(no stderr output). When `sandbox` is set the result also echoes it as `sandbox`, with inline MCP
+JSON replaced by `<inline JSON, N bytes>` since it can carry credentials. `harness_run_async`
+accepts the same object and returns the warnings and the echo in its start response.
 
 Returns the run summary: agent, status, tokens, cost, duration, run/trial dir.
 
