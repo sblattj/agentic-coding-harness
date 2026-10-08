@@ -55,6 +55,16 @@ ach --version
 | Standalone | [GitHub release binaries and SHA256SUMS](https://github.com/sblattj/agentic-coding-harness/releases/latest) | macOS or Linux, arm64 or x64; no Node/Bun runtime |
 | Python wrapper | `uv tool install agentic-coding-harness` or `pipx install agentic-coding-harness` | Python 3.9+ and Node.js 18.19+ or Bun; PyPI currently provides the older 0.7.4 release |
 
+From a source checkout (fresh clone or worktree), `ach` is not on `PATH` until you build it:
+
+```sh
+bun install && bun run build:node && bun link
+```
+
+`package.json` declares `bin.ach = dist/cli/ach.js`, and `dist/` is a gitignored build
+output that `build:node` writes. Without the build there is nothing for `bun link` to
+point at. To skip the build, run the source entry directly: `bun run src/cli/ach.ts run ...`.
+
 Standalone binaries embed the web dashboard. The interactive browser terminal requires
 `bun-pty` and is unavailable in standalone builds; CLI runs, stats, terminal dashboard,
 and the rest of the web dashboard remain available. See [packaging](docs/PACKAGING.md)
@@ -268,6 +278,8 @@ ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|null|custom|de
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
             [--extra-args 'a b']... [--extra-arg TOKEN]...   # see "Passing extra CLI args"
+            [--permission-mode MODE] [--allowed-tools LIST]... [--disallowed-tools LIST]...
+            [--mcp-config PATH|JSON] [--evidence-dir DIR]   # see "Permission and sandbox flags"
             kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
                        [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                        [--kiro-startup-ms N] [--kiro-require-model-ack] [--kiro-mcp-server '<json>']...
@@ -373,6 +385,54 @@ ach run --agent codex \
 ```
 
 The MCP tools take `extraArgs` as an array, which is already verbatim.
+
+### Permission and sandbox flags: `--permission-mode` / `--allowed-tools` / `--disallowed-tools` / `--mcp-config`
+
+These four flags build the typed `SandboxPolicy` (see `src/core/types.ts`) that each adapter
+translates into its own CLI flags, so a headless child that needs Bash, file writes or MCP
+tools does not stall on an approval prompt, and you do not hand-assemble `--extra-args`.
+
+- `--permission-mode <mode>`: `ask` and `dontAsk` are portable; any other value passes
+  through as the agent's native mode (claude `bypassPermissions` / `acceptEdits`, codex
+  `on-failure`, gemini `yolo`).
+- `--allowed-tools <list>` / `--disallowed-tools <list>`: repeatable AND comma-separated;
+  occurrences concatenate. Commas inside parentheses are kept, so `'Bash(git log:*)'` is one tool.
+- `--mcp-config <path|json>`: given once. A value starting with `{` is parsed as inline JSON,
+  anything else is a file path passed verbatim.
+
+| Agent | `--permission-mode` | `--allowed-tools` | `--disallowed-tools` | `--mcp-config` |
+|---|---|---|---|---|
+| claude | yes | yes | yes | yes |
+| gemini | yes | yes | yes | yes |
+| codex | yes | no | no | no |
+| kiro | no | yes (becomes `--kiro-tools`; `--kiro-tools` wins) | no | no (use `--kiro-mcp-server`) |
+| prime | no | yes | no | no |
+| opencode, kiro-ide, null, `custom`, agents.d | no | no | no | no |
+
+A flag the chosen agent cannot honor prints `[warn] --<flag> is not supported by agent
+'<agent>' and was dropped` and the run continues (`--extra-arg` stays the escape hatch).
+The resolved policy is printed to stderr as a `[sandbox] permissionMode=... allowedTools=...`
+header line, and `--json` output gains a `sandbox` object; inline MCP JSON is shown as
+`<inline JSON, N bytes>` because it can carry credentials.
+
+```sh
+ach run --agent claude --permission-mode bypassPermissions \
+  --allowed-tools 'Bash,Read,Edit' --mcp-config ./mcp.json "prompt"
+```
+
+The same policy is available on the other two surfaces. `ach trial --matrix` plans take an
+optional `sandbox` object at plan level, per agent entry and per task (see
+[docs/TRIALS.md](docs/TRIALS.md#sandbox-policy-in-a-plan)); the MCP `harness_run` and
+`harness_run_async` tools take a `sandbox` input object (see [docs/MCP.md](docs/MCP.md)). Both
+use the support table above and report a dropped field as a warning.
+
+### Metrics-only evidence: `--evidence-dir`
+
+`ach run --evidence-dir <dir>` writes `<dir>/metrics.json` (`metrics-<i>.json` per child with
+`--repeat`) after the run: agent, model, exit status, wall seconds, turns, cost with
+provenance, token totals, the sandbox policy, `ach` version and timestamps. It holds no
+prompt, response, tool input or file content, so a trial can commit it while keeping the raw
+stream private. See `docs/TRIALS.md`, "Evidence hygiene".
 
 ### Ancestor instruction files and `--hermetic`
 
@@ -734,6 +794,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 ## Develop
 
 ```sh
+bun install && bun run build:node && bun link   # put `ach` on PATH from a checkout (dist/ is built, not tracked)
 npm run typecheck   # tsc --noEmit
 npm test            # tsx --test (canonical runner)
 bun test            # same suite under bun

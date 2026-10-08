@@ -304,6 +304,37 @@ them from the summary, the ledger or the report.
 
 Cells run one at a time, in agent → task → model → trial order.
 
+### Sandbox policy in a plan
+
+A plan can carry the same typed policy as the `ach run` sandbox flags (README: "Permission and
+sandbox flags"): an optional `sandbox` object with `permissionMode`, `allowedTools`,
+`disallowedTools` and `mcpConfig` (a path, or an inline object). It is accepted in three places:
+
+```json
+{
+  "experiment": "sandboxed-sweep",
+  "agents": ["claude", { "agent": "codex", "sandbox": { "permissionMode": "on-failure" } }],
+  "sandbox": { "permissionMode": "acceptEdits", "allowedTools": ["Bash", "Read", "Edit"] },
+  "tasks": [
+    { "id": "fix-bug", "prompt": "Fix the failing test", "verify": "npm test" },
+    { "id": "risky", "prompt": "...", "sandbox": { "permissionMode": "bypassPermissions" } }
+  ]
+}
+```
+
+- Precedence, narrowest wins: task `sandbox` over agent-entry `sandbox` over plan `sandbox`. The
+  merge is per field, so the `risky` cell above keeps `allowedTools` from the plan and takes its
+  own `permissionMode`.
+- Each object is validated with `SandboxPolicySchema` (unknown keys, empty lists and an empty
+  `permissionMode` are rejected when the plan loads; `scrubEnv` is not exposed). A string
+  `mcpConfig` starting with `{` is parsed as inline JSON, as with `--mcp-config`.
+- A field the cell's agent cannot honor is dropped, and the runner prints one
+  `[warn] sandbox.<field> is not supported by agent '<agent>' and was dropped ... (first in cell <cellId>)`
+  line per agent and field (stderr; also under `--dry-run`, and in `--json` as `sandboxWarnings`).
+  The support table is the one in the README.
+- The resolved policy is recorded as `sandbox` on every ledger row and on every `--dry-run --json`
+  cell. Inline MCP JSON appears as `<inline JSON, N bytes>` because it can carry credentials.
+
 ### Plan schema
 
 The zod source of truth is `MatrixPlanSchema` in `src/cli/trial-matrix.ts`.
@@ -312,22 +343,23 @@ Unknown keys are rejected.
 | Key | Type | Meaning |
 |---|---|---|
 | `experiment` | string, required | compare-view experiment label on every run |
-| `agents` | `(string \| {agent, models?})[]`, ≥1 | built-in or agents.d names. A per-agent `models` list replaces the plan-level list for that agent. `custom` is rejected because it needs `--template`. |
+| `agents` | `(string \| {agent, models?, sandbox?})[]`, ≥1 | built-in or agents.d names. A per-agent `models` list replaces the plan-level list for that agent. `custom` is rejected because it needs `--template`. |
 | `tasks` | task[], ≥1 | inline task or task directory (below) |
 | `models` | string[]? | crossed with every agent that has no own list. Omitted means the adapter default (`default` in the cellId). A literal `"default"` also means no `--model`. |
 | `trials` | int ≥1, default 1 | fresh sessions per cell |
 | `variant` | string, default `{agent}:{model}` | template; placeholders `{agent}` `{model}` `{task}` |
 | `budget` | `{usd?, maxTurns?, wallMs?, idleMs?}` | per-run caps, as the `ach run` flags |
+| `sandbox` | `{permissionMode?, allowedTools?, disallowedTools?, mcpConfig?}` | default sandbox policy for every cell; agent entries and tasks may override it (see "Sandbox policy in a plan") |
 | `cwd` | string? | default agent cwd for shared-workspace tasks, relative to the plan's directory (default: that directory) |
 | `setupTimeoutMs` / `verifyTimeoutMs` | int? | plan-level defaults (300000 / 120000) |
 
-**Inline task:** `{id, prompt, cwd?, setup?, verify?, workspace?, setupTimeoutMs?, verifyTimeoutMs?}`.
+**Inline task:** `{id, prompt, cwd?, setup?, verify?, workspace?, setupTimeoutMs?, verifyTimeoutMs?, sandbox?}`.
 - `id` must match `[A-Za-z0-9._-]+`, with no `:` because `:` separates the
   parts of a cellId.
 - `setup` and `verify` are shell commands (`/bin/sh -c`).
 - `workspace` defaults to `"shared"`: the agent runs in `cwd`.
 
-**Task directory:** `{dir, id?, workspace?, setupTimeoutMs?, verifyTimeoutMs?}`,
+**Task directory:** `{dir, id?, workspace?, setupTimeoutMs?, verifyTimeoutMs?, sandbox?}`,
 with `dir` relative to the plan's directory:
 
 | File | Required | Use |
@@ -394,6 +426,50 @@ cell then measures your instructions, not the agent. This matters for trials bec
 
 See the README section "Ancestor instruction files and `--hermetic`" for the copy,
 sync and cleanup rules.
+
+## Writing a trial: entry point and evidence hygiene (#13)
+
+**Invoke the source entry in `trials/*/run.sh`.** `ach` is only on `PATH` after
+`bun run build:node && bun link` (`bin.ach` points at the gitignored `dist/cli/ach.js`), which
+a fresh clone or worktree has not done. A trial script that calls `bun run src/cli/ach.ts`
+works with no build:
+
+```sh
+#!/bin/sh
+ACH="bun run $(dirname "$0")/../../src/cli/ach.ts"   # no build step needed
+$ACH run --agent claude --permission-mode bypassPermissions \
+  --evidence-dir "$(dirname "$0")/evidence/sidecar-b" "$(cat "$(dirname "$0")/prompt.md")"
+```
+
+**Evidence hygiene.** The raw stream (`claude.json` from `--json`, `*.stderr`) holds
+everything the child read, including any private corpus it consulted. Commit only
+metrics. `ach run --evidence-dir <dir>` writes a metrics-only sidecar `metrics.json`
+(`metrics-<i>.json` under `--repeat`):
+
+```json
+{"schema":"ach.metrics/1","achVersion":"x.y.z","agent":"claude","model":"...","runId":"...",
+ "exitStatus":"success","wallSeconds":412.3,"turns":57,
+ "cost":{"usd":6.1,"provenance":"usd:pricer; tokens:native"},
+ "tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0},
+ "sandbox":{"permissionMode":"bypassPermissions"},"verify":null,
+ "startedAt":"...","endedAt":"..."}
+```
+
+It contains no prompt text, responses, tool inputs, file contents or warnings, and inline
+`--mcp-config` JSON is reduced to a byte count. A test asserts the prompt string does not
+occur in it. Convention: **commit `metrics*.json` (and your scoring output such as `drift-*`),
+gitignore the raw streams.** Sample `trials/<name>/.gitignore`:
+
+```gitignore
+# raw streams: contain everything the child read
+claude.json
+*.stderr
+evidence/arm-*/
+# evidence/sidecar-*/metrics.json and evidence/drift-* are not matched, so they stay tracked
+```
+
+Keep the sidecar directory outside the ignored raw-stream directories (`evidence/sidecar-b/`
+next to `evidence/arm-b/`), so `git add` picks up `metrics.json` and nothing else.
 
 ## `ach trial --suite core`: the bundled task suite
 

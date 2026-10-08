@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "./contract.ts";
-import { KIRO_IDE_INPUT_SCHEMA, KIRO_INPUT_SCHEMA, RunArgsSchema } from "./tools-run.ts";
+import { KIRO_IDE_INPUT_SCHEMA, KIRO_INPUT_SCHEMA, RunArgsSchema, SANDBOX_INPUT_SCHEMA, sandboxResultParts } from "./tools-run.ts";
 import type { RunSpec as CoreRunSpec } from "../core/types.ts";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { unchainedLines } from "../core/hash-chain.ts";
@@ -81,6 +81,7 @@ export function toSpec(a: RunArgs, runId: string, extraArgsOverride?: string[]):
     ...(extraArgs !== undefined ? { extraArgs } : {}),
     ...(a.kiro !== undefined ? { kiro: a.kiro } : {}),
     ...(a.kiroIde !== undefined ? { kiroIde: a.kiroIde } : {}),
+    ...(a.sandbox !== undefined ? { sandbox: a.sandbox } : {}),
   };
 }
 
@@ -135,6 +136,7 @@ export function registerJobTools(
         extraArgs: { type: "array", items: { type: "string" }, description: "Extra CLI args appended verbatim" },
         kiro: KIRO_INPUT_SCHEMA,
         kiroIde: KIRO_IDE_INPUT_SCHEMA,
+        sandbox: SANDBOX_INPUT_SCHEMA,
         hermetic: {
           type: "boolean",
           description:
@@ -158,6 +160,7 @@ export function registerJobTools(
         extra.stripped.length > 0
           ? `gateway: stripped extraArgs not in allowlist: ${extra.stripped.map((s) => `'${s}'`).join(", ")}`
           : undefined;
+      const sb = sandboxResultParts(a.agent, a.sandbox);
       const runId = randomUUID();
       const driver = createDriver({
         adapters: await defaultAdapters(),
@@ -196,7 +199,8 @@ export function registerJobTools(
         sessionId: null,
         started: true,
         transcriptPath: path.join(registryDir(opts.stateDir), `${runId}.json`),
-        ...(strippedWarning !== undefined ? { warnings: [strippedWarning] } : {}),
+        ...(sb.warnings.length > 0 || strippedWarning !== undefined ? { warnings: [...sb.warnings, ...(strippedWarning !== undefined ? [strippedWarning] : [])] } : {}),
+        ...(sb.echo !== undefined ? { sandbox: sb.echo } : {}),
       };
     },
   });

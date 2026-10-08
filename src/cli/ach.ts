@@ -26,7 +26,16 @@ import {
   type KiroIdeConfig,
   type RunResult,
   type RunSpec,
+  type SandboxPolicy,
 } from "../core/types.ts";
+import {
+  buildRunMetrics,
+  describeSandbox,
+  formatSandboxHeader,
+  sandboxDropWarnings,
+  sandboxFromFlags,
+  writeMetricsSidecar,
+} from "./run-sandbox.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, type VerifyResult } from "../core/verify.ts";
 import { findAncestorInstructions, formatAncestorWarning } from "../core/ancestor-instructions.ts";
 import { formatHermeticLine, HermeticSyncError, hermeticSyncErrorInfo, type HermeticWorkspace } from "../core/hermetic.ts";
@@ -157,6 +166,19 @@ usage:
                            --extra-arg is ONE verbatim argv token, never split, so a value with
                            spaces works. e.g. route codex to a custom provider:
                            --extra-arg -c --extra-arg 'model_provider=ferry')
+              [--permission-mode <mode>] [--allowed-tools <list>]... [--disallowed-tools <list>]...
+              [--mcp-config <path|json>]  (typed sandbox policy; <mode> is ask|dontAsk or an agent-native
+                           value, e.g. claude bypassPermissions/acceptEdits. Tool lists are repeatable
+                           and comma-separated (commas inside parentheses are kept: 'Bash(git log:*)').
+                           --mcp-config is a file path, or inline JSON when it starts with '{'.
+                           Honored by: claude all four; gemini all four; codex --permission-mode only;
+                           kiro --allowed-tools only; prime --allowed-tools only. Any other field/agent
+                           prints a [warn] naming the dropped flag. The resolved policy is printed as a
+                           '[sandbox]' header line and added to --json output)
+              [--evidence-dir <dir>]  (after the run, write <dir>/metrics.json (repeat: metrics-<i>.json):
+                           agent, model, exit status, wall seconds, turns, cost + provenance, token
+                           totals, sandbox policy, ach version, timestamps. NO prompt, responses, tool
+                           inputs or file contents, so it is safe to commit; see docs/TRIALS.md)
               [--hermetic]  (run in a temp copy of cwd whose ancestor dirs hold no
                            CLAUDE.md/AGENTS.md/GEMINI.md, then sync edits (and deletions)
                            back before --verify; fails if the temp root is not clean.
@@ -514,6 +536,12 @@ async function cmdRun(rest: string[]): Promise<number> {
       "on-budget": { type: "string" },
       "extra-args": { type: "string", multiple: true },
       "extra-arg": { type: "string", multiple: true },
+      // #13: SandboxPolicy flags (src/cli/run-sandbox.ts) and the metrics sidecar.
+      "permission-mode": { type: "string" },
+      "allowed-tools": { type: "string", multiple: true },
+      "disallowed-tools": { type: "string", multiple: true },
+      "mcp-config": { type: "string", multiple: true },
+      "evidence-dir": { type: "string" },
       // Kiro-only typed config (src/core/types.ts KiroConfig). Ignored for
       // other agents; the driver's RunSpecSchema validates the shape.
       "kiro-transport": { type: "string" },
@@ -605,12 +633,24 @@ async function cmdRun(rest: string[]): Promise<number> {
   // (backwards compatibility). `--extra-arg` is one verbatim token. Both
   // accumulate in command-line order.
   const extraArgs = orderedExtraArgs(args.tokens);
+  // #13: sandbox flags → the SandboxPolicy adapters already consume. Warn once
+  // per field the chosen agent has no flag for, and print the resolved policy.
+  const sandbox = sandboxFromFlags(args.values);
+  if (sandbox !== undefined) {
+    for (const w of sandboxDropWarnings(agent, sandbox, { kiroToolsSet: args.values["kiro-tools"] !== undefined })) {
+      process.stderr.write(`[warn] ${w}\n`);
+    }
+    process.stderr.write(formatSandboxHeader(sandbox) + "\n");
+  }
+  const evidenceDir = args.values["evidence-dir"];
+  if (evidenceDir !== undefined && evidenceDir.trim() === "") throw new HarnessError("--evidence-dir needs a directory", "USAGE");
   const spec: RunSpec = {
     prompt,
     model: args.values.model,
     resume: args.values.resume,
     budget: { ...budget, ...alertBudget },
     ...(extraArgs !== undefined ? { extraArgs } : {}),
+    ...(sandbox !== undefined ? { sandbox } : {}),
     ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
     ...(agent === "kiro-ide" ? { kiroIde: kiroIdeConfigFromFlags(args.values) } : {}),
     ...(trialFlags.labels.variant !== undefined ? { variant: trialFlags.labels.variant } : {}),
@@ -642,7 +682,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   };
 
   if (trialFlags.repeat !== undefined) {
-    return runRepeatCli(trialOpts, trialFlags.repeat, trialFlags.parallel, args.values.json, args.values.model, exitMode);
+    return runRepeatCli(trialOpts, trialFlags.repeat, trialFlags.parallel, args.values.json, args.values.model, exitMode, sandbox, evidenceDir);
   }
 
   let outcome: TrialOutcome;
@@ -674,10 +714,20 @@ async function cmdRun(rest: string[]): Promise<number> {
   for (const w of result.warnings) process.stderr.write(`[warn] ${w}\n`);
   if (outcome.annotateFailed) process.stderr.write(`[warn] registry: could not record verify/labels on run ${result.runId}\n`);
 
+  if (evidenceDir !== undefined) {
+    const p = writeMetricsSidecar(evidenceDir, buildRunMetrics({ agent, ...(args.values.model !== undefined ? { modelFlag: args.values.model } : {}), result, ...(sandbox ? { sandbox } : {}), ...(outcome.verify ? { verifyStatus: outcome.verify.status } : {}) }));
+    process.stderr.write(`[evidence] wrote ${p}\n`);
+  }
+
   if (args.values.json) {
     // Full RunResult: sessionId, events, tokens, totalCost, durationMs,
-    // exitStatus, warnings — plus `verify` only when a checker ran.
-    const out = outcome.verify !== undefined ? { ...result, verify: outcome.verify } : result;
+    // exitStatus, warnings — plus `verify` only when a checker ran, and the
+    // resolved `sandbox` policy (inline MCP JSON redacted) when flags set one.
+    const out = {
+      ...result,
+      ...(outcome.verify !== undefined ? { verify: outcome.verify } : {}),
+      ...(sandbox !== undefined ? { sandbox: describeSandbox(sandbox) } : {}),
+    };
     process.stdout.write(JSON.stringify(out, null, 2) + "\n");
   } else {
     process.stdout.write(runSummaryText(agent, result, args.values.model, outcome.verify) + "\n");
@@ -699,6 +749,8 @@ async function runRepeatCli(
   json: boolean,
   modelFlag: string | undefined,
   exitMode: "binary" | "ladder",
+  sandbox?: SandboxPolicy,
+  evidenceDir?: string,
 ): Promise<number> {
   const { group, outcomes } = await runRepeatGroup({
     ...opts,
@@ -708,6 +760,10 @@ async function runRepeatCli(
       for (const w of o.result?.warnings ?? []) process.stderr.write(`[warn] [${o.index}] ${w}\n`);
       if (o.annotateFailed) process.stderr.write(`[warn] [${o.index}] registry: could not record repeat/verify on the run\n`);
       if (o.error !== undefined) process.stderr.write(`[error] [${o.index}] ${o.error}\n`);
+      if (evidenceDir !== undefined && o.result !== undefined) {
+        const p = writeMetricsSidecar(evidenceDir, buildRunMetrics({ agent: opts.agent, ...(modelFlag !== undefined ? { modelFlag } : {}), result: o.result, ...(sandbox ? { sandbox } : {}), ...(o.verify ? { verifyStatus: o.verify.status } : {}) }), `metrics-${o.index}.json`);
+        process.stderr.write(`[evidence] wrote ${p}\n`);
+      }
     },
   });
   const succeeded = outcomes.filter((o) => o.result?.exitStatus === "success").length;
