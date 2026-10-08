@@ -275,7 +275,7 @@ describe('report availability summary', () => {
 });
 
 describe('classifyUnavailable: auth failure event (claude not logged in)', () => {
-  const msg: AgentEvent = { type: 'message', agent: 'claude', content: 'Not logged in', timestamp: 1 } as AgentEvent;
+  const msg: AgentEvent = { type: 'message', agent: 'claude', content: 'Not logged in', timestamp: 1 } as unknown as AgentEvent;
   it('an auth_failed error event settles unavailable with the hint, even after activity', () => {
     const auth = {
       type: 'error',
