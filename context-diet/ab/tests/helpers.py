@@ -18,6 +18,12 @@ if os.environ.get("FAKE_CLAUDE_HANG"):
     import time; time.sleep(60)
 prompt = a[a.index("-p") + 1]
 fmt = a[a.index("--output-format") + 1]
+if "Skill: " in prompt and "Write " in prompt:
+    name = prompt.split("Skill: ", 1)[1].split("\n", 1)[0]
+    n = int(prompt.split("Write ", 1)[1].split(" ", 1)[0])
+    outs = ["please help with chore %s number %d" % (name[::-1], i) for i in range(n)]
+    print(json.dumps([{"type": "system"}, {"type": "result", "is_error": False, "result": "Here:\n" + json.dumps(outs)}]))
+    sys.exit(0)
 if fmt == "json":
     # judge: keep ids whose prompt text does not contain "KEEPNOT"
     payload = json.loads(prompt.split("Prompts (JSON):\n", 1)[1])
