@@ -184,7 +184,9 @@ export function takeOnOutput(spec: { onOutput?: unknown; [key: string]: unknown 
  * CLAUDE_CODE_OAUTH_TOKEN; codex: OPENAI_API_KEY; gemini: GEMINI_API_KEY,
  * GOOGLE_API_KEY, GOOGLE_APPLICATION_CREDENTIALS; kiro: KIRO_API_KEY plus
  * the AWS_* chain it authenticates through; prime: PRIME_API_KEY,
- * PRIME_TEAM_ID) and the config-dir overrides
+ * PRIME_TEAM_ID; copilot: COPILOT_GITHUB_TOKEN plus the BYOK provider keys —
+ * GH_TOKEN / GITHUB_TOKEN are deliberately NOT scrubbed, other tools need
+ * them, so pass them in an explicit scrubEnv array) and the config-dir overrides
  * that point a child at the caller's real authenticated config.
  * Harness-managed vars (e.g. the per-run CLAUDE_CONFIG_DIR the claude
  * adapter creates) are re-applied by each adapter after the scrub.
@@ -203,6 +205,10 @@ export const PROVIDER_CREDENTIAL_ENV_VARS: readonly string[] = [
   'AWS_SESSION_TOKEN',
   'PRIME_API_KEY',
   'PRIME_TEAM_ID',
+  'COPILOT_GITHUB_TOKEN',
+  'COPILOT_PROVIDER_API_KEY',
+  'COPILOT_PROVIDER_BEARER_TOKEN',
+  'COPILOT_HOME',
   'CLAUDE_CONFIG_DIR',
   'CODEX_HOME',
   'OPENCODE_CONFIG',

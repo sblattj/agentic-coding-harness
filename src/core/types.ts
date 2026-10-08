@@ -24,7 +24,7 @@ import type { AttachmentManifest } from "./attachments.js";
 // "null" (src/adapters/null.ts, issue #55) is the negative-control adapter:
 // no CLI binary, no credentials, deterministic zero-cost usage — exercises
 // the whole run pipeline for free.
-export const AGENTS = ["claude", "opencode", "kiro", "codex", "gemini", "prime", "kiro-ide", "null"] as const;
+export const AGENTS = ["claude", "opencode", "kiro", "codex", "gemini", "prime", "kiro-ide", "copilot", "null"] as const;
 export type AgentName = (typeof AGENTS)[number];
 
 export function isKnownAgent(a: string): a is AgentName {
@@ -806,7 +806,7 @@ export interface UsageAvailability {
     /** Every source that reported a credit total, verbatim (audit trail). */
     sources?: Partial<Record<"stream" | "session-store" | "tap", number>>;
   };
-  usd: { available: boolean; source?: "pricer"; value?: number };
+  usd: { available: boolean; source?: "pricer" | "vendor"; value?: number };
   /**
    * Context-window occupancy — DERIVED, never billed tokens. `tokens` here is
    * round(percentage/100 * windowTokens); `windowSource:'assumed'` marks a
@@ -873,7 +873,7 @@ export const UsageAvailabilitySchema = z.object({
     .default({ available: false }),
   usd: z.object({
     available: z.boolean(),
-    source: z.literal("pricer").optional(),
+    source: z.enum(["pricer", "vendor"]).optional(),
     value: z.number().optional(),
   }),
   context: z

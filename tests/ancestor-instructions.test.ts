@@ -44,7 +44,7 @@ describe("findAncestorInstructions (#106)", () => {
   it("excludes the cwd's own files (the workspace's own project memory)", () => {
     const root = tree(["ws/CLAUDE.md", "ws/CLAUDE.local.md", "ws/AGENTS.md", "ws/GEMINI.md"]);
     const ws = path.join(root, "ws");
-    for (const agent of ["claude", "codex", "gemini", "prime"]) {
+    for (const agent of ["claude", "codex", "gemini", "prime", "copilot"]) {
       assert.deepEqual(findAncestorInstructions(agent, ws, { root }), [], agent);
     }
   });
@@ -61,6 +61,19 @@ describe("findAncestorInstructions (#106)", () => {
       path.join(bare, "a/AGENTS.md"),
       path.join(bare, "CLAUDE.md"),
     ]);
+  });
+
+  it("copilot: AGENTS.md and CLAUDE.md up to the git root only (probed: copilot 1.0.93 `instruction list`)", () => {
+    const root = tree(["AGENTS.md", "repo/.git/", "repo/AGENTS.md", "repo/CLAUDE.md", "repo/ws/AGENTS.md", "repo/ws/"]);
+    assert.deepEqual(findAncestorInstructions("copilot", path.join(root, "repo/ws"), { root }), [
+      path.join(root, "repo/AGENTS.md"),
+      path.join(root, "repo/CLAUDE.md"),
+    ]);
+    // Control: prime walks past the git root, copilot must not.
+    assert.ok(findAncestorInstructions("prime", path.join(root, "repo/ws"), { root }).includes(path.join(root, "AGENTS.md")));
+    // No git root anywhere: none (same rule as codex/gemini).
+    const bare = tree(["AGENTS.md", "a/ws/"]);
+    assert.deepEqual(findAncestorInstructions("copilot", path.join(bare, "a/ws"), { root: bare }), []);
   });
 
   it("returns [] when nothing is found", () => {
@@ -108,7 +121,7 @@ describe("findAncestorInstructions (#106)", () => {
       assert.deepEqual(findAncestorInstructions(agent, ws, { root }), [], agent);
     }
     assert.deepEqual(findAncestorInstructions("prime", ws, { root }), [path.join(root, "AGENTS.md"), path.join(root, "CLAUDE.md")]);
-    assert.deepEqual(Object.keys(ANCESTOR_INSTRUCTION_SPECS).sort(), ["claude", "codex", "gemini", "prime"]);
+    assert.deepEqual(Object.keys(ANCESTOR_INSTRUCTION_SPECS).sort(), ["claude", "codex", "copilot", "gemini", "prime"]);
   });
 
   it("a directory named CLAUDE.md is not an instruction file", () => {

@@ -38,6 +38,14 @@
 //           PAST the git root (not gemini's ceiling) and reads CLAUDE.md as
 //           well as AGENTS.md. That `/` itself is reached is inferred from the
 //           pi-style upward walk, not observed; over-reporting is the safe side.
+//   copilot AGENTS.md, CLAUDE.md up to the git root. Behavioural probe,
+//           copilot 1.0.93 (`copilot instruction list`): tree <t>/AGENTS.md,
+//           <t>/repo/{.git,AGENTS.md,CLAUDE.md}, <t>/repo/ws/AGENTS.md — run
+//           from ws it listed repo's AGENTS.md and CLAUDE.md ("Repository
+//           instructions") and ws's own AGENTS.md ("Working directory
+//           instructions"), and did NOT list <t>/AGENTS.md above the git root.
+//           (.github/copilot-instructions.md is a nested path, not an
+//           ancestor file name, so it is not reported.)
 //   opencode, kiro, null, custom, agents.d descriptors: nothing verified,
 //           so nothing is reported (empty list).
 
@@ -59,6 +67,7 @@ export const ANCESTOR_INSTRUCTION_SPECS: Readonly<Record<string, AncestorInstruc
   codex: { files: ['AGENTS.override.md', 'AGENTS.md'], stop: 'git-root' },
   gemini: { files: ['GEMINI.md'], stop: 'git-root' },
   prime: { files: ['AGENTS.md', 'CLAUDE.md'], stop: 'filesystem-root' },
+  copilot: { files: ['AGENTS.md', 'CLAUDE.md'], stop: 'git-root' },
 };
 
 export interface AncestorProbe {

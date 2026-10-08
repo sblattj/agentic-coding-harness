@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeAuto } from './normalize.js';
-import { createPricer, pricedSources, type Pricer } from './pricing.js';
+import { createPricer, isVendorMetered, pricedSources, type Pricer } from './pricing.js';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { ChainWriter, canonicalTotals } from './hash-chain.ts';
@@ -25,6 +25,7 @@ import { CodexAdapter } from '../adapters/codex.js';
 import { GeminiAdapter } from '../adapters/gemini.js';
 import { PrimeAdapter } from '../adapters/prime.js';
 import { KiroIdeAdapter } from '../adapters/kiro-ide.js';
+import { CopilotAdapter } from '../adapters/copilot.js';
 import { NullAdapter } from '../adapters/null.js';
 import { takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
@@ -182,7 +183,7 @@ export interface Driver {
   installSignalAbort(runId: string, signals?: readonly NodeJS.Signals[]): () => void;
 }
 
-const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'prime', 'kiro-ide', 'null'] as const;
+const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'prime', 'kiro-ide', 'copilot', 'null'] as const;
 
 /** Default signals wired by installSignalAbort (#11). */
 const ABORT_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
@@ -213,6 +214,7 @@ export async function defaultAdapters(): Promise<Record<string, AgentAdapter>> {
     gemini: () => new GeminiAdapter(),
     prime: () => new PrimeAdapter(),
     'kiro-ide': () => new KiroIdeAdapter(),
+    copilot: () => new CopilotAdapter(),
     null: () => new NullAdapter(),
   };
   for (const name of ADAPTER_MODULE_NAMES) {
@@ -434,6 +436,13 @@ export function createDriver(options: DriverOptions): Driver {
         if (budgetUsd !== undefined && (agentName === 'kiro' || agentName === 'kiro-ide')) {
           warnings.push(
             `budget: usd cap is not enforceable for ${agentName} (credits only); wall/idle/maxTurns still apply`,
+          );
+        }
+        // Copilot reports AIU only in its exit-time session summary, so a usd cap
+        // is checked once, after the run: it warns, it cannot stop a run early.
+        if (budgetUsd !== undefined && agentName === 'copilot') {
+          warnings.push(
+            'budget: usd cap cannot stop a copilot run mid-run (AIU telemetry arrives when the CLI exits); it is checked afterwards; wall/idle/maxTurns still apply',
           );
         }
         // --- threshold alerts / near-limit warnings (#20) ---
@@ -712,7 +721,16 @@ export function createDriver(options: DriverOptions): Driver {
                 if (typeof cum === 'number' && Number.isFinite(cum)) {
                   streamCreditsCumulative = Math.max(streamCreditsCumulative ?? 0, cum);
                 }
-                if (nx?.tokensAvailable === false) {
+                if (isVendorMetered(normalized)) {
+                  // Vendor-metered (copilot AIU): the cost is the vendor's stated
+                  // figure or nothing — never token math, whatever the pricer is.
+                  const stated = normalized.costUsd;
+                  if (typeof stated === 'number' && Number.isFinite(stated)) {
+                    cumulativeCost += stated;
+                    pricerPriced = true;
+                    costFromReported = true;
+                  }
+                } else if (nx?.tokensAvailable === false) {
                   // Placeholder zeros with no token counts to price (kiro
                   // 2.21.x): pricing them would only emit an "unknown model"
                   // warning about a record that carries nothing priceable.

@@ -69,7 +69,7 @@ split is closed — see §9).
 ### Driver
 
 `core/driver.ts` (`createDriver`) is the run orchestrator: resolves the adapter from a registry
-(`defaultAdapters()` instantiates the bundled `adapters/{claude,opencode,kiro,codex,gemini,prime,kiro-ide}.js`
+(`defaultAdapters()` instantiates the bundled `adapters/{claude,opencode,kiro,codex,gemini,prime,kiro-ide,copilot}.js`
 classes, skipping missing ones with a warning), attaches to the event stream, writes a raw NDJSON
 transcript to `<stateDir>/raw/<agent>-<sessionId>.jsonl`, normalizes usage (`normalizeAuto` /
 `fromPreNormalized`), prices each record via the `Pricer`, and enforces budgets inside the event
