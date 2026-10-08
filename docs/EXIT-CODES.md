@@ -121,4 +121,9 @@ ach stats --days 1 --json --exit-codes ladder > usage.json
 [ $? -eq 30 ] && exit 0                      # nothing ran today
 ```
 
-`ach queue run` has its own process exit codes (0 drained, 1 a slice failed, 40 `--max-hours` expired, 130 interrupted); they do not use this ladder. See [QUEUE.md](QUEUE.md#exit-codes).
+## Commands outside the run ladder
+
+These commands have their own exit codes and do not use the ladder above. Each code applies only to its own command; `40` means something different in each.
+
+- `ach queue run`: `0` drained, `1` a slice or `post` hook failed, `40` `--max-hours` expired, `130` interrupted. See [QUEUE.md](QUEUE.md#exit-codes).
+- `ach replay vet`: `0` pass or warn, `1` usage or `gh` error, `40` a vet check failed. See [REPLAY.md](REPLAY.md).

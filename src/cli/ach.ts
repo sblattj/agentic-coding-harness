@@ -125,6 +125,7 @@ import { cmdMcp } from "./mcp.ts";
 import { cmdAudit } from "./audit.ts";
 import { ccusageHintText, cmdImport, parseStatsOrigin, statsOriginIndex, type StatsOrigin } from "./import.ts";
 import { cmdVerifyRun } from "./verify-run.ts";
+import { cmdReplay } from "./replay-vet.ts";
 import { EXIT_CODES, noDataExitCode, parseExitCodesMode, repeatExitCode, runExitCode } from "./exit-codes.ts";
 import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
 import { alertFlagsToBudget } from "./alerts.ts";
@@ -314,6 +315,12 @@ usage:
                 (recompute the run's sha256 hash-chained event log and check its
                  terminal seal + sealed totals (#59); exit 0 intact, 2 tampered
                  (names the first bad line), 3 unsealed legacy log, 4 open chain)
+  ach replay vet <pr-number|pr-url> [--repo owner/name] [--clone PATH=.] [--fallback-clone PATH]...
+                 [--trunk BRANCH] [--min-files N=3] [--test-regex RE] [--ticket-regex RE] [--json]
+                (read-only replay-case vetting (#115): merged, approved, trunk, size, tests,
+                 ticket id (title/body/branch), merge + base commits in the clone or a fallback,
+                 squash vs merge, diff stat; prints a draft {pr, workItem, merge, base} entry and
+                 the next commands; uses gh. exit 0 pass/warn, 40 fail; see docs/REPLAY.md)
   ach status [--compact|--json] [--transcripts] [--budget-usd N] [--exit-codes ladder]
              [--once] [--write-state <path>] [--interval-ms MS=5000]
                 (runs, active runs, trailing-24h spend = \`stats --days 1\`,
@@ -1763,7 +1770,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue",
+  "trial", "queue", "replay",
 ]);
 
 /**
@@ -1823,6 +1830,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdImport(rest);
     case "verify-run":
       return cmdVerifyRun(rest);
+    case "replay":
+      return cmdReplay(rest);
     case "status":
       return cmdStatus(rest);
     case "statusline":
