@@ -14,6 +14,7 @@ import {
   toCanonicalTokenRecord,
   type CanonicalTokenRecord,
 } from "../src/monitors/transcripts.ts";
+import { TRANSCRIPT_SOURCES } from "../src/monitors/transcript-sources.ts";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 
@@ -148,8 +149,9 @@ test("scanAll: walks all three fixture sources with agent set", async () => {
     codexDir: join(fixtures, "codex"),
     geminiDir: join(fixtures, "gemini"),
     primeDir: join(fixtures, "does-not-exist"),
-    // Hermetic: keep the read-only sources off the real home directory.
-    sourceRoots: { amp: [], goose: [], qwen: [] },
+    copilotDir: join(fixtures, "does-not-exist"),
+    // Hermetic: keep every read-only source off the real home directory.
+    sourceRoots: Object.fromEntries(TRANSCRIPT_SOURCES.map((s) => [s.agent, []])),
   })) {
     records.push(record);
   }
