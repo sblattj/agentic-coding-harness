@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const FAKE_MITMDUMP = `#!/usr/bin/env node
 const net = require('node:net');
@@ -60,7 +61,7 @@ function runChild(startAt: number, tag: string): Promise<ChildResult> {
       process.execPath,
       [
         '--import', 'tsx',
-        join(import.meta.dirname, 'helpers/kiro-tap-child.ts'),
+        join(dirname(fileURLToPath(import.meta.url)), 'helpers/kiro-tap-child.ts'),
         String(startAt),
         join(dir, 'fake-mitmdump.js'),
         join(dir, 'fake-kiro.sh'),
