@@ -7,6 +7,10 @@ Note: releases before 0.8.1 predate this changelog.
 ### Fixed
 
 - `ach run --agent claude` on a keychain-login Mac with no `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` ended `error` with no reason. The adapter now recognises the CLI's "Not logged in" stream, emits one error event naming the fix (set a token or API key, or pass `--claude-default-config`), and the run settles `unavailable` like an unauthenticated Cursor run.
+- `ach run --agent copilot --disallowed-tools shell` blocked nothing: copilot ignores tool names it does not know (its shell is `bash`). A sandbox tool name that is not a copilot built-in now prints a `[warn]` with a "did you mean" hint; the name is still passed through.
+- kiro: the v3 engine now trusts the MITM tap's CA via `NODE_EXTRA_CA_CERTS` (#119).
+- `ach queue` under node + tsx: a queued run in a directory without tsx installed failed with `ERR_MODULE_NOT_FOUND`; bare `--import`/`--require` specifiers are now resolved before spawning.
+- Tests: node 18 compatibility (`import.meta.dirname`), a longer stats spawn timeout, a hermetic transcript scan that ignores real `~/.copilot` sessions, and a 30 s per-fetch limit in the binary smoke.
 
 ## [0.17.0] - 2026-10-08
 
