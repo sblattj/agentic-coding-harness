@@ -390,6 +390,8 @@ function runCli(args: string[], env: Record<string, string>): { code: number; st
   const p = spawnSync(process.execPath, isBun ? [CLI, ...args] : ["--import", "tsx", CLI, ...args], {
     env: { ...process.env, AGENTIC_CODING_HARNESS_PROJECT_ALIASES: "", AGENTIC_CODING_HARNESS_TZ: "UTC", ...env },
     encoding: "utf8",
+    timeout: 60000,
+    killSignal: "SIGKILL",
   });
   return { code: p.status ?? -1, stdout: p.stdout ?? "", stderr: p.stderr ?? "" };
 }
