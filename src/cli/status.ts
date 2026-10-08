@@ -267,7 +267,10 @@ async function collectTodayRecords(sinceTs: number, includeTranscripts: boolean)
     if (seen.has(key)) continue;
     seen.add(key);
     let costUsd: number | undefined;
-    if (rec.model) {
+    // Vendor-metered rows (copilot AIU) carry their own USD and no token price.
+    if (rec.extra?.vendorMetered === true) {
+      if (rec.costUsd !== undefined) costUsd = rec.costUsd;
+    } else if (rec.model) {
       const cost = pricer.price({
         model: rec.model,
         inputTokens: row.inputTokens,

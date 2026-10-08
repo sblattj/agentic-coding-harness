@@ -27,6 +27,7 @@ const SAMPLE_FILE: Record<string, string> = {
   goose: "sessions.db",
   qwen: "proj/chats/session.jsonl",
   cursor: "state.vscdb",
+  copilot: "sess-1/events.jsonl",
 };
 
 function fixture() {

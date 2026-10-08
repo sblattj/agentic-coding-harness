@@ -114,6 +114,7 @@ import { cmdServe } from "./serve.ts";
 import { cmdWeb } from "./web.ts";
 import { cmdMcp } from "./mcp.ts";
 import { cmdAudit } from "./audit.ts";
+import { creditUnitOfAgent } from "../core/credit-units.ts";
 import { ccusageHintText, cmdImport, parseStatsOrigin, statsOriginIndex, type StatsOrigin } from "./import.ts";
 import { cmdVerifyRun } from "./verify-run.ts";
 import { EXIT_CODES, noDataExitCode, parseExitCodesMode, repeatExitCode, runExitCode } from "./exit-codes.ts";
@@ -829,7 +830,12 @@ function runSummaryText(agent: string, result: RunResult, modelFlag: string | un
     exitStatus: result.exitStatus,
     ...(result.usage !== undefined ? { usage: result.usage } : {}),
   });
-  if (totalCredits !== undefined) summary += `\ncredits    ${totalCredits.toFixed(2)}`;
+  if (totalCredits !== undefined) {
+    // Units stay apart (#23): kiro credits vs copilot AIU ("AI credits").
+    summary += creditUnitOfAgent(agent) === "copilot"
+      ? `\nAI credits (copilot) ${totalCredits.toFixed(2)}`
+      : `\ncredits    ${totalCredits.toFixed(2)}`;
+  }
   if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
   // #32: ttft / throughput / per-tool durations, only the ones measured.
   for (const l of formatLatencyLines(deriveLatency(result.events))) summary += `\n${l}`;
@@ -969,7 +975,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
   const sources = transcriptSources(transcriptDir ? scanOptionsForRoot(path.resolve(transcriptDir)) : {});
   const state = stateDir();
   const offsets = await loadOffsets();
-  type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number };
+  type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number; vendorCost?: number; vendorMetered?: boolean };
   const seenByFile = new Map<string, Map<string, WatchTotals>>();
   const seenOpencode = new Set<string>();
   const pricer = createPricer();
@@ -1001,6 +1007,8 @@ async function cmdWatch(rest: string[]): Promise<number> {
         cacheWrite: number;
         cacheWrite1h?: number;
         reasoning: number;
+        costUsd?: number;
+        extra?: Record<string, unknown>;
       }>
     >;
   }
@@ -1056,6 +1064,11 @@ async function cmdWatch(rest: string[]): Promise<number> {
         value.input += rec.input; value.output += rec.output;
         value.cacheRead += rec.cacheRead; value.cacheWrite += rec.cacheWrite;
         value.cacheWrite1h += rec.cacheWrite1h ?? 0;
+        // Vendor-metered (copilot AIU) rows carry their own USD; never token-priced.
+        if (rec.extra?.vendorMetered === true) {
+          value.vendorMetered = true;
+          if (rec.costUsd !== undefined) value.vendorCost = (value.vendorCost ?? 0) + rec.costUsd;
+        }
         map.set(key, value);
       };
       for (const rec of await w.parse(w.file)) {
@@ -1073,8 +1086,9 @@ async function cmdWatch(rest: string[]): Promise<number> {
         const cacheReadTokens = Math.max(0, value.cacheRead - (before?.cacheRead ?? 0));
         const cacheWriteTokens = Math.max(0, value.cacheWrite - (before?.cacheWrite ?? 0));
         const cacheWrite1hTokens = Math.max(0, value.cacheWrite1h - (before?.cacheWrite1h ?? 0));
-        if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) continue;
-        const priced = value.model ? pricer.price({ model: value.model, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens }) : NaN;
+        const vendorCost = value.vendorMetered ? Math.max(0, (value.vendorCost ?? 0) - (before?.vendorCost ?? 0)) : undefined;
+        if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0 && !vendorCost) continue;
+        const priced = value.vendorMetered ? (value.vendorCost !== undefined ? vendorCost! : NaN) : value.model ? pricer.price({ model: value.model, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens }) : NaN;
         bump({ agent: value.agent, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
           ...(Number.isFinite(priced) ? { costUsd: priced } : {}) });
       }
@@ -1337,6 +1351,12 @@ async function cmdStats(rest: string[]): Promise<number> {
     ...(r.extra?.tokensAvailable === false ? { tokensAvailable: false } : {}),
   }));
   const seen = new Set(stateRecords.map(dedupeKey));
+  // Sessions `ach run` owns (state records or a non-imported registry run).
+  // Copilot's shutdown record is a CUMULATIVE per-session snapshot whose
+  // timestamp never equals the run's own record, so the composite dedupeKey
+  // cannot collapse the pair: skip the transcript copy by session instead (#23).
+  const runOwned = new Set<string>(stateRecords.map((r) => `${r.agent}\0${r.sessionId}`));
+  for (const r of registryScan.records) if (r.sessionId && r.source !== "imported") runOwned.add(`${r.agent}\0${r.sessionId}`);
 
   // ... plus machine CLI transcripts (claude/codex/gemini), computed-only (no
   // reported cost on these rows). costUsd is set only when the record has a
@@ -1360,14 +1380,16 @@ async function cmdStats(rest: string[]): Promise<number> {
         cacheWriteTokens: rec.cacheWrite,
         ...(rec.cacheWrite1h !== undefined ? { cacheWrite1hTokens: rec.cacheWrite1h } : {}),
         reasoningTokens: rec.reasoning,
+        ...(rec.extra !== undefined ? { extra: rec.extra } : {}),
       };
+      if (rec.agent === "copilot" && runOwned.has(`${rec.agent}\0${rec.sessionId}`)) continue;
       const key = dedupeKey(row);
       if (seen.has(key)) continue;
       seen.add(key);
       const cwd = rec.cwd ?? runCwd(rec.agent, rec.sessionId);
       // Branch only via the run registry (session match): no fixture proves transcripts carry gitBranch, and we never shell out per row.
       const branch = runBranch(rec.agent, rec.sessionId);
-      records.push({ ...row, ...costFor(row, undefined), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), source: "transcript" });
+      records.push({ ...row, ...costFor(row, rec.costUsd), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), source: "transcript" });
     }
     // agents.d usage taps (#38): descriptor-declared transcript sources.
     const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs, costMode });

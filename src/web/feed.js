@@ -247,7 +247,9 @@
       fmtTok(u.cacheWriteTokens) + " cache-w",
     ];
     var credits = u.extra && u.extra.credits;
-    if (isFiniteNum(credits)) parts.push(Number(credits).toFixed(3) + " credits");
+    /* copilot AIU are "AI credits", a different unit from kiro credits (#23) */
+    var aiu = u.extra && u.extra.costBasis === "copilot-aiu";
+    if (isFiniteNum(credits)) parts.push(Number(credits).toFixed(3) + (aiu ? " AI credits (copilot)" : " credits"));
     if (isFiniteNum(u.costUsd)) parts.push("$" + Number(u.costUsd).toFixed(4));
     return "usage " + parts.join(" · ");
   }

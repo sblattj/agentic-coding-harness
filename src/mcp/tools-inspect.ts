@@ -1,5 +1,6 @@
 // MCP inspection tools: report rendering, interchange emission, and usage
 // stats — thin wrappers over the same functions the `harness` CLI uses.
+import { creditUnitOfAgent } from "../core/credit-units.ts";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -200,12 +201,21 @@ interface StatRow {
   cacheWriteTokens: number;
   reasoningTokens: number;
   costUsd: number;
+  /** Kiro metering credits (only kiro-unit records; copilot AIU is in `aiu`). */
   credits?: number;
+  /** GitHub Copilot AIU ("AI credits", 1 AIU = US$0.01): a different unit from `credits`, never added to it. */
+  aiu?: number;
+}
+
+/** Per-unit credit figures for one stats row. */
+interface UnitCredits {
+  credits?: number;
+  aiu?: number;
 }
 
 function rowWithCredits(
   bucket: ReturnType<typeof aggregate>["totals"],
-  credits: number | undefined,
+  units: UnitCredits | undefined,
 ): StatRow {
   const row: StatRow = {
     runs: bucket.records,
@@ -216,21 +226,29 @@ function rowWithCredits(
     reasoningTokens: bucket.reasoningTokens,
     costUsd: bucket.costUsd,
   };
-  if (credits !== undefined && credits > 0) row.credits = Math.round(credits * 100) / 100;
+  if (units?.credits !== undefined && units.credits > 0) row.credits = Math.round(units.credits * 100) / 100;
+  if (units?.aiu !== undefined && units.aiu > 0) row.aiu = Math.round(units.aiu * 100) / 100;
   return row;
 }
 
-function statCredits(records: Array<{ agent: string; extra?: Record<string, unknown> }>): {
-  byAgent: Map<string, number>;
-  total: number | undefined;
+export function statCredits(records: Array<{ agent: string; extra?: Record<string, unknown> }>): {
+  byAgent: Map<string, UnitCredits>;
+  total: UnitCredits;
 } {
-  const byAgent = new Map<string, number>();
-  let total: number | undefined;
+  const byAgent = new Map<string, UnitCredits>();
+  const total: UnitCredits = {};
+  const bump = (o: UnitCredits, key: "credits" | "aiu", v: number): void => {
+    o[key] = (o[key] ?? 0) + v;
+  };
   for (const r of records) {
     const credits = r.extra?.credits;
     if (typeof credits !== "number" || !Number.isFinite(credits)) continue;
-    byAgent.set(r.agent, (byAgent.get(r.agent) ?? 0) + credits);
-    total = (total ?? 0) + credits;
+    // Units stay apart (#23): kiro credits and copilot AIU are never one sum.
+    const key = creditUnitOfAgent(r.agent) === "copilot" ? "aiu" : "credits";
+    const row = byAgent.get(r.agent) ?? {};
+    bump(row, key, credits);
+    byAgent.set(r.agent, row);
+    bump(total, key, credits);
   }
   return { byAgent, total };
 }
