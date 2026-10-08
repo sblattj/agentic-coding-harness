@@ -395,6 +395,50 @@ cell then measures your instructions, not the agent. This matters for trials bec
 See the README section "Ancestor instruction files and `--hermetic`" for the copy,
 sync and cleanup rules.
 
+## Writing a trial: entry point and evidence hygiene (#13)
+
+**Invoke the source entry in `trials/*/run.sh`.** `ach` is only on `PATH` after
+`bun run build:node && bun link` (`bin.ach` points at the gitignored `dist/cli/ach.js`), which
+a fresh clone or worktree has not done. A trial script that calls `bun run src/cli/ach.ts`
+works with no build:
+
+```sh
+#!/bin/sh
+ACH="bun run $(dirname "$0")/../../src/cli/ach.ts"   # no build step needed
+$ACH run --agent claude --permission-mode bypassPermissions \
+  --evidence-dir "$(dirname "$0")/evidence/sidecar-b" "$(cat "$(dirname "$0")/prompt.md")"
+```
+
+**Evidence hygiene.** The raw stream (`claude.json` from `--json`, `*.stderr`) holds
+everything the child read, including any private corpus it consulted. Commit only
+metrics. `ach run --evidence-dir <dir>` writes a metrics-only sidecar `metrics.json`
+(`metrics-<i>.json` under `--repeat`):
+
+```json
+{"schema":"ach.metrics/1","achVersion":"x.y.z","agent":"claude","model":"...","runId":"...",
+ "exitStatus":"success","wallSeconds":412.3,"turns":57,
+ "cost":{"usd":6.1,"provenance":"usd:pricer; tokens:native"},
+ "tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0},
+ "sandbox":{"permissionMode":"bypassPermissions"},"verify":null,
+ "startedAt":"...","endedAt":"..."}
+```
+
+It contains no prompt text, responses, tool inputs, file contents or warnings, and inline
+`--mcp-config` JSON is reduced to a byte count. A test asserts the prompt string does not
+occur in it. Convention: **commit `metrics*.json` (and your scoring output such as `drift-*`),
+gitignore the raw streams.** Sample `trials/<name>/.gitignore`:
+
+```gitignore
+# raw streams: contain everything the child read
+claude.json
+*.stderr
+evidence/arm-*/
+# evidence/sidecar-*/metrics.json and evidence/drift-* are not matched, so they stay tracked
+```
+
+Keep the sidecar directory outside the ignored raw-stream directories (`evidence/sidecar-b/`
+next to `evidence/arm-b/`), so `git add` picks up `metrics.json` and nothing else.
+
 ## `ach trial --suite core`: the bundled task suite
 
 ```sh
