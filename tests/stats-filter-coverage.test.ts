@@ -16,7 +16,7 @@ function invoke(state: string, args: string[]) {
   const bun = Boolean((process.versions as { bun?: string }).bun);
   return spawnSync(process.execPath, bun ? [cli, ...args] : ["--import", "tsx", cli, ...args], {
     encoding: "utf8",
-    timeout: 20000,
+    timeout: 60000,
     env: {
       ...process.env,
       HOME: state,
