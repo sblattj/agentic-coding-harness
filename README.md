@@ -420,8 +420,11 @@ ach run --agent claude --permission-mode bypassPermissions \
   --allowed-tools 'Bash,Read,Edit' --mcp-config ./mcp.json "prompt"
 ```
 
-`ach trial --matrix` and the MCP `harness_run` tool build their specs separately and do not
-take these flags yet.
+The same policy is available on the other two surfaces. `ach trial --matrix` plans take an
+optional `sandbox` object at plan level, per agent entry and per task (see
+[docs/TRIALS.md](docs/TRIALS.md#sandbox-policy-in-a-plan)); the MCP `harness_run` and
+`harness_run_async` tools take a `sandbox` input object (see [docs/MCP.md](docs/MCP.md)). Both
+use the support table above and report a dropped field as a warning.
 
 ### Metrics-only evidence: `--evidence-dir`
 

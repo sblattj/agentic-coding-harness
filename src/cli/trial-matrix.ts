@@ -31,7 +31,8 @@ import { z } from "zod";
 import { createDriver, defaultAdapters, type Driver } from "../core/driver.ts";
 import { createPricer, type Pricer } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
-import { HarnessError, isKnownAgent, type AgentAdapter, type RunSpec } from "../core/types.ts";
+import { describeSandbox, mergeSandbox, SandboxInputSchema, sandboxDropWarnings } from "../core/sandbox-policy.ts";
+import { HarnessError, isKnownAgent, type AgentAdapter, type RunSpec, type SandboxPolicy } from "../core/types.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, runVerifier, type VerifyStatus } from "../core/verify.ts";
 import { isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { loadCatalog, reportCatalogIssues, resolveRunAgent } from "./custom-agents.ts";
@@ -69,6 +70,8 @@ export const InlineTaskSchema = z
     workspace: WorkspaceSchema.optional(),
     setupTimeoutMs: PositiveInt.optional(),
     verifyTimeoutMs: PositiveInt.optional(),
+    /** Per-task sandbox override (wins over the agent entry's and the plan's). */
+    sandbox: SandboxInputSchema.optional(),
   })
   .strict();
 
@@ -83,6 +86,8 @@ export const DirTaskSchema = z
     workspace: WorkspaceSchema.optional(),
     setupTimeoutMs: PositiveInt.optional(),
     verifyTimeoutMs: PositiveInt.optional(),
+    /** Per-task sandbox override (wins over the agent entry's and the plan's). */
+    sandbox: SandboxInputSchema.optional(),
   })
   .strict();
 
@@ -102,7 +107,14 @@ export const TaskMetaSchema = z
 /** An agent entry: a name, or a name with its own model list (overrides plan `models`). */
 export const MatrixAgentSchema = z.union([
   z.string().min(1),
-  z.object({ agent: z.string().min(1), models: z.array(z.string().min(1)).min(1).optional() }).strict(),
+  z
+    .object({
+      agent: z.string().min(1),
+      models: z.array(z.string().min(1)).min(1).optional(),
+      /** Per-agent sandbox override (wins over the plan's, loses to a task's). */
+      sandbox: SandboxInputSchema.optional(),
+    })
+    .strict(),
 ]);
 
 export const MatrixPlanSchema = z
@@ -132,6 +144,8 @@ export const MatrixPlanSchema = z
     cwd: z.string().min(1).optional(),
     setupTimeoutMs: PositiveInt.optional(),
     verifyTimeoutMs: PositiveInt.optional(),
+    /** Plan-level sandbox policy (#13): permissionMode / allowedTools / disallowedTools / mcpConfig, as the `ach run` flags. */
+    sandbox: SandboxInputSchema.optional(),
   })
   .strict();
 
@@ -153,6 +167,8 @@ export interface ResolvedTask {
   dir?: string;
   setupTimeoutMs?: number;
   verifyTimeoutMs?: number;
+  /** Task-level sandbox override. */
+  sandbox?: SandboxPolicy;
   meta?: TaskMeta;
 }
 
@@ -169,6 +185,8 @@ export interface MatrixCell {
   trial: number;
   experiment: string;
   variant: string;
+  /** Resolved sandbox policy (plan < agent entry < task, field-wise); undefined when none is set. */
+  sandbox?: SandboxPolicy;
 }
 
 /** Parse + validate a plan object; USAGE HarnessError listing every issue. */
@@ -266,7 +284,8 @@ export function resolveTask(task: z.output<typeof MatrixTaskSchema>, baseDir: st
       ...(task.setupTimeoutMs !== undefined ? { setupTimeoutMs: task.setupTimeoutMs } : {}),
       ...(task.verifyTimeoutMs !== undefined ? { verifyTimeoutMs: task.verifyTimeoutMs } : {}),
     });
-    return resolved.workspace === "shared" ? { ...resolved, cwd: path.resolve(baseDir, planCwd ?? ".") } : resolved;
+    const withSandbox = task.sandbox !== undefined ? { ...resolved, sandbox: task.sandbox } : resolved;
+    return withSandbox.workspace === "shared" ? { ...withSandbox, cwd: path.resolve(baseDir, planCwd ?? ".") } : withSandbox;
   }
   const workspace = task.workspace ?? "shared";
   return {
@@ -278,6 +297,7 @@ export function resolveTask(task: z.output<typeof MatrixTaskSchema>, baseDir: st
     ...(task.verify !== undefined ? { verify: task.verify } : {}),
     ...(task.setupTimeoutMs !== undefined ? { setupTimeoutMs: task.setupTimeoutMs } : {}),
     ...(task.verifyTimeoutMs !== undefined ? { verifyTimeoutMs: task.verifyTimeoutMs } : {}),
+    ...(task.sandbox !== undefined ? { sandbox: task.sandbox } : {}),
   };
 }
 
@@ -311,7 +331,9 @@ export function expandMatrix(plan: MatrixPlan, baseDir: string): MatrixCell[] {
     const agent = typeof entry === "string" ? entry : entry.agent;
     const models: (string | undefined)[] =
       (typeof entry === "string" ? undefined : entry.models) ?? plan.models ?? [undefined];
+    const agentSandbox = mergeSandbox(plan.sandbox, typeof entry === "string" ? undefined : entry.sandbox);
     for (const task of tasks) {
+      const sandbox = mergeSandbox(agentSandbox, task.sandbox);
       for (const rawModel of models) {
         // A literal "default" means the adapter default: no --model.
         const model = rawModel === DEFAULT_MODEL_TOKEN ? undefined : rawModel;
@@ -328,12 +350,34 @@ export function expandMatrix(plan: MatrixPlan, baseDir: string): MatrixCell[] {
             trial,
             experiment: plan.experiment,
             variant: renderVariant(plan.variant, agent, model, task.id),
+            ...(sandbox !== undefined ? { sandbox } : {}),
           });
         }
       }
     }
   }
   return cells;
+}
+
+/**
+ * #13: one warning per (agent, dropped field) across the grid, for cells whose
+ * resolved sandbox sets a field the agent's adapter ignores. Same table and
+ * wording family as `ach run` (src/core/sandbox-policy.ts), with the first
+ * affected cell named.
+ */
+export function matrixSandboxWarnings(cells: readonly MatrixCell[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const cell of cells) {
+    if (cell.sandbox === undefined) continue;
+    for (const w of sandboxDropWarnings(cell.agent, cell.sandbox, { style: "field" })) {
+      const key = `${cell.agent}|${w}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(`${w} (first in cell ${cell.cellId})`);
+    }
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ ledger
@@ -434,6 +478,8 @@ export interface LedgerRow {
   error?: string;
   /** #113: set when the run settled but its hermetic sync-back failed (code, message, keptDir, source). */
   errorInfo?: HermeticSyncErrorInfo;
+  /** #13: the cell's resolved sandbox policy (inline MCP JSON redacted); absent when none was set. */
+  sandbox?: Record<string, unknown>;
   startedAt: number;
   endedAt: number;
 }
@@ -662,6 +708,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
     task: cell.task.id,
     model: cell.model ?? null,
     trial: cell.trial,
+    ...(cell.sandbox !== undefined ? { sandbox: describeSandbox(cell.sandbox) } : {}),
     startedAt,
   };
   let cwd: string;
@@ -704,6 +751,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
     cwd,
     variant: cell.variant,
     ...(cell.model !== undefined ? { model: cell.model } : {}),
+    ...(cell.sandbox !== undefined ? { sandbox: cell.sandbox } : {}),
     ...(opts.budget !== undefined ? { budget: { ...opts.budget } } : {}),
   };
   let outcome: TrialOutcome;
@@ -1011,6 +1059,8 @@ export interface ExecuteMatrixCliOptions {
 export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<number> {
   const { plan, ledgerPath, retryFailed, json } = o;
   const cells = expandMatrix(plan, o.baseDir);
+  const sandboxWarnings = matrixSandboxWarnings(cells);
+  for (const w of sandboxWarnings) process.stderr.write(`[warn] ${w}\n`);
 
   if (o.dryRun) {
     const { rows, malformed } = readLedger(ledgerPath);
@@ -1033,10 +1083,12 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
               model: e.cell.model ?? null,
               trial: e.cell.trial,
               variant: e.cell.variant,
+              ...(e.cell.sandbox !== undefined ? { sandbox: describeSandbox(e.cell.sandbox) } : {}),
               ...(e.last !== undefined ? { last: { status: e.last.status, runId: e.last.runId } } : {}),
             })),
             summary,
             ...(malformed > 0 ? { malformedLedgerLines: malformed } : {}),
+            ...(sandboxWarnings.length > 0 ? { sandboxWarnings } : {}),
           },
           null,
           2,
