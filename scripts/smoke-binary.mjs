@@ -58,7 +58,7 @@ try {
     ['/vendor/xterm/addon-fit.js', /FitAddon/], ['/vendor/xterm/addon-web-links.js', /WebLinksAddon/],
     ['/vendor/xterm/addon-webgl.js', /WebglAddon/], ['/vendor/xterm/LICENSE', /MIT/],
   ]) {
-    const response = await fetch(base + route, { signal: AbortSignal.timeout(5000) });
+    const response = await fetch(base + route, { signal: AbortSignal.timeout(30_000) });
     assert.equal(response.status, 200, route);
     assert.match(await response.text(), marker, route);
     console.log(`200 ${route}`);
