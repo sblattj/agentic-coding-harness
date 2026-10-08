@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
 import { isPrimeSessionFile, parsePrimeSession } from "./prime.ts";
+import { copilotSessionStateRoot, isCopilotEventsFile, parseCopilotSession } from "./copilot.ts";
 import { TRANSCRIPT_SOURCES, type TranscriptOnlyAgent } from "./transcript-sources.ts";
 
 // ---------------------------------------------------------------------------
@@ -34,7 +35,7 @@ export interface CanonicalTokenRecord {
   sourcePath?: string;
   /** Which CLI agent produced the record. amp/goose/qwen are read-only
    * transcript sources (src/monitors/transcript-sources.ts). */
-  agent: "claude" | "codex" | "gemini" | "amp" | "goose" | "qwen" | "cursor" | "prime";
+  agent: "claude" | "codex" | "gemini" | "amp" | "goose" | "qwen" | "cursor" | "prime" | "copilot";
   /** Session identifier when the source exposes one, else null. */
   sessionId: string | null;
   /** ISO-8601 timestamp when the source exposes one, else null. */
@@ -58,6 +59,13 @@ export interface CanonicalTokenRecord {
   reasoning: number;
   /** Working directory the session ran in, when the source records it (claude line `cwd`, codex session_meta). */
   cwd?: string;
+  /**
+   * Vendor-metered cost in USD (copilot: AIU at $0.01). Present only when the
+   * vendor stated one; token math is never a substitute (#23).
+   */
+  costUsd?: number;
+  /** Producer extras carried to the central record (copilot: vendorMetered, credits = AIU, creditUnit). */
+  extra?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +380,8 @@ export interface ScanOptions {
   geminiDir?: string;
   /** Prime Agent dir (~/.prime/agent) holding sessions/ and session-artifacts/. */
   primeDir?: string;
+  /** Copilot CLI session-state dir (${COPILOT_HOME:-~/.copilot}/session-state) holding <id>/events.jsonl. */
+  copilotDir?: string;
   /** Root overrides for the read-only sources in TRANSCRIPT_SOURCES
    * (amp/goose/qwen); an omitted agent uses its defaultRoots(homedir()). */
   sourceRoots?: Partial<Record<TranscriptOnlyAgent, string[]>>;
@@ -432,9 +442,11 @@ const NATIVE_TRANSCRIPT_SOURCES = [
   { agent: "codex", option: "codexDir", root: (home: string) => join(home, ".codex", "sessions"), keep: isJsonl, parse: parseCodexRollout },
   { agent: "gemini", option: "geminiDir", root: (home: string) => join(home, ".gemini", "tmp"), keep: isGeminiChatFile, parse: parseGeminiChat },
   { agent: "prime", option: "primeDir", root: (home: string) => join(home, ".prime", "agent"), keep: isPrimeSessionFile, parse: parsePrimeSession },
+  // #23: launchable (ach run --agent copilot) AND monitored, like prime. $COPILOT_HOME relocates it.
+  { agent: "copilot", option: "copilotDir", root: copilotSessionStateRoot, keep: isCopilotEventsFile, parse: parseCopilotSession },
 ] as const satisfies ReadonlyArray<{
   agent: CanonicalTokenRecord["agent"];
-  option: "claudeDir" | "codexDir" | "geminiDir" | "primeDir";
+  option: "claudeDir" | "codexDir" | "geminiDir" | "primeDir" | "copilotDir";
   root: (home: string) => string;
   keep: (filePath: string) => boolean;
   parse: (filePath: string) => Promise<CanonicalTokenRecord[]>;
@@ -469,7 +481,7 @@ export function transcriptSources(opts: ScanOptions = {}): TranscriptSource[] {
 export function scanOptionsForRoot(root: string): Required<ScanOptions> {
   const native = Object.fromEntries(NATIVE_TRANSCRIPT_SOURCES.map((src) => [src.option, src.root(root)])) as Pick<
     Required<ScanOptions>,
-    "claudeDir" | "codexDir" | "geminiDir" | "primeDir"
+    "claudeDir" | "codexDir" | "geminiDir" | "primeDir" | "copilotDir"
   >;
   return {
     ...native,
@@ -526,6 +538,7 @@ export function toCanonicalTokenRecord(
     ...(record.cacheWrite1h !== undefined ? { cacheWrite1hTokens: record.cacheWrite1h } : {}),
     reasoningTokens: record.reasoning,
     ...(Number.isFinite(ts) ? { timestamp: ts } : {}),
-    extra: { timestampIso: record.timestamp },
+    ...(record.costUsd !== undefined ? { costUsd: record.costUsd } : {}),
+    extra: { ...record.extra, timestampIso: record.timestamp },
   };
 }

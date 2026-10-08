@@ -363,7 +363,7 @@ function renderMeta() {
   box.appendChild(kv("cost", fmtCost(runCost(r)) + (runCost(r) == null ? "" : provMark(r, "costUsd"))));
   var ctxTxt = fmtCtx(r);
   if (ctxTxt) box.appendChild(kv("ctx", ctxTxt));
-  if (t.credits != null) box.appendChild(kv("credits", String(t.credits)));
+  if (t.credits != null) box.appendChild(kv(r.agent === "copilot" ? "AI credits (copilot)" : "credits", String(t.credits)));
   /* budget / near-limit threshold crossings (#20): latest one, count on hover */
   if (r.alerts && r.alerts.length) {
     var la = r.alerts[r.alerts.length - 1];

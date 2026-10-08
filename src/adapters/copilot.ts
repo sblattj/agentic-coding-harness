@@ -178,22 +178,34 @@ export function subtractCopilotSummary(final: CopilotUsageSummary, baseline: Cop
   };
 }
 
-/** Every `session.shutdown` summary in an events.jsonl text, oldest first. Bad lines are skipped. */
-export function parseCopilotShutdowns(eventsJsonl: string): CopilotUsageSummary[] {
-  const out: CopilotUsageSummary[] = [];
-  for (const line of eventsJsonl.split('\n')) {
-    if (!line.includes('session.shutdown')) continue;
+/** One `session.shutdown` event: its cumulative summary plus the event's ISO timestamp (null when absent). */
+export interface CopilotShutdown {
+  summary: CopilotUsageSummary;
+  timestamp: string | null;
+}
+
+/** Every `session.shutdown` event in an events.jsonl text, oldest first. Bad lines are skipped. */
+export function parseCopilotShutdownEvents(eventsJsonl: string, onBadLine?: (lineNo: number) => void): CopilotShutdown[] {
+  const out: CopilotShutdown[] = [];
+  eventsJsonl.split('\n').forEach((line, i) => {
+    if (!line.includes('session.shutdown')) return;
     let rec: unknown;
     try {
       rec = JSON.parse(line);
     } catch {
-      continue;
+      onBadLine?.(i + 1);
+      return;
     }
-    if (!isRec(rec) || rec.type !== 'session.shutdown') continue;
+    if (!isRec(rec) || rec.type !== 'session.shutdown') return;
     const s = parseCopilotUsageSummary(rec.data);
-    if (s !== null) out.push(s);
-  }
+    if (s !== null) out.push({ summary: s, timestamp: typeof rec.timestamp === 'string' && rec.timestamp !== '' ? rec.timestamp : null });
+  });
   return out;
+}
+
+/** Every `session.shutdown` summary in an events.jsonl text, oldest first. Bad lines are skipped. */
+export function parseCopilotShutdowns(eventsJsonl: string): CopilotUsageSummary[] {
+  return parseCopilotShutdownEvents(eventsJsonl).map((s) => s.summary);
 }
 
 /**
@@ -287,7 +299,7 @@ export function copilotUsageEvents(
       aiuSource: source,
       ...(tokensKnown ? {} : { tokensAvailable: false }),
       ...(hasCost
-        ? { nanoAiu: nano, credits: aiu, creditsCumulative: cumulativeAiu, source: 'native' }
+        ? { nanoAiu: nano, credits: aiu, creditUnit: 'copilot', creditsCumulative: cumulativeAiu, source: 'native' }
         : {}),
     };
     events.push({
