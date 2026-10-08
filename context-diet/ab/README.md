@@ -1,6 +1,6 @@
 # Skill-trigger A/B pipeline
 
-Measures whether a skill-visibility change (for example moving skills to `name-only` in `skillOverrides`) still lets the model pick the right skill, using **real prompts mined from your own session logs**. Part of the context-diet kit (see [docs/CONTEXT-DIET.md](../../docs/CONTEXT-DIET.md), issue #118). Python 3.9+, standard library only.
+Measures whether a skill-visibility change (for example moving skills to `name-only` in `skillOverrides`) still lets the model pick the right skill, using **real prompts mined from your own session logs**. Part of the context-diet kit (see [docs/CONTEXT-DIET.md](../../docs/CONTEXT-DIET.md), issue #118). Python 3.9+, standard library only. Order: mine, filter, make_arms, synth (optional), run, report.
 
 ```
 transcripts --mine.py--> candidates.jsonl --filter.py--> cases.jsonl --run.py--> results.jsonl --report.py--> tables
@@ -25,7 +25,14 @@ A user prompt whose turn called `Skill(x)` is a positive labelled `x` (several s
 # 2. Filter with a cheap judge (batches of 25; keeps prompts understandable without prior context)
 python3 filter.py work/candidates.jsonl --out work/cases.jsonl --model haiku
 ```
-Add synthetic positives by appending lines like `{"id":"syn1","prompt":"...","label":"positive","skills":["name"],"explicit":false}` to `cases.jsonl`. Mined negatives are noisy (some no-skill turns *should* have used a skill): relabel by hand before trusting the negative fire rate.
+Mined negatives are noisy (some no-skill turns *should* have used a skill): relabel by hand before trusting the negative fire rate.
+
+```sh
+# 2b. Synthetic positives for skills with no (or too few) mined positives (the issue added 14)
+python3 synth.py work/cases.jsonl --skills-dir "$HOME/.claude/skills" --arms work/arms/*.json \
+    --min-positives 1 --per-skill 2 --model haiku
+```
+Appends `"synthetic": true` positives (same schema, `explicit: false`) to `cases.jsonl`, generated from each skill's name and description through the same `claude -p` path as `filter.py` (haiku, deadline, key stripped). Prompts that name the skill, duplicates of existing cases, and skills hidden from the model (`user-invocable-only`/`off` in any `--arms` file, or `disable-model-invocation: true`) are skipped. The issue gives only a total (14), so `--min-positives` defaults to 1 and `--per-skill` to 2; both are flags. `--dry-run` lists what would be generated. Run it after `make_arms.py` so `--arms` exists, and re-run `run.py` afterwards (it only runs the new cases). `report.py` excludes synthetic cases by default (`--synthetic include|only` to change) and prints their recall on a separate line, so real recall is not inflated.
 
 ```sh
 # 3. Arms: complete skillOverrides maps; each arm pins every skill explicitly. First --arm = baseline.

@@ -99,21 +99,31 @@ def skill_rates(recs):
     return by
 
 
-def build_report(recs, baseline=None):
+def build_report(recs, baseline=None, synthetic="exclude"):
+    """synthetic: exclude (default; real recall is not inflated) | include | only."""
+    synth_all = [r for r in recs if r.get("synthetic") and not r.get("excluded") and not r.get("error")]
+    all_recs = recs  # arm list/order always comes from every record
+    if synthetic == "exclude":
+        recs = [r for r in recs if not r.get("synthetic")]
+    elif synthetic == "only":
+        recs = [r for r in recs if r.get("synthetic")]
     usable = [r for r in recs if not r.get("excluded") and not r.get("error")]
     # order arms by the run's arm order (arm_idx), not by file order: workers append concurrently
     order = {}
-    for r in recs:
+    for r in all_recs:
         order.setdefault(r["arm"], r.get("arm_idx", len(order)))
         order[r["arm"]] = min(order[r["arm"]], r.get("arm_idx", order[r["arm"]]))
     arms = sorted(order, key=lambda x: order[x])
     base = baseline or (arms[0] if arms else None)
     per = {a: [r for r in usable if r["arm"] == a] for a in arms}
-    out = {"baseline": base, "arms": {}, "paired": {},
+    out = {"synthetic_mode": synthetic, "baseline": base, "arms": {}, "paired": {},
            "errors": sum(1 for r in recs if r.get("error")),
            "excluded": sum(1 for r in recs if r.get("excluded"))}
     for a in arms:
         out["arms"][a] = summarize(per[a])
+        if synthetic == "exclude":  # shown separately, never mixed into the real numbers
+            sp = [r for r in synth_all if r["arm"] == a and r["label"] == "positive"]
+            out["arms"][a]["synthetic_recall"] = (sum(is_hit(r) for r in sp), len(sp))
     bm = majority(per[base]) if base else {}
     for a in arms:
         if a == base:
@@ -137,6 +147,7 @@ def render(rep):
     L = []
     L.append("Baseline arm: %s   (errors dropped: %d, excluded by design: %d)" % (
         rep["baseline"], rep["errors"], rep["excluded"]))
+    L.append("Synthetic cases: %s" % rep.get("synthetic_mode"))
     L.append("")
     L.append("%-14s %-24s %-24s %-22s %-22s %s" % ("arm", "recall", "recall (implicit)", "wrong skill",
                                                      "fires on negatives", "median start tok"))
@@ -144,6 +155,8 @@ def render(rep):
         mt = "%.0f" % s["median_tokens"] if s["median_tokens"] is not None else "n/a"
         L.append("%-14s %-24s %-24s %-22s %-22s %s" % (
             a, fmt(*s["recall"]), fmt(*s["recall_implicit"]), fmt(*s["wrong"]), fmt(*s["neg_fire"]), mt))
+        if s.get("synthetic_recall") and s["synthetic_recall"][1]:
+            L.append("%-14s synthetic-only recall (not in the numbers above): %s" % ("", fmt(*s["synthetic_recall"])))
     for a, p in rep["paired"].items():
         L.append("")
         L.append("Paired %s vs %s over %d positive cases (per-case majority): only %s hit: %d, only %s hit: %d, "
@@ -158,9 +171,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("results", help="results.jsonl from run.py")
     ap.add_argument("--baseline", default=None, help="baseline arm name (default: first arm in run order)")
+    ap.add_argument("--synthetic", choices=["exclude", "include", "only"], default="exclude",
+                    help="treatment of synthetic cases (default exclude; their recall is shown on its own line)")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
     a = ap.parse_args(argv)
-    rep = build_report(load(a.results), a.baseline)
+    rep = build_report(load(a.results), a.baseline, a.synthetic)
     print(json.dumps(rep, indent=2) if a.json else render(rep))
     return 0
 

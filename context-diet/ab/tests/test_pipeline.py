@@ -12,6 +12,7 @@ import filter as filt
 import make_arms
 import mine
 import report
+import synth
 import run
 
 AB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -128,6 +129,46 @@ class FilterTests(FakeClaudeCase):
             filt.parse_ids("none")
 
 
+class SynthTests(FakeClaudeCase):
+    def setUp(self):
+        super().setUp()
+        sd = self.p("skills")
+        for n, extra in (("deploy", ""), ("haiku-poem", ""), ("hidden", "disable-model-invocation: true\n"), ("covered", "")):
+            os.makedirs(os.path.join(sd, n))
+            with open(os.path.join(sd, n, "SKILL.md"), "w") as f:
+                f.write("---\nname: %s\ndescription: Use when asked about %s things.\n%s---\nb\n" % (n, n, extra))
+        helpers.write_jsonl(self.p("cases.jsonl"), [
+            {"id": "c1", "prompt": "real covered prompt", "label": "positive", "skills": ["covered"], "explicit": False}])
+
+    def test_synth(self):
+        rc = synth.main([self.p("cases.jsonl"), "--skills-dir", self.p("skills"), "--per-skill", "2"])
+        self.assertEqual(rc, 0)
+        rows = _claude.read_jsonl(self.p("cases.jsonl"))
+        syn = [r for r in rows if r.get("synthetic")]
+        self.assertEqual(sorted({r["skills"][0] for r in syn}), ["deploy", "haiku-poem"])  # not hidden, not covered
+        self.assertEqual(len(syn), 4)
+        for r in syn:
+            self.assertEqual((r["label"], r["explicit"]), ("positive", False))
+        self.assertEqual(len({r["id"] for r in syn}), 4)
+        calls = self.calls()
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(calls[0]["has_key"])
+        self.assertEqual(calls[0]["args"][calls[0]["args"].index("--model") + 1], "haiku")
+        # idempotent: rerun adds nothing (dedupe) -- skills now have positives anyway
+        synth.main([self.p("cases.jsonl"), "--skills-dir", self.p("skills")])
+        self.assertEqual(len(_claude.read_jsonl(self.p("cases.jsonl"))), 5)
+
+    def test_dedupe_and_arm_skip(self):
+        json.dump({"skillOverrides": {"deploy": "user-invocable-only"}}, open(self.p("a.json"), "w"))
+        synth.main([self.p("cases.jsonl"), "--skills-dir", self.p("skills"), "--arms", self.p("a.json"), "--per-skill", "1"])
+        names = {r["skills"][0] for r in _claude.read_jsonl(self.p("cases.jsonl")) if r.get("synthetic")}
+        self.assertEqual(names, {"haiku-poem"})
+
+    def test_min_positives_dry_run(self):
+        synth.main([self.p("cases.jsonl"), "--skills-dir", self.p("skills"), "--min-positives", "2", "--dry-run"])
+        self.assertFalse(os.path.exists(self.log))  # no model call in dry-run
+
+
 class ArmsTests(FakeClaudeCase):
     def make_skills(self):
         sd = self.p("skills")
@@ -205,6 +246,20 @@ class RunReportTests(FakeClaudeCase):
         self.assertEqual(pr["regressions"][0][0], "deploy")
         text = report.render(rep)
         self.assertIn("exact McNemar p = 0.5", text)
+
+    def test_synthetic_excluded_by_default(self):
+        with open(self.p("cases.jsonl"), "a") as f:
+            f.write(json.dumps({"id": "s1", "prompt": "deploy synthetic one", "label": "positive",
+                                "skills": ["deploy"], "explicit": False, "synthetic": True}) + "\n")
+        self.go()
+        recs = _claude.read_jsonl(self.p("res.jsonl"))
+        self.assertTrue(all(r["synthetic"] for r in recs if r["case"] == "s1"))
+        d = report.build_report(recs)
+        self.assertEqual(d["arms"]["a_before"]["recall"], (4, 6))           # unchanged by synthetic
+        self.assertEqual(d["arms"]["a_before"]["synthetic_recall"], (2, 2))
+        self.assertEqual(report.build_report(recs, synthetic="include")["arms"]["a_before"]["recall"], (6, 8))
+        self.assertEqual(report.build_report(recs, synthetic="only")["arms"]["a_before"]["recall"], (2, 2))
+        self.assertIn("synthetic-only recall", report.render(d))
 
     def test_user_invocable_only_excluded(self):
         json.dump({"skillOverrides": {"deploy": "user-invocable-only"}}, open(self.p("arms/b_after.json"), "w"))

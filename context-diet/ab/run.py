@@ -106,7 +106,7 @@ def done_keys(out_path, keep_errors):
 def run_one(case, arm, arm_path, rep, opts, arm_idx=0):
     rec = {"key": "%s|%s|%d" % (arm, case["id"], rep), "arm": arm, "arm_idx": arm_idx, "case": case["id"], "rep": rep,
            "label": case["label"], "expected": case.get("skills", []),
-           "explicit": bool(case.get("explicit")), "prompt": case["prompt"][:200],
+           "explicit": bool(case.get("explicit")), "synthetic": bool(case.get("synthetic")), "prompt": case["prompt"][:200],
            "ts": int(time.time())}
     if is_excluded(case, arm_path):
         rec.update(excluded=True, skills=[], start_tokens=None)
