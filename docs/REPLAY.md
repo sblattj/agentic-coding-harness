@@ -28,7 +28,7 @@ Each check is `pass`, `warn` or `fail`; the verdict is the worst of them.
 | `tests` | a changed path matches `--test-regex` | | none: there is no answer key |
 | `ticket` | an id matched in the title, branch name or body (that order) | none found: rebuild the ticket from the PR as first opened; the PR creation time is printed | |
 | `merge-commit` | `merge_commit_sha` is in `--clone` | only in a `--fallback-clone`: the message says which one to use | in no clone: fetch the trunk branch |
-| `merge-kind` | one parent: **squash** (or rebase) merge; two or more: **merge commit**. The base is the first parent either way | root commit, no base | |
+| `merge-kind` | two or more parents: **merge commit**, base = first parent. One parent: **squash**, base = that parent; or **rebase** (multi-commit PR whose head commit is in the clone and has the same tree, author date and subject as the merge commit), base = the merge commit minus N commits. A single-commit PR, or a head commit missing from the clone, cannot be told squash from rebase and is reported as `squash` with that caveat | root commit, no base | |
 | `base-commit` | the first parent is in `--clone` | only in a fallback clone | in no clone (clones that only fetched the default branch miss release-branch bases) |
 | `diff-matches` | `git diff base merge` touches as many files as the PR lists | counts differ: the clone's history may not be what GitHub merged | |
 
@@ -59,7 +59,7 @@ used here so a fail never collides with it.)
           "headRef": "feat/x", "createdAt": "ISO", "mergedAt": "ISO|null" },
   "workItem": { "id": "PROJ-42|null", "source": "title|branch|body|null", "candidates": ["PROJ-42"],
                 "rebuildFromPr": false, "prCreatedAt": "ISO" },
-  "merge": { "sha": "...", "kind": "squash|merge-commit|unknown", "parents": 1, "clone": "path|null" },
+  "merge": { "sha": "...", "kind": "squash|rebase|merge-commit|unknown", "parents": 1, "clone": "path|null" },
   "base": { "sha": "first parent|null", "clone": "path|null" },
   "diffStat": "git diff --stat output|null",
   "checks": [ { "id": "tests", "status": "pass|warn|fail", "reason": "..." } ],

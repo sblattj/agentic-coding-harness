@@ -123,6 +123,79 @@ describe("replay vet: git fixtures", () => {
     assert.equal(r.verdict, "warn");
   });
 
+  test("#115 literal case: release-branch merge whose base exists only in the fallback clone", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ach-vet-rel-"));
+    const all = path.join(root, "all");
+    fs.mkdirSync(all);
+    sh(all, "init", "-q", "-b", "main");
+    const w = (f: string, t: string) => { fs.mkdirSync(path.dirname(path.join(all, f)), { recursive: true }); fs.writeFileSync(path.join(all, f), t); };
+    w("a.txt", "a\n"); sh(all, "add", "."); sh(all, "commit", "-qm", "A");
+    sh(all, "checkout", "-qb", "release/1");
+    w("r.txt", "r\n"); sh(all, "add", "."); sh(all, "commit", "-qm", "R1 (release only)");
+    const relBase = sh(all, "rev-parse", "HEAD");
+    sh(all, "checkout", "-qb", "fix");
+    w("src/f.ts", "f\n"); w("tests/f.test.ts", "t\n"); sh(all, "add", "."); sh(all, "commit", "-qm", "fix");
+    sh(all, "checkout", "-q", "release/1");
+    sh(all, "merge", "--no-ff", "-qm", "Merge fix", "fix");
+    const merge = sh(all, "rev-parse", "HEAD");
+    // default-branch-only primary clone: has main, none of the release branch
+    const primary = path.join(root, "primary");
+    fs.mkdirSync(primary);
+    sh(primary, "init", "-q", "-b", "main");
+    sh(primary, "fetch", "-q", all, "main");
+    const p = pull({ number: 9, baseRef: "release/1", mergeCommitSha: merge });
+    const r = await vetPr({ repo: "o/r", number: 9, clone: primary, fallbackClones: [all], minFiles: 2 }, fetcher(p, OK_REVIEW, ["src/f.ts", "tests/f.test.ts"]));
+    assert.equal(r.merge.clone, all);
+    assert.equal(r.base.clone, all);
+    assert.equal(r.base.sha, relBase);
+    for (const id of ["merge-commit", "base-commit"]) {
+      assert.equal(status(r, id), "warn", id);
+      assert.match(r.checks.find((c) => c.id === id)!.reason, new RegExp("use fallback clone " + all.replace(/[/.]/g, "\\$&")));
+    }
+    // merged into a release branch, not the default branch: trunk fails, and passes when --trunk names it
+    assert.equal(status(r, "trunk"), "fail");
+    assert.equal(r.verdict, "fail");
+    assert.match(r.next[0]!, new RegExp("git -C " + all.replace(/[/.]/g, "\\$&") + " worktree add"));
+    const r2 = await vetPr({ repo: "o/r", number: 9, clone: primary, fallbackClones: [all], minFiles: 2, trunk: "release/1" }, fetcher(p, OK_REVIEW, ["src/f.ts", "tests/f.test.ts"]));
+    assert.equal(status(r2, "trunk"), "pass");
+    assert.equal(r2.verdict, "warn");
+  });
+
+  test("rebase vs squash: multi-commit PR with one-parent merge commit", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ach-vet-rb-"));
+    const d = path.join(root, "r");
+    fs.mkdirSync(d);
+    sh(d, "init", "-q", "-b", "main");
+    const w = (f: string, t: string) => { fs.mkdirSync(path.dirname(path.join(d, f)), { recursive: true }); fs.writeFileSync(path.join(d, f), t); };
+    w("a.txt", "a\n"); sh(d, "add", "."); sh(d, "commit", "-qm", "A");
+    const base = sh(d, "rev-parse", "HEAD");
+    sh(d, "checkout", "-qb", "feat");
+    w("src/x.ts", "1\n"); sh(d, "add", "."); sh(d, "commit", "-qm", "one");
+    w("tests/x.test.ts", "2\n"); sh(d, "add", "."); sh(d, "commit", "-qm", "two");
+    const head = sh(d, "rev-parse", "HEAD");
+    sh(d, "checkout", "-q", "main");
+    // rebase merge: replay both commits (author dates kept) after a later committer time
+    sh(d, "cherry-pick", "feat~1", "feat");
+    const rebased = sh(d, "rev-parse", "HEAD");
+    sh(d, "checkout", "-qb", "sq", base);
+    // squash merge: one commit with the same final tree, new author date, PR title as subject
+    sh(d, "merge", "--squash", "-q", "feat");
+    execFileSync("git", ["-C", d, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "PROJ-42 add x (#10)", "--date", "2030-01-01T00:00:00Z"]);
+    const squashed = sh(d, "rev-parse", "HEAD");
+    const base2 = (sha: string) => fetcher(pull({ mergeCommitSha: sha, headSha: head, commitCount: 2 }), OK_REVIEW, ["src/x.ts", "tests/x.test.ts"]);
+    const rb = await vetPr({ repo: "o/r", number: 10, clone: d, minFiles: 2 }, base2(rebased));
+    assert.equal(rb.merge.kind, "rebase");
+    assert.equal(rb.base.sha, base);
+    assert.equal(status(rb, "diff-matches"), "pass");
+    const sq = await vetPr({ repo: "o/r", number: 10, clone: d, minFiles: 2 }, base2(squashed));
+    assert.equal(sq.merge.kind, "squash");
+    assert.equal(sq.base.sha, base);
+    // head commit not in the clone: cannot tell, stays squash-or-rebase with the reason
+    const unk = await vetPr({ repo: "o/r", number: 10, clone: d, minFiles: 2 }, fetcher(pull({ mergeCommitSha: rebased, headSha: "f".repeat(40), commitCount: 2 }), OK_REVIEW, ["src/x.ts", "tests/x.test.ts"]));
+    assert.equal(unk.merge.kind, "squash");
+    assert.match(unk.checks.find((c) => c.id === "merge-kind")!.reason, /cannot be told apart/);
+  });
+
   test("PR-level fails: unmerged, unapproved, feature-branch base, no tests; ticket warn with creation time", async () => {
     const r = await vetPr(
       { repo: "o/r", number: 7, clone: fx.full },
