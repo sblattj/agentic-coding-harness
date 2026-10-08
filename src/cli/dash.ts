@@ -18,6 +18,7 @@ import {
 import { collectQuota, dashQuotaCell, type QuotaRow } from "../core/quota.ts";
 import { markerFor, PROVENANCE_LEGEND, PROVENANCE_MARKER, provenanceOf } from "../core/provenance.ts";
 
+import { collectQueueViews, fmtDuration, queueSummaryLine, sliceDetail, QUEUE_RECENT_HOURS, type QueueView } from "../core/queue-view.ts";
 import { transcriptView } from "./transcript-view.ts";
 
 const REDRAW_MS = 500;
@@ -280,6 +281,31 @@ export interface FrameOptions {
   quota?: QuotaRow[];
   /** Registry files that failed to parse; > 0 adds a warning line above the footer. */
   skippedRunRecords?: number;
+  /** Queue views (#115): adds a "Queues" section; omitted or empty = no section. */
+  queues?: QueueView[];
+}
+
+/** The "Queues" section: a summary line per queue, then one row per slice. Pure. */
+export function queueLines(queues: QueueView[], width: number, ansi: boolean): string[] {
+  if (queues.length === 0) return [];
+  const paint = (t: string, code: string): string => (ansi ? `\x1b[${code}m${t}\x1b[0m` : t);
+  const out: string[] = [`Queues (running, or ended < ${QUEUE_RECENT_HOURS}h ago)`];
+  for (const q of queues) {
+    out.push(q.died ? paint(queueSummaryLine(q), "31") : queueSummaryLine(q));
+    if (q.died) out.push(paint(`  queue process died (pid ${q.queuePid}) — ${q.resumeHint}`, "31"));
+    out.push(`  ${padR("SLICE", 18)} ${padR("AGENT/MODEL", 22)} ${padR("STATUS", 10)} ${padR("RUNS/PID", 18)} ELAPSED`);
+    for (const sl of q.slices) {
+      const am = sl.model !== undefined ? `${sl.agent}/${sl.model}` : sl.agent;
+      const elapsed = sl.elapsedMs !== undefined ? fmtDuration(sl.elapsedMs) : "";
+      const color = sl.status === "failed" || sl.status === "pre-failed" ? "31" : sl.status === "running" ? "32" : sl.status === "done" ? "2" : "";
+      const status = padR(sl.status, 10);
+      const row = `  ${padR(sl.label, 18)} ${padR(am, 22)} ${color ? paint(status, color) : status} ${padR(sliceDetail(sl), 18)} ${elapsed}`;
+      out.push(row.length > width + 40 ? row.slice(0, width + 40) : row);
+      if (sl.error !== undefined) out.push(`    ${sl.error}`);
+    }
+  }
+  out.push("");
+  return out;
 }
 
 /** One rendered dashboard frame. Exported for tests (pure: no TTY, no I/O). */
@@ -331,6 +357,7 @@ export function frame(
     lines.push(paceRow(r, (opts.tracker ?? new PaceTracker()).pace(r, now, opts.budgetUsd)));
   }
   lines.push("");
+  lines.push(...queueLines(opts.queues ?? [], width, ansi));
   if (opts.skippedRunRecords !== undefined && opts.skippedRunRecords > 0) {
     const text = `skipped ${opts.skippedRunRecords} unreadable run record(s) — run \`ach dash --json\` for details on stderr`;
     lines.push(ansi ? `\x1b[33m${text}\x1b[0m` : text);
@@ -420,7 +447,7 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
     }
     drawing = false;
     process.stdout.write(
-      "\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi, { ...frameOpts, quota: quota ?? [], skippedRunRecords }) + "\n",
+      "\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi, { ...frameOpts, quota: quota ?? [], skippedRunRecords, queues: collectQueueViews(dir) }) + "\n",
     );
   };
 
@@ -446,6 +473,7 @@ export async function cmdDash(rest: string[]): Promise<number> {
       json: { type: "boolean", default: false },
       all: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      queues: { type: "boolean", default: false },
       dir: { type: "string" },
       "state-dir": { type: "string" },
       "budget-usd": { type: "string" },
@@ -483,7 +511,10 @@ export async function cmdDash(rest: string[]): Promise<number> {
       live: isLive(r),
       effectiveStatus: r.metadata?.source === "transcript" || r.source === "imported" ? null : effectiveStatus(r),
     }));
-    process.stdout.write(JSON.stringify(recs, null, 2) + "\n");
+    // Default output stays a bare array (existing consumers); --queues wraps it
+    // as { records, queues } with the queue views (#115).
+    const payload = args.values.queues ? { records: recs, queues: collectQueueViews(dir) } : recs;
+    process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
     return 0;
   }
   return liveLoop(dir, args.values.all, budgetUsd, args.values["state-only"]);
