@@ -134,6 +134,7 @@ describe("suite resolution", () => {
         { agent: "kiro", reason: "kiro-bin not found on PATH" },
         { agent: "gemini", reason: "gemini-bin not found on PATH" },
         { agent: "prime", reason: "prime-bin not found on PATH" },
+        { agent: "copilot", reason: "copilot-bin not found on PATH" },
       ],
     });
     // kiro-ide is opt-in: absent from the default sweep, probed when asked for.

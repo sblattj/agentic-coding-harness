@@ -117,6 +117,18 @@ function sumReportedCostUsd(tokens: CanonicalTokenRecord[]): number | null {
   return total;
 }
 
+/** Sum `costUsd` over vendor-metered records (extra.vendorMetered); null when none stated one. */
+function sumVendorCostUsd(tokens: CanonicalTokenRecord[]): number | null {
+  let total: number | null = null;
+  for (const rec of tokens) {
+    if (extraOf(rec).vendorMetered !== true) continue;
+    const cost = finite(rec.costUsd);
+    if (cost === undefined) continue;
+    total = (total ?? 0) + cost;
+  }
+  return total;
+}
+
 /** Sum store turns into run-total counts (kiro's native per-turn records). */
 function sumStoreTurns(store: ParsedKiroSessionStore): NormalizedUsageTokens {
   const total: NormalizedUsageTokens = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -222,9 +234,12 @@ export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsage
   // --------------------------------------------------------------------- usd
   // USD is real only when the pricer priced a record that HAS tokens. Pricing
   // zero tokens yields $0.0000, which is a lie dressed as a number.
+  // A vendor-metered cost (copilot AIU) stands without token counts: the
+  // vendor stated the dollars, so there is no zero-token pricing to distrust.
+  const vendorUsd = sumVendorCostUsd(input.tokens);
   const usd: UsageAvailability['usd'] =
-    input.pricerPriced && tokens.available && Number.isFinite(input.totalCost)
-      ? { available: true, source: 'pricer', value: input.totalCost }
+    input.pricerPriced && (tokens.available || vendorUsd !== null) && Number.isFinite(input.totalCost)
+      ? { available: true, source: vendorUsd !== null ? 'vendor' : 'pricer', value: input.totalCost }
       : { available: false };
 
   // ----------------------------------------------------------------- context

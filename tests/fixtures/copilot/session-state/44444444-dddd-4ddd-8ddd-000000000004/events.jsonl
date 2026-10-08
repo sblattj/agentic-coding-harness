@@ -1,0 +1,2 @@
+{"type": "session.start", "id": "e0", "timestamp": "2026-03-04T10:00:00.000Z", "data": {"sessionId": "x"}}
+{"type": "session.shutdown", "id": "e1", "timestamp": "2026-03-04T10:05:00.000Z", "parentId": null, "data": {"totalNanoAiu": 2000000000, "totalPremiumRequests": 0, "currentModel": "gpt-5", "modelMetrics": {"gpt-5": {"requests": {"count": 2, "cost": 0}, "usage": {"inputTokens": 400, "outputTokens": 40, "cacheReadTokens": 100, "cacheWriteTokens": 0}, "totalNanoAiu": 2000000000}}}}

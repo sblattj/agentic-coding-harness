@@ -1,6 +1,6 @@
 # Custom agents: command templates and `agents.d` descriptors
 
-ach ships adapters for six CLIs (claude, opencode, kiro, codex, gemini, prime) and a desktop-app adapter (kiro-ide). You
+ach ships adapters for seven CLIs (claude, opencode, kiro, codex, gemini, prime, copilot) and a desktop-app adapter (kiro-ide). You
 can run any other CLI in two ways, and neither needs a code change:
 
 1. **Per invocation** (#37): `ach run --agent custom --template '<cmd>' "<prompt>"`.

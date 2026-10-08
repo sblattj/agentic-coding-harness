@@ -1,0 +1,4 @@
+{"type": "session.start", "id": "e0", "timestamp": "2026-03-01T10:00:00.000Z", "data": {"sessionId": "x"}}
+{"type": "session.shutdown", "id": "e1", "timestamp": "2026-03-01T10:05:00.000Z", "parentId": null, "data": {"totalNanoAiu": 1000000000, "totalPremiumRequests": 0, "currentModel": "gpt-5", "modelMetrics": {"gpt-5": {"requests": {"count": 2, "cost": 0}, "usage": {"inputTokens": 500, "outputTokens": 20, "cacheReadTokens": 300, "cacheWriteTokens": 0}, "totalNanoAiu": 1000000000}}}}
+{not json session.shutdown
+{"type": "session.shutdown", "id": "e2", "timestamp": "2026-03-01T11:30:00.000Z", "parentId": null, "data": {"totalNanoAiu": 3000000000, "totalPremiumRequests": 0, "currentModel": "gpt-5", "modelMetrics": {"gpt-5": {"requests": {"count": 2, "cost": 0}, "usage": {"inputTokens": 1000, "outputTokens": 50, "cacheReadTokens": 600, "cacheWriteTokens": 0}, "totalNanoAiu": 3000000000}}}}

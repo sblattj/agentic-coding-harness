@@ -68,7 +68,7 @@ export const SandboxInputSchema = SandboxShapeSchema.transform((v, ctx): Sandbox
 /**
  * Which CLI-exposed policy fields each launchable agent honors (read from the
  * adapters, see SandboxPolicy doc in src/core/types.ts):
- * claude + gemini all four (claudeSandboxArgs, geminiSandboxArgs); codex
+ * claude, gemini + copilot all four (claudeSandboxArgs, geminiSandboxArgs); codex
  * permissionMode only (codexSandboxArgs); kiro allowedTools only, folded into
  * kiro.tools (applySandboxToKiroSpec); prime allowedTools only (primeSandboxArgs;
  * prime also warns for the rest itself through validateProfile, so it is
@@ -81,6 +81,9 @@ const HONORED: Record<string, readonly PolicyField[]> = {
   gemini: ["permissionMode", "allowedTools", "disallowedTools", "mcpConfig"],
   codex: ["permissionMode"],
   kiro: ["allowedTools"],
+  // copilotSandboxArgs maps all four; its own copilotUnsupportedSandbox warns
+  // about permissionMode values it cannot express.
+  copilot: ["permissionMode", "allowedTools", "disallowedTools", "mcpConfig"],
 };
 
 /** Policy fields set on `policy` that `agent` will silently drop. */

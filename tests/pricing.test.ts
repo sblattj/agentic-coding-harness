@@ -27,6 +27,8 @@ const AGENT_DEFAULT_MODELS: Record<(typeof AGENTS)[number], string> = {
   prime: 'claude-sonnet-5',
   // kiro-ide reports no tokens (credits only); a priceable stand-in, as for kiro.
   'kiro-ide': 'claude-sonnet-4-5',
+  // copilot cost is vendor-metered AIU, never priced from tokens; a priceable stand-in keeps the table total.
+  copilot: 'claude-sonnet-5',
   null: 'null',
 };
 
