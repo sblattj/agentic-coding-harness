@@ -429,6 +429,8 @@ tools does not stall on an approval prompt, and you do not hand-assemble `--extr
   Tool names are agent-native (copilot: `bash`, `view`, `create`, `edit`, `grep`, `glob`, ...; claude: `Bash`,
   `Read`, ...), not translated; copilot silently ignores a name it does not know, so `ach` prints a `[warn]`
   for a copilot tool name that is not a built-in (with a "did you mean" hint) while still passing it through.
+  A deny list blocks only the tools it names: on copilot, excluding `view` and `bash` still leaves
+  `read_bash`, `grep` and `glob`, which can read files, so prefer an `--allowed-tools` list to confine a run.
 - `--mcp-config <path|json>`: given once. A value starting with `{` is parsed as inline JSON,
   anything else is a file path passed verbatim.
 
