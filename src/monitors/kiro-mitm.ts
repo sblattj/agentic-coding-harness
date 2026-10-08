@@ -8,9 +8,12 @@
 //
 //   HTTPS_PROXY=http://127.0.0.1:8888 \
 //   SSL_CERT_FILE=~/.mitmproxy/mitmproxy-ca-cert.pem \
+//   NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem \
 //   kiro-cli chat --no-interactive --trust-all-tools --output-format stream-json --v3 "<prompt>"
 //
-// tapEnv() below builds exactly that env. Create the CA first: `mitmproxy`
+// SSL_CERT_FILE covers the v2 engine; the v3 engine runs on Node, which ignores
+// it and only trusts the CA via NODE_EXTRA_CA_CERTS (without it v3 dies with
+// ModelRegistryUnavailableError). tapEnv() below builds exactly that env. Create the CA first: `mitmproxy`
 // writes it on first run.
 //
 // parseMitmLine() emits the core CanonicalTokenRecord (src/core/types.ts):
@@ -508,7 +511,7 @@ export function tapEnv(
   port: number = DEFAULT_MITM_PORT,
   caPath: string = path.join(os.homedir(), '.mitmproxy', 'mitmproxy-ca-cert.pem'),
 ): NodeJS.ProcessEnv {
-  return { HTTPS_PROXY: `http://127.0.0.1:${port}`, SSL_CERT_FILE: caPath };
+  return { HTTPS_PROXY: `http://127.0.0.1:${port}`, SSL_CERT_FILE: caPath, NODE_EXTRA_CA_CERTS: caPath };
 }
 
 export interface KiroMitmHandle extends EventEmitter {
