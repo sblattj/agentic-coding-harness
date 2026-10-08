@@ -99,6 +99,8 @@ describe("sandboxDroppedFields (per-adapter honor table)", () => {
     assert.deepEqual(sandboxDroppedFields("claude", all), []);
     assert.deepEqual(sandboxDroppedFields("gemini", all), []);
     assert.deepEqual(sandboxDroppedFields("copilot", all), []);
+    // cursor: its adapter validateProfile names each dropped field itself (no double warning).
+    assert.deepEqual(sandboxDroppedFields("cursor", all), []);
   });
   test("codex keeps only permissionMode", () => {
     assert.deepEqual(sandboxDroppedFields("codex", all), ["allowedTools", "disallowedTools", "mcpConfig"]);
