@@ -590,7 +590,8 @@ by construction. On a Mac whose Claude Code login is keychain-bound OAuth (no
 `~/.claude/.credentials.json`) that dir cannot see the token and every run ends `Not logged in`;
 pass `--claude-default-config` (or set `AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1`) to run against the
 default config instead. Transcripts then land under `~/.claude/projects` and concurrent claude runs
-share one config, so pair it with sequential runs when isolation matters.
+share one config, so pair it with sequential runs when isolation matters. A run that hits this now ends
+`unavailable` with the fix printed (`[warn] unavailable: claude: not logged in for this run ...`).
 
 ## Kiro IDE (desktop app)
 

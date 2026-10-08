@@ -135,6 +135,8 @@ export type AgentEvent =
         signal: string | null;
         message?: string;
         stderrTail?: string;
+        /** `auth_failed`: the CLI reported it is not logged in (settles `unavailable`). */
+        kind?: 'auth_failed';
       };
     };
 
@@ -202,6 +204,8 @@ const InitLineSchema = z.object({
 
 const AssistantLineSchema = z.object({
   type: z.literal('assistant'),
+  /** Top-level failure tag the CLI sets on a synthetic error turn (`authentication_failed`). */
+  error: z.string().optional(),
   message: z.object({
     /** API message id; every content-block line of one model response shares it. */
     id: z.string().optional(),
@@ -237,6 +241,7 @@ const ResultLineSchema = z.object({
   subtype: z.string().optional(),
   session_id: z.string().optional(),
   is_error: z.boolean().optional(),
+  result: z.string().optional(),
   total_cost_usd: z.number().optional(),
   usage: ClaudeUsageSchema.optional(),
   modelUsage: z.record(z.string(), ModelUsageEntrySchema).optional(),
@@ -247,6 +252,22 @@ const ResultLineSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_MAX_TURNS = 250;
+
+/**
+ * Hint for a run whose claude CLI reported "Not logged in". `perRunConfigDir`
+ * is true when the adapter gave the run a fresh CLAUDE_CONFIG_DIR, which cannot
+ * see a keychain /login session.
+ */
+export function claudeAuthHint(perRunConfigDir: boolean): string {
+  if (perRunConfigDir) {
+    return (
+      'claude: not logged in for this run. Runs use a per-run CLAUDE_CONFIG_DIR, which cannot see a keychain /login session. ' +
+      'Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY, or pass --claude-default-config.'
+    );
+  }
+  return 'claude: not logged in. Run `claude /login`, or set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY.';
+}
+
 const ABORT_ESCALATE_MS = 5_000;
 const STDERR_TAIL_LIMIT = 8 * 1024;
 
@@ -729,6 +750,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
   private done = false;
   private aborted = false;
   private sawResult = false;
+  private sawAuthFailure = false;
   /** canonicalJson() of every result line seen (issue #14 dedupe). */
   private readonly seenResultKeys = new Set<string>();
   private parseErrors = 0;
@@ -988,6 +1010,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
         return;
       }
       const { message } = parsed.data;
+      if (parsed.data.error === 'authentication_failed') this.noteAuthFailure();
       const lineMeta: ClaudeLineMeta = {
         at,
         lane: parsed.data.parent_tool_use_id ?? 'main',
@@ -1030,6 +1053,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
         return;
       }
       this.sawResult = true;
+      if (parsed.data.is_error === true && /Not logged in/i.test(parsed.data.result ?? '')) this.noteAuthFailure();
       if (parsed.data.session_id) this.sessionId = parsed.data.session_id;
       // Issue #14: a result line is the CLI's cumulative-final record for its
       // session, and CLI 2.1.277 was observed re-emitting it byte-identically.
@@ -1048,6 +1072,21 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       return;
     }
     // stream_event / other lines: ignored (forward compatible).
+  }
+
+  /** Push ONE auth-failure error event per run (the assistant and result lines both signal it). */
+  private noteAuthFailure(): void {
+    if (this.sawAuthFailure) return;
+    this.sawAuthFailure = true;
+    this.push({
+      type: 'error',
+      payload: {
+        exitCode: null,
+        signal: null,
+        message: claudeAuthHint(this.configDir !== null),
+        kind: 'auth_failed',
+      },
+    });
   }
 
   private handleClose(code: number | null, signal: string | null): void {

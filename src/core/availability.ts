@@ -21,6 +21,12 @@
 //      outage typically prints a banner to stderr and exits non-zero before
 //      the model produced anything.
 //
+//   3. auth failure — an adapter-originated `error` event tagged
+//      `data.kind === 'auth_failed'` (claude's "Not logged in" stream). The
+//      adapter saw the CLI itself refuse for lack of credentials, so the run
+//      is `unavailable` even though an assistant turn preceded it; the event's
+//      message (the fix) becomes the reason.
+//
 // Caveat (documented in docs/EXIT-CODES.md): rule 2 also catches a CLI that
 // rejects its own arguments before starting (e.g. an unknown --model). Such
 // a run produced no task verdict either, so "no data" is the honest bucket.
@@ -55,6 +61,13 @@ export function isSpawnFailureEvent(e: AgentEvent): boolean {
   return /failed to spawn\b/i.test(text) && SPAWN_ERRNO.test(text);
 }
 
+/** True for an adapter-originated "not logged in" error event (rule 3). */
+export function isAuthFailureEvent(e: AgentEvent): boolean {
+  if (e.type !== 'error') return false;
+  const data = e.data as { kind?: unknown } | null | undefined;
+  return typeof data === 'object' && data !== null && data.kind === 'auth_failed';
+}
+
 export interface AvailabilityInput {
   /** What the adapter's handle.wait() reported. */
   adapterExit: AdapterExit;
@@ -74,6 +87,8 @@ export function classifyUnavailable(input: AvailabilityInput): string | null {
   if (spawnFailure !== undefined) {
     return `agent CLI could not be started (${eventText(spawnFailure)})`;
   }
+  const authFailure = input.events.find(isAuthFailureEvent);
+  if (authFailure !== undefined) return eventText(authFailure) || 'agent CLI is not logged in';
   const active = input.events.some((e) => ACTIVITY_TYPES.has(e.type));
   if (!active) {
     return 'agent CLI exited with an error before its first event (missing auth, service outage, or a startup failure)';

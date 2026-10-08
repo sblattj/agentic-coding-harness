@@ -10,6 +10,7 @@ import {
   ClaudeCodeAdapter,
   type ClaudeAdapterOptions,
   canonicalJson,
+  claudeAuthHint,
   capabilities,
   type HarnessChildProcess,
   type SpawnFn,
@@ -687,5 +688,88 @@ describe('ClaudeCodeAdapter.launch (driver contract)', () => {
     assert.equal(events[0]!.type, 'aborted');
     assert.ok(captured.child.killed);
     cleanup(stateDir);
+  });
+});
+
+describe('ClaudeCodeAdapter not-logged-in stream', () => {
+  const AUTH_ASSISTANT = JSON.stringify({
+    type: 'assistant',
+    error: 'authentication_failed',
+    message: { model: '<synthetic>', content: [{ type: 'text', text: 'Not logged in · Please run /login' }] },
+  });
+  const AUTH_RESULT = JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: true,
+    result: 'Not logged in · Please run /login',
+    usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+  });
+
+  async function run(env?: Record<string, string>) {
+    const { adapter, captured, stateDir } = makeAdapter();
+    adapter.spawn({ prompt: 'hi', ...(env ? { env } : {}) });
+    captured.child.feed(AUTH_ASSISTANT + '\n' + AUTH_RESULT + '\n');
+    captured.child.end(1);
+    const events = (await collect(adapter.attach())) as any[];
+    return { adapter, events, stateDir };
+  }
+
+  it('emits exactly one error event with the per-run hint', async () => {
+    const { adapter, events, stateDir } = await run();
+    try {
+      assert.notEqual(adapter.configDir, null);
+      const errs = events.filter((e) => e.type === 'error' && e.payload.kind === 'auth_failed');
+      assert.equal(errs.length, 1);
+      assert.equal(errs[0].payload.message, claudeAuthHint(true));
+      assert.match(errs[0].payload.message, /per-run CLAUDE_CONFIG_DIR/);
+      assert.match(errs[0].payload.message, /CLAUDE_CODE_OAUTH_TOKEN/);
+      assert.match(errs[0].payload.message, /--claude-default-config/);
+    } finally {
+      cleanup(stateDir);
+    }
+  });
+
+  it('uses the login hint when the default config is in use', async () => {
+    const prev = process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG;
+    process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = '1';
+    try {
+      const { adapter, events, stateDir } = await run();
+      try {
+        assert.equal(adapter.configDir, null);
+        const errs = events.filter((e) => e.type === 'error' && e.payload.kind === 'auth_failed');
+        assert.equal(errs.length, 1);
+        assert.equal(errs[0].payload.message, claudeAuthHint(false));
+        assert.match(errs[0].payload.message, /claude \/login/);
+        assert.doesNotMatch(errs[0].payload.message, /per-run/);
+      } finally {
+        cleanup(stateDir);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG;
+      else process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = prev;
+    }
+  });
+
+  it('a result line alone (no assistant error) also yields one hint; ordinary errors do not', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+    try {
+      adapter.spawn({ prompt: 'hi' });
+      captured.child.feed(AUTH_RESULT + '\n');
+      captured.child.end(1);
+      const events = (await collect(adapter.attach())) as any[];
+      assert.equal(events.filter((e) => e.payload?.kind === 'auth_failed').length, 1);
+    } finally {
+      cleanup(stateDir);
+    }
+    const o = makeAdapter();
+    try {
+      o.adapter.spawn({ prompt: 'hi' });
+      o.captured.child.feed(JSON.stringify({ type: 'result', is_error: true, result: 'rate limited' }) + '\n');
+      o.captured.child.end(1);
+      const events = (await collect(o.adapter.attach())) as any[];
+      assert.equal(events.filter((e) => e.payload?.kind === 'auth_failed').length, 0);
+    } finally {
+      cleanup(o.stateDir);
+    }
   });
 });
