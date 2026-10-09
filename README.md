@@ -165,10 +165,11 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   cost from text length. `cursor` is also the name of the read-only Cursor IDE monitor, which
   `ach stats --agent cursor` keeps reading (separate store, no double count). Supports cursor-agent
   2026.10.x: its result reports tokens (net input, cache read, cache write, output) but no cost, so a
-  Cursor run's cost is `computed`. Recent Cursor IDE builds keep no per-message token counts on disk,
+  Cursor run's cost is `computed` from `--model`. The default model, `Auto`, does not say which model
+  served the run, so its tokens are recorded and its cost is unavailable (one warning). Recent Cursor IDE builds keep no per-message token counts on disk,
   so `ach stats --agent cursor` reports them unavailable (one warning) rather than estimating; use
   `ach run --agent cursor` or the Cursor dashboard export for exact usage. Stream shapes were read
-  from the 2026.10.01 CLI bundle, not an authenticated run; see
+  from the 2026.10.01 CLI bundle and verified on a live logged-in run; see
   [docs/transcript-adapters.md](docs/transcript-adapters.md).
   No vendor quota source.
 - **Unified events, cache-aware tokens** — one `AgentEvent` stream, one canonical token record;
