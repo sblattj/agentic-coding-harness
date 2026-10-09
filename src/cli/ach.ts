@@ -72,6 +72,8 @@ import {
 } from "../monitors/transcripts.ts";
 import { TRANSCRIPT_SOURCES, isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
+import { readCursorDashboardStore } from "../monitors/cursor-dashboard.ts";
+import { dashboardSpan, inDashboardSpan, reconcileDashboardWithState, type DashboardSpan } from "./cursor-dashboard-merge.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer } from "../core/pricing.ts";
@@ -1441,6 +1443,37 @@ async function cmdStats(rest: string[]): Promise<number> {
   const runOwned = new Set<string>(stateRecords.map((r) => `${r.agent}\0${r.sessionId}`));
   for (const r of registryScan.records) if (r.sessionId && r.source !== "imported") runOwned.add(`${r.agent}\0${r.sessionId}`);
 
+  // Imported Cursor dashboard exports (stateDir data, so read even with
+  // --state-only) carry the billed cost: they replace the matching `ach run`
+  // cursor rows and the Cursor IDE-store rows inside their span.
+  let dashSpan: DashboardSpan | null = null;
+  if (!agent || agent === "cursor") {
+    const dashAll = readCursorDashboardStore(stateDir());
+    dashSpan = dashboardSpan(dashAll);
+    const dash = dashAll.filter((d) => inWindow(d.timestamp ? Date.parse(d.timestamp) : NaN, window));
+    const rec = reconcileDashboardWithState(dash, records);
+    records = records.filter((r) => !rec.dropped.has(r));
+    for (const m of rec.matches) {
+      const d = m.rec;
+      const from = m.replaced[0];
+      const row = {
+        ts: d.timestamp,
+        agent: d.agent,
+        sessionId: m.sessionId ?? "unknown",
+        model: d.model ?? undefined,
+        inputTokens: d.input,
+        outputTokens: d.output,
+        cacheReadTokens: d.cacheRead,
+        cacheWriteTokens: d.cacheWrite,
+        reasoningTokens: d.reasoning,
+        ...(d.extra !== undefined ? { extra: d.extra } : {}),
+      };
+      const cwd = from?.cwd ?? runCwd(d.agent, m.sessionId ?? undefined);
+      const branch = from?.branch ?? runBranch(d.agent, m.sessionId ?? undefined);
+      records.push({ ...row, ...costFor(row, d.costUsd), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), source: "transcript" });
+    }
+  }
+
   // ... plus machine CLI transcripts (claude/codex/gemini), computed-only (no
   // reported cost on these rows). costUsd is set only when the record has a
   // model the pricer knows; undefined costs contribute nothing to the sums.
@@ -1452,6 +1485,8 @@ async function cmdStats(rest: string[]): Promise<number> {
       if (agent && rec.agent !== agent) continue;
       const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
       if (!inWindow(tsMs, window)) continue;
+      // The dashboard export covers this span with billed numbers: its rows replace the IDE store's.
+      if (rec.agent === "cursor" && inDashboardSpan(dashSpan, tsMs)) continue;
       const row = {
         ts: Number.isFinite(tsMs) ? new Date(tsMs).toISOString() : null,
         agent: rec.agent,
