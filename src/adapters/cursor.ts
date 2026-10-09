@@ -284,7 +284,7 @@ export function createCursorLineParser(options: CursorParserOptions = {}): Curso
         } else if (evt.subtype === 'completed') {
           const text = thinking !== '' ? thinking : typeof evt.text === 'string' ? evt.text : '';
           thinking = '';
-          if (text.trim() !== '') out.push({ type: 'message', role: 'assistant', text, reasoning: true } as CanonicalEvent);
+          if (text.trim() !== '') out.push({ type: 'message', role: 'assistant', text, reasoning: true });
         }
         break;
       }
