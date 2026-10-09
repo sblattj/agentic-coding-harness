@@ -165,7 +165,14 @@ export function cursorUsageEvents(usage: CursorResultUsage | null, model: string
     return { events: [], warnings };
   }
   const reported = usage.costUsd !== null;
-  if (!reported) {
+  // `Auto` (the CLI default) never says which model served the run, so the
+  // tokens have no price: record them, leave the cost unavailable.
+  const autoRouted = model !== undefined && cursorModelSlug(model) === 'auto';
+  if (!reported && autoRouted) {
+    warnings.push(
+      'cursor: model Auto (Cursor auto-routing) does not report which model served the run; tokens recorded, cost unavailable (pass --model <name> to price a run; named models need a paid Cursor plan)',
+    );
+  } else if (!reported) {
     warnings.push(
       'cursor: the CLI stated tokens but no cost; cost computed from the reported tokens with the bundled pricing table (provenance computed)',
     );
@@ -185,10 +192,12 @@ export function cursorUsageEvents(usage: CursorResultUsage | null, model: string
       raw: usage,
       extra: reported
         ? { vendorMetered: true, costBasis: 'cursor-reported', source: 'native', ...(usage.hasTokens ? {} : { tokensAvailable: false }) }
-        : { costBasis: 'computed-from-tokens' },
+        : autoRouted
+          ? { costBasis: 'unpriced', unpricedReason: 'auto-routed' }
+          : { costBasis: 'computed-from-tokens' },
     },
     ...(reported ? { cost: usage.costUsd! } : {}),
-    ...(model !== undefined ? { model } : {}),
+    ...(model !== undefined && !autoRouted ? { model } : {}),
   } as unknown as CanonicalEvent;
   return { events: [event], warnings };
 }
@@ -388,7 +397,9 @@ export function classifyCursorStderr(line: string): string | null {
  * a completed run stays progress text.
  */
 export function cursorGenericStderrError(line: string): string | null {
-  const generic = /^\s*Error: (.+)/.exec(line);
+  // `Error:` and named classes such as `ActionRequiredError:` (2026.10.01:
+  // "Named models unavailable Free plans can only use Auto. ...").
+  const generic = /^\s*(?:[A-Z][A-Za-z]*)?Error: (.+)/.exec(line);
   return generic ? `cursor: ${generic[1]!.trim()}` : null;
 }
 
