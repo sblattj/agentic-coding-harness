@@ -208,6 +208,11 @@ describe('argv, sandbox and stderr classification', () => {
     assert.equal(classifyCursorStderr('Error: Something specific broke'), null, 'the generic form is decided by whether a result arrived');
     assert.equal(cursorGenericStderrError('Error: Something specific broke'), 'cursor: Something specific broke');
     assert.equal(cursorGenericStderrError('warning: nothing'), null);
+    assert.equal(
+      cursorGenericStderrError('ActionRequiredError: Named models unavailable Free plans can only use Auto.'),
+      'cursor: Named models unavailable Free plans can only use Auto.',
+    );
+    assert.equal(cursorGenericStderrError('    at Error: (internal)'), null);
     assert.match(classifyCursorStderr("Error: Authentication required. Please run 'agent login' first") ?? '', /not authenticated/);
     assert.equal(classifyCursorStderr('warning: nothing'), null);
   });
@@ -402,6 +407,7 @@ describe('end to end through the driver with a stub cursor-agent', () => {
     ['fail-trust', /workspace trust required/i, 'Workspace Trust Required'],
     ['fail-nochats', /--resume.*not found/, 'No previous chats found.'],
     ['fail-generic', /^cursor: Something specific broke$/, 'Error: Something specific broke'],
+    ['fail-plan', /^cursor: Named models unavailable Free plans can only use Auto\./, 'ActionRequiredError (free plan, after init)'],
   ] as const) {
     it(`stderr failure "${label}" (exit 1, no result event) surfaces the specific error`, async () => {
       const dirs = env();
@@ -411,6 +417,31 @@ describe('end to end through the driver with a stub cursor-agent', () => {
       assert.equal(errors.filter((m) => pattern.test(m)).length, 1, errors.join(' | '));
     });
   }
+
+  it('LIVE capture (cursor-agent 2026.10.01, model Auto, 2 tools): tokens recorded, cost unavailable with one Auto warning', async () => {
+    const dirs = env();
+    const { result } = await driveStub('live', dirs, {}, { CURSOR_API_KEY: 'synthetic-key' });
+    assert.equal(result.exitStatus, 'success');
+    assert.deepEqual(result.usage!.cost?.tokens, { inputTokens: 12182, outputTokens: 289, cacheReadTokens: 19328, cacheWriteTokens: 0 });
+    assert.equal(result.usage!.cost?.costAvailability, 'unavailable');
+    const notices = result.warnings;
+    assert.equal(notices.filter((w) => /model Auto/.test(w)).length, 1, notices.join(' | '));
+    assert.ok(!notices.some((w) => /cost computed|unknown model/.test(w)), notices.join(' | '));
+    const tools = result.events.filter((e) => e.type === 'tool_call').map((e) => String((e as { functionName?: string }).functionName));
+    assert.deepEqual(tools, ['read', 'shell']);
+    assert.equal(result.events.filter((e) => e.type === 'tool_result').length, 2);
+    assert.equal(result.events.filter((e) => e.type === 'message' && (e as { reasoning?: boolean }).reasoning).length, 2);
+  });
+
+  it('control: the same live capture with --model prices the tokens (computed, one computed warning)', async () => {
+    const dirs = env();
+    const { result } = await driveStub('live', dirs, { model: 'claude-sonnet-5' }, { CURSOR_API_KEY: 'synthetic-key' });
+    assert.equal(result.exitStatus, 'success');
+    assert.ok(result.totalCost > 0, `totalCost ${result.totalCost}`);
+    const notices = result.warnings;
+    assert.ok(!notices.some((w) => /model Auto/.test(w)), notices.join(' | '));
+    assert.equal(notices.filter((w) => /cost computed/.test(w)).length, 1, notices.join(' | '));
+  });
 
   it('control: a non-fatal `Error:` stderr line on a run that reaches `result` stays progress, never an error', async () => {
     const dirs = env();

@@ -732,10 +732,11 @@ export function createDriver(options: DriverOptions): Driver {
                     pricerPriced = true;
                     costFromReported = true;
                   }
-                } else if (nx?.tokensAvailable === false) {
+                } else if (nx?.tokensAvailable === false || typeof nx?.unpricedReason === 'string') {
                   // Placeholder zeros with no token counts to price (kiro
-                  // 2.21.x): pricing them would only emit an "unknown model"
-                  // warning about a record that carries nothing priceable.
+                  // 2.21.x), or real tokens the adapter declares unpriceable
+                  // (cursor `Auto`: no served model) and already warned about:
+                  // pricing them would only add an "unknown model" warning.
                 } else {
                   const cost = pricer.price(normalized);
                   if (Number.isNaN(cost)) {
