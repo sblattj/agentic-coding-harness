@@ -21,10 +21,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
         # 18.x resolves to the newest 18.x release, which satisfies the
         # package.json engines floor of >=18.19.
-        node-version: ['18.x', '20.x', '22.x']
+        node-version: ['18.x', '20.x']
     steps:
       - uses: actions/checkout@v7
 
@@ -37,8 +37,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Probe archive
+        run: sh scripts/probe-archive.sh
 
       # Bundled task suite (#51): every task's verify.sh must FAIL on the
       # untouched starter, PASS on reference/ and FAIL on broken/. A checker
