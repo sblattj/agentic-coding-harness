@@ -7,7 +7,7 @@ Note: releases before 0.8.1 predate this changelog.
 ### Added
 
 - cursor: support cursor-agent 2026.10.x stream-json. Usage is read from the nested camelCase `result.usage` (input is already net of cache), with top-level and snake_case (`cached_input_tokens`) fallbacks that are never summed. `thinking` events become one reasoning message per block. The CLI-internal `interaction_query`, `retry`, `connection` and `system/task_notification` events are ignored without warnings.
-- cursor: specific errors for stderr-only failures (workspace trust, a `--resume` id with no chat, any other `Error: <msg>`), one per run, instead of only `exited with code 1`.
+- cursor: specific errors for stderr-only failures (workspace trust, a `--resume` id with no chat, and, when the run produced no `result`, any other `Error: <msg>`), one per run, instead of only `exited with code 1`.
 - cursor IDE: recent `state.vscdb` stores parse. Epoch-ms timestamps are accepted. The model falls back to the composer's `modelConfig.modelName`, and `default` (auto-routing) means unknown. A store whose conversations carry no token counts (`{0,0}` bubbles, `agentKv` rows) now warns once, pointing at `ach run --agent cursor` or the Cursor dashboard export, instead of returning nothing silently.
 
 ### Fixed

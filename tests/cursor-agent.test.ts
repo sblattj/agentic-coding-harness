@@ -15,6 +15,7 @@ import {
   CURSOR_CAPABILITIES,
   CursorAdapter,
   classifyCursorStderr,
+  cursorGenericStderrError,
   createCursorLineParser,
   cursorArgs,
   cursorModelSlug,
@@ -204,7 +205,9 @@ describe('argv, sandbox and stderr classification', () => {
     assert.match(classifyCursorStderr('Error: Workspace Trust Required') ?? '', /workspace trust required/i);
     assert.match(classifyCursorStderr('Workspace Trust Required') ?? '', /workspace trust required/i);
     assert.match(classifyCursorStderr('No previous chats found.') ?? '', /--resume.*not found/);
-    assert.equal(classifyCursorStderr('Error: Something specific broke'), 'cursor: Something specific broke');
+    assert.equal(classifyCursorStderr('Error: Something specific broke'), null, 'the generic form is decided by whether a result arrived');
+    assert.equal(cursorGenericStderrError('Error: Something specific broke'), 'cursor: Something specific broke');
+    assert.equal(cursorGenericStderrError('warning: nothing'), null);
     assert.match(classifyCursorStderr("Error: Authentication required. Please run 'agent login' first") ?? '', /not authenticated/);
     assert.equal(classifyCursorStderr('warning: nothing'), null);
   });
@@ -408,6 +411,15 @@ describe('end to end through the driver with a stub cursor-agent', () => {
       assert.equal(errors.filter((m) => pattern.test(m)).length, 1, errors.join(' | '));
     });
   }
+
+  it('control: a non-fatal `Error:` stderr line on a run that reaches `result` stays progress, never an error', async () => {
+    const dirs = env();
+    const { result } = await driveStub('success-stderr-error', dirs, {}, { CURSOR_API_KEY: 'synthetic-key' });
+    assert.equal(result.exitStatus, 'success');
+    const errors = result.events.filter((e) => e.type === 'error').map((e) => String(e.message ?? e.content ?? ''));
+    assert.deepEqual(errors, []);
+    assert.ok(result.events.some((e) => e.type === 'progress' && /transient blip/.test(String(e.text))), 'the line is kept as progress');
+  });
 
   it('dedupe: two identical stderr error lines give one specific error', async () => {
     const dirs = env();
