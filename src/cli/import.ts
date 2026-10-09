@@ -34,6 +34,13 @@
 //   Only claude is importable today. A lane is a machine transcript source
 //   from src/monitors/transcripts.ts (transcriptSources) plus a corruption
 //   probe for its file format; adding codex/gemini is an IMPORT_LANES entry.
+//
+// CURSOR DASHBOARD USAGE EXPORT (`ach import --agent cursor --usage-export <file>`)
+//   Not an IMPORT_LANES entry: the Cursor dashboard export is per-request usage
+//   with no session transcript, so this mode writes NO RunRecords and NOTHING
+//   under <stateDir>/raw. It validates the file (src/monitors/cursor-dashboard.ts)
+//   and copies it verbatim to <stateDir>/cursor-dashboard/<sha256>.<csv|json>,
+//   content-addressed, so re-importing the same file writes nothing.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { isDeepStrictEqual, parseArgs } from "node:util";
@@ -51,6 +58,7 @@ import {
   type ScanOptions,
 } from "../monitors/transcripts.ts";
 import { resolveDirFlag } from "./lib.ts";
+import { CURSOR_DASHBOARD_DIR, detectCursorExportFormat, parseCursorDashboardExport } from "../monitors/cursor-dashboard.ts";
 
 export const DEFAULT_IMPORT_DAYS = 30;
 export const IMPORT_PRODUCER = "ach import";
@@ -372,7 +380,87 @@ export function formatImportText(res: ImportResult): string {
   return out.join("\n") + "\n";
 }
 
-export const IMPORT_USAGE = `ach import --agent claude [--days N=${DEFAULT_IMPORT_DAYS}] [--transcript-dir <root>] [--state-dir <stateDir>] [--dry-run] [--json]`;
+export const IMPORT_USAGE =
+  `ach import --agent claude [--days N=${DEFAULT_IMPORT_DAYS}] [--transcript-dir <root>] [--state-dir <stateDir>] [--dry-run] [--json]\n` +
+  `ach import --agent cursor --usage-export <file> [--usage-export <file>]... [--state-dir <stateDir>] [--dry-run] [--json]`;
+
+export interface CursorExportRow {
+  file: string;
+  format: "csv" | "json";
+  sha256: string;
+  stored: string;
+  outcome: "imported" | "unchanged" | "would-import";
+  records: number;
+  firstTimestamp: string | null;
+  lastTimestamp: string | null;
+  /** Sum of the dashboard-stated cost over records that carry one; null when none do. */
+  costUsd: number | null;
+}
+
+export interface CursorExportImportResult {
+  agent: "cursor";
+  stateDir: string;
+  dryRun: boolean;
+  files: CursorExportRow[];
+  warnings: string[];
+}
+
+/** Validate and store Cursor dashboard usage exports. Writes nothing when any file is unusable or on dry-run. */
+export function importCursorUsageExports(opts: { files: string[]; stateDir: string; dryRun?: boolean }): CursorExportImportResult {
+  const warnings: string[] = [];
+  const warn = (m: string) => warnings.push(m);
+  const dir = path.join(opts.stateDir, CURSOR_DASHBOARD_DIR);
+  const prepared: { row: CursorExportRow; bytes: Buffer }[] = [];
+  for (const file of opts.files) {
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFileSync(file);
+    } catch (e) {
+      throw new HarnessError(`--usage-export: cannot read '${file}': ${e instanceof Error ? e.message : String(e)}`, "USAGE");
+    }
+    const text = bytes.toString("utf8");
+    const format = detectCursorExportFormat(text);
+    const records = parseCursorDashboardExport(text, file, warn);
+    if (!format || records.length === 0) {
+      throw new HarnessError(`--usage-export: '${file}' has no usable Cursor dashboard usage records (nothing imported)${warnings.length ? `: ${warnings[warnings.length - 1]}` : ""}`, "USAGE");
+    }
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const stored = path.join(dir, `${sha256}.${format}`);
+    const stamps = records.map((r) => r.timestamp).filter((t): t is string => t !== null).sort();
+    const costs = records.map((r) => r.costUsd).filter((c): c is number => c !== undefined);
+    prepared.push({
+      bytes,
+      row: {
+        file, format, sha256, stored,
+        outcome: fs.existsSync(stored) ? "unchanged" : opts.dryRun ? "would-import" : "imported",
+        records: records.length,
+        firstTimestamp: stamps[0] ?? null,
+        lastTimestamp: stamps[stamps.length - 1] ?? null,
+        costUsd: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
+      },
+    });
+  }
+  if (!opts.dryRun) {
+    for (const { row, bytes } of prepared) {
+      if (row.outcome !== "imported") continue;
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(row.stored, bytes);
+    }
+  }
+  return { agent: "cursor", stateDir: opts.stateDir, dryRun: !!opts.dryRun, files: prepared.map((p) => p.row), warnings };
+}
+
+export function formatCursorExportText(res: CursorExportImportResult): string {
+  return (
+    res.files
+      .map((r) => {
+        const span = r.firstTimestamp && r.lastTimestamp ? `${r.firstTimestamp}..${r.lastTimestamp}` : "n/a";
+        const cost = r.costUsd === null ? "n/a" : `$${r.costUsd.toFixed(4)}`;
+        return `${r.outcome.padEnd(12)} ${r.file}: records=${r.records} span=${span} reported-cost=${cost}${r.outcome === "unchanged" ? " (already stored)" : ""}`;
+      })
+      .join("\n") + "\n"
+  );
+}
 
 export async function cmdImport(rest: string[]): Promise<number> {
   const args = parseArgs({
@@ -385,11 +473,30 @@ export async function cmdImport(rest: string[]): Promise<number> {
       dir: { type: "string" },
       "state-dir": { type: "string" },
       "transcript-dir": { type: "string" },
+      "usage-export": { type: "string", multiple: true },
     },
     allowPositionals: false,
   });
   const agent = args.values.agent;
-  if (!agent) throw new HarnessError(`import requires --agent <${importableAgents().join("|")}>`, "USAGE");
+  if (!agent) throw new HarnessError(`import requires --agent <${[...importableAgents(), "cursor"].join("|")}>`, "USAGE");
+  const usageExports = args.values["usage-export"] ?? [];
+  if (agent === "cursor") {
+    if (usageExports.length === 0) {
+      throw new HarnessError("import --agent cursor needs --usage-export <file> (a Cursor dashboard usage export, CSV or JSON); the Cursor lane has no transcripts to scan", "USAGE");
+    }
+    if (args.values.days !== undefined || args.values["transcript-dir"] !== undefined) {
+      throw new HarnessError("--days and --transcript-dir do not apply to `import --agent cursor --usage-export`", "USAGE");
+    }
+    const cres = importCursorUsageExports({
+      files: usageExports.map((f) => path.resolve(f)),
+      stateDir: resolveDirFlag(args.values, "state-dir") ?? defaultStateDir(),
+      dryRun: args.values["dry-run"],
+    });
+    for (const w of cres.warnings) process.stderr.write(`[warn] ${w}\n`);
+    process.stdout.write(args.values.json ? JSON.stringify(cres, null, 2) + "\n" : formatCursorExportText(cres));
+    return 0;
+  }
+  if (usageExports.length > 0) throw new HarnessError("--usage-export applies only to `import --agent cursor`", "USAGE");
   let days: number | undefined;
   if (args.values.days !== undefined) {
     days = Number(args.values.days);
