@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -1184,5 +1184,78 @@ describe('RunRecord totals.costSource (issue #28)', () => {
     assert.equal(t.costSource, undefined);
     assert.equal(t.provenance?.costUsd, 'computed'); // a blend is labelled computed
     assert.ok(t.costUsd > 0.3);
+  });
+});
+
+describe('kiro v3 engine store (#121)', () => {
+  const previousSessionsDir = process.env.KIRO_SESSIONS_DIR;
+  afterEach(() => {
+    if (previousSessionsDir === undefined) delete process.env.KIRO_SESSIONS_DIR;
+    else process.env.KIRO_SESSIONS_DIR = previousSessionsDir;
+  });
+
+  const V3_ID = 'sess_ec3122ff-e76d-414b-aa58-f46f05c0061a';
+  const V3_FIXTURE = join(
+    dirname(new URL(import.meta.url).pathname),
+    'fixtures',
+    'kiro',
+    'v3',
+    'd09f675e45985feb',
+    V3_ID,
+  );
+  const v3Records = readFileSync(join(V3_FIXTURE, 'messages.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map((l) => JSON.parse(l) as { payload: Record<string, any> });
+  const v3Credits = v3Records
+    .filter((r) => r.payload.type === 'usage_summary')
+    .reduce((a, r) => a + r.payload.promptTurnSummaries.reduce((b: number, e: { usage: number }) => b + e.usage, 0), 0);
+  const v3Pct = v3Records
+    .filter((r) => r.payload.type === 'session_metadata')
+    .map((r) => r.payload.value.usagePercentage as number)
+    .at(-1) as number;
+
+  it('reports tokens unavailable, credits from the store, context from the derived estimate, and no missing-store warning', async () => {
+    const root = join(mkdtempSync(join(tmpdir(), 'kiro-v3-')), 'sessions');
+    mkdirSync(join(root, 'cli'), { recursive: true });
+    cpSync(V3_FIXTURE, join(root, 'd09f675e45985feb', V3_ID), { recursive: true });
+    process.env.KIRO_SESSIONS_DIR = join(root, 'cli');
+    const driver = createDriver({
+      adapters: { kiro: new KiroMockAdapter(`kiro-${V3_ID}`, () => {}) },
+      stateDir: tmpStateDir(),
+      registry: { stateDir: tmpStateDir() },
+    });
+    const result = await driver.run('kiro', {
+      prompt: 'ping',
+      // No stream/tap credits and no stream context %: the store is the only source.
+      kiroEvents: [kiroChunk(), kiroUsage({ credits: undefined, creditsCumulative: undefined, contextUsagePercentage: undefined }), kiroTurnEnd()],
+    });
+    assert.equal(result.exitStatus, 'success');
+    assert.ok(
+      !result.warnings.some((w) => /no kiro session store/.test(w)),
+      `unexpected warnings: ${JSON.stringify(result.warnings)}`,
+    );
+    assert.equal(result.usage?.tokens.available, false);
+    assert.equal(result.usage?.credits.available, true);
+    assert.equal(result.usage?.credits.value, v3Credits);
+    assert.equal(result.usage?.credits.source, 'native');
+    assert.equal(result.usage?.context?.available, true);
+    assert.equal(result.usage?.context?.percentage, v3Pct);
+    assert.equal(result.usage?.context?.windowSource, 'assumed');
+    assert.equal(result.usage?.context?.tokens, Math.round((v3Pct / 100) * (result.usage?.context?.windowTokens as number)));
+    assert.equal(result.usage?.cost?.tokens, undefined, 'a v3 store contributes no token totals, not zeros');
+  });
+
+  it('control: with no store on disk the missing-store warning still fires', async () => {
+    const root = join(mkdtempSync(join(tmpdir(), 'kiro-v3-')), 'sessions');
+    mkdirSync(join(root, 'cli'), { recursive: true });
+    process.env.KIRO_SESSIONS_DIR = join(root, 'cli');
+    const driver = createDriver({
+      adapters: { kiro: new KiroMockAdapter(`kiro-${V3_ID}`, () => {}) },
+      stateDir: tmpStateDir(),
+      registry: { stateDir: tmpStateDir() },
+    });
+    const result = await driver.run('kiro', { prompt: 'ping', kiroEvents: [kiroChunk(), kiroUsage(), kiroTurnEnd()] });
+    assert.ok(result.warnings.some((w) => /no kiro session store/.test(w)), JSON.stringify(result.warnings));
   });
 });

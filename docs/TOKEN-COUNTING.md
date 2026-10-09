@@ -125,6 +125,14 @@ headless run plus kiro's own session store for two probe runs. Fixtures:
 | MITM tap — `metadataEvent` / `meteringEvent` frames | `tokenUsage.{uncachedInputTokens,cacheReadInputTokens,cacheWriteInputTokens,outputTokens,totalTokens}` | **all `0`** on 2.21.x; on 2.28.0 no frame carries `tokenUsage` at all (tap records get `extra.tokensAvailable = false`; context % arrives on `contextUsageEvent`, credits on `meteringEvent.usage`) |
 | Session store — `session_state.conversation_metadata.user_turn_metadatas[i]` | `input_token_count`, `output_token_count`, `cache_read_input_token_count`, `cache_write_input_token_count` | **all `0`** |
 | Stream / ACP `metadata` frames | *(no token field at all)* | — |
+| v3-engine session store — `<sessions root>/<16hex>/sess_<id>/messages.jsonl` (2.28.0) | *(no token field at all)*; carries `session_metadata` `contextUsage.usagePercentage` and one `usage_summary` (`promptTurnSummaries[].usage` = credits) per prompt turn | — (fixture: `tests/fixtures/kiro/v3/`) |
+
+**kiro-cli 2.28 reports no token counts on any surface** (wire, v2 store zeros, v3 store, ACP).
+Credits and context % are real. The v3 store is read by `readKiroSessionStore` for `sess_<id>`
+native session ids (`parseKiroV3Session`): credits are summed per unique `executionId` (one
+`usage_summary` per prompt turn, so a rewritten record replaces rather than adds), the latest
+`usagePercentage` is the context reading, and the store is tagged `hasTokenData:false` so it
+never makes tokens "available" and never contributes zero totals.
 
 So on this version **every token counter in every available source is zero**, and a zero there is
 indistinguishable from "not reported". The harness therefore reports `usage.tokens.available =
@@ -146,7 +154,9 @@ The three credit sources are reconciled to **one** charge in `src/core/usage-ava
 (authority order above, tolerance `1e-9`); they are never summed together, and any disagreement
 becomes a run warning naming all three values. Context tokens are **derived, not billed** — the
 `≈` and the separate column are deliberate, and a window taken from the fallback table is marked
-`windowSource:'assumed'`.
+`windowSource:'assumed'`. `usage.context.tokens` is an occupancy **estimate** (percentage × window,
+window from the store or an assumed 200k, labelled by `windowSource`) and is never folded into
+token totals.
 
 Nothing here is fabricated: a field the store does not carry comes back `undefined`, not `0`.
 Re-derive by symbol: `parseKiroSessionStore` (`src/adapters/kiro-session-store.ts`),

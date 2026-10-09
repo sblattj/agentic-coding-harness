@@ -36,6 +36,13 @@ export interface KiroStoreTurn {
 }
 
 export interface ParsedKiroSessionStore {
+  /** Which on-disk layout this was parsed from: the v2 engine's
+   *  `cli/<uuid>.json` or the v3 engine's `<16hex>/sess_<id>/` directory. */
+  format?: 'cli-v2' | 'v3';
+  /** `false` when the layout carries NO token fields at all (v3). Distinct from
+   *  the v2 store whose counters exist but are all zero; downstream must never
+   *  read a `false` here as "zero tokens", nor let it make tokens available. */
+  hasTokenData?: boolean;
   /** `rts_model_state.model_info.model_id`, else the last turn's `model`. */
   model?: string;
   contextWindowTokens?: number;
@@ -190,6 +197,7 @@ export function parseKiroSessionStore(json: unknown): ParsedKiroSessionStore | n
   }
 
   return {
+    format: 'cli-v2',
     ...(model !== undefined ? { model } : {}),
     ...(modelInfo && num(modelInfo.context_window_tokens) !== undefined
       ? { contextWindowTokens: num(modelInfo.context_window_tokens) as number }
@@ -197,6 +205,92 @@ export function parseKiroSessionStore(json: unknown): ParsedKiroSessionStore | n
     turns,
     creditsTotal,
     ...(lastContextUsagePercentage !== undefined ? { lastContextUsagePercentage } : {}),
+  };
+}
+
+/**
+ * Parse a kiro v3-engine session directory (`session.json` + `messages.jsonl`).
+ *
+ * The v3 store carries NO token fields. What it has per model call is context
+ * % (`session_metadata` key `contextUsage`, `value.usagePercentage`) and, once
+ * per prompt turn, a `usage_summary` whose `promptTurnSummaries[].usage` is the
+ * credits that turn cost. Measured on 31 real files: exactly one usage_summary
+ * per `executionId`, one summary entry each, so it is a PER-TURN charge, not a
+ * running total. Each unique `executionId` becomes one turn; a repeated id (a
+ * rewritten record) replaces the earlier one rather than adding to it, and
+ * entries inside one record are summed. Token counters are 0 on every turn only
+ * because `KiroStoreTurn` requires numbers: `hasTokenData: false` is the signal.
+ *
+ * Total and pure: never throws; unparsable lines (a half-written tail) are
+ * skipped. Returns null when neither file yields anything recognizable.
+ */
+export function parseKiroV3Session(
+  sessionJson: unknown,
+  messagesJsonl: string,
+): ParsedKiroSessionStore | null {
+  const meta = isRecord(sessionJson) ? sessionJson : undefined;
+  const sessionModel = meta ? text(meta.modelId) : undefined;
+
+  const turnsById = new Map<string, KiroStoreTurn>();
+  const order: string[] = [];
+  let pendingPct: number | undefined;
+  let lastPct: number | undefined;
+  let recognized = meta !== undefined && text(meta.id) !== undefined;
+  let anon = 0;
+
+  for (const line of messagesJsonl.split('\n')) {
+    if (line.trim() === '') continue;
+    let rec: unknown;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(rec) || !isRecord(rec.payload)) continue;
+    const payload = rec.payload;
+    if (typeof payload.type !== 'string') continue;
+    recognized = true;
+    if (payload.type === 'session_metadata') {
+      if (payload.key === 'contextUsage' && isRecord(payload.value)) {
+        const pct = num(payload.value.usagePercentage);
+        if (pct !== undefined) {
+          pendingPct = pct;
+          lastPct = pct;
+        }
+      }
+    } else if (payload.type === 'usage_summary') {
+      let credits: number | null = null;
+      if (Array.isArray(payload.promptTurnSummaries)) {
+        for (const entry of payload.promptTurnSummaries) {
+          if (!isRecord(entry)) continue;
+          const v = num(entry.usage);
+          if (v === undefined) continue;
+          credits = (credits ?? 0) + v;
+        }
+      }
+      const id = text(payload.executionId) ?? text(rec.id) ?? `anon-${anon++}`;
+      if (!turnsById.has(id)) order.push(id);
+      turnsById.set(id, {
+        ...(sessionModel !== undefined ? { model: sessionModel } : {}),
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        ...(pendingPct !== undefined ? { contextUsagePercentage: pendingPct } : {}),
+        credits,
+      });
+    }
+  }
+  if (!recognized) return null;
+
+  const turns = order.map((id) => turnsById.get(id) as KiroStoreTurn);
+  return {
+    format: 'v3',
+    hasTokenData: false,
+    ...(sessionModel !== undefined ? { model: sessionModel } : {}),
+    turns,
+    creditsTotal: sumTurnCredits(turns),
+    ...(lastPct !== undefined ? { lastContextUsagePercentage: lastPct } : {}),
   };
 }
 
@@ -228,6 +322,58 @@ export async function locateKiroSessionStore(
   return file;
 }
 
+/**
+ * Directory of the v3-engine store for a `sess_<id>` native session id:
+ * `<sessions root>/<16hex>/sess_<id>/`, where the sessions root is the parent
+ * of `kiroSessionsDir()`. The `<16hex>` bucket is not derivable from the id, so
+ * the root is scanned. Same id safety rules as `locateKiroSessionStore`; null
+ * when nothing matches. Never throws.
+ */
+export async function locateKiroV3SessionDir(
+  nativeSessionId: string | undefined | null,
+  opts: { dir?: string } = {},
+): Promise<string | null> {
+  if (typeof nativeSessionId !== 'string' || !nativeSessionId.startsWith('sess_')) return null;
+  if (nativeSessionId.includes('/') || nativeSessionId.includes('\\') || nativeSessionId.includes('..')) {
+    return null;
+  }
+  const root = path.dirname(kiroSessionsDir(opts));
+  let buckets: string[];
+  try {
+    buckets = await fs.readdir(root);
+  } catch {
+    return null;
+  }
+  for (const bucket of buckets.sort()) {
+    const candidate = path.join(root, bucket, nativeSessionId);
+    try {
+      const stat = await fs.stat(path.join(candidate, 'messages.jsonl'));
+      if (stat.isFile()) return candidate;
+    } catch {
+      // not in this bucket
+    }
+  }
+  return null;
+}
+
+async function readKiroV3Store(dir: string): Promise<KiroSessionStoreResult> {
+  let messages: string;
+  try {
+    messages = await fs.readFile(path.join(dir, 'messages.jsonl'), 'utf8');
+  } catch (err) {
+    return { ok: false, reason: `kiro v3 session store unreadable (${dir}): ${err instanceof Error ? err.message : String(err)}` };
+  }
+  let sessionJson: unknown;
+  try {
+    sessionJson = JSON.parse(await fs.readFile(path.join(dir, 'session.json'), 'utf8'));
+  } catch {
+    sessionJson = undefined; // model is optional; messages.jsonl alone is usable
+  }
+  const store = parseKiroV3Session(sessionJson, messages);
+  if (store === null) return { ok: false, reason: `kiro v3 session store has no recognizable records (${dir})` };
+  return { ok: true, path: dir, store };
+}
+
 export type KiroSessionStoreResult =
   | { ok: true; path: string; store: ParsedKiroSessionStore }
   | KiroSessionStoreFailure;
@@ -242,6 +388,8 @@ export async function readKiroSessionStore(
 ): Promise<KiroSessionStoreResult> {
   const file = await locateKiroSessionStore(nativeSessionId, opts);
   if (file === null) {
+    const v3Dir = await locateKiroV3SessionDir(nativeSessionId, opts);
+    if (v3Dir !== null) return readKiroV3Store(v3Dir);
     return { ok: false, reason: `no kiro session store for session id ${nativeSessionId ?? '(none)'}` };
   }
   let raw: string;
