@@ -127,7 +127,7 @@ as an MCP failure.
 |---|---|---|
 | credits | **yes** | stream `metadata.meteringUsage[].value` (cumulative) > session store `metering_usage` > MITM tap `meteringEvent.credits`; reconciled to one charge, disagreements become a warning |
 | context tokens | **derived** | `contextUsagePercentage × context_window_tokens` (200 000 on 2.21.2); shown as `ctx ≈ N tok`, never billed |
-| input / output / cache tokens | **no** | every token field in the tap, the stream and the session store is `0`; the harness reports `tokens.available = false` and renders `n/a` |
+| input / output / cache tokens | **no** | no surface reports tokens (kiro-cli 2.28: none on the wire, v2 store zeros, v3 store `sess_<id>/messages.jsonl` has no token fields, ACP none); on 2.21.x every token field is `0`; the harness reports `tokens.available = false` and renders `n/a` |
 | USD | **no** | nothing maps credits to dollars; `--budget-usd` on a kiro run warns that the cap is unenforceable |
 
 The rule is: a `0` that cannot be distinguished from "not reported" is never shown as `0`.

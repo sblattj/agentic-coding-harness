@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   kiroSessionsDir,
   locateKiroSessionStore,
+  locateKiroV3SessionDir,
+  parseKiroV3Session,
   parseKiroSessionStore,
   readKiroSessionStore,
   sliceKiroSessionStore,
@@ -183,5 +185,139 @@ describe('sliceKiroSessionStore', () => {
     assert.equal(sliceKiroSessionStore(store, 0), store);
     assert.equal(sliceKiroSessionStore(store, 4), store);
     assert.equal(sliceKiroSessionStore(store, -1), store);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v3 engine store: <root>/<16hex>/sess_<id>/{session.json,messages.jsonl}.
+// Fixture is a trimmed copy of a real kiro-cli 2.28.0 run (prompt text and
+// paths neutralized). Expected numbers are re-derived from the raw file here.
+// ---------------------------------------------------------------------------
+const V3_ID = 'sess_ec3122ff-e76d-414b-aa58-f46f05c0061a';
+const V3_ROOT = join(FIXTURES, 'v3');
+const V3_DIR = join(V3_ROOT, 'd09f675e45985feb', V3_ID);
+
+function v3Records(file = join(V3_DIR, 'messages.jsonl')): Array<{ payload: Record<string, any> }> {
+  return readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+}
+
+/** Copy the v3 fixture under <tmp>/sessions/<bucket>/ and return {root, cli}. */
+function plantV3(bucket = 'd09f675e45985feb', id = V3_ID): { root: string; cli: string } {
+  const root = join(mkdtempSync(join(tmpdir(), 'kiro-v3-')), 'sessions');
+  const cli = join(root, 'cli');
+  mkdirSync(cli, { recursive: true });
+  cpSync(V3_DIR, join(root, bucket, id), { recursive: true });
+  return { root, cli };
+}
+
+describe('parseKiroV3Session / v3 store — real 2.28.0 fixture', () => {
+  it('reads credits, latest context % and model from the real messages.jsonl', () => {
+    const recs = v3Records();
+    const usage = recs.filter((r) => r.payload.type === 'usage_summary');
+    const pcts = recs
+      .filter((r) => r.payload.type === 'session_metadata')
+      .map((r) => r.payload.value.usagePercentage as number);
+    assert.equal(usage.length, 1, 'fixture has one usage_summary');
+    const expectedCredits = usage[0]!.payload.promptTurnSummaries.reduce(
+      (a: number, e: { usage: number }) => a + e.usage,
+      0,
+    );
+    const store = parseKiroV3Session(
+      JSON.parse(readFileSync(join(V3_DIR, 'session.json'), 'utf8')),
+      readFileSync(join(V3_DIR, 'messages.jsonl'), 'utf8'),
+    );
+    assert.ok(store);
+    assert.equal(store.format, 'v3');
+    assert.equal(store.hasTokenData, false);
+    assert.equal(store.creditsTotal, expectedCredits);
+    assert.equal(store.lastContextUsagePercentage, pcts[pcts.length - 1]);
+    assert.equal(store.model, 'auto');
+    assert.equal(store.contextWindowTokens, undefined);
+    assert.equal(store.turns.length, 1);
+  });
+
+  it('does not double count: one turn per executionId, a repeated record replaces', () => {
+    const rec = (exec: string, usage: number[]) =>
+      JSON.stringify({
+        id: `${exec}-usage`,
+        payload: {
+          type: 'usage_summary',
+          executionId: exec,
+          promptTurnSummaries: usage.map((u) => ({ unit: 'credit', usage: u })),
+        },
+      });
+    const pct = (v: number) => JSON.stringify({ id: `p${v}`, payload: { type: 'session_metadata', key: 'contextUsage', value: { usagePercentage: v } } });
+    const jsonl = [pct(1), rec('e1', [0.25]), rec('e1', [0.25]), pct(3), pct(4), rec('e2', [0.5, 0.125]), 'not json {'].join('\n');
+    const store = parseKiroV3Session(undefined, jsonl);
+    assert.ok(store);
+    assert.equal(store.turns.length, 2);
+    assert.deepEqual(store.turns.map((t) => t.credits), [0.25, 0.625]);
+    assert.equal(store.creditsTotal, 0.875);
+    assert.equal(store.lastContextUsagePercentage, 4);
+    assert.equal(store.turns[1]?.contextUsagePercentage, 4);
+    assert.equal(store.model, undefined);
+  });
+
+  it('yields null credits (not 0) when no usage_summary exists yet, and null for junk', () => {
+    const only = JSON.stringify({ payload: { type: 'turn_start' } });
+    const store = parseKiroV3Session({ id: 'sess_x' }, only);
+    assert.ok(store);
+    assert.equal(store.creditsTotal, null);
+    assert.equal(store.turns.length, 0);
+    assert.equal(parseKiroV3Session(undefined, ''), null);
+    assert.equal(parseKiroV3Session(42, '{"nope":1}\n[1]\n'), null);
+  });
+
+  it('readKiroSessionStore finds sess_<id> by scanning <root>/*/ and honours KIRO_SESSIONS_DIR', async () => {
+    const { root, cli } = plantV3();
+    assert.equal(await locateKiroV3SessionDir(V3_ID, { dir: cli }), join(root, 'd09f675e45985feb', V3_ID));
+    const read = await readKiroSessionStore(V3_ID, { dir: cli });
+    assert.equal(read.ok, true);
+    assert.equal(read.ok && read.store.format, 'v3');
+    assert.equal(read.ok && read.path, join(root, 'd09f675e45985feb', V3_ID));
+
+    const previous = process.env.KIRO_SESSIONS_DIR;
+    process.env.KIRO_SESSIONS_DIR = cli;
+    try {
+      const viaEnv = await readKiroSessionStore(V3_ID);
+      assert.equal(viaEnv.ok, true);
+    } finally {
+      if (previous === undefined) delete process.env.KIRO_SESSIONS_DIR;
+      else process.env.KIRO_SESSIONS_DIR = previous;
+    }
+  });
+
+  it('a missing v3 id, a non-sess_ id and traversal attempts fail without throwing', async () => {
+    const { cli } = plantV3();
+    const miss = await readKiroSessionStore('sess_00000000-0000-0000-0000-000000000000', { dir: cli });
+    assert.equal(miss.ok, false);
+    assert.match(miss.ok ? '' : miss.reason, /no kiro session store for session id sess_0/);
+    assert.equal(await locateKiroV3SessionDir('sess_../x', { dir: cli }), null);
+    assert.equal(await locateKiroV3SessionDir('sess_a/b', { dir: cli }), null);
+    assert.equal(await locateKiroV3SessionDir('sess_a\\b', { dir: cli }), null);
+    assert.equal(await locateKiroV3SessionDir('not-a-sess-id', { dir: cli }), null);
+    assert.equal(await locateKiroV3SessionDir(undefined, { dir: cli }), null);
+    assert.equal(await locateKiroV3SessionDir(V3_ID, { dir: join(tmpdir(), 'no-such-root-xyz', 'cli') }), null);
+  });
+
+  it('sliceKiroSessionStore degrades sanely for v3: scopes by turn and keeps the v3 markers', () => {
+    const rec = (exec: string, u: number) =>
+      JSON.stringify({ payload: { type: 'usage_summary', executionId: exec, promptTurnSummaries: [{ usage: u }] } });
+    const pct = (v: number) => JSON.stringify({ payload: { type: 'session_metadata', key: 'contextUsage', value: { usagePercentage: v } } });
+    const store = parseKiroV3Session(undefined, [pct(1), rec('a', 0.5), pct(2), rec('b', 0.25)].join('\n'));
+    assert.ok(store);
+    const sliced = sliceKiroSessionStore(store, 1);
+    assert.equal(sliced.creditsTotal, 0.25);
+    assert.equal(sliced.lastContextUsagePercentage, 2);
+    assert.equal(sliced.hasTokenData, false);
+    assert.equal(sliced.format, 'v3');
+  });
+
+  it('control: a v2 cli/<uuid>.json store is unchanged and tagged cli-v2', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiro-sessions-'));
+    writeFileSync(join(dir, 'abc.json'), readFileSync(HAIKU, 'utf8'));
+    const read = await readKiroSessionStore('abc', { dir });
+    assert.equal(read.ok && read.store.format, 'cli-v2');
+    assert.equal(read.ok && read.store.hasTokenData, undefined);
   });
 });

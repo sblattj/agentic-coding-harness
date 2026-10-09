@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0.0",
+  "dataModelVersion": 1,
+  "id": "sess_ec3122ff-e76d-414b-aa58-f46f05c0061a",
+  "title": "Read, List, and Summarize Files",
+  "agentMode": "vibe",
+  "workspacePaths": [
+    "/workspace"
+  ],
+  "rootPaths": [
+    "/workspace"
+  ],
+  "createdAt": "2026-10-09T00:02:59.413Z",
+  "lastModifiedAt": "2026-10-09T00:03:10.062Z",
+  "modelId": "auto",
+  "semanticReviewEnabled": true,
+  "disableAutoCompaction": false,
+  "ftaEnabled": false,
+  "workflowsEnabled": false,
+  "specPlanEnabled": false,
+  "specWorkflow": "quick",
+  "specSkipClarificationEnabled": true,
+  "memoryConfigSource": "legacy",
+  "status": "idle"
+}

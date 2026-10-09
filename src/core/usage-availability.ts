@@ -65,6 +65,8 @@ function recordHasTokens(rec: CanonicalTokenRecord): boolean {
 }
 
 function storeHasTokens(store: ParsedKiroSessionStore): boolean {
+  // A v3 store has no token fields at all; its placeholder zeros are not data.
+  if (store.hasTokenData === false) return false;
   return store.turns.some(
     (t) => t.inputTokens > 0 || t.outputTokens > 0 || t.cacheReadTokens > 0 || t.cacheWriteTokens > 0,
   );
