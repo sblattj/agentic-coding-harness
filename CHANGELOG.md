@@ -4,13 +4,14 @@ Note: releases before 0.8.1 predate this changelog.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-09
+
 ### Added
 
 - cursor: support cursor-agent 2026.10.x stream-json. Usage is read from the nested camelCase `result.usage` (input is already net of cache), with top-level and snake_case (`cached_input_tokens`) fallbacks that are never summed. `thinking` events become one reasoning message per block. The CLI-internal `interaction_query`, `retry`, `connection` and `system/task_notification` events are ignored without warnings.
 - cursor: specific errors for stderr-only failures (workspace trust, a `--resume` id with no chat, and, when the run produced no `result`, any other `Error: <msg>` or `<Name>Error: <msg>` such as the free plan's `ActionRequiredError: Named models unavailable`), one per run, instead of only `exited with code 1`.
 - cursor IDE: recent `state.vscdb` stores parse. Epoch-ms timestamps are accepted. The model falls back to the composer's `modelConfig.modelName`, and `default` (auto-routing) means unknown. A store whose conversations carry no token counts (`{0,0}` bubbles, `agentKv` rows) now warns once, pointing at `ach run --agent cursor` or the Cursor dashboard export, instead of returning nothing silently.
 - cursor: a run on the default model `Auto` records its tokens with cost unavailable and one warning, instead of pricing as `unknown model` next to a contradictory "cost computed" warning. Verified live on cursor-agent 2026.10.01: ach's tokens equal the CLI's `result.usage` exactly.
-
 - cursor: `ach import --agent cursor --usage-export <file>` validates a Cursor dashboard usage export (CSV or JSON, live captures of 2026-10-09) and stores a verbatim copy under `<stateDir>/cursor-dashboard/<sha256>.<ext>`. Re-importing is `unchanged`; `--dry-run` and `--json` are supported; no RunRecords and nothing under `raw/` are written. The parser (`src/monitors/cursor-dashboard.ts`) checks the CSV `Total Tokens` against its four counters, reports `chargedCents/100` as the JSON cost, and de-duplicates a request that appears in several exports.
 - cursor: `ach stats` now counts imported dashboard exports (also with `--state-only`), at the billed cost. A JSON row replaces every `ach run` cursor record of its session; a CSV row replaces one `ach run` cursor record with identical input, cache-read and output tokens within 10 minutes (each record used once) and takes over its session and project; Cursor IDE-store rows inside the export's time span are replaced, rows outside it are kept. The rules are pure functions in `src/cli/cursor-dashboard-merge.ts`.
 
