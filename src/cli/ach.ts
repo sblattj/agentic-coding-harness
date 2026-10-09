@@ -329,6 +329,13 @@ usage:
                  last activity is older than --days; a corrupt file is an error
                  line and the import continues (exit 0); \`ach stats\` totals
                  are unchanged by import; --dir is an alias of --state-dir here)
+  ach import --agent cursor --usage-export <file> [--usage-export <file>]...
+             [--state-dir <stateDir>] [--dry-run] [--json]
+                (validate a Cursor dashboard usage export, CSV or JSON, and store a
+                 verbatim copy under <stateDir>/cursor-dashboard/<sha256>.<ext>;
+                 prints records, date span and reported cost per file; re-importing
+                 the same file is \`unchanged\`; writes no RunRecords and nothing
+                 under raw/; --days and --transcript-dir do not apply)
   ach verify-run <runId|runDir> [--json] [--records] [--state-dir <stateDir>]
                 (recompute the run's sha256 hash-chained event log and check its
                  terminal seal + sealed totals (#59); exit 0 intact, 2 tampered

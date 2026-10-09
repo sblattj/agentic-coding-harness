@@ -55,7 +55,7 @@ export async function parseCursorDb(file: string, warn: WarnFn = warnTranscript)
       } catch { warn(`cursor: ${file}: skipped malformed bubble ${row.key}`); }
     }
     if (!out.length && (unavailable > 0 || agentKv > 0)) {
-      warn(`cursor: ${file}: this Cursor build does not record per-message token counts locally (${unavailable + agentKv} conversation entries without usage); use \`ach run --agent cursor\` for exact CLI usage or the Cursor dashboard usage export`);
+      warn(`cursor: ${file}: this Cursor build does not record per-message token counts locally (${unavailable + agentKv} conversation entries without usage); use \`ach run --agent cursor\` for exact CLI usage or import the Cursor dashboard usage export with \`ach import --agent cursor --usage-export <file>\``);
     } else if (unavailable) warn(`cursor: ${file}: reported usage unavailable for ${unavailable} bubbles; no token estimates used`);
   } catch (error) { warn(`cursor: skipped unreadable store ${file}: ${(error as Error).message}`); }
   return out;

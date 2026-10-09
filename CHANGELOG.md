@@ -11,6 +11,8 @@ Note: releases before 0.8.1 predate this changelog.
 - cursor IDE: recent `state.vscdb` stores parse. Epoch-ms timestamps are accepted. The model falls back to the composer's `modelConfig.modelName`, and `default` (auto-routing) means unknown. A store whose conversations carry no token counts (`{0,0}` bubbles, `agentKv` rows) now warns once, pointing at `ach run --agent cursor` or the Cursor dashboard export, instead of returning nothing silently.
 - cursor: a run on the default model `Auto` records its tokens with cost unavailable and one warning, instead of pricing as `unknown model` next to a contradictory "cost computed" warning. Verified live on cursor-agent 2026.10.01: ach's tokens equal the CLI's `result.usage` exactly.
 
+- cursor: `ach import --agent cursor --usage-export <file>` validates a Cursor dashboard usage export (CSV or JSON, live captures of 2026-10-09) and stores a verbatim copy under `<stateDir>/cursor-dashboard/<sha256>.<ext>`. Re-importing is `unchanged`; `--dry-run` and `--json` are supported; no RunRecords and nothing under `raw/` are written. The parser (`src/monitors/cursor-dashboard.ts`) checks the CSV `Total Tokens` against its four counters, reports `chargedCents/100` as the JSON cost, and de-duplicates a request that appears in several exports. Reading imported exports in `ach stats` is a separate follow-up.
+
 ### Fixed
 
 - cursor IDE: large stores were skipped as unreadable (`stdout maxBuffer length exceeded`) because whole message values were piped out of SQLite. Only the counted fields are extracted now.

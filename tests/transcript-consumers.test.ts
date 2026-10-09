@@ -133,7 +133,7 @@ test('Cursor reads modern stores: epoch timestamps, composer model fallback, no 
     const none = await parseCursorDb(empty.db, (s) => emptyWarnings.push(s));
     const entries = (empty.sql.match(/"inputTokens":0,"outputTokens":0/g) ?? []).length + (empty.sql.match(/'agentKv:blob:/g) ?? []).length;
     assert.deepEqual(none, []);
-    assert.deepEqual(emptyWarnings, [`cursor: ${empty.db}: this Cursor build does not record per-message token counts locally (${entries} conversation entries without usage); use \`ach run --agent cursor\` for exact CLI usage or the Cursor dashboard usage export`]);
+    assert.deepEqual(emptyWarnings, [`cursor: ${empty.db}: this Cursor build does not record per-message token counts locally (${entries} conversation entries without usage); use \`ach run --agent cursor\` for exact CLI usage or import the Cursor dashboard usage export with \`ach import --agent cursor --usage-export <file>\``]);
   } finally { rmSync(f.home, { recursive: true, force: true }); }
 });
 test('Cursor never pipes message text: a store bigger than the read buffer still parses', async () => {
