@@ -2,6 +2,13 @@
 
 Note: releases before 0.8.1 predate this changelog.
 
+## [0.17.2] - 2026-10-09
+
+### Fixed
+
+- kiro (#121): kiro-cli 2.28.0 stopped sending `tokenUsage` and moved `contextUsagePercentage` to a new `contextUsageEvent`, so every tapped run read 0 tokens. The MITM tap now captures `contextUsageEvent`. Tap frames with no `tokenUsage` object are marked `tokensAvailable: false` instead of producing zero-token records. `frameToMitmLine` also reads `meteringEvent.usage` credits.
+- kiro (#121): ach now reads the v3 engine session store (`~/.kiro/sessions/<hex>/sess_<id>/`) for credits and context %. Tokens are reported unavailable there, because kiro 2.28 exposes no real token counts on any surface. Context tokens are derived from the percentage and an assumed window.
+
 ## [0.17.1] - 2026-10-08
 
 ### Fixed
