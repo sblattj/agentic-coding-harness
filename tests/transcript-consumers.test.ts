@@ -136,6 +136,27 @@ test('Cursor reads modern stores: epoch timestamps, composer model fallback, no 
     assert.deepEqual(emptyWarnings, [`cursor: ${empty.db}: this Cursor build does not record per-message token counts locally (${entries} conversation entries without usage); use \`ach run --agent cursor\` for exact CLI usage or the Cursor dashboard usage export`]);
   } finally { rmSync(f.home, { recursive: true, force: true }); }
 });
+test('Cursor never pipes message text: a store bigger than the read buffer still parses', async () => {
+  const { parseCursorDb } = await import('../src/monitors/cursor.ts');
+  const f = fixture();
+  try {
+    const db = join(f.home, 'big.db');
+    // A 70 MB bubble text exceeds the 64 MB sqlite3 stdout buffer if values are selected whole.
+    const sql = [
+      'CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB);',
+      `INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-big:huge', json_object('type', 2, 'text', printf('%.*c', 70000000, 'x'), 'createdAt', '2026-10-01T00:00:00.000Z', 'tokenCount', json_object('inputTokens', 9, 'outputTokens', 1)));`,
+      `INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-big:own-default', '{"createdAt":"2026-10-01T00:00:01.000Z","modelInfo":{"modelName":"default"},"tokenCount":{"inputTokens":4,"outputTokens":2}}');`,
+      `INSERT INTO cursorDiskKV VALUES ('composerData:comp-big', '{"modelConfig":{"modelName":"gpt-5"}}');`,
+      `INSERT INTO cursorDiskKV VALUES ('composerData:comp-broken', '{broken');`,
+    ].join('\n');
+    const built = spawnSync('sqlite3', [db], { input: sql, encoding: 'utf8' });
+    assert.equal(built.status, 0, built.stderr);
+    const warnings: string[] = [];
+    const rows = await parseCursorDb(db, (s) => warnings.push(s));
+    assert.deepEqual(warnings, []);
+    assert.deepEqual(rows.map((r) => [r.input, r.output, r.model]), [[9, 1, 'gpt-5'], [4, 2, 'gpt-5']]);
+  } finally { rmSync(f.home, { recursive: true, force: true }); }
+});
 test('web source includes transcript rows and suppresses sessions already owned by registry', async () => {
   const { TranscriptRunSource } = await import('../src/web/run-source-transcript.ts');
   const f = fixture();
