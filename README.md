@@ -168,7 +168,10 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   Cursor run's cost is `computed` from `--model`. The default model, `Auto`, does not say which model
   served the run, so its tokens are recorded and its cost is unavailable (one warning). Recent Cursor IDE builds keep no per-message token counts on disk,
   so `ach stats --agent cursor` reports them unavailable (one warning) rather than estimating; use
-  `ach run --agent cursor` or the Cursor dashboard export for exact usage. Stream shapes were read
+  `ach run --agent cursor` or the Cursor dashboard export for exact usage.
+  To keep a dashboard export, run `ach import --agent cursor --usage-export <file>` (CSV or JSON from the
+  Cursor dashboard): the file is validated and a copy stored under `<stateDir>/cursor-dashboard/`;
+  re-importing the same file is `unchanged`, and no run records are written. Stream shapes were read
   from the 2026.10.01 CLI bundle and verified on a live logged-in run; see
   [docs/transcript-adapters.md](docs/transcript-adapters.md).
   No vendor quota source.
