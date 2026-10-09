@@ -209,6 +209,8 @@ export interface CursorLineParser {
   /** Called once after the last stdout line: emits the usage events and warnings. */
   finish(): CanonicalEvent[];
   sessionId(): string | undefined;
+  /** True once the terminal `result` event was parsed (the run completed). */
+  sawResult(): boolean;
 }
 
 /** `readToolCall` -> `read`; `{function:{name}}` -> name. */
@@ -353,7 +355,7 @@ export function createCursorLineParser(options: CursorParserOptions = {}): Curso
     return [...events, ...notices];
   };
 
-  return { parseLine, finish, sessionId: () => sessionId };
+  return { parseLine, finish, sessionId: () => sessionId, sawResult: () => sawResult };
 }
 
 // ---------------------------------------------------------------------------
@@ -377,9 +379,17 @@ export function classifyCursorStderr(line: string): string | null {
   if (/No previous chats found/i.test(line)) {
     return 'cursor: the --resume session id was not found ("No previous chats found."); start a new run or check the id.';
   }
-  const generic = /^\s*Error: (.+)/.exec(line);
-  if (generic) return `cursor: ${generic[1]!.trim()}`;
   return null;
+}
+
+/**
+ * Any other handled CLI error (`Error: <msg>`, then exit 1 with no `result`).
+ * Only an error when the run produced no `result`: a non-fatal `Error:` line on
+ * a completed run stays progress text.
+ */
+export function cursorGenericStderrError(line: string): string | null {
+  const generic = /^\s*Error: (.+)/.exec(line);
+  return generic ? `cursor: ${generic[1]!.trim()}` : null;
 }
 
 export interface CursorPreflightResult {
@@ -634,18 +644,37 @@ export class CursorAdapter implements AgentAdapter, CoreAgentAdapter {
       ...(opts.model !== undefined ? { model: opts.model } : {}),
     });
     const reported = new Set<string>();
+    // Generic `Error:` lines wait for stdout to end: they become errors only
+    // when no `result` arrived. A line after stdout ended is decided at once.
+    const pending: string[] = [];
+    let stdoutEnded = false;
+    const once = (message: string): CanonicalEvent[] => {
+      if (reported.has(message)) return [];
+      reported.add(message);
+      return [{ type: 'error', message }];
+    };
     const handle = runJsonlCli({
       spec,
       parseLine: parser.parseLine,
       spawnFn: this.#spawnFn,
       onOutput,
       onStderrLine: (line) => {
-        const message = classifyCursorStderr(line);
-        if (message === null || reported.has(message)) return;
-        reported.add(message);
-        return [{ type: 'error', message }];
+        const specific = classifyCursorStderr(line);
+        if (specific !== null) return once(specific);
+        const generic = cursorGenericStderrError(line);
+        if (generic === null) return;
+        if (!stdoutEnded) {
+          pending.push(generic);
+          return;
+        }
+        return parser.sawResult() ? undefined : once(generic);
       },
-      onStdoutEnd: () => parser.finish(),
+      onStdoutEnd: () => {
+        stdoutEnded = true;
+        const tail = parser.finish();
+        if (!parser.sawResult()) for (const message of pending) tail.push(...once(message));
+        return tail;
+      },
     });
     this.#current = handle;
     void handle.wait().finally(() => {

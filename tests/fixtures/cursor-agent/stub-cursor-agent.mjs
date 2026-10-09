@@ -43,7 +43,9 @@ if (failLines) {
   process.stderr.write(failLines.join('\n') + '\n', () => process.exit(1));
   await new Promise(() => {});
 }
+// A non-fatal stderr `Error:` line on a run that still completes.
+if (mode === 'success-stderr-error') process.stderr.write('Error: transient blip\n');
 const resume = argv.indexOf('--resume') >= 0 ? argv[argv.indexOf('--resume') + 1] : undefined;
 const sid = resume ?? '5b6f8f4e-0d6c-4c53-9f5c-3b0a7c7d9e22';
-const file = { computed: 'stream-computed.jsonl', reported: 'stream-reported.jsonl', 'no-usage': 'stream-no-usage.jsonl', 'run-error': 'stream-run-error.jsonl', 'stream-2026-10': 'stream-2026-10.jsonl' }[mode];
+const file = { computed: 'stream-computed.jsonl', reported: 'stream-reported.jsonl', 'no-usage': 'stream-no-usage.jsonl', 'run-error': 'stream-run-error.jsonl', 'stream-2026-10': 'stream-2026-10.jsonl', 'success-stderr-error': 'stream-2026-10.jsonl' }[mode];
 process.stdout.write(readFileSync(join(here, file), 'utf8').replaceAll('__SID__', sid), () => process.exit(mode === 'run-error' ? 1 : 0));
