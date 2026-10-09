@@ -4,6 +4,10 @@ Note: releases before 0.8.1 predate this changelog.
 
 ## [Unreleased]
 
+### Changed
+
+- The context-diet kit now lives in its own repo, [sblattj/context-diet](https://github.com/sblattj/context-diet), which also installs as a Claude Code plugin. The copy in `context-diet/` stays for now but is frozen, and new fixes land in the new repo. See docs/CONTEXT-DIET.md.
+
 ## [0.18.0] - 2026-10-09
 
 ### Added

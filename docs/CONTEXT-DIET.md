@@ -1,5 +1,7 @@
 # Context diet kit
 
+> **Moved:** the kit now lives in [sblattj/context-diet](https://github.com/sblattj/context-diet), with the full history, a runbook and a Claude Code plugin (`claude plugin marketplace add sblattj/context-diet`). The copy here is frozen and may fall behind; use the new repo for anything new.
+
 Every Claude Code session and subagent pays a startup cost before it does any work: the system prompt, tool schemas, the skills listing, MCP tool schemas, and instructions files (`CLAUDE.md`). In a heavily customized setup that was about 43k tokens per subagent, so a 52-agent fan-out burned roughly 2.3M tokens of pure baseline. This kit measures that cost, finds skills that do not earn their listing, and ships a lean subagent template. It needs only `bash`, `python3` and the `claude` CLI; nothing here touches the TypeScript build.
 
 | Tool | Answers |
