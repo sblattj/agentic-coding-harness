@@ -1,6 +1,6 @@
 # Skill-trigger A/B pipeline
 
-Measures whether a skill-visibility change (for example moving skills to `name-only` in `skillOverrides`) still lets the model pick the right skill, using **real prompts mined from your own session logs**. Part of the context-diet kit (see [docs/CONTEXT-DIET.md](../../docs/CONTEXT-DIET.md), issue #118). Python 3.9+, standard library only. Order: mine, filter, make_arms, synth (optional), run, report.
+Measures whether a skill-visibility change (for example moving skills to `name-only` in `skillOverrides`) still lets the model pick the right skill, using **real prompts mined from your own session logs**. Part of the context-diet kit, which now lives in [sblattj/context-diet](https://github.com/sblattj/context-diet) (this copy is frozen) (see [docs/CONTEXT-DIET.md](../../docs/CONTEXT-DIET.md), issue #118). Python 3.9+, standard library only. Order: mine, filter, make_arms, synth (optional), run, report.
 
 ```
 transcripts --mine.py--> candidates.jsonl --filter.py--> cases.jsonl --run.py--> results.jsonl --report.py--> tables

@@ -832,7 +832,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
   double-counting traps, cost formula.
 - [`docs/MCP.md`](docs/MCP.md) — MCP server: client configs (opencode, Claude Code), tool
   reference, worked example, troubleshooting.
-- [Context diet kit](docs/CONTEXT-DIET.md) — measure subagent startup tokens (`ablate.sh`), mine skill usage,
+- [Context diet kit](docs/CONTEXT-DIET.md) (moved to [sblattj/context-diet](https://github.com/sblattj/context-diet)): measure subagent startup tokens (`ablate.sh`), mine skill usage,
   lint skill descriptions, and a lean subagent template.
 - [`docs/TOOLHIVE.md`](docs/TOOLHIVE.md) — host deployment behind a ToolHive gateway: HTTP
   serve lane, async job lifecycle, gateway profile, secret forwarding, client configs.
