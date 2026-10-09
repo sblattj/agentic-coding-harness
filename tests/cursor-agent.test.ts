@@ -132,7 +132,83 @@ describe('stdout line parser', () => {
   });
 });
 
+describe('cursor-agent 2026.10.01 stream-json', () => {
+  it('full stream: nested usage (real sample numbers), one reasoning message, tool ok, ignored types silent', () => {
+    const { events, parser } = parseAll('stream-2026-10.jsonl');
+    const [u] = usageOf(events);
+    assert.ok(u);
+    assert.deepEqual(
+      [u.tokens.inputTokens, u.tokens.outputTokens, u.tokens.cacheReadTokens, u.tokens.cacheWriteTokens],
+      [26640, 40, 467, 12],
+    );
+    assert.equal((u.tokens as { extra?: Record<string, unknown> }).extra!.costBasis, 'computed-from-tokens');
+    assert.equal(parser.sessionId(), SESSION);
+    const reasoning = events.filter((e) => e.type === 'message' && (e as { reasoning?: boolean }).reasoning === true);
+    assert.equal(reasoning.length, 1);
+    assert.equal((reasoning[0] as { text: string }).text, 'Let me look at the README.');
+    assert.equal((reasoning[0] as { role: string }).role, 'assistant');
+    const plain = events.filter((e) => e.type === 'message' && (e as { reasoning?: boolean }).reasoning !== true);
+    assert.deepEqual(plain.map((e) => (e as { text: string }).text), ['Done: one file.']);
+    const tools = events.filter((e) => e.type === 'tool') as Array<{ phase: string; status?: string }>;
+    assert.deepEqual(tools.map((t) => [t.phase, t.status]), [['start', undefined], ['result', 'success']]);
+    assert.deepEqual(events.filter((e) => e.type === 'error'), []);
+    // The only notice is the expected "computed from tokens" one; nothing for retry/connection/etc.
+    assert.deepEqual(noticesOf(events).filter((w) => !/computed from the reported tokens/.test(w)), []);
+    assert.equal(events.filter((e) => e.type === 'step').length, 1);
+  });
+
+  it('thinking: a completed event with no deltas emits nothing; a non-empty text with no deltas emits one message', () => {
+    const p = createCursorLineParser();
+    assert.deepEqual(p.parseLine('{"type":"thinking","subtype":"completed","session_id":"s"}').filter((e) => e.type === 'message'), []);
+    const out = p.parseLine('{"type":"thinking","subtype":"completed","text":"whole thought","session_id":"s"}');
+    assert.deepEqual(out.filter((e) => e.type === 'message'), [{ type: 'message', role: 'assistant', text: 'whole thought', reasoning: true }]);
+  });
+
+  it('usage: top-level camelCase fields on the result (older builds)', () => {
+    const { events } = parseAll('stream-top-level-usage.jsonl');
+    const [u] = usageOf(events);
+    assert.ok(u);
+    assert.deepEqual([u.tokens.inputTokens, u.tokens.outputTokens, u.tokens.cacheReadTokens, u.tokens.cacheWriteTokens], [111, 22, 333, 4]);
+  });
+
+  it('usage: snake_case with cached_input_tokens -> cacheRead', () => {
+    const { events } = parseAll('stream-snake-usage.jsonl');
+    const [u] = usageOf(events);
+    assert.ok(u);
+    assert.deepEqual([u.tokens.inputTokens, u.tokens.outputTokens, u.tokens.cacheReadTokens, u.tokens.cacheWriteTokens], [500, 60, 7000, 0]);
+  });
+
+  it('usage: nested wins when both nested and top-level fields are present (no double count)', () => {
+    const u = parseCursorResultUsage({ inputTokens: 9, outputTokens: 9, cacheReadTokens: 9, usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 } });
+    assert.deepEqual([u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheWriteTokens], [1, 2, 3, 4]);
+  });
+
+  it('a tool_call completed with {"error":{...}} is a failed tool (control: the success fixture is not)', () => {
+    const { events } = parseAll('stream-tool-error.jsonl');
+    const result = events.find((e) => e.type === 'tool' && (e as { phase: string }).phase === 'result') as { status: string };
+    assert.equal(result.status, 'error');
+    const ok = parseAll('stream-2026-10.jsonl').events.find((e) => e.type === 'tool' && (e as { phase: string }).phase === 'result') as { status: string };
+    assert.equal(ok.status, 'success');
+  });
+
+  it('a present-but-empty failure member does not fail the tool', () => {
+    const p = createCursorLineParser();
+    const line = '{"type":"tool_call","subtype":"completed","call_id":"c","tool_call":{"readToolCall":{"args":{},"result":{"success":{"content":"x"},"error":null}}},"session_id":"s"}';
+    const r = p.parseLine(line).find((e) => e.type === 'tool') as { status: string };
+    assert.equal(r.status, 'success');
+  });
+});
+
 describe('argv, sandbox and stderr classification', () => {
+  it('classifies the trust, no-chats and generic Error: lines; the auth line wins over the generic form', () => {
+    assert.match(classifyCursorStderr('Error: Workspace Trust Required') ?? '', /workspace trust required/i);
+    assert.match(classifyCursorStderr('Workspace Trust Required') ?? '', /workspace trust required/i);
+    assert.match(classifyCursorStderr('No previous chats found.') ?? '', /--resume.*not found/);
+    assert.equal(classifyCursorStderr('Error: Something specific broke'), 'cursor: Something specific broke');
+    assert.match(classifyCursorStderr("Error: Authentication required. Please run 'agent login' first") ?? '', /not authenticated/);
+    assert.equal(classifyCursorStderr('warning: nothing'), null);
+  });
+
   it('headless argv: print + stream-json, --trust, --force, prompt after `--`', () => {
     assert.deepEqual(cursorArgs('hello', { model: 'gpt-5' }), ['--print', '--output-format', 'stream-json', '--trust', '--model', 'gpt-5', '--force', '--', 'hello']);
     assert.deepEqual(cursorArgs('-x').slice(-2), ['--', '-x']);
@@ -308,6 +384,36 @@ describe('end to end through the driver with a stub cursor-agent', () => {
     assert.equal(result.exitStatus, 'unavailable');
     const errors = result.events.filter((e) => e.type === 'error').map((e) => String(e.message ?? e.content ?? ''));
     assert.ok(errors.some((m) => /cursor: not authenticated/.test(m)), errors.join(' | '));
+  });
+
+  it('2026.10 stream end to end: usage priced from the real-sample tokens, no stray warnings', async () => {
+    const dirs = env();
+    const { result } = await driveStub('stream-2026-10', dirs, { model: 'claude-sonnet-5' });
+    assert.equal(result.exitStatus, 'success');
+    const expected = createPricer().price({ agent: 'cursor', model: 'claude-sonnet-5', inputTokens: 26640, outputTokens: 40, cacheReadTokens: 467, cacheWriteTokens: 12 });
+    assert.ok(expected > 0);
+    assert.ok(Math.abs(result.totalCost - expected) < 1e-12, `${result.totalCost} vs ${expected}`);
+  });
+
+  for (const [mode, pattern, label] of [
+    ['fail-trust', /workspace trust required/i, 'Workspace Trust Required'],
+    ['fail-nochats', /--resume.*not found/, 'No previous chats found.'],
+    ['fail-generic', /^cursor: Something specific broke$/, 'Error: Something specific broke'],
+  ] as const) {
+    it(`stderr failure "${label}" (exit 1, no result event) surfaces the specific error`, async () => {
+      const dirs = env();
+      const { result } = await driveStub(mode, dirs, {}, { CURSOR_API_KEY: 'synthetic-key' });
+      assert.notEqual(result.exitStatus, 'success');
+      const errors = result.events.filter((e) => e.type === 'error').map((e) => String(e.message ?? e.content ?? ''));
+      assert.equal(errors.filter((m) => pattern.test(m)).length, 1, errors.join(' | '));
+    });
+  }
+
+  it('dedupe: two identical stderr error lines give one specific error', async () => {
+    const dirs = env();
+    const { result } = await driveStub('fail-generic-dup', dirs, {}, { CURSOR_API_KEY: 'synthetic-key' });
+    const errors = result.events.filter((e) => e.type === 'error').map((e) => String(e.message ?? e.content ?? ''));
+    assert.equal(errors.filter((m) => /Something specific broke/.test(m)).length, 1, errors.join(' | '));
   });
 
   it('a failing result (is_error, exit 1) after work is an error run, not unavailable', async () => {

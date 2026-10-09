@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/synthetic","session_id":"__SID__","model":"Claude 4 Sonnet","permissionMode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"session_id":"__SID__"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"duration_api_ms":900,"result":"ok","session_id":"__SID__","request_id":"req-synthetic-4","usage":{"input_tokens":500,"output_tokens":60,"cached_input_tokens":7000}}

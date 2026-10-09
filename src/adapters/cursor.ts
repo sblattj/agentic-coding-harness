@@ -26,23 +26,31 @@ import {
  * `cursor-agent --print --output-format stream-json [--force] -- <prompt>`,
  * which writes one JSON event per line on stdout.
  *
- * Evidence for the stream shapes (none observed live: the verifying machine
- * was not authenticated, and an unauthenticated run emits nothing on stdout):
- *  - cursor.com/docs/cli/reference/output-format (fetched 2026-10-08): events
- *    `system/init` {apiKeySource, cwd, session_id, model, permissionMode},
- *    `user`, `assistant` {message.content[{type:'text',text}]},
- *    `tool_call` started/completed {call_id, tool_call:{<kind>ToolCall:{args,result}}},
- *    and a terminal `result` {subtype, is_error, duration_ms, duration_api_ms,
- *    result, session_id, request_id}. That page states NO event carries tokens
- *    or cost.
- *  - aws-samples/sample-agent-cost-bench `agent_cost_bench/usage.py`
- *    (`parse_cursor_usage`, source `cursor_json`): the `result` object may carry
- *    `usage: {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}`
- *    (camelCase; inputTokens read as the UNCACHED slice) and NO cost field.
+ * Evidence for the stream shapes (read from the cursor-agent 2026.10.01 bundle,
+ * 9969.index.js, stream-json writer; read from code, not a captured live run,
+ * since the verifying machine was not authenticated):
+ *  - `system/init` {apiKeySource, cwd, session_id, model (display name),
+ *    permissionMode (hard-coded "default", even with --force)}, then a `user`
+ *    echo; `assistant` {message.content[{type:'text',text}]};
+ *    `tool_call` started/completed {call_id, tool_call:{<kind>ToolCall:{args,result}},
+ *    model_call_id, timestamp_ms}: protobuf toJson with default values emitted
+ *    (args carry ""/0/false/[]), `result` a oneof (`{success}` / `{error}` ...).
+ *  - `thinking` {subtype:'delta' (text) | 'completed' (no text)}; the CLI-internal
+ *    `interaction_query`, `retry`, `connection`, `system/task_notification` and
+ *    `system/background_shell_timeout` carry nothing we map and are ignored.
+ *  - terminal `result` {subtype:'success', is_error, duration_ms, duration_api_ms,
+ *    result, session_id, request_id, usage:{inputTokens, outputTokens,
+ *    cacheReadTokens, cacheWriteTokens}}: inputTokens is already NET of cache
+ *    reads/writes; `usage` is ABSENT when there are no counts; there is NO cost,
+ *    model or num_turns field. Older builds put the camelCase counts at the top
+ *    level of the result (aws-samples/sample-agent-cost-bench `parse_cursor_usage`).
+ *  - Failures emit NO result event: the CLI writes to stderr and exits 1
+ *    ("Error: Authentication required...", "Workspace Trust Required",
+ *    "No previous chats found.", other handled errors as "Error: <msg>").
  *
  * Usage, in order (the issue's provenance rule, #24):
  *  1. The result states a cost (`total_cost_usd` / `cost_usd` / `costUsd` /
- *     `cost`; UNVERIFIED: no public source shows a Cursor CLI cost field):
+ *     `cost`; none exists in 2026.10.01, kept for forward compatibility):
  *     that figure is the cost, flagged `extra.vendorMetered` so the pricer never
  *     re-derives it from tokens -> provenance `reported`.
  *  2. The result states tokens only: the pricer computes the cost from the
@@ -81,16 +89,30 @@ export interface CursorResultUsage {
   costUsd: number | null;
 }
 
-/** Field names probed for a CLI-stated cost, in order (UNVERIFIED against a live CLI). */
+/**
+ * Field names probed for a CLI-stated cost, in order. These fields are absent
+ * in cursor-agent 2026.10.01 (the result has no cost); kept for forward
+ * compatibility with a build that adds one.
+ */
 const COST_FIELDS = ['total_cost_usd', 'cost_usd', 'costUsd', 'cost'] as const;
 
+const INPUT_KEYS = ['inputTokens', 'input_tokens'];
+const OUTPUT_KEYS = ['outputTokens', 'output_tokens'];
+const CACHE_READ_KEYS = ['cacheReadTokens', 'cache_read_tokens', 'cache_read_input_tokens', 'cached_input_tokens'];
+const CACHE_WRITE_KEYS = ['cacheWriteTokens', 'cache_write_tokens', 'cache_creation_input_tokens'];
+
 /**
- * Read the usage a terminal `result` object states. Accepts the camelCase
- * `usage` of the cost-bench source and a snake_case spelling.
+ * Read the usage a terminal `result` object states. Three shapes: the nested
+ * camelCase `usage` (2026.10.01), top-level camelCase fields on the result
+ * (older builds), and snake_case `usage.{input_tokens, output_tokens,
+ * cached_input_tokens}`. The nested `usage` wins when it states any token
+ * count; the top-level fields are then ignored (never summed).
  */
 export function parseCursorResultUsage(result: unknown): CursorResultUsage {
   const r = isRec(result) ? result : {};
-  const u = isRec(r.usage) ? r.usage : {};
+  const nested = isRec(r.usage) ? r.usage : {};
+  const allKeys = [...INPUT_KEYS, ...OUTPUT_KEYS, ...CACHE_READ_KEYS, ...CACHE_WRITE_KEYS];
+  const u = allKeys.some((k) => num(nested[k]) !== null) ? nested : r;
   const pick = (...keys: string[]): number => {
     for (const k of keys) {
       const v = num(u[k]);
@@ -98,12 +120,12 @@ export function parseCursorResultUsage(result: unknown): CursorResultUsage {
     }
     return 0;
   };
-  const inputTokens = pick('inputTokens', 'input_tokens');
-  const outputTokens = pick('outputTokens', 'output_tokens');
-  const cacheReadTokens = pick('cacheReadTokens', 'cache_read_tokens', 'cache_read_input_tokens');
-  const cacheWriteTokens = pick('cacheWriteTokens', 'cache_write_tokens', 'cache_creation_input_tokens');
+  const inputTokens = pick(...INPUT_KEYS);
+  const outputTokens = pick(...OUTPUT_KEYS);
+  const cacheReadTokens = pick(...CACHE_READ_KEYS);
+  const cacheWriteTokens = pick(...CACHE_WRITE_KEYS);
   let costUsd: number | null = null;
-  for (const holder of [r, u]) {
+  for (const holder of [r, nested]) {
     for (const f of COST_FIELDS) {
       const v = num(holder[f]);
       if (v !== null && v >= 0) {
@@ -201,6 +223,18 @@ function toolOf(toolCall: unknown): { name: string; body: Record<string, unknown
   return { name: 'unknown_tool', body: {} };
 }
 
+/** Oneof members of a tool `result` that mean the tool failed (shell: failure/timeout/rejected/spawnError/permissionDenied). */
+const TOOL_FAILURE_KEYS = ['error', 'failure', 'rejected', 'timeout', 'spawnError', 'permissionDenied'] as const;
+
+/** A failure member counts only when present and not null/undefined/"" (protobuf default-valued output). */
+function toolResultFailed(res: unknown): boolean {
+  if (!isRec(res)) return false;
+  return TOOL_FAILURE_KEYS.some((k) => {
+    const v = res[k];
+    return v !== undefined && v !== null && v !== '';
+  });
+}
+
 function textOf(message: unknown): string {
   if (!isRec(message) || !Array.isArray(message.content)) return '';
   return message.content
@@ -209,11 +243,12 @@ function textOf(message: unknown): string {
 }
 
 /**
- * Stateful stdout parser. Mapping (cursor.com output-format docs; not observed
- * live): `system/init` -> session + model; `assistant` -> assistant message;
- * `tool_call` started/completed -> tool start/result; `result` -> captured
- * usage, plus an error event when `is_error` is true or the subtype is not
- * `success`. `user` echoes and unknown types are ignored.
+ * Stateful stdout parser. Mapping (2026.10.01 bundle; see the file header):
+ * `system/init` -> session + model; `assistant` -> assistant message;
+ * `thinking` -> one reasoning message on `completed`; `tool_call`
+ * started/completed -> tool start/result; `result` -> captured usage, plus an
+ * error event when `is_error` is true or the subtype is not `success`. `user`
+ * echoes, the CLI-internal types and unknown types are ignored.
  */
 export function createCursorLineParser(options: CursorParserOptions = {}): CursorLineParser {
   let sessionId = options.sessionId;
@@ -221,6 +256,7 @@ export function createCursorLineParser(options: CursorParserOptions = {}): Curso
   let initModel: string | undefined;
   let result: CursorResultUsage | null = null;
   let sawResult = false;
+  let thinking = '';
 
   const announce = (): CanonicalEvent[] => {
     if (announced || sessionId === undefined) return [];
@@ -238,9 +274,26 @@ export function createCursorLineParser(options: CursorParserOptions = {}): Curso
     out.push(...announce());
     switch (evt.type) {
       case 'system': {
+        // system/task_notification and system/background_shell_timeout: ignored on purpose.
         if (evt.subtype === 'init' && typeof evt.model === 'string' && evt.model !== '') initModel = evt.model;
         break;
       }
+      case 'thinking': {
+        if (evt.subtype === 'delta') {
+          if (typeof evt.text === 'string') thinking += evt.text;
+        } else if (evt.subtype === 'completed') {
+          const text = thinking !== '' ? thinking : typeof evt.text === 'string' ? evt.text : '';
+          thinking = '';
+          if (text.trim() !== '') out.push({ type: 'message', role: 'assistant', text, reasoning: true } as CanonicalEvent);
+        }
+        break;
+      }
+      // interaction_query / retry / connection are CLI-internal (the CLI answers
+      // its own queries and retries): ignored on purpose, never a warning.
+      case 'interaction_query':
+      case 'retry':
+      case 'connection':
+        break;
       case 'assistant': {
         const text = textOf(evt.message);
         if (text.trim() !== '') out.push({ type: 'message', role: 'assistant', text });
@@ -259,7 +312,7 @@ export function createCursorLineParser(options: CursorParserOptions = {}): Curso
           });
         } else if (evt.subtype === 'completed') {
           const res = body.result;
-          const failed = isRec(res) && ('error' in res || 'failure' in res || 'rejected' in res);
+          const failed = toolResultFailed(res);
           out.push({
             type: 'tool',
             toolName: name,
@@ -318,6 +371,14 @@ export const CURSOR_AUTH_HINT =
  */
 export function classifyCursorStderr(line: string): string | null {
   if (/Authentication required|Not logged in|not authenticated/i.test(line)) return CURSOR_AUTH_HINT;
+  if (/Workspace Trust Required/i.test(line)) {
+    return 'cursor: workspace trust required; the CLI refused to run in an untrusted directory (trust it in Cursor first, or pass --trust).';
+  }
+  if (/No previous chats found/i.test(line)) {
+    return 'cursor: the --resume session id was not found ("No previous chats found."); start a new run or check the id.';
+  }
+  const generic = /^\s*Error: (.+)/.exec(line);
+  if (generic) return `cursor: ${generic[1]!.trim()}`;
   return null;
 }
 

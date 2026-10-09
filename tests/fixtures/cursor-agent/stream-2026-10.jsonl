@@ -1,0 +1,14 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work/synthetic","session_id":"__SID__","model":"Claude 4 Sonnet","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"list the files"}]},"session_id":"__SID__"}
+{"type":"thinking","subtype":"delta","text":"Let me look ","session_id":"__SID__","timestamp_ms":1760000000100}
+{"type":"thinking","subtype":"delta","text":"at the README.","session_id":"__SID__","timestamp_ms":1760000000200}
+{"type":"thinking","subtype":"completed","session_id":"__SID__","timestamp_ms":1760000000300}
+{"type":"interaction_query","subtype":"request","query_type":"webFetchRequestQuery","query_id":1,"session_id":"__SID__","timestamp_ms":1760000000350}
+{"type":"interaction_query","subtype":"response","query_type":"webFetchRequestQuery","query_id":1,"response":{"approved":{}},"session_id":"__SID__","timestamp_ms":1760000000360}
+{"type":"retry","subtype":"starting","attempt":1,"session_id":"__SID__","timestamp_ms":1760000000370}
+{"type":"connection","subtype":"reconnecting","session_id":"__SID__","timestamp_ms":1760000000380}
+{"type":"system","subtype":"task_notification","session_id":"__SID__","timestamp_ms":1760000000390}
+{"type":"tool_call","subtype":"started","call_id":"call_1","tool_call":{"readToolCall":{"args":{"path":"README.md","offset":0,"limit":0,"includeLineNumbers":false}}},"model_call_id":"mc_1","session_id":"__SID__","timestamp_ms":1760000000400}
+{"type":"tool_call","subtype":"completed","call_id":"call_1","tool_call":{"readToolCall":{"args":{"path":"README.md","offset":0,"limit":0,"includeLineNumbers":false},"result":{"success":{"content":"# demo","totalLines":1,"fileSize":6,"path":"README.md","isEmpty":false,"exceededLimit":false}}}},"model_call_id":"mc_1","session_id":"__SID__","timestamp_ms":1760000000500}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done: one file."}]},"session_id":"__SID__","model_call_id":"mc_2","timestamp_ms":1760000000600}
+{"type":"result","subtype":"success","duration_ms":10606,"duration_api_ms":10606,"is_error":false,"result":"Done: one file.","session_id":"__SID__","request_id":"req-synthetic-2","usage":{"inputTokens":26640,"outputTokens":40,"cacheReadTokens":467,"cacheWriteTokens":12}}

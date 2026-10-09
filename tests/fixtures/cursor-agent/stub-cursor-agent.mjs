@@ -6,6 +6,9 @@
 //   no-usage            result carries neither            run-error result is_error
 //   logged-out          `status` says "Not logged in" (exit 0), like the real CLI; a run would fail
 //   run-auth            `status` is fine but the run fails with the real unauthenticated error
+//   stream-2026-10      the full 2026.10.01 stream (thinking, interaction_query, retry, ...)
+//   fail-trust | fail-nochats | fail-generic | fail-generic-dup
+//                       stderr text, exit 1, NO result event (the real failure shape)
 // STUB_CURSOR_ARGV=<file> records the argv of the main run as JSON;
 // STUB_CURSOR_STATUS=<file> is appended to when `status` is invoked.
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -29,7 +32,18 @@ if (mode === 'run-auth' || mode === 'logged-out') {
   process.stderr.write("Error: Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY environment variable.\n");
   process.exit(1);
 }
+// Real failures write to stderr and exit 1 with NO result event (cursor-agent 2026.10.01 bundle).
+const failLines = {
+  'fail-trust': ['Error: Workspace Trust Required'],
+  'fail-nochats': ['No previous chats found.'],
+  'fail-generic': ['Error: Something specific broke'],
+  'fail-generic-dup': ['Error: Something specific broke', 'Error: Something specific broke'],
+}[mode];
+if (failLines) {
+  process.stderr.write(failLines.join('\n') + '\n', () => process.exit(1));
+  await new Promise(() => {});
+}
 const resume = argv.indexOf('--resume') >= 0 ? argv[argv.indexOf('--resume') + 1] : undefined;
 const sid = resume ?? '5b6f8f4e-0d6c-4c53-9f5c-3b0a7c7d9e22';
-const file = { computed: 'stream-computed.jsonl', reported: 'stream-reported.jsonl', 'no-usage': 'stream-no-usage.jsonl', 'run-error': 'stream-run-error.jsonl' }[mode];
+const file = { computed: 'stream-computed.jsonl', reported: 'stream-reported.jsonl', 'no-usage': 'stream-no-usage.jsonl', 'run-error': 'stream-run-error.jsonl', 'stream-2026-10': 'stream-2026-10.jsonl' }[mode];
 process.stdout.write(readFileSync(join(here, file), 'utf8').replaceAll('__SID__', sid), () => process.exit(mode === 'run-error' ? 1 : 0));
