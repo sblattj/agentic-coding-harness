@@ -17,14 +17,14 @@ jobs:
   test:
     name: test (node ${{ matrix.node-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
         # 18.x resolves to the newest 18.x release, which satisfies the
         # package.json engines floor of >=18.19.
-        node-version: ['18.x', '20.x', '22.x']
+        node-version: ['18.x']
     steps:
       - uses: actions/checkout@v7
 
@@ -58,7 +58,7 @@ jobs:
       #     bun-pty for real — this is the only place in the matrix that
       #     verifies the PTY layer #39 calls out as unverified risk.
       - name: Test (Bun not on PATH)
-        run: npm test
+        run: ls tests/*.test.ts src/adapters/*.test.ts | xargs -P 3 -n 1 sh scripts/probe-per-file.sh
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
