@@ -1,0 +1,11 @@
+CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB);
+INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-ctx:zero-1', '{"type":1,"createdAt":"2026-09-27T01:00:00.000Z","tokenCount":{"inputTokens":0,"outputTokens":0}}');
+INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-ctx:zero-2', '{"type":2,"createdAt":"2026-09-27T01:00:01.000Z","tokenCount":{"inputTokens":0,"outputTokens":0}}');
+INSERT INTO cursorDiskKV VALUES ('composerData:comp-ctx', '{"modelConfig":{"modelName":"default"},"createdAt":1790000000000,"contextTokensUsed":99999,"promptTokenBreakdown":{"system":50000,"files":49999}}');
+INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-opus:reported', '{"type":2,"createdAt":1790000000000,"tokenCount":{"inputTokens":700,"outputTokens":80}}');
+INSERT INTO cursorDiskKV VALUES ('composerData:comp-opus', '{"modelConfig":{"modelName":"claude-opus-4-8[context=1m]"},"createdAt":1790000000000}');
+INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-auto:reported', '{"type":2,"createdAt":"2026-09-28T02:00:00.000Z","tokenCount":{"inputTokens":30,"outputTokens":5}}');
+INSERT INTO cursorDiskKV VALUES ('composerData:comp-auto', '{"modelConfig":{"modelName":"default"},"createdAt":1790000000000}');
+INSERT INTO cursorDiskKV VALUES ('agentKv:blob:aaaa', '{"role":"user","content":"hi","providerOptions":{"cursor":{"requestId":"r1","modelName":"default"}}}');
+INSERT INTO cursorDiskKV VALUES ('agentKv:blob:bbbb', '{"role":"assistant","content":"hello","providerOptions":{"cursor":{"requestId":"r1","modelName":"default"}}}');
+INSERT INTO cursorDiskKV VALUES ('agentKv:blob:cccc', '{"role":"tool","content":"x","providerOptions":{"cursor":{"requestId":"r2","modelName":"default"}}}');

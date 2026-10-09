@@ -99,6 +99,43 @@ test('Cursor reads explicit reported bubble counts and skips malformed or unavai
     }
   } finally { rmSync(f.home, { recursive: true, force: true }); }
 });
+test('Cursor reads modern stores: epoch timestamps, composer model fallback, no context gauges', async () => {
+  const { parseCursorDb } = await import('../src/monitors/cursor.ts');
+  const { readFileSync } = await import('node:fs');
+  const f = fixture();
+  const build = (name: string) => {
+    const db = join(f.home, `${name}.db`);
+    const sql = readFileSync(new URL(`./fixtures/cursor/${name}.sql`, import.meta.url), 'utf8');
+    const built = spawnSync('sqlite3', [db], { input: sql, encoding: 'utf8' });
+    assert.equal(built.status, 0, built.stderr);
+    return { db, sql };
+  };
+  try {
+    const modern = build('modern');
+    const warnings: string[] = [];
+    const rows = await parseCursorDb(modern.db, (s) => warnings.push(s));
+    const zero = (modern.sql.match(/"inputTokens":0,"outputTokens":0/g) ?? []).length;
+    assert.equal(rows.length, 2);
+    const opus = rows.find((r) => r.sessionId === 'comp-opus')!;
+    assert.equal(opus.input, 700); assert.equal(opus.output, 80);
+    assert.equal(opus.timestamp, new Date(1790000000000).toISOString());
+    assert.equal(opus.model, 'claude-opus-4-8[context=1m]');
+    const auto = rows.find((r) => r.sessionId === 'comp-auto')!;
+    assert.equal(auto.input, 30); assert.equal(auto.output, 5);
+    assert.equal(auto.timestamp, '2026-09-28T02:00:00.000Z');
+    assert.equal(auto.model, null);
+    // contextTokensUsed (99999) and promptTokenBreakdown must contribute nothing.
+    assert.equal(rows.reduce((n, r) => n + r.input + r.output, 0), 700 + 80 + 30 + 5);
+    assert.deepEqual(warnings, [`cursor: ${modern.db}: reported usage unavailable for ${zero} bubbles; no token estimates used`]);
+
+    const empty = build('modern-empty');
+    const emptyWarnings: string[] = [];
+    const none = await parseCursorDb(empty.db, (s) => emptyWarnings.push(s));
+    const entries = (empty.sql.match(/"inputTokens":0,"outputTokens":0/g) ?? []).length + (empty.sql.match(/'agentKv:blob:/g) ?? []).length;
+    assert.deepEqual(none, []);
+    assert.deepEqual(emptyWarnings, [`cursor: ${empty.db}: this Cursor build does not record per-message token counts locally (${entries} conversation entries without usage); use \`ach run --agent cursor\` for exact CLI usage or the Cursor dashboard usage export`]);
+  } finally { rmSync(f.home, { recursive: true, force: true }); }
+});
 test('web source includes transcript rows and suppresses sessions already owned by registry', async () => {
   const { TranscriptRunSource } = await import('../src/web/run-source-transcript.ts');
   const f = fixture();
