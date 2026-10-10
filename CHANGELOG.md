@@ -4,6 +4,8 @@ Note: releases before 0.8.1 predate this changelog.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-09
+
 ### Changed
 
 - **BREAKING:** Node.js 22 or newer is now required (`engines.node` is `>=22`; Node 18 and 20 are end of life). The Python wrapper rejects Node older than 22.0.
