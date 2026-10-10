@@ -13,8 +13,8 @@
 //
 // SSL_CERT_FILE covers the v2 engine; the v3 engine runs on Node, which ignores
 // it and only trusts the CA via NODE_EXTRA_CA_CERTS (without it v3 dies with
-// ModelRegistryUnavailableError). tapEnv() below builds exactly that env. Create the CA first: `mitmproxy`
-// writes it on first run.
+// ModelRegistryUnavailableError). tapEnv() below builds exactly that env.
+// Create the CA first: `mitmproxy` writes it on first run.
 //
 // parseMitmLine() emits the core CanonicalTokenRecord (src/core/types.ts):
 // inputTokens is UNCACHED input (the AWS uncachedInputTokens), cache slices map
