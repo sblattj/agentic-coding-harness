@@ -1,6 +1,6 @@
 """Console-script entry point: locate a JS runtime and exec the vendored ach.mjs.
 
-Stdlib only. Prefers Bun, then Node >= 18.19. The runtime may be forced via
+Stdlib only. Prefers Bun, then Node >= 22. The runtime may be forced via
 the AGENTIC_CODING_HARNESS_RUNTIME environment variable. On POSIX we execv so
 stdio, signals, and exit codes pass through untouched; on Windows we fall back
 to subprocess.call.
@@ -26,11 +26,11 @@ _COMMON_DIRS = (
 
 _MISSING_RUNTIME_MESSAGE = """ach: no JavaScript runtime found.
 
-agentic-coding-harness needs Bun or Node.js (>= 18.19) to run.
+agentic-coding-harness needs Bun or Node.js (>= 22) to run.
 
 Install one of:
   curl -fsSL https://bun.sh/install | bash      # Bun (recommended)
-  https://nodejs.org/en/download                 # Node.js >= 18.19
+  https://nodejs.org/en/download                 # Node.js >= 22
 
 Or point {env} at an existing runtime binary, e.g.:
   export {env}=/usr/local/bin/node
@@ -95,7 +95,7 @@ def find_runtime(env=None):
             # Unprobeable (e.g. broken install) - skip rather than fail hard.
             continue
         major, minor = version
-        if (major, minor) >= (18, 19):
+        if (major, minor) >= (22, 0):
             return node
 
     return None

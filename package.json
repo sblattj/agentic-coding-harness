@@ -44,7 +44,7 @@
     "ach": "dist/cli/ach.js"
   },
   "engines": {
-    "node": ">=18.19"
+    "node": ">=22"
   },
   "repository": {
     "type": "git",

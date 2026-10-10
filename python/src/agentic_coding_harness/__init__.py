@@ -1,7 +1,7 @@
 """agentic-coding-harness: run/watch/meter coding agents.
 
 Python wrapper that locates a JavaScript runtime (Bun preferred, then
-Node.js >= 18.19) and execs the vendored ach.mjs CLI bundle with full
+Node.js >= 22) and execs the vendored ach.mjs CLI bundle with full
 argument passthrough.
 """
 

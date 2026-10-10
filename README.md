@@ -6,7 +6,7 @@
   <a href="https://www.npmjs.com/package/agentic-coding-harness"><img alt="npm version" src="https://img.shields.io/npm/v/agentic-coding-harness"></a>
   <a href="https://pypi.org/project/agentic-coding-harness/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/agentic-coding-harness"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="Node.js 18.19 or newer" src="https://img.shields.io/badge/node-%3E%3D18.19-brightgreen">
+  <img alt="Node.js 22 or newer" src="https://img.shields.io/badge/node-%3E%3D22-brightgreen">
 </p>
 
 ![Live web dashboard grid showing token usage and cost across concurrent Claude Code and Kiro agent runs, with interactive terminal panes](docs/assets/dashboard.gif)
@@ -51,9 +51,9 @@ ach --version
 | Install path | Command or download | Requirements |
 |---|---|---|
 | Homebrew | Commands above | Homebrew; Node is installed as a dependency |
-| npm | `npm install -g agentic-coding-harness` | Node.js 18.19+ |
+| npm | `npm install -g agentic-coding-harness` | Node.js 22+ |
 | Standalone | [GitHub release binaries and SHA256SUMS](https://github.com/sblattj/agentic-coding-harness/releases/latest) | macOS or Linux, arm64 or x64; no Node/Bun runtime |
-| Python wrapper | `uv tool install agentic-coding-harness` or `pipx install agentic-coding-harness` | Python 3.9+ and Node.js 18.19+ or Bun; PyPI currently provides the older 0.7.4 release |
+| Python wrapper | `uv tool install agentic-coding-harness` or `pipx install agentic-coding-harness` | Python 3.9+ and Node.js 22+ or Bun; PyPI currently provides the older 0.7.4 release |
 
 From a source checkout (fresh clone or worktree), `ach` is not on `PATH` until you build it:
 

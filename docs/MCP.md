@@ -196,5 +196,5 @@ The client resolves it into three `tools/call` invocations:
 - Protocol on **stdout only**, diagnostics on **stderr**. If the client parses
   garbage, something is printing to stdout.
 - Client hangs at startup: check `bun --version` >= 1.3 (NDJSON stdio framing).
-- `ach mcp` needs Node >= 18.19 only — the `bun --version` note applies to the
+- `ach mcp` needs Node >= 22 only — the `bun --version` note applies to the
   `bun src/mcp/index.ts` checkout form.
