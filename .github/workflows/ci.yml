@@ -22,9 +22,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        # 18.x resolves to the newest 18.x release, which satisfies the
-        # package.json engines floor of >=18.19.
-        node-version: ['18.x', '20.x', '22.x']
+        # 22.x is the package.json engines floor (>=22), 24.x is the active
+        # LTS, and 26.x is the newest release line.
+        node-version: ['22.x', '24.x', '26.x']
     steps:
       - uses: actions/checkout@v7
 

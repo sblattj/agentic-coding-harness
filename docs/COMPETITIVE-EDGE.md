@@ -22,7 +22,7 @@ Every surveyed rival is exactly one of the things ach combines, and admits it:
 5. **Kiro depth nobody else has** — MITM credit tap, ACP transport with proven model ack, kiro preflight. loongsuite-pilot's own matrix marks Kiro "Token Usage: No".
 6. **Run registry + external feeds** — atomic per-run records, public `writeRunRecord` API, and `--source` poll/SSE/WS so one dashboard fronts many machines. Axon ingests OTLP but has no run model; ccusage has no live model at all.
 7. **Artifacts out** — self-validating ATIF v1.7 trajectories (harbor authored ATIF but doesn't emit per-run cost), OTel gen_ai spans, Langfuse OTLP, single-file HTML compares, asciinema `.cast` replay per run.
-8. **Distribution** — npm AND PyPI, Node ≥18.19, library-grade API; zero ClickHouse/Postgres/Redis (langfuse self-host = 5+ services), zero Docker requirement (harbor), zero Xcode toolchain (token-meter/codeburn companions).
+8. **Distribution** — npm AND PyPI, Node ≥22, library-grade API; zero ClickHouse/Postgres/Redis (langfuse self-host = 5+ services), zero Docker requirement (harbor), zero Xcode toolchain (token-meter/codeburn companions).
 
 ## Structural advantages
 
