@@ -134,7 +134,7 @@ function issuerViaProxy(proxyPort: number, host: string): Promise<string> {
         t.destroy();
         resolve(`${issuer?.O ?? ''} ${issuer?.CN ?? ''}`);
       });
-      t.once('error', (e) => {
+      t.once('error', (e: Error) => {
         clearTimeout(timer);
         reject(e);
       });
