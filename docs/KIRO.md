@@ -25,6 +25,18 @@ prompt, is part of `effective` and of `configHash`), but on 2.21.2 it can only p
 request was *refused*, never that one was honored. The MITM credit tap auto-starts on the headless
 lane only.
 
+### MITM tap scope
+
+kiro-cli passes its environment to every shell command the agent runs, so the tap's
+`HTTPS_PROXY`, `SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS` reach those commands too. The tap
+therefore intercepts only the hosts it meters (`codewhisperer.*.amazonaws.com` and
+`runtime.*.kiro.dev`, passed to mitmdump as `--allow-hosts`). Every other host is tunneled
+unchanged through the proxy, so a `curl`, `npm` or another vendor's CLI in the agent's shell
+talks to the real origin and sees its real certificate. `SSL_CERT_FILE` points at a bundle of
+the system roots plus the tap CA, so OpenSSL clients still verify tunneled hosts. If Kiro moves
+metering to a new host, add it with `ACH_KIRO_TAP_HOSTS` (comma-separated host regexes, no
+port), for example `ACH_KIRO_TAP_HOSTS='q\.[^:/]*\.amazonaws\.com'`.
+
 ### Verified configuration (`modelAck`)
 
 `modelAck` is one of:
