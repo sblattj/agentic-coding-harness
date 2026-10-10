@@ -290,20 +290,45 @@ export function stripAnsi(text: string): string {
   return text.replace(ANSI_RE, '');
 }
 
-/** How many non-empty stderr lines (and bytes) the exit-reason tail keeps. */
-const STDERR_TAIL_LINES = 5;
+/**
+ * How many non-empty stderr lines (and bytes per line) the exit-reason tail
+ * keeps. Wide enough that a real error is not pushed out by trailing routine
+ * log lines (kiro-cli prints `[INFO] ...` lines after the failure).
+ */
+const STDERR_TAIL_LINES = 20;
 const STDERR_TAIL_BYTES = 4096;
 
+const WARN_LEVEL_RE = /\[warn(?:ing)?\]|(?:^|\s)WARN(?:ING)?(?=[\s:]|$)|\blevel=["']?warn(?:ing)?\b/i;
+/** `error` stays a substring match so `TypeError:`/`ActionRequiredError:` still count. */
+const FAILURE_RE = /error|\b(?:failed|not offered|denied|exceeded|unauthori[sz]ed|forbidden)\b/i;
+
 /**
- * Pick the most telling stderr line for a nonzero-exit message: the last line
- * matching /error/i, else the last non-empty line. Undefined when there is none.
+ * Routine log lines: `[INFO]`, ` DEBUG `, `TRACE:`, `level=info` and similar.
+ * The bare token must be uppercase so prose like "no info" is not skipped.
+ */
+function isRoutineLogLine(line: string): boolean {
+  return (
+    /\[(?:info|debug|trace)\]/i.test(line) ||
+    /(?:^|\s)(?:INFO|DEBUG|TRACE)(?=[\s:]|$)/.test(line) ||
+    /\blevel=["']?(?:info|debug|trace)\b/i.test(line)
+  );
+}
+
+/**
+ * Pick the most telling stderr line for a nonzero-exit message. Routine
+ * INFO/DEBUG/TRACE log lines are never picked. In order: the last line that
+ * looks like a failure (error, failed, not offered, denied, ...), else the last
+ * WARN line, else the last other non-empty line. Undefined when there is none.
  */
 export function pickStderrReason(lines: readonly string[]): string | undefined {
-  const clean = lines.map((l) => stripAnsi(l).trim()).filter((l) => l !== '');
-  for (let i = clean.length - 1; i >= 0; i--) {
-    if (/error/i.test(clean[i]!)) return clean[i];
-  }
-  return clean[clean.length - 1];
+  const clean = lines
+    .map((l) => stripAnsi(l).trim())
+    .filter((l) => l !== '' && !isRoutineLogLine(l));
+  const last = (re: RegExp): string | undefined => {
+    for (let i = clean.length - 1; i >= 0; i--) if (re.test(clean[i]!)) return clean[i];
+    return undefined;
+  };
+  return last(FAILURE_RE) ?? last(WARN_LEVEL_RE) ?? clean[clean.length - 1];
 }
 
 /**
