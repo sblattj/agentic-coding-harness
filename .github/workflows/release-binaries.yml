@@ -117,7 +117,14 @@ jobs:
           # Tests already gate main in ci.yml; build explicitly instead of
           # letting prepack (build + full test suite) run a second time.
           npm run build
-          npm publish --ignore-scripts --provenance --access public
+          # A backfill of an older tag must not move the `latest` dist-tag back.
+          LATEST="$(npm view "$NAME" dist-tags.latest 2>/dev/null || true)"
+          DIST_TAG=latest
+          if [ -n "$LATEST" ] && [ "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -n1)" != "$VERSION" ]; then
+            DIST_TAG=backfill
+            echo "::notice::$VERSION is older than npm latest $LATEST; publishing under dist-tag '$DIST_TAG'"
+          fi
+          npm publish --ignore-scripts --provenance --access public --tag "$DIST_TAG"
   homebrew:
     needs: [publish, npm]
     runs-on: ubuntu-24.04

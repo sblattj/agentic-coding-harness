@@ -58,6 +58,8 @@ skipped):
 gh workflow run release-binaries.yml -f tag=vX.Y.Z
 ```
 
+A version older than npm's current `latest` is published under the `backfill` dist-tag, so a backfill never moves `latest` backwards. A backfill run's `homebrew` job fails its version check (the formula always tracks the default branch's version); that is expected and harmless.
+
 ## Homebrew tap
 
 This repository is also its own tap; `Formula/ach.rb` is the canonical formula.
