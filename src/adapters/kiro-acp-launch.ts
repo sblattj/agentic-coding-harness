@@ -36,6 +36,7 @@ import {
   buildKiroAcpArgs,
   KiroAcpClient,
   KiroAcpError,
+  kiroToolsPermissionPolicy,
   type AcpMcpServer,
   type AcpNotification,
   type HandshakeReceipt,
@@ -120,6 +121,12 @@ export async function launchKiroAcp(
     ...(spec.extraArgs ?? []),
   ];
 
+  // Engine v3 cannot take the trust flags on argv (#127): answer its
+  // permission requests from the same `tools` policy instead. An explicit
+  // `opts.onPermission` still wins; `tools` unset keeps the default deny.
+  const isV3 = kiro.engine === 'v3';
+  const onPermission = opts.onPermission ?? (isV3 ? kiroToolsPermissionPolicy(kiro.tools) : undefined);
+
   const client = new KiroAcpClient({
     ...(opts.command !== undefined ? { command: opts.command } : {}),
     args,
@@ -128,7 +135,7 @@ export async function launchKiroAcp(
     ...(spec.sandbox?.scrubEnv !== undefined ? { scrubEnv: spec.sandbox.scrubEnv } : {}),
     ...(opts.spawnFn !== undefined ? { spawnFn: opts.spawnFn } : {}),
     ...(kiro.startupMs !== undefined ? { startupMs: kiro.startupMs } : {}),
-    ...(opts.onPermission !== undefined ? { onPermission: opts.onPermission } : {}),
+    ...(onPermission !== undefined ? { onPermission } : {}),
   });
 
   const normalizer = createKiroNormalizer({ transport: 'acp' });
@@ -209,6 +216,8 @@ export async function launchKiroAcp(
         ...(kiro.agent !== undefined ? { agent: kiro.agent } : {}),
         ...(spec.model !== undefined ? { model: spec.model } : {}),
         requireModelAck: kiro.requireModelAck ?? spec.model !== undefined,
+        ...(kiro.engine !== undefined ? { engine: kiro.engine } : {}),
+        ...(isV3 && kiro.effort !== undefined ? { effort: kiro.effort } : {}),
         ...(spec.resume !== undefined && spec.resume !== '' ? { resume: spec.resume } : {}),
       });
       sessionId = receipt.sessionId;
@@ -304,6 +313,21 @@ function buildEffective(input: {
     agentVerified: receipt?.agentVerified ?? false,
     mcpNotices: [...new Set([...(receipt?.mcpNotices ?? []), ...input.notices])],
     ...(spec.model !== undefined ? { requestedModel: spec.model } : {}),
+    ...(kiro.engine !== undefined ? { engine: kiro.engine } : {}),
+    // Effort is only ever confirmed over ACP on v3; argv engines report the
+    // flag as passed, never as acknowledged.
+    ...(kiro.effort !== undefined
+      ? {
+          requestedEffort: kiro.effort,
+          effortAck: receipt?.effortAck ?? 'not-requested',
+          currentEffort: receipt?.currentEffort ?? null,
+        }
+      : {}),
+    // How `tools` reached kiro: as argv flags, as per-request ACP permission
+    // answers (v3, #127), or not at all (unset: the native agent config decides).
+    ...(kiro.tools !== undefined
+      ? { toolTrust: kiro.engine === 'v3' ? 'acp-permission-policy' : 'argv' }
+      : {}),
   };
   return {
     cliVersion: receipt?.cliVersion ?? 'unknown',

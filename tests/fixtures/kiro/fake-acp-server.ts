@@ -34,11 +34,83 @@ export const SCENARIOS = [
   'fs-request',
   'load-not-found',
   'load-exit',
+  'v3',
+  'v3-permission',
+  'v3-late-models',
 ] as const;
 export type FakeAcpScenario = (typeof SCENARIOS)[number];
 
 const scenario = (process.env.FAKE_ACP_SCENARIO ?? 'ok') as FakeAcpScenario;
 const stdinLog = process.env.FAKE_ACP_STDIN_LOG;
+const isV3 = scenario === 'v3' || scenario === 'v3-permission' || scenario === 'v3-late-models';
+/**
+ * `v3-late-models`: a fresh workspace on 2.29.0 can answer session/new and
+ * the first set_config_option BEFORE its model catalog has loaded, so neither
+ * carries a `model` option; it shows up in a later `config_option_update`.
+ */
+let modelsLoaded = scenario !== 'v3-late-models';
+
+// ---------------------------------------------------------------------------
+// Engine v3 (`--agent-engine v3`) as measured on kiro-cli 2.29.0 (#127):
+//  - `session/new` returns `modes` (custom agents included) and `configOptions`
+//    but NO `models`; the `model` option arrives in a `config_option_update`
+//    notification right after the result.
+//  - `session/set_model` is not implemented (-32603 Internal error).
+//  - `session/set_config_option {configId, value}` answers `{configOptions}`.
+//    An unknown mode is ignored (the mode stays, `_kiro/customAgent/not_found`
+//    is pushed); an unknown model id is stored verbatim; an unknown effort is
+//    ignored. `effortLevel` only exists while the model supports it (not haiku).
+// ---------------------------------------------------------------------------
+
+const V3_SESSION = 'sess_fake-v3';
+const V3_MODES = ['vibe', 'plan', 'demo-agent'];
+const V3_MODELS = ['claude-sonnet-5.5', 'claude-opus-5.5', 'claude-haiku-4.5'];
+const V3_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const v3State: { mode: string; model: string; effort: string } = {
+  mode: 'vibe',
+  model: 'claude-haiku-4.5',
+  effort: 'medium',
+};
+
+function v3ConfigOptions(withModelRequested: boolean): Json[] {
+  const withModel = withModelRequested && modelsLoaded;
+  const select = (id: string, currentValue: string, values: string[]): Json => ({
+    type: 'select',
+    id,
+    name: id,
+    currentValue,
+    options: values.map((value) => ({ value, name: value })),
+  });
+  const out: Json[] = [select('mode', v3State.mode, V3_MODES)];
+  if (withModel) {
+    out.push(select('model', v3State.model, V3_MODELS));
+    if (v3State.model !== 'claude-haiku-4.5') out.push(select('effortLevel', v3State.effort, V3_EFFORTS));
+  }
+  out.push(select('autopilot', 'on', ['on', 'off']));
+  return out;
+}
+
+function v3SessionResult(): Json {
+  return {
+    sessionId: V3_SESSION,
+    modes: {
+      currentModeId: v3State.mode,
+      availableModes: V3_MODES.map((id) => ({ id, name: id })),
+    },
+    configOptions: v3ConfigOptions(false),
+  };
+}
+
+function v3ConfigUpdate(): Json {
+  return {
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId: V3_SESSION,
+      update: { sessionUpdate: 'config_option_update', configOptions: v3ConfigOptions(true) },
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fixture replay table: method -> { notifications[], result }
@@ -130,6 +202,18 @@ async function handle(req: Json): Promise<void> {
     }
 
     case 'session/new': {
+      if (isV3) {
+        respond(id, v3SessionResult());
+        if (scenario === 'v3-late-models') {
+          setTimeout(() => {
+            modelsLoaded = true;
+            send(v3ConfigUpdate());
+          }, 300);
+          return;
+        }
+        send(v3ConfigUpdate());
+        return;
+      }
       const step = stepFor('session/new');
       emit(step.notifications);
       const result = structuredClone(step.result) as Json;
@@ -158,6 +242,13 @@ async function handle(req: Json): Promise<void> {
       // `load-exit` forces that same silent death even with a cwd.
       if (typeof params.cwd !== 'string' || scenario === 'load-exit') process.exit(0);
       const sid = String(params.sessionId);
+      if (isV3) {
+        const { sessionId: _sid, ...loaded } = v3SessionResult();
+        void _sid;
+        respond(id, loaded);
+        send(v3ConfigUpdate());
+        return;
+      }
       if (scenario === 'load-not-found') {
         send({
           jsonrpc: '2.0',
@@ -177,6 +268,18 @@ async function handle(req: Json): Promise<void> {
     }
 
     case 'session/set_model': {
+      if (isV3) {
+        send({
+          jsonrpc: '2.0',
+          error: {
+            code: -32603,
+            message: 'Internal error',
+            data: { details: 'Ext method "session/set_model" has no persistence classification.' },
+          },
+          id,
+        } as Json);
+        return;
+      }
       if (scenario === 'reject-model') {
         respondError(id, -32602, `model '${String(params.modelId)}' is not supported`);
         return;
@@ -186,7 +289,58 @@ async function handle(req: Json): Promise<void> {
       return;
     }
 
+    case 'session/set_config_option': {
+      if (!isV3) {
+        respondError(id, -32601, `Method not found: ${String(method)}`);
+        return;
+      }
+      const value = String(params.value);
+      if (params.configId === 'mode') {
+        if (V3_MODES.includes(value)) v3State.mode = value;
+        else send({ jsonrpc: '2.0', method: '_kiro/customAgent/not_found', params: { sessionId: V3_SESSION, name: value } } as Json);
+      } else if (params.configId === 'model') {
+        v3State.model = value; // stored verbatim, even when not offered
+      } else if (params.configId === 'effortLevel') {
+        if (V3_EFFORTS.includes(value) && v3State.model !== 'claude-haiku-4.5') v3State.effort = value;
+      }
+      respond(id, { configOptions: v3ConfigOptions(true) });
+      if (modelsLoaded) send(v3ConfigUpdate());
+      return;
+    }
+
     case 'session/prompt': {
+      if (scenario === 'v3-permission') {
+        const answer = await ask('session/request_permission', {
+          sessionId: params.sessionId,
+          toolCall: {
+            toolCallId: 'run_command_fake',
+            title: 'Write a file',
+            kind: 'execute',
+            rawInput: { command: 'echo ok > out.txt' },
+            _meta: { kiro: { toolId: 'shell' } },
+          },
+          options: [
+            { optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' },
+            { optionId: 'allow-once', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+          ],
+        });
+        const outcome = ((answer.result as Json | undefined)?.outcome ?? {}) as Json;
+        respond(id, { stopReason: outcome.outcome === 'selected' ? 'end_turn' : 'refusal' });
+        return;
+      }
+      if (scenario === 'v3') {
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'pineapple' } },
+          },
+        } as Json);
+        respond(id, { stopReason: 'end_turn' });
+        return;
+      }
       const step = stepFor('session/prompt');
       if (scenario === 'crash-mid-prompt') {
         send(step.notifications[0] as Json);

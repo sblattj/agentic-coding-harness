@@ -47,9 +47,22 @@ export interface KiroAcpArgsConfig {
   engine?: KiroAcpEngine;
 }
 
-/** Pure argv builder for `kiro-cli acp`. Never emits `-v`. */
+/**
+ * Pure argv builder for `kiro-cli acp`. Never emits `-v`.
+ *
+ * Engine v3 rejects `--agent`, `--model`, `--effort`, `--trust-all-tools` and
+ * `--trust-tools` on `acp` (kiro-cli 2.29.0 exits 2 before answering
+ * `initialize`, #127), so for v3 only `--agent-engine v3` is emitted: agent,
+ * model and effort are selected over ACP during the handshake
+ * (`session/set_config_option`) and tool trust is answered per request by
+ * `kiroToolsPermissionPolicy`.
+ */
 export function buildKiroAcpArgs(cfg: KiroAcpArgsConfig = {}): string[] {
   const args = ['acp'];
+  if (cfg.engine === 'v3') {
+    args.push('--agent-engine', 'v3');
+    return args;
+  }
   if (cfg.agent) args.push('--agent', cfg.agent);
   if (cfg.model) args.push('--model', cfg.model);
   if (cfg.effort) args.push('--effort', cfg.effort);
@@ -75,6 +88,8 @@ export type KiroAcpPhase =
   /** `session/load` on `--resume` (#117): a load that errors or kills the child is fatal here. */
   | 'session/load'
   | 'session/set_model'
+  /** Engine v3 (#127): agent (mode), model and effort are config options. */
+  | 'session/set_config_option'
   | 'session/prompt'
   /** Not a request phase: the MCP-startup gate in kiro-acp-launch.ts (PLAN § ACP client). */
   | 'mcp';
@@ -116,10 +131,25 @@ export interface AcpModel {
   [k: string]: unknown;
 }
 
+/**
+ * A session config option (ACP `configOptions`). Engine v3 (kiro-cli 2.29.0)
+ * exposes `mode` (agent), `model` and, for models that support it,
+ * `effortLevel` as `select` options.
+ */
+export interface AcpConfigOption {
+  id: string;
+  type?: string;
+  name?: string;
+  currentValue?: unknown;
+  options?: Array<{ value: unknown; name?: string; [k: string]: unknown }>;
+  [k: string]: unknown;
+}
+
 export interface AcpNewSessionResult {
   sessionId: string;
   modes?: { currentModeId?: string; availableModes?: AcpMode[] };
   models?: { currentModelId?: string; availableModels?: AcpModel[] };
+  configOptions?: AcpConfigOption[];
   [k: string]: unknown;
 }
 
@@ -161,6 +191,50 @@ export type OnPermissionFn = (params: unknown) => Promise<AcpPermissionOutcome>;
  */
 export const denyAllPermissions: OnPermissionFn = async () => ({ outcome: { outcome: 'cancelled' } });
 
+/**
+ * Permission policy derived from the `kiro.tools` trust setting, for engines
+ * where the trust flags cannot be passed on argv (v3, #127).
+ *
+ *   - `'all'`: allow (an `allow_once` option, else any `allow_*` option);
+ *   - a list: allow only when the tool's id (`_meta.kiro.toolId`, `toolName`,
+ *     `name`) or ACP `kind` is listed. The model-written `title` is never
+ *     matched, so a tool cannot talk its way into an allow list;
+ *   - `'none'`: deny;
+ *   - `undefined`: no policy (the caller keeps the default deny).
+ *
+ * A request that offers no allow option is always cancelled.
+ */
+export function kiroToolsPermissionPolicy(tools: KiroAcpTools | undefined): OnPermissionFn | undefined {
+  if (tools === undefined) return undefined;
+  const cancelled: AcpPermissionOutcome = { outcome: { outcome: 'cancelled' } };
+  if (tools === 'none') return async () => cancelled;
+  const listed = tools === 'all' ? null : new Set(tools);
+  return async (params: unknown) => {
+    const p = (params ?? {}) as {
+      toolCall?: {
+        kind?: unknown;
+        toolName?: unknown;
+        name?: unknown;
+        _meta?: { kiro?: { toolId?: unknown; toolName?: unknown } };
+      };
+      options?: Array<{ optionId?: unknown; kind?: unknown }>;
+    };
+    if (listed !== null) {
+      const tc = p.toolCall ?? {};
+      const ids = [tc._meta?.kiro?.toolId, tc._meta?.kiro?.toolName, tc.toolName, tc.name, tc.kind].filter(
+        (v): v is string => typeof v === 'string' && v !== '',
+      );
+      if (!ids.some((id) => listed.has(id))) return cancelled;
+    }
+    const options = Array.isArray(p.options) ? p.options : [];
+    const allow =
+      options.find((o) => o.kind === 'allow_once') ??
+      options.find((o) => typeof o.kind === 'string' && o.kind.startsWith('allow'));
+    if (!allow || typeof allow.optionId !== 'string') return cancelled;
+    return { outcome: { outcome: 'selected', optionId: allow.optionId } };
+  };
+}
+
 export interface HandshakeReceipt {
   cliVersion: string | null;
   sessionId: string;
@@ -171,6 +245,14 @@ export interface HandshakeReceipt {
   modelAck: 'acknowledged' | 'rejected' | 'not-requested';
   agentVerified: boolean;
   modelVerified: boolean;
+  /**
+   * Engine v3 only (#127): whether a requested effort was confirmed by the
+   * session's `effortLevel` config option. Engines that take `--effort` on
+   * argv never acknowledge it, so they report `not-requested` here.
+   */
+  effortAck: 'acknowledged' | 'not-requested';
+  /** The session's `effortLevel` after the handshake (v3), else null. */
+  currentEffort: string | null;
   /** Methods of `_kiro.dev/mcp/*` and `_kiro.dev/webTools/*` notices seen during the handshake. */
   mcpNotices: string[];
   /** True when the session came from `session/load` (resume) rather than `session/new`. */
@@ -181,7 +263,15 @@ export interface HandshakeReceipt {
    * run's output, so they are counted here and never reach `notifications`.
    */
   replayedUpdates: number;
-  durationsMs: { initialize: number; newSession: number; loadSession: number; setModel: number; total: number };
+  durationsMs: {
+    initialize: number;
+    newSession: number;
+    loadSession: number;
+    setModel: number;
+    /** v3: the mode and effort `session/set_config_option` calls (the model one counts as setModel). */
+    setConfig: number;
+    total: number;
+  };
 }
 
 export interface HandshakeOptions {
@@ -190,6 +280,14 @@ export interface HandshakeOptions {
   agent?: string;
   model?: string;
   requireModelAck?: boolean;
+  /**
+   * Engine v3 (#127) selects agent, model and effort with
+   * `session/set_config_option` after the session exists, because v3 rejects
+   * the argv flags and does not implement `session/set_model`.
+   */
+  engine?: KiroAcpEngine;
+  /** v3 only: effort applied and verified via the `effortLevel` config option. */
+  effort?: KiroAcpEffort;
   /**
    * Resume this existing session: `initialize` -> `session/load` (NO
    * `session/new`), the ACP order for an existing session (#117).
@@ -621,6 +719,22 @@ export class KiroAcpClient {
     return this.#replayed;
   }
 
+  /**
+   * `session/set_config_option` (engine v3). Answers `{configOptions}` with the
+   * session's options after the change. v3 does not reject unknown values: an
+   * unknown mode is ignored and an unknown model id is stored verbatim, so the
+   * caller must verify the returned options.
+   */
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<AcpConfigOption[]> {
+    const result = await this.#request<{ configOptions?: AcpConfigOption[] } | null>(
+      'session/set_config_option',
+      { sessionId, configId, value },
+      'session/set_config_option',
+      this.#startupMs,
+    );
+    return Array.isArray(result?.configOptions) ? result.configOptions : [];
+  }
+
   setModel(sessionId: string, modelId: string): Promise<unknown> {
     return this.#request<unknown>(
       'session/set_model',
@@ -661,8 +775,18 @@ export class KiroAcpClient {
    */
   async handshake(opts: HandshakeOptions): Promise<HandshakeReceipt> {
     const mcpNotices: string[] = [];
+    // v3 pushes the full option set (including `model`) as a
+    // `config_option_update` right after session/new; keep the latest.
+    let pushed: { options: AcpConfigOption[]; seq: number } | null = null;
     const watch = (n: AcpNotification): void => {
       if (MCP_NOTICE_METHODS.test(n.method)) mcpNotices.push(n.method);
+      if (n.method === 'session/update') {
+        const update = (n.params as { update?: { sessionUpdate?: unknown; configOptions?: unknown } } | undefined)
+          ?.update;
+        if (update?.sessionUpdate === 'config_option_update' && Array.isArray(update.configOptions)) {
+          pushed = { options: update.configOptions as AcpConfigOption[], seq: (pushed?.seq ?? 0) + 1 };
+        }
+      }
     };
     const unwatch = this.#watchNotifications(watch);
     const t0 = Date.now();
@@ -701,6 +825,22 @@ export class KiroAcpClient {
           `child exited (code ${this.exitCode ?? 'null'}) right after ${sessionPhase}`,
           this.stderrTail(),
         );
+      }
+
+      if (opts.engine === 'v3') {
+        return await this.#v3Select({
+          opts,
+          init,
+          session,
+          sessionPhase,
+          pushed: () => pushed,
+          mcpNotices,
+          resumed: resume !== undefined,
+          t0,
+          initializeMs,
+          newSessionMs,
+          loadSessionMs,
+        });
       }
 
       const currentModeId = session.modes?.currentModeId ?? null;
@@ -751,6 +891,8 @@ export class KiroAcpClient {
         modelAck,
         agentVerified: opts.agent !== undefined && currentModeId === opts.agent,
         modelVerified,
+        effortAck: 'not-requested',
+        currentEffort: null,
         mcpNotices,
         resumed: resume !== undefined,
         replayedUpdates: this.#replayed,
@@ -759,12 +901,201 @@ export class KiroAcpClient {
           newSession: newSessionMs,
           loadSession: loadSessionMs,
           setModel: setModelMs,
+          setConfig: 0,
           total: Date.now() - t0,
         },
       };
     } finally {
       unwatch();
     }
+  }
+
+  /**
+   * Engine v3 selection (#127), measured on kiro-cli 2.29.0: `session/new`
+   * lists custom agents as modes and carries `configOptions`, but no `models`;
+   * `session/set_model` fails with -32603. Order: mode (an agent may bring its
+   * own model), then model, then effort (`effortLevel` only exists for models
+   * that support it). Every value is verified against the options v3 returns,
+   * because v3 accepts unknown values without an error.
+   */
+  async #v3Select(ctx: {
+    opts: HandshakeOptions;
+    init: AcpInitializeResult;
+    session: AcpNewSessionResult;
+    sessionPhase: KiroAcpPhase;
+    pushed: () => { options: AcpConfigOption[]; seq: number } | null;
+    mcpNotices: string[];
+    resumed: boolean;
+    t0: number;
+    initializeMs: number;
+    newSessionMs: number;
+    loadSessionMs: number;
+  }): Promise<HandshakeReceipt> {
+    const { opts, session } = ctx;
+    const sid = session.sessionId;
+    const PHASE: KiroAcpPhase = 'session/set_config_option';
+    const availableModes = session.modes?.availableModes ?? [];
+    let options: AcpConfigOption[] = ctx.pushed()?.options ?? session.configOptions ?? [];
+    const opt = (id: string): AcpConfigOption | undefined => options.find((o) => o.id === id);
+    const values = (o: AcpConfigOption | undefined): string[] =>
+      (o?.options ?? []).map((v) => v.value).filter((v): v is string => typeof v === 'string');
+    const current = (id: string): string | null => {
+      const v = opt(id)?.currentValue;
+      return typeof v === 'string' ? v : null;
+    };
+    const latest = (fromResult: AcpConfigOption[]): void => {
+      if (fromResult.length > 0) options = fromResult;
+    };
+    /**
+     * On a fresh workspace v3 can answer session/new and the first
+     * set_config_option before its model catalog has loaded: neither carries a
+     * `model` option, which only arrives later in a `config_option_update`.
+     * Wait (bounded) for a push NEWER than `afterSeq` that has the option.
+     */
+    const waitForOption = async (id: string, afterSeq: number, ms: number): Promise<void> => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const p = ctx.pushed();
+        if (p && p.seq > afterSeq && p.options.some((o) => o.id === id)) {
+          options = p.options;
+          return;
+        }
+        if (Date.now() >= deadline || this.#exited) return;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    };
+    const seqNow = (): number => ctx.pushed()?.seq ?? 0;
+    const catalogWaitMs = Math.min(this.#startupMs, 15_000);
+    const effortWaitMs = Math.min(this.#startupMs, 2_000);
+    let setConfigMs = 0;
+    let setModelMs = 0;
+
+    // --- agent (mode) ------------------------------------------------------
+    let agentVerified = false;
+    if (opts.agent) {
+      const offered = new Set([...availableModes.map((m) => m.id), ...values(opt('mode'))]);
+      const headless = `; use --kiro-transport headless to run a custom agent on engine v3 without ACP`;
+      if (!offered.has(opts.agent)) {
+        throw new KiroAcpError(
+          ctx.sessionPhase,
+          `requested agent '${opts.agent}' is not offered by this engine v3 session; available: ${[...offered].join(', ') || 'none'}${headless}`,
+          this.stderrTail(),
+        );
+      }
+      if (current('mode') !== opts.agent && (session.modes?.currentModeId ?? null) !== opts.agent) {
+        const start = Date.now();
+        latest(await this.setConfigOption(sid, 'mode', opts.agent));
+        setConfigMs += Date.now() - start;
+      }
+      const mode = current('mode') ?? session.modes?.currentModeId ?? null;
+      if (mode !== opts.agent) {
+        throw new KiroAcpError(
+          PHASE,
+          `engine v3 did not switch to agent '${opts.agent}' (current '${mode ?? 'none'}')${headless}`,
+          this.stderrTail(),
+        );
+      }
+      agentVerified = true;
+    }
+
+    // --- model -------------------------------------------------------------
+    let modelAck: HandshakeReceipt['modelAck'] = 'not-requested';
+    let modelVerified = false;
+    if (opts.model) {
+      if (!opt('model')) await waitForOption('model', 0, catalogWaitMs);
+      const known = values(opt('model'));
+      if (known.length > 0 && !known.includes(opts.model)) {
+        // v3 would store an unknown id verbatim: never send it.
+        if (opts.requireModelAck) {
+          throw new KiroAcpError(
+            PHASE,
+            `model '${opts.model}' is not offered by this session; available: ${known.join(', ')}`,
+            this.stderrTail(),
+          );
+        }
+        modelAck = 'rejected';
+      } else {
+        const start = Date.now();
+        const before = seqNow();
+        try {
+          latest(await this.setConfigOption(sid, 'model', opts.model));
+        } catch (err) {
+          if (opts.requireModelAck) throw err;
+        }
+        if (current('model') !== opts.model) await waitForOption('model', before, catalogWaitMs);
+        if (current('model') !== opts.model && values(opt('model')).includes(opts.model)) {
+          // The catalog loaded after our set and reset the selection: set once more.
+          latest(await this.setConfigOption(sid, 'model', opts.model));
+        }
+        setModelMs = Date.now() - start;
+        modelVerified = values(opt('model')).includes(opts.model);
+        modelAck = modelVerified && current('model') === opts.model ? 'acknowledged' : 'rejected';
+        if (modelAck === 'rejected' && opts.requireModelAck) {
+          throw new KiroAcpError(
+            PHASE,
+            `model '${opts.model}' was not acknowledged (current '${current('model') ?? 'none'}'); available: ${values(opt('model')).join(', ') || 'none'}`,
+            this.stderrTail(),
+          );
+        }
+      }
+    }
+
+    // --- effort ------------------------------------------------------------
+    let effortAck: HandshakeReceipt['effortAck'] = 'not-requested';
+    if (opts.effort) {
+      if (!opt('effortLevel')) await waitForOption('effortLevel', 0, effortWaitMs);
+      const levels = values(opt('effortLevel'));
+      if (!levels.includes(opts.effort)) {
+        throw new KiroAcpError(
+          PHASE,
+          `effort '${opts.effort}' is not available for model '${current('model') ?? 'unknown'}' on engine v3; available: ${levels.join(', ') || 'none'}`,
+          this.stderrTail(),
+        );
+      }
+      if (current('effortLevel') !== opts.effort) {
+        const start = Date.now();
+        latest(await this.setConfigOption(sid, 'effortLevel', opts.effort));
+        setConfigMs += Date.now() - start;
+      }
+      if (current('effortLevel') !== opts.effort) {
+        throw new KiroAcpError(
+          PHASE,
+          `engine v3 did not apply effort '${opts.effort}' (current '${current('effortLevel') ?? 'none'}')`,
+          this.stderrTail(),
+        );
+      }
+      effortAck = 'acknowledged';
+    }
+
+    const modelOption = opt('model');
+    const availableModels: AcpModel[] = (modelOption?.options ?? [])
+      .filter((v) => typeof v.value === 'string')
+      .map((v) => ({ modelId: v.value as string, ...(typeof v.name === 'string' ? { name: v.name } : {}) }));
+
+    return {
+      cliVersion: ctx.init.agentInfo?.version ?? null,
+      sessionId: sid,
+      currentModeId: current('mode') ?? session.modes?.currentModeId ?? null,
+      availableModes,
+      currentModelId: current('model'),
+      availableModels,
+      modelAck,
+      agentVerified,
+      modelVerified,
+      effortAck,
+      currentEffort: current('effortLevel'),
+      mcpNotices: ctx.mcpNotices,
+      resumed: ctx.resumed,
+      replayedUpdates: this.#replayed,
+      durationsMs: {
+        initialize: ctx.initializeMs,
+        newSession: ctx.newSessionMs,
+        loadSession: ctx.loadSessionMs,
+        setModel: setModelMs,
+        setConfig: setConfigMs,
+        total: Date.now() - ctx.t0,
+      },
+    };
   }
 
   /**

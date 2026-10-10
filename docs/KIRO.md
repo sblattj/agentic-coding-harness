@@ -108,7 +108,7 @@ as an MCP failure.
   `clientCapabilities.terminal`. A silent initialize is a client bug, not a hung agent.
 - Initialize took 15–23 s locally (profile lookup retries), so the startup deadline defaults to
   60 s (`kiro.startupMs`), and a timeout names the failing phase (`spawn`, `initialize`, `session/new`,
-  `session/load`, `session/set_model`, `mcp`, `session/prompt`).
+  `session/load`, `session/set_model`, `session/set_config_option`, `mcp`, `session/prompt`).
 - `session/load` without `cwd` makes kiro-cli (2.21.2 and 2.28.0) **exit 0 with no response and no
   stderr** (#117). The harness always sends `cwd` (the run's cwd, else the process cwd). An unknown
   session id answers `-32603 Internal error` with the reason in `data`
@@ -117,6 +117,21 @@ as an MCP failure.
   notifications. They are history, not this run's output, so the harness drops them (counted as
   `replayedUpdates` on the handshake receipt).
 - Never pass `-v`; it logs to stdout and corrupts the JSON-RPC stream.
+- Engine v3 (`--kiro-engine v3`, measured on kiro-cli 2.29.0, #127) is supported over ACP, but
+  the CLI flags do not apply there: `kiro-cli acp --agent-engine v3` exits 2 if it also gets
+  `--agent`, `--model`, `--effort` or a trust flag. The harness passes only `--agent-engine v3`
+  and then, after `session/new` or `session/load`, calls `session/set_config_option` for `mode`
+  (the agent; workspace and user agents from `.kiro/agents` are listed as modes), `model` and
+  `effortLevel`. v3 does not implement `session/set_model`, and it accepts unknown values
+  silently, so each value is checked against the options v3 returns. An agent that is not
+  offered fails before the prompt, and the error suggests `--kiro-transport headless`. An effort
+  the model does not offer also fails (Haiku models have no `effortLevel`). A fresh workspace can
+  send its model list after `session/new`; the handshake waits up to 15 s for it. `kiro.tools`
+  becomes the answer to `session/request_permission` (`all` allows once, a list allows matching
+  tool ids or ACP kinds, `none` or unset denies). In our 2.29.0 runs v3 did not send permission
+  requests at all and ran shell tools on its own, so on v3 `tools` cannot narrow what kiro's own
+  settings already allow. The run evidence says so: `effective.toolTrust` is
+  `acp-permission-policy`.
 - `session/prompt` resolves with `{stopReason}`; the harness surfaces it as the native stop reason.
 - Agent→client requests (permissions, fs, terminal) are answered by policy — permissions are
   denied — and recorded as events; the harness never broadens them.

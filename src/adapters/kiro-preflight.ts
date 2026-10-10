@@ -233,6 +233,8 @@ export async function kiroPreflight(cfg: KiroPreflightConfig): Promise<Preflight
       ...(kiro.agent !== undefined ? { agent: kiro.agent } : {}),
       ...(cfg.model !== undefined ? { model: cfg.model } : {}),
       requireModelAck: kiro.requireModelAck ?? cfg.model !== undefined,
+      ...(kiro.engine !== undefined ? { engine: kiro.engine } : {}),
+      ...(kiro.engine === 'v3' && kiro.effort !== undefined ? { effort: kiro.effort } : {}),
     });
   } catch (err) {
     hsError = err;
