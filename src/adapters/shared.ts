@@ -281,6 +281,31 @@ export function validateCliSessionProfile(
   return { ok: errors.length === 0, errors, warnings };
 }
 
+/** ANSI escape sequences (CSI and OSC) a CLI may paint its stderr with. */
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+/** Strip ANSI escape sequences from one line of child output. */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, '');
+}
+
+/** How many non-empty stderr lines (and bytes) the exit-reason tail keeps. */
+const STDERR_TAIL_LINES = 5;
+const STDERR_TAIL_BYTES = 4096;
+
+/**
+ * Pick the most telling stderr line for a nonzero-exit message: the last line
+ * matching /error/i, else the last non-empty line. Undefined when there is none.
+ */
+export function pickStderrReason(lines: readonly string[]): string | undefined {
+  const clean = lines.map((l) => stripAnsi(l).trim()).filter((l) => l !== '');
+  for (let i = clean.length - 1; i >= 0; i--) {
+    if (/error/i.test(clean[i]!)) return clean[i];
+  }
+  return clean[clean.length - 1];
+}
+
 /**
  * Shared run loop: spawn the CLI, feed stdout JSONL through parseLine, forward
  * stderr as progress events, and surface a non-zero exit as an error event.
@@ -320,6 +345,11 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
       queue.push({ type: 'error', message: `failed to spawn ${spec.command}: ${err.message}` });
     });
 
+    // An adapter hook (onStderrLine / onStdoutEnd) that already raised its own
+    // error event has explained the failure; the exit message then stays bare
+    // so the reason is not reported twice.
+    let hookRaisedError = false;
+
     const assembler = new LineAssembler();
     proc.stdout?.on('data', (chunk: Buffer | string) => {
       // Raw tap first (exact chunk, boundaries preserved), always guarded:
@@ -353,7 +383,10 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
       if (config.onStdoutEnd) {
         try {
           const tail = config.onStdoutEnd();
-          if (tail) queue.push(...tail);
+          if (tail) {
+            if (tail.some((e) => e.type === 'error')) hookRaisedError = true;
+            queue.push(...tail);
+          }
         } catch {
           /* an end hook must never break the run */
         }
@@ -361,12 +394,20 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
     });
 
     const stderrAsm = new LineAssembler();
+    // Bounded tail of stderr, so a nonzero exit can say why the child died
+    // (e.g. kiro-cli's "monthly usage limit has been reached").
+    const stderrTail: string[] = [];
     const emitStderr = (line: string): void => {
       if (line.trim() === '') return;
+      stderrTail.push(line.length > STDERR_TAIL_BYTES ? line.slice(-STDERR_TAIL_BYTES) : line);
+      if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift();
       if (onStderrLine) {
         try {
           const extra = onStderrLine(line);
-          if (extra) queue.push(...extra);
+          if (extra) {
+            if (extra.some((e) => e.type === 'error')) hookRaisedError = true;
+            queue.push(...extra);
+          }
         } catch {
           /* a stderr hook must never break the run */
         }
@@ -392,9 +433,13 @@ export function runJsonlCli(config: JsonlRunConfig): RunHandle {
     proc.once('close', (code, signal) => {
       settleExit(code, signal);
       if (!killed && code !== null && code !== 0) {
+        // Drain any unterminated trailing stderr so its reason is not lost
+        // when 'close' wins the race with the stream's 'end'.
+        for (const line of stderrAsm.flush()) emitStderr(line);
+        const reason = hookRaisedError ? undefined : pickStderrReason(stderrTail);
         queue.push({
           type: 'error',
-          message: `${spec.command} exited with code ${code}${signal ? ` (signal ${signal})` : ''}`,
+          message: `${spec.command} exited with code ${code}${signal ? ` (signal ${signal})` : ''}${reason ? `: ${reason}` : ''}`,
         });
       }
       queue.close();
