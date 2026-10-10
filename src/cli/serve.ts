@@ -20,6 +20,7 @@ const DEFAULT_PORT = 8398;
 const DEFAULT_HOST = "127.0.0.1";
 // Mirrors src/mcp/index.ts (importing it would start the stdio lane).
 import { VERSION } from '../version.ts';
+import { flushAndExit } from "./stdio-flush.ts";
 const DRAIN_MS = 5_000;
 
 function optPort(v: string | undefined, flag: string): number {
@@ -127,7 +128,7 @@ export async function cmdServe(rest: string[]): Promise<number> {
     const force = setTimeout(() => process.exit(0), DRAIN_MS);
     force.unref();
     // Drain in-flight requests (≤ DRAIN_MS via the force timer), then exit 0.
-    void http.close().finally(() => process.exit(0));
+    void http.close().finally(() => flushAndExit(0));
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

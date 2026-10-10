@@ -14,6 +14,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
+import { flushAndExit, trackStdioBackpressure } from "./stdio-flush.ts";
 import {
   AcpMcpServerSchema,
   HarnessError,
@@ -1071,7 +1072,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
   const stop = () => {
     if (stopping) return;
     stopping = true;
-    saveOffsets(offsets).finally(() => process.exit(0));
+    void saveOffsets(offsets).finally(() => flushAndExit(0));
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
@@ -1987,6 +1988,9 @@ function invokedAsCli(): boolean {
 }
 
 if (invokedAsCli()) {
+  // Piped stdout is asynchronous: remember backpressure so the forced exit
+  // below waits for queued output to drain instead of truncating it (#128).
+  trackStdioBackpressure();
   main(process.argv.slice(2))
     .catch((err: unknown) => {
       if (err instanceof HarnessError) {
@@ -2008,14 +2012,5 @@ if (invokedAsCli()) {
       process.stderr.write(`harness: unexpected error — ${msg}\n`);
       return 1;
     })
-    .then(async (code) => {
-      // stdout/stderr pipes are asynchronous on some supported platforms.
-      // A forced exit may otherwise discard the tail of help or stats JSON.
-      // Empty writes enqueue callbacks behind every command's prior output;
-      // preserve forced shutdown only after both streams have flushed.
-      await Promise.all([process.stdout, process.stderr].map((stream) =>
-        new Promise<void>((resolve) => stream.write("", () => resolve())),
-      ));
-      process.exit(code);
-    });
+    .then((code) => flushAndExit(code));
 }

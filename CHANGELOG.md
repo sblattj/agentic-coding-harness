@@ -4,6 +4,10 @@ Note: releases before 0.8.1 predate this changelog.
 
 ## [Unreleased]
 
+### Fixed
+
+- Piped stdout is no longer truncated under Bun (#128). `ach dash --json --all | wc -c` stopped at 64 KiB in the compiled binaries and 128 KiB from source, because the CLI called `process.exit` before the pipe drained: under Bun the empty `write("", cb)` guard fires its callback while earlier output is still queued. The CLI now records stdout/stderr backpressure (a `write()` that returns false) and waits for `drain` before every forced exit (`src/cli/stdio-flush.ts`), including `watch`, `serve` and the live `dash` shutdown paths.
+
 ## [0.19.0] - 2026-10-09
 
 ### Changed
