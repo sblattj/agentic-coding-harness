@@ -532,6 +532,34 @@ describe("run summary — truthful usage", () => {
     assert.match(summary, /context {4}ctx ~= 20,000 tok \(10\.0%\) \(assumed window\)/);
   });
 
+  test("shows the start context reading next to the end reading (#137)", () => {
+    const summary = formatSummary({
+      agent: "kiro",
+      sessionId: "s",
+      tokens,
+      costUsd: 0,
+      durationMs: 1,
+      exitStatus: "success",
+      usage: {
+        tokens: { available: false },
+        credits: { available: false },
+        usd: { available: false },
+        context: {
+          available: true,
+          source: "derived",
+          percentage: 2.8449,
+          windowTokens: 1_000_000,
+          windowSource: "derived",
+          tokens: 28449,
+          startPercentage: 1,
+          startTokens: 10000,
+        },
+      },
+    });
+    assert.match(summary, /context {4}ctx ~= 28,449 tok \(2\.8%\) start ~= 10,000 tok \(1\.0%\)/);
+    assert.ok(!summary.includes("assumed window"), summary);
+  });
+
   test("a summary WITHOUT a usage block renders exactly as before (no context line)", () => {
     const summary = formatSummary({
       agent: "claude",
