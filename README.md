@@ -55,6 +55,8 @@ ach --version
 | Standalone | [GitHub release binaries and SHA256SUMS](https://github.com/sblattj/agentic-coding-harness/releases/latest) | macOS or Linux, arm64 or x64; no Node/Bun runtime |
 | Python wrapper | `uv tool install agentic-coding-harness` or `pipx install agentic-coding-harness` | Python 3.9+ and Node.js 22+ or Bun; PyPI currently provides the older 0.7.4 release |
 
+npm releases are published by the release workflow after the binaries build. GitHub Release binaries are always available; npm may lag if publishing failed, so compare `npm view agentic-coding-harness version` with the [latest release](https://github.com/sblattj/agentic-coding-harness/releases/latest). See [packaging](docs/PACKAGING.md) for publishing.
+
 From a source checkout (fresh clone or worktree), `ach` is not on `PATH` until you build it:
 
 ```sh
