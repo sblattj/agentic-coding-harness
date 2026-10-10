@@ -14,6 +14,9 @@
 // SSL_CERT_FILE covers the v2 engine; the v3 engine runs on Node, which ignores
 // it and only trusts the CA via NODE_EXTRA_CA_CERTS (without it v3 dies with
 // ModelRegistryUnavailableError). tapEnv() below builds exactly that env.
+// mitmdump only intercepts the metered hosts (--allow-hosts, see
+// mitmdumpArgs); every other host is tunneled raw, because kiro-cli passes
+// this env on to the agent's shell tools.
 // Create the CA first: `mitmproxy` writes it on first run.
 //
 // parseMitmLine() emits the core CanonicalTokenRecord (src/core/types.ts):
@@ -24,10 +27,11 @@
 
 import { spawn as nodeSpawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
+import tls from 'node:tls';
 import type { Readable } from 'node:stream';
 import type { CanonicalTokenRecord } from '../core/types.js';
 
@@ -550,12 +554,102 @@ export function mitmdumpAvailable(bin: string = process.env.MITMDUMP_BIN ?? 'mit
   return available;
 }
 
+// ---------------------------------------------------------------------------
+// Tap scope. kiro-cli passes its env to every shell tool the agent runs, so
+// any HTTPS client in the agent's shell also sees HTTPS_PROXY. Unscoped,
+// mitmdump re-terminates TLS for every host and a host whose chain it cannot
+// verify comes back as HTTP 502. mitmdump therefore only intercepts the hosts
+// the addon's WATCH_RE meters; every other CONNECT is tunneled raw, so those
+// clients reach the origin and see its real certificate.
+// ---------------------------------------------------------------------------
+
+/** Host regexes (no port, no anchors) the tap intercepts; mirrors WATCH_RE in the addon. */
+export const KIRO_TAP_HOST_PATTERNS: readonly string[] = [
+  String.raw`codewhisperer\.[^:/]*\.amazonaws\.com`,
+  String.raw`runtime\.[^:/]*\.kiro\.dev`,
+];
+
+/** Comma-separated extra host regexes to intercept (for new Kiro endpoints). */
+export const KIRO_TAP_HOSTS_ENV = 'ACH_KIRO_TAP_HOSTS';
+
+/**
+ * mitmproxy `--allow-hosts` value: one anchored alternation over the default
+ * host patterns plus any from ACH_KIRO_TAP_HOSTS. mitmproxy matches it with
+ * re.search (case-insensitive) against "host:port" strings, hence the anchors
+ * and the optional port.
+ */
+export function tapAllowHostsRegex(env: NodeJS.ProcessEnv = process.env): string {
+  const extra = (env[KIRO_TAP_HOSTS_ENV] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return `^(?:${[...KIRO_TAP_HOST_PATTERNS, ...extra].join('|')})(?::\\d+)?$`;
+}
+
+/** mitmdump argv for the tap (pinned to 127.0.0.1, scoped to the Kiro hosts). */
+export function mitmdumpArgs(port: number, scriptPath: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  return [
+    '-p',
+    String(port),
+    '--listen-host',
+    '127.0.0.1',
+    '--allow-hosts',
+    tapAllowHostsRegex(env),
+    '-s',
+    scriptPath,
+  ];
+}
+
+const SYSTEM_CA_BUNDLES = [
+  '/etc/ssl/cert.pem',
+  '/etc/ssl/certs/ca-certificates.crt',
+  '/etc/pki/tls/certs/ca-bundle.crt',
+  '/etc/ssl/ca-bundle.pem',
+];
+
+/**
+ * Write a CA bundle = the system (or Node's bundled) public roots + the tap
+ * CA, and return its path. SSL_CERT_FILE REPLACES the trust store of OpenSSL
+ * clients, so pointing it at the bare tap CA breaks every tunneled
+ * (non-intercepted) host for those clients. Falls back to the bare CA path
+ * when the CA is missing or the bundle cannot be written.
+ */
+export function tapCaBundlePath(port: number, dir: string = os.tmpdir()): string {
+  // Port in the name: concurrent taps in one process each own their bundle.
+  return path.join(dir, `kiro-mitm-ca-bundle-${process.pid}-${port}.pem`);
+}
+
+/** Best-effort removal of a tap's CA bundle (missing file is fine). */
+export function removeTapCaBundle(port: number, dir: string = os.tmpdir()): void {
+  try {
+    unlinkSync(tapCaBundlePath(port, dir));
+  } catch {
+    /* ENOENT or already gone: nothing to clean */
+  }
+}
+
+export function tapCaBundle(caPath: string, port: number = DEFAULT_MITM_PORT, dir: string = os.tmpdir()): string {
+  try {
+    if (!existsSync(caPath)) return caPath;
+    const ca = readFileSync(caPath, 'utf8');
+    const sysFile = [process.env.SSL_CERT_FILE, ...SYSTEM_CA_BUNDLES].find(
+      (f): f is string => !!f && f !== caPath && existsSync(f),
+    );
+    const roots = sysFile ? readFileSync(sysFile, 'utf8') : tls.rootCertificates.join('\n');
+    const file = tapCaBundlePath(port, dir);
+    writeFileSync(file, `${roots.trimEnd()}\n${ca.trimEnd()}\n`, { mode: 0o644 });
+    return file;
+  } catch {
+    return caPath;
+  }
+}
+
 // Env to launch kiro-cli through the tap (see module comment).
 export function tapEnv(
   port: number = DEFAULT_MITM_PORT,
   caPath: string = path.join(os.homedir(), '.mitmproxy', 'mitmproxy-ca-cert.pem'),
 ): NodeJS.ProcessEnv {
-  return { HTTPS_PROXY: `http://127.0.0.1:${port}`, SSL_CERT_FILE: caPath, NODE_EXTRA_CA_CERTS: caPath };
+  return { HTTPS_PROXY: `http://127.0.0.1:${port}`, SSL_CERT_FILE: tapCaBundle(caPath, port), NODE_EXTRA_CA_CERTS: caPath };
 }
 
 export interface KiroMitmHandle extends EventEmitter {
@@ -593,7 +687,7 @@ const BIND_FAIL_RE = /address already in use|errno 48|errno 98|eaddrinuse|cannot
 export function startKiroMitm(port: number = DEFAULT_MITM_PORT, opts: KiroMitmOptions = {}): KiroMitmHandle {
   const scriptPath = opts.scriptPath ?? writeAddonScript();
   const bin = opts.mitmdumpBin ?? process.env.MITMDUMP_BIN ?? 'mitmdump';
-  const child = nodeSpawn(bin, ['-p', String(port), '--listen-host', '127.0.0.1', '-s', scriptPath], {
+  const child = nodeSpawn(bin, mitmdumpArgs(port, scriptPath, { ...process.env, ...(opts.env ?? {}) }), {
     stdio: ['ignore', 'pipe', 'pipe'],
     // PYTHONUNBUFFERED: with piped stdio mitmdump block-buffers its startup
     // banner until exit, which would stall the readiness check.
@@ -659,6 +753,8 @@ export function startKiroMitm(port: number = DEFAULT_MITM_PORT, opts: KiroMitmOp
 
   handle.stop = () =>
     new Promise((resolve) => {
+      // tapEnv(handle.port) wrote this tap's CA bundle; drop it with the tap.
+      removeTapCaBundle(handle.port);
       if (child.exitCode !== null || child.signalCode !== null) return resolve();
       let settled = false;
       const settle = (): void => {
