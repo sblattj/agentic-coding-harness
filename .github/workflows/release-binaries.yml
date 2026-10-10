@@ -79,8 +79,54 @@ jobs:
             gh release create "$RELEASE_TAG" --verify-tag --generate-notes
           fi
           gh release upload "$RELEASE_TAG" ach-* SHA256SUMS --clobber
+  npm:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: npm ci
+      - name: Publish to npm (idempotent)
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p 'require("./package.json").version')"
+          test "$RELEASE_TAG" = "v$VERSION"
+          NAME="$(node -p 'require("./package.json").name')"
+          if [ "$(npm view "$NAME@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "::notice::$NAME@$VERSION is already on npm; skipping publish"
+            exit 0
+          fi
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::Repository secret NPM_TOKEN is empty or missing, so $NAME@$VERSION cannot be published to npm. Add an npm automation or granular publish token as the NPM_TOKEN Actions secret, then re-run: gh workflow run release-binaries.yml -f tag=$RELEASE_TAG"
+            exit 1
+          fi
+          # Tests already gate main in ci.yml; build explicitly instead of
+          # letting prepack (build + full test suite) run a second time.
+          npm run build
+          # A backfill of an older tag must not move the `latest` dist-tag back.
+          LATEST="$(npm view "$NAME" dist-tags.latest 2>/dev/null || true)"
+          DIST_TAG=latest
+          if [ -n "$LATEST" ] && [ "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -n1)" != "$VERSION" ]; then
+            DIST_TAG=backfill
+            echo "::notice::$VERSION is older than npm latest $LATEST; publishing under dist-tag '$DIST_TAG'"
+          fi
+          npm publish --ignore-scripts --provenance --access public --tag "$DIST_TAG"
   homebrew:
-    needs: publish
+    needs: [publish, npm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
