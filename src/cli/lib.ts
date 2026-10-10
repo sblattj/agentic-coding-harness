@@ -220,6 +220,10 @@ export function formatSummary(r: RunSummaryInput): string {
   if (ctx?.available === true && ctx.tokens !== undefined) {
     lines.push(
       `context    ${formatContextCell(ctx)}${ctx.windowSource === "assumed" ? " (assumed window)" : ""}` +
+        // #137: the first reading is the session's start size.
+        (ctx.startTokens !== undefined && ctx.startPercentage !== undefined
+          ? ` start ~= ${fmtInt(ctx.startTokens)} tok (${ctx.startPercentage.toFixed(1)}%)`
+          : "") +
         (ctx.toolOutputShare !== undefined ? ` tool-output ~${(ctx.toolOutputShare * 100).toFixed(0)}% (estimated)` : ""),
     );
   }
