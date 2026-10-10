@@ -76,7 +76,7 @@ describe("scripts/build-binaries.sh", () => {
 
     const unrelated = join(DIST_BIN, "ach-unrelated");
     writeFileSync(unrelated, "preserve existing output");
-    const build = spawnSync("bash", [SCRIPT, target, "--out-dir", DIST_BIN], { encoding: "utf8" });
+    const build = spawnSync("bash", [SCRIPT, target, "--out-dir", DIST_BIN], { encoding: "utf8", timeout: 600_000 });
     assert.equal(build.status, 0, `build failed: ${build.stderr}`);
     assert.ok(existsSync(outPath), `expected compiled binary at ${outPath}`);
 
@@ -84,7 +84,7 @@ describe("scripts/build-binaries.sh", () => {
     const hash = createHash("sha256").update(readFileSync(outPath)).digest("hex");
     assert.equal(readFileSync(join(DIST_BIN, "SHA256SUMS"), "utf8"), `${hash}  ach-${target}\n`);
 
-    const smoke = spawnSync(process.execPath, [join(REPO_ROOT, "scripts/smoke-binary.mjs"), outPath], { encoding: "utf8" });
+    const smoke = spawnSync(process.execPath, [join(REPO_ROOT, "scripts/smoke-binary.mjs"), outPath], { encoding: "utf8", timeout: 180_000 });
     assert.equal(smoke.status, 0, smoke.stdout + smoke.stderr);
 
     const version = spawnSync(outPath, ["--version"], { encoding: "utf8" });

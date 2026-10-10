@@ -59,7 +59,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "tsx --test tests/*.test.ts src/adapters/*.test.ts",
+    "test": "tsx --import ./tests/support/spawn-timeout.mjs --test --test-timeout=300000 tests/*.test.ts src/adapters/*.test.ts",
     "test:bun": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
     "build": "npm run build:node && npm run build:bun && npm run build:lib",
