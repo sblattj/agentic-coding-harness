@@ -15,7 +15,7 @@ export interface RunContextRow {
   contextPercentage: number | null;
   contextTokens: number | null;
   windowTokens: number | null;
-  windowSource: "session-store" | "assumed" | null;
+  windowSource: "session-store" | "derived" | "assumed" | null;
   /** 'last-call' = occupancy reading; 'turn-total' = upper bound. */
   basis: "last-call" | "turn-total" | null;
   /** True when derived from usage + the bundled window table. */

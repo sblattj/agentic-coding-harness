@@ -103,10 +103,58 @@ export interface KiroUsageExtra {
   tokensAvailable: false;
   /** kiro's own context-window percentage on the same metadata frame. */
   contextUsagePercentage?: number;
+  /** The FIRST positive context percentage of the run (the start size, #137). */
+  contextStartPercentage?: number;
   /** Per-model-call credit values of the latest snapshot, verbatim. */
   meteringUsage: unknown;
   /** kiro's reported turn wall time, when the frame carries it. */
   turnDurationMs?: number;
+}
+
+/**
+ * Context-only usage record (v3 `context_usage` update, #137): no credits, no
+ * token counts. Carries the context reading so computeUsageAvailability sees
+ * every update, not just the credit-bearing frames.
+ */
+export interface KiroContextExtra {
+  source: 'native';
+  tokensAvailable: false;
+  contextUsagePercentage: number;
+  contextStartPercentage?: number;
+  contextWindowDerived?: number;
+  contextBreakdown?: Record<string, number>;
+}
+
+/** Known context-window sizes a derived estimate snaps to (#137). */
+export const KNOWN_CONTEXT_WINDOWS = [128_000, 200_000, 256_000, 400_000, 1_000_000, 2_000_000];
+
+/**
+ * Derive the real context window from a v3 `breakdown`. Per-category token
+ * counts are client estimates that go stale (a later update can zero
+ * `yourPrompts.tokens` while its percent stays), so the SUM is unreliable.
+ * Per-category `tokens / (percent/100)` is stable: use the category with the
+ * largest token count where both tokens and percent are positive, ignore
+ * categories under 1000 tokens (percent has 1-decimal precision, so small
+ * counts are too imprecise), and snap to a known window within 15%.
+ */
+export function deriveContextWindow(breakdown: unknown): number | undefined {
+  if (!isRecord(breakdown)) return undefined;
+  let best: { tokens: number; percent: number } | undefined;
+  for (const cat of Object.values(breakdown)) {
+    if (!isRecord(cat)) continue;
+    const tokens = cat.tokens;
+    const percent = cat.percent;
+    if (typeof tokens !== 'number' || typeof percent !== 'number') continue;
+    if (!Number.isFinite(tokens) || !Number.isFinite(percent) || tokens < 1000 || percent <= 0) continue;
+    if (best === undefined || tokens > best.tokens) best = { tokens, percent };
+  }
+  if (best === undefined) return undefined;
+  const raw = best.tokens / (best.percent / 100);
+  let snapped: number | undefined;
+  for (const w of KNOWN_CONTEXT_WINDOWS) {
+    if (Math.abs(raw - w) / w <= 0.15 && (snapped === undefined || Math.abs(raw - w) < Math.abs(raw - snapped))) snapped = w;
+  }
+  return snapped ?? Math.round(raw);
 }
 
 /** AdapterTokenRecord plus the kiro credits sidecar. */
@@ -294,6 +342,8 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
   let creditsLatest: number | null = null;
   let creditSnapshots = 0;
   let contextUsagePercentage: number | undefined;
+  let contextBreakdownEmitted = false;
+  let contextStartPercentage: number | undefined;
   let turns = 0;
   let messageText = '';
   /** The open coalescing segment (#108): one chunk kind, its text so far. */
@@ -356,10 +406,15 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
     closeSpan(out);
   }
 
+  function noteStart(pct: number): void {
+    if (contextStartPercentage === undefined && Number.isFinite(pct) && pct > 0) contextStartPercentage = pct;
+  }
+
   function handleMetadata(params: Record<string, unknown>, out: CanonicalEvent[]): void {
     captureSession(params.sessionId, out);
     if (typeof params.contextUsagePercentage === 'number') {
       contextUsagePercentage = params.contextUsagePercentage;
+      noteStart(contextUsagePercentage);
     }
     const sum = sumMeteringUsage(params.meteringUsage);
     if (sum === null) {
@@ -383,6 +438,7 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
       source: 'native',
       tokensAvailable: false,
       ...(contextUsagePercentage !== undefined ? { contextUsagePercentage } : {}),
+      ...(contextStartPercentage !== undefined ? { contextStartPercentage } : {}),
       meteringUsage: params.meteringUsage,
       ...(typeof params.turnDurationMs === 'number' ? { turnDurationMs: params.turnDurationMs } : {}),
     };
@@ -502,9 +558,63 @@ export function createKiroNormalizer(opts: { transport?: KiroTransport } = {}): 
         });
         return;
       }
+      case 'session_info_update':
+        out.push(vendorStep('vendor', update, { sessionUpdate: kind }));
+        handleContextUsage(update, out);
+        return;
       default:
         out.push(vendorStep('vendor', update, { sessionUpdate: kind }));
     }
+  }
+
+  /**
+   * v3 `session_info_update` with `_meta.kiro.kind === 'context_usage'` (#137):
+   * emit a context-only usage record. Other kinds (focus_update,
+   * user_message_id_assigned) are ignored.
+   */
+  function handleContextUsage(update: Record<string, unknown>, out: CanonicalEvent[]): void {
+    const meta = isRecord(update._meta) ? update._meta : undefined;
+    const kiro = meta && isRecord(meta.kiro) ? meta.kiro : undefined;
+    if (!kiro || kiro.kind !== 'context_usage') return;
+    const cu = isRecord(kiro.contextUsage) ? kiro.contextUsage : undefined;
+    const pct = typeof kiro.usagePercentage === 'number' ? kiro.usagePercentage : cu?.usagePercentage;
+    if (typeof pct !== 'number' || !Number.isFinite(pct)) return;
+    contextUsagePercentage = pct;
+    noteStart(pct);
+    const window = deriveContextWindow(kiro.breakdown);
+    let breakdown: Record<string, number> | undefined;
+    if (!contextBreakdownEmitted && isRecord(kiro.breakdown)) {
+      const b: Record<string, number> = {};
+      for (const [name, cat] of Object.entries(kiro.breakdown)) {
+        if (isRecord(cat) && typeof cat.tokens === 'number' && Number.isFinite(cat.tokens)) b[name] = cat.tokens;
+      }
+      if (Object.keys(b).length > 0) {
+        breakdown = b;
+        contextBreakdownEmitted = true;
+      }
+    }
+    const extra: KiroContextExtra = {
+      source: 'native',
+      tokensAvailable: false,
+      contextUsagePercentage: pct,
+      ...(contextStartPercentage !== undefined ? { contextStartPercentage } : {}),
+      ...(window !== undefined ? { contextWindowDerived: window } : {}),
+      ...(breakdown !== undefined ? { contextBreakdown: breakdown } : {}),
+    };
+    out.push({
+      type: 'usage',
+      tokens: {
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: null,
+        totalTokens: null,
+        durationMs: null,
+        raw: update,
+        extra,
+      } as unknown as AdapterTokenRecord,
+    });
   }
 
   function metaToolName(update: Record<string, unknown>): string | undefined {

@@ -155,8 +155,19 @@ The three credit sources are reconciled to **one** charge in `src/core/usage-ava
 becomes a run warning naming all three values. Context tokens are **derived, not billed** — the
 `≈` and the separate column are deliberate, and a window taken from the fallback table is marked
 `windowSource:'assumed'`. `usage.context.tokens` is an occupancy **estimate** (percentage × window,
-window from the store or an assumed 200k, labelled by `windowSource`) and is never folded into
-token totals.
+window labelled by `windowSource`) and is never folded into token totals.
+
+Window precedence (#137): kiro's session store `context_window_tokens` (`'session-store'`) >
+a window **derived** from the v3 `session_info_update` `_meta.kiro` breakdown (`'derived'`) >
+an assumed 200k (`'assumed'`; v2 runs without a store window — a v3 window is not reused across
+runs). The derivation is `tokens / (percent/100)` of the category with the largest token count
+(>= 1000 tokens, percent > 0), snapped to the nearest known size (128k, 200k, 256k, 400k, 1M, 2M)
+within 15%. Do **not** sum the categories' tokens and divide by `usagePercentage`: category
+`tokens` are client estimates that go stale (a later update can report `yourPrompts` as 0 tokens
+at 2.3%), while their `percent` values track the real percentage. `usage.context.percentage`/`tokens`
+are the END reading (last update); `startPercentage`/`startTokens` are the FIRST (v2: first
+`metadata` frame before the reply; v3: first nonzero `context_usage` update), present only when
+known. `usage.context.breakdown` (v3) is the first update's category → tokens map.
 
 Nothing here is fabricated: a field the store does not carry comes back `undefined`, not `0`.
 Re-derive by symbol: `parseKiroSessionStore` (`src/adapters/kiro-session-store.ts`),
@@ -364,6 +375,7 @@ step/message event → the RunSpec `model`.
 |---|---|
 | `estimated: true` | Computed by the meter (usage ÷ bundled table), not reported by the provider. |
 | `windowSource: 'assumed'` | Window from the bundled table. |
+| `windowSource: 'derived'` | kiro v3: window derived from the `context_usage` breakdown (#137). |
 | `basis: 'last-call'` | Latest single model call: claude assistant-message usage, opencode step-finish. A real occupancy reading. |
 | `basis: 'turn-total'` | A usage record summed over a turn's model calls: codex `turn.completed`, gemini `result.stats`, a claude `result` with no per-message usage. An **upper bound** (exact only for a one-call turn); rendered `≤` / `<=`. |
 | `toolOutputTokens` / `toolOutputShare` | Estimated (chars ÷ 4) size of every tool result seen in the stream, and its share of `tokens` (capped at 1). **Omitted, not 0**, when the run had no tool events. |
@@ -384,7 +396,7 @@ step/message event → the RunSpec `model`.
     runId, agent, startedAt, status: string | null, model: string | null,
     contextPercentage: number | null,   // null = unknowable, never 0
     contextTokens: number | null, windowTokens: number | null,
-    windowSource: 'session-store' | 'assumed' | null,
+    windowSource: 'session-store' | 'derived' | 'assumed' | null,
     basis: 'last-call' | 'turn-total' | null,
     estimated: boolean,
     toolOutputShare?: number            // omitted when no tool events
