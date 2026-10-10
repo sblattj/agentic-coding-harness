@@ -5,6 +5,7 @@
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
+import { flushAndExit } from "./stdio-flush.ts";
 import { resolveDirFlag } from "./lib.ts";
 import { describeAlert } from "../core/budget-alerts.ts";
 import { PACE_WINDOWS, paceFromSamples, type Pace, type PaceSample } from "../core/usage-windows.ts";
@@ -383,13 +384,14 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
     for (const b of buf) {
       if (b === 0x71 /* q */ || b === 0x03 /* Ctrl-C */) {
         cleanup();
-        process.exit(0);
+        void flushAndExit(0);
+        return;
       }
     }
   };
   const onSignal = (): void => {
     cleanup();
-    process.exit(0);
+    void flushAndExit(0);
   };
 
   function cleanup(): void {
