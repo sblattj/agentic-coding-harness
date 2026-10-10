@@ -5,7 +5,7 @@
 Run, watch, and meter coding agents from the command line. This Python
 package wraps the compiled `ach` CLI (vendored inside the wheel) and launches
 it with whatever JavaScript runtime you have installed — Bun if available,
-otherwise Node.js >= 18.19. No Python runtime dependencies; stdlib only.
+otherwise Node.js >= 22. No Python runtime dependencies; stdlib only.
 
 ```sh
 # run without installing (the alias name matters for uvx)
@@ -19,7 +19,7 @@ ach --help
 ## Requirements
 
 - Python 3.9+
-- Bun or Node.js >= 18.19 on your PATH (or in the usual install dirs), or set
+- Bun or Node.js >= 22 on your PATH (or in the usual install dirs), or set
   `AGENTIC_CODING_HARNESS_RUNTIME=/path/to/runtime` to force one.
 
 ## What it does

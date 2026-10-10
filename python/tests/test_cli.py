@@ -63,3 +63,29 @@ def test_find_runtime_accepts_override(tmp_path):
     fake.chmod(0o755)
     env = {"AGENTIC_CODING_HARNESS_RUNTIME": str(fake)}
     assert _cli.find_runtime(env) == str(fake)
+
+
+def _fake_node(directory, version):
+    directory.mkdir(parents=True, exist_ok=True)
+    fake = directory / "node"
+    fake.write_text('#!/bin/sh\necho "v{}"\n'.format(version))
+    fake.chmod(0o755)
+    return fake
+
+
+def _isolate_runtime_search(monkeypatch, bin_dir):
+    # Only the fake dir is searched: no real bun/node via PATH or install dirs.
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(_cli, "_COMMON_DIRS", ())
+
+
+def test_find_runtime_rejects_node_below_floor(tmp_path, monkeypatch):
+    _fake_node(tmp_path / "bin", "20.11.0")
+    _isolate_runtime_search(monkeypatch, tmp_path / "bin")
+    assert _cli.find_runtime({}) is None
+
+
+def test_find_runtime_accepts_node_at_floor(tmp_path, monkeypatch):
+    fake = _fake_node(tmp_path / "bin", "22.0.0")
+    _isolate_runtime_search(monkeypatch, tmp_path / "bin")
+    assert _cli.find_runtime({}) == str(fake)
