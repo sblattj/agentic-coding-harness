@@ -1,8 +1,8 @@
 # Release packaging
 
-Publish the npm package before pushing its matching `v<version>` tag. The
-`Standalone release binaries` workflow runs on tags, or manually with an existing
-tag. It does not publish npm. A tag must match `package.json` exactly.
+The `Standalone release binaries` workflow runs on `v*` tags, or manually with an
+existing tag. Its `npm` job publishes that tag's version to npm (with provenance),
+skipping if the version is already published; the Homebrew job waits on it. A tag must match `package.json` exactly.
 
 ## Standalone executables
 
@@ -40,6 +40,23 @@ The web server's `readAsset()` loads files from disk for source/npm execution an
 uses text imports embedded by Bun for standalone execution. The `bun-pty` native
 addon remains external: standalone builds support dashboard viewing, but live
 browser PTY sessions require a package installation with that addon available.
+
+## Publishing to npm
+
+The `npm` job needs a repository Actions secret named `NPM_TOKEN`: an npm
+automation token or a granular access token with publish rights on
+`agentic-coding-harness`. Add it under Settings, Secrets and variables, Actions.
+If it is missing the job fails with an `::error::` naming the secret rather than
+skipping silently. The job builds explicitly and runs `npm publish --ignore-scripts`
+because `ci.yml` already gates tests on `main`; `prepack` still runs the full suite
+for a local `npm publish`.
+
+To backfill or retry a tag (publish is idempotent; an already-published version is
+skipped):
+
+```sh
+gh workflow run release-binaries.yml -f tag=vX.Y.Z
+```
 
 ## Homebrew tap
 
