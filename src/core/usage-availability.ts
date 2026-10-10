@@ -102,6 +102,36 @@ function streamContextPercentage(tokens: CanonicalTokenRecord[]): number | undef
   return undefined;
 }
 
+/** FIRST positive `extra.contextUsagePercentage` seen (the start size, #137). */
+function firstContextPercentage(tokens: CanonicalTokenRecord[]): number | undefined {
+  for (const rec of tokens) {
+    const extra = extraOf(rec);
+    const pct = finite(extra.contextStartPercentage) ?? finite(extra.contextUsagePercentage);
+    if (pct !== undefined && pct > 0) return pct;
+  }
+  return undefined;
+}
+
+/** Latest window a v3 context_usage update derived from its breakdown (#137). */
+function derivedContextWindow(tokens: CanonicalTokenRecord[]): number | undefined {
+  for (let i = tokens.length - 1; i >= 0; i -= 1) {
+    const rec = tokens[i];
+    if (!rec) continue;
+    const w = finite(extraOf(rec).contextWindowDerived);
+    if (w !== undefined && w > 0) return w;
+  }
+  return undefined;
+}
+
+/** The first v3 update's category -> tokens map, when one rode a record. */
+function contextBreakdown(tokens: CanonicalTokenRecord[]): Record<string, number> | undefined {
+  for (const rec of tokens) {
+    const b = extraOf(rec).contextBreakdown;
+    if (b !== null && typeof b === 'object' && !Array.isArray(b)) return b as Record<string, number>;
+  }
+  return undefined;
+}
+
 /**
  * Sum the provider-reported USD cost across records (issue #7). `costUsd` on a
  * record exists ONLY when the provider's own output stated a USD figure
@@ -248,8 +278,14 @@ export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsage
   const percentage = store?.lastContextUsagePercentage ?? streamContextPercentage(input.tokens);
   const model = store?.model;
   const storeWindow = store?.contextWindowTokens;
-  const windowTokens = storeWindow ?? ASSUMED_CONTEXT_WINDOWS.default;
-  const windowSource: 'session-store' | 'assumed' = storeWindow !== undefined ? 'session-store' : 'assumed';
+  // Precedence: session-store window > window derived from the v3 breakdown
+  // (#137) > the assumed fallback.
+  const derivedWindow = derivedContextWindow(input.tokens);
+  const windowTokens = storeWindow ?? derivedWindow ?? ASSUMED_CONTEXT_WINDOWS.default;
+  const windowSource: 'session-store' | 'derived' | 'assumed' =
+    storeWindow !== undefined ? 'session-store' : derivedWindow !== undefined ? 'derived' : 'assumed';
+  const startPercentage = firstContextPercentage(input.tokens);
+  const breakdown = contextBreakdown(input.tokens);
   const context: UsageAvailability['context'] =
     percentage === undefined || windowTokens === undefined
       ? { available: false, source: 'derived', ...(model !== undefined ? { model } : {}) }
@@ -260,6 +296,10 @@ export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsage
           windowTokens,
           windowSource,
           tokens: Math.round((percentage / 100) * windowTokens),
+          ...(startPercentage !== undefined
+            ? { startPercentage, startTokens: Math.round((startPercentage / 100) * windowTokens) }
+            : {}),
+          ...(breakdown !== undefined ? { breakdown } : {}),
           ...(model !== undefined ? { model } : {}),
         };
 

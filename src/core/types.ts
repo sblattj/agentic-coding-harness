@@ -817,8 +817,13 @@ export interface UsageAvailability {
     source: "derived";
     percentage?: number;
     windowTokens?: number;
-    windowSource?: "session-store" | "assumed";
+    windowSource?: "session-store" | "derived" | "assumed";
     tokens?: number;
+    /** FIRST context reading of the run (v2: first metadata frame; v3: first nonzero context_usage). `percentage`/`tokens` stay the END value. */
+    startPercentage?: number;
+    startTokens?: number;
+    /** v3: category -> tokens from the first context_usage update (client estimates). */
+    breakdown?: Record<string, number>;
     model?: string;
     /**
      * Issue #21 (non-kiro agents, src/core/context-meter.ts): what `tokens`
@@ -882,8 +887,11 @@ export const UsageAvailabilitySchema = z.object({
       source: z.literal("derived"),
       percentage: z.number().optional(),
       windowTokens: z.number().optional(),
-      windowSource: z.enum(["session-store", "assumed"]).optional(),
+      windowSource: z.enum(["session-store", "derived", "assumed"]).optional(),
       tokens: z.number().optional(),
+      startPercentage: z.number().optional(),
+      startTokens: z.number().optional(),
+      breakdown: z.record(z.string(), z.number()).optional(),
       model: z.string().optional(),
       basis: z.enum(["last-call", "turn-total"]).optional(),
       estimated: z.boolean().optional(),

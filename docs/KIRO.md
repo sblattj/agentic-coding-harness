@@ -153,7 +153,7 @@ as an MCP failure.
 | Signal | Available? | Where it comes from |
 |---|---|---|
 | credits | **yes** | stream `metadata.meteringUsage[].value` (cumulative) > session store `metering_usage` > MITM tap `meteringEvent.credits`; reconciled to one charge, disagreements become a warning |
-| context tokens | **derived** | `contextUsagePercentage × context_window_tokens` (200 000 on 2.21.2); shown as `ctx ≈ N tok`, never billed |
+| context tokens | **derived** | `contextUsagePercentage × window`; the window is the session store's `context_window_tokens`, else (v3) **derived** from the `session_info_update` `context_usage` breakdown (`windowSource:'derived'`, e.g. 1 000 000 for Opus 5.5), else an **assumed** 200 000 (v2 without a store window); `percentage`/`tokens` are the END reading, `startPercentage`/`startTokens` the first (v2 first metadata frame, v3 first nonzero update); shown as `ctx ≈ N tok`, never billed (#137) |
 | input / output / cache tokens | **no** | no surface reports tokens (kiro-cli 2.28: none on the wire, v2 store zeros, v3 store `sess_<id>/messages.jsonl` has no token fields, ACP none); on 2.21.x every token field is `0`; the harness reports `tokens.available = false` and renders `n/a` |
 | USD | **no** | nothing maps credits to dollars; `--budget-usd` on a kiro run warns that the cap is unenforceable |
 
