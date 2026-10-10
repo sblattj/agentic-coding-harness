@@ -61,6 +61,36 @@ describe('nonzero CLI exit surfaces the stderr reason', () => {
     assert.deepEqual(exitErrors(events), ['sh exited with code 1']);
   });
 
+  it('picks an error line followed by several INFO lines', async () => {
+    const { events } = await collect(
+      'echo "Error: request failed (code 400)" >&2; for i in 1 2 3 4 5 6 7 8; do echo "[INFO] [KRS] <-- GenerateAssistantResponseCommand done totalEvents=$i" >&2; done; exit 1',
+    );
+    assert.deepEqual(exitErrors(events), ['sh exited with code 1: Error: request failed (code 400)']);
+  });
+
+  it('keeps the bare message when stderr has only INFO/DEBUG/TRACE lines', async () => {
+    const { events } = await collect(
+      'echo "[INFO] [KRS] <-- GenerateAssistantResponseCommand done totalEvents=9" >&2; echo "2026-01-01T00:00:00Z DEBUG closing stream" >&2; echo "level=trace msg=bye" >&2; exit 1',
+    );
+    assert.deepEqual(exitErrors(events), ['sh exited with code 1']);
+  });
+
+  it("picks a 'not offered' line over trailing INFO lines", () => {
+    assert.equal(
+      pickStderrReason([
+        "model 'x' is not offered by this session",
+        '[INFO] [KRS] <-- GenerateAssistantResponseCommand done totalEvents=9',
+        ' INFO shutting down',
+      ]),
+      "model 'x' is not offered by this session",
+    );
+  });
+
+  it('pickStderrReason skips INFO-tagged error mentions and prefers WARN over plain lines', () => {
+    assert.equal(pickStderrReason(['WARN quota nearly used', '[INFO] retried after error', 'plain']), 'WARN quota nearly used');
+    assert.equal(pickStderrReason(['first', '[DEBUG] x', 'level=info msg=y']), 'first');
+  });
+
   it('pickStderrReason prefers the last error line', () => {
     assert.equal(pickStderrReason(['a', 'Error: one', 'b', 'fatal error: two', 'c']), 'fatal error: two');
     assert.equal(pickStderrReason(['a', '  ', 'last']), 'last');
