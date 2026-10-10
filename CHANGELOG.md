@@ -6,6 +6,9 @@ Note: releases before 0.8.1 predate this changelog.
 
 ### Changed
 
+- **BREAKING:** Node.js 22 or newer is now required (`engines.node` is `>=22`; Node 18 and 20 are end of life). The Python wrapper rejects Node older than 22.0.
+- CI now runs on Node 22, 24 and 26.
+- Tests: `npm test` preloads `tests/support/spawn-timeout.mjs`, which gives every `spawnSync`, `execFileSync` and `execSync` call in a test a 90 s time limit when the call sets none (override with `ACH_TEST_SPAWN_TIMEOUT_MS`). A hung child now fails the test that spawned it and prints `[spawn-timeout] <test file>: child timed out …`, instead of blocking the file until the CI job is cancelled. Each test also has a 300 s limit (`--test-timeout`).
 - The context-diet kit now lives in its own repo, [sblattj/context-diet](https://github.com/sblattj/context-diet), which also installs as a Claude Code plugin. The copy in `context-diet/` stays for now but is frozen, and new fixes land in the new repo. See docs/CONTEXT-DIET.md.
 
 ## [0.18.0] - 2026-10-09
