@@ -1,6 +1,6 @@
 # Changelog
 
-Note: releases before 0.8.1 predate this changelog.
+Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes and commit history.
 
 ## [0.19.1] - 2026-10-10
 
@@ -270,3 +270,258 @@ Note: releases before 0.8.1 predate this changelog.
 ### Added
 
 - mcpName registry marker for MCP publication (`io.github.sblattj/agentic-coding-harness`).
+
+## [0.8.0] - 2026-09-15
+
+### Added
+
+- Run-to-directory mode: `driver.run(agent, { ..., outputDir })` and the `runToDirectory()` helper mirror a run into a caller-provided directory (`invocation.json`, `events.jsonl`, `stdout.txt`, `stderr.txt`, `result.json`, `status.json`). `status.json` is written atomically with `{runId, status, updatedAt, eventCount}` and moves `running` to `success`, `error`, `timeout`, `idle-timeout`, or `aborted`. It is persisted on every exit path, including watchdog timeout, idle timeout, abort, and crash (#6).
+- Normalized usage and cost on the run result: `result.usage.cost = { costAvailability, reportedCostUsd }`. Claude reports whole-run `total_cost_usd` and opencode sums per-step costs. Codex, gemini, and kiro report `"unavailable"` with `null` (#7).
+- Typed sandbox and permission policy: `RunSpec.sandbox = { allowedTools?, disallowedTools?, permissionMode?, mcpConfig?, scrubEnv? }`, translated per adapter. Claude and gemini map all fields, codex maps `permissionMode`, opencode omits it (use `extraArgs`), and kiro folds `allowedTools` into its trust policy. `scrubEnv: true | string[]` strips provider credential environment variables before spawn on every adapter, including kiro ACP (#8).
+- Workspace confinement: `createDriver({ confineToWorkspace: true, workspaceRoot })` rejects a `spec.cwd` or `spec.stateDir` that escapes the workspace through `..` or symlinks, before launch (#9).
+- Adapter-owned profile validation: `AgentAdapter.validateProfile(spec)`. Kiro validates its config (strict schema, MCP server sanity); claude, codex, gemini, and opencode share CLI-argument checks. Errors fail fast with `INVALID_PROFILE`; warnings are added to `result.warnings` (#9).
+- Typed run-options schema: `RunSpecSchema`, `RunResultSchema`, `parseRunSpec`, and the full type surface are exported from the package entry. Invalid specs fail with `INVALID_SPEC` and field paths: non-finite, zero, or negative timeouts are rejected, the budget shape is strict, and models must be pinned where the adapter requires it (kiro ACP `requireModelAck`) (#10).
+- `driver.installSignalAbort(runId, signals?)` wires SIGTERM/SIGINT to `driver.abort(runId)` and returns a disposer. The first signal aborts and uninstalls, so later signals keep Node's default behavior (#11).
+- Prompt attachment API: `composePrompt(prompt, files, { maxTotalBytes? })` (default 1 MiB cap) returns `{ prompt, manifest }` with per-file `{path, sha256, bytes}`, `promptSha256`, and `totalBytes`. It is wired into `RunSpec.attachments` and `attachmentsMaxBytes`, and the manifest is on `result.attachments` (#12).
+
+## [0.7.4] - 2026-09-14
+
+### Added
+
+- Library entry `dist/index.js` (from `src/index.ts`), wired through package.json `main`/`exports`, exporting `createDriver`, `defaultAdapters`, `ClaudeCodeAdapter`, `KiroAdapter`, `CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, and `VERSION`. `import('agentic-coding-harness')` works as a drop-in replacement for the SDLC runtime patch (#5).
+- `RunSpec.timeoutMs` and `RunSpec.idleTimeoutMs` as top-level aliases for `budget.wallMs` and `budget.idleMs` (an explicit `budget.*` value wins). Hitting either resolves `{ exitStatus: 'timeout' }`.
+- README section "Use as a library".
+
+### Changed
+
+- Importing the package, or the legacy path `dist/cli/ach.js`, no longer runs the CLI: `main()` runs only when the module is the process entry. `ach` with no arguments still prints usage and exits 1.
+
+### Fixed
+
+- `driver.abort(runId)` out-of-band cancellation now has test coverage; the run settles `aborted`, and an unknown id returns `false`.
+
+## [0.7.3] - 2026-09-14
+
+### Added
+
+- `DriverOptions.onOutput`: a driver-wide tap that receives each chunk of the agent CLI's raw stdout as received.
+- `RunSpec.onOutput` / `RunOptions.onOutput`: a per-run tap that overrides the driver-wide default. Non-function values are ignored.
+- The tap fires before line parsing for the codex, gemini, opencode, and kiro headless adapters, and claude taps its native spawn path the same way. A throwing tap never breaks a run. Childless transports (kiro ACP, `opencode preferServer`) have no stdout to tap.
+- Consumers pinned to 0.7.2 with a byte-range patch to repopulate raw stdout can depend on the published package and drop the patch (#4).
+
+## [0.7.2] - 2026-09-13
+
+### Fixed
+
+- Dashboard feed: Kiro `agent_thought_chunk` deltas now coalesce into their own dim italic reasoning row. Only `agent_message_chunk` text lands in the agent row; before, both were concatenated into one row.
+- Dashboard feed: dim advisory rows (`progress`, `modelAck`, `stderrNotice`) no longer close the streamed block, so a heartbeat between chunks no longer splits one message into a row per delta. Message, tool-card, and terminal rows still end the stream.
+- `resolveRawTranscript` relocates a run record's absolute `rawTranscript` path under the current `<stateDir>/raw/` when the stored path is gone. Records written before the v0.7.0 rename pointed at `~/.agent-harness/raw/`, so the dashboard backlog and the `harness_run_events` MCP tool returned nothing for those runs.
+
+### Changed
+
+- The vendored Python bundle was rebuilt from this release.
+
+## [0.7.1] - 2026-09-12
+
+### Added
+
+- Node-compatible build and npm packaging, with publish-ready package metadata and an MIT license.
+- `ach serve` and `ach web` run on a runtime-agnostic HTTP and WebSocket layer, giving Node parity with Bun.
+- `agentic-coding-harness` PyPI wrapper package.
+
+## [0.7.0] - 2026-09-12
+
+### Changed
+
+- **Breaking:** the package `agent-harness` is renamed `agentic-coding-harness`, and the CLI binary `harness` / `agh` is renamed `ach`. There is no compatibility shim.
+- Environment variables `AGENT_HARNESS_*` are now `AGENTIC_CODING_HARNESS_*` (state dir, HTTP token, default claude config, and others).
+- The state dir `~/.agent-harness` is now `~/.agentic-coding-harness`. To keep prior run history visible, run `mv ~/.agent-harness ~/.agentic-coding-harness`.
+- The MCP server name, README, docs, and CLI banner use the new name. The GitHub repo moved to `sblattj/agentic-coding-harness`; the old URL redirects.
+- No feature changes relative to v0.6.2.
+
+## [0.6.2] - 2026-09-12
+
+### Fixed
+
+- The terminal grid's per-tile PTY button is renamed from `LIVE` to `TERM ➜`, with the tooltip "spawn a live interactive terminal (PTY)". The bare `LIVE` label read as a run-status badge even when the header pill showed `0 runs live`; the per-tile status dot is now the only liveness signal.
+
+## [0.6.1] - 2026-09-12
+
+### Added
+
+- One shared live feed (`/feed.js`, `HarnessFeed`) renders in `/`, the `/grid` tiles, and the `/trio` drawer: agent/user messages, coalesced output chunks, warnings, usage lines, and exit status. It streams over the existing run websocket and backfills from the persisted transcript.
+- Each `tool_call`/`tool_result` pair renders as a card (glyph, name, argument summary, success or failure mark, duration). Click a card to expand the input JSON and the output; failed calls are red with the real error text.
+- The Claude adapter persists `tool_use` and `tool_result` blocks from the CLI's JSON stream as `tool_call` and `tool_result` events, so Claude runs show tool spans in the feed and in trio traces.
+
+### Changed
+
+- When a run ends, the feed latches with "— stream ended —" and stays scrollable. The asciinema replay player and its vendor bundle are removed; `/cast` remains for external consumers.
+- The v0.6.0 interactive terminals stay: the grid `LIVE` button and the trio `LIVE TERMINAL` tab now sit beside the feed instead of a replay.
+
+### Fixed
+
+- The trio view no longer reserves an empty fatal box.
+- Kiro usage rows with all-zero values are skipped in the feed.
+
+## [0.6.0] - 2026-09-12
+
+### Added
+
+- PTY relay (`bun-pty`) for the web dashboard: agents spawn under a real PTY via `POST /api/pty`, `GET /api/pty`, `POST /api/pty/:id/kill`, and `WS /ws/pty/:id`, which provides scrollback catch-up, verbatim live bytes, keystroke injection, and resize (SIGWINCH).
+- A `LIVE` button on each grid tile expands to a full-size xterm.js pane running the agent CLI, and the trio view gains a replay / live-terminal toggle.
+- PTY sessions carry a `runId`, so the live terminal and the traces, metrics, and logs describe the same run.
+- Agents spawned from the dashboard boot non-interactively so they do not stall on a trust prompt: Claude `--dangerously-skip-permissions`, Kiro `--trust-all-tools`, Codex `--full-auto`, Gemini `--yolo`.
+
+### Fixed
+
+- The grid and trio views show Kiro metering credits and no longer report a false $0 for credits-only runs.
+
+## [0.5.2] - 2026-09-12
+
+### Added
+
+- Opt-in `harness run --agent claude --claude-default-config`, also available as env `AGENT_HARNESS_DEFAULT_CLAUDE_CONFIG=1` (the route for the MCP tools and ToolHive) and the adapter option `useDefaultClaudeConfig: true`. The child gets no `CLAUDE_CONFIG_DIR` (an inherited override is dropped too), no per-run config dir is created, and the RunRecord still comes from stdout. The transcript file lands under `~/.claude/projects` instead of the state dir, and concurrent Claude runs share one config, so pair it with sequential runs when isolation matters.
+
+### Fixed
+
+- On a Mac whose Claude Code login is keychain-bound OAuth (no `~/.claude/.credentials.json`), the per-run `CLAUDE_CONFIG_DIR` could not see the token, so every `harness run --agent claude` ended with `Not logged in · Please run /login`, exit 1, and zero tokens. `--claude-default-config` avoids this (#3).
+
+## [0.5.1] - 2026-09-12
+
+### Changed
+
+- `harness serve` now defaults to port 8398 (`harness web` stays on 8399); both previously defaulted to 8399, so a running dashboard blocked the MCP endpoint. `docs/TOOLHIVE.md` is updated.
+- A port that is already in use now fails with `serve: port N on HOST is already in use (another harness serve or harness web?); pass --port to choose another` instead of a stack trace.
+- The ACP client's `clientInfo.version` now reads `VERSION` from `src/version.ts` instead of a literal.
+
+### Fixed
+
+- A `--model` that Kiro CLI rejects is now a run warning. Kiro CLI 2.21.2's headless lane answers `--model` with `Method not found` and runs its default; the run already recorded `modelAck: "unsupported"` but `warnings` stayed empty. It now carries `kiro: requested model '<m>' was not applied (kiro-cli rejected --model: Method not found); the run used the CLI default`. A session-store model that differs from the request also warns, with one warning per cause and the rejection taking precedence.
+- Kiro's `Dynamic registration failed: …` stderr line (OAuth dynamic client registration against an MCP server in `~/.kiro/settings/mcp.json` or the agent's `mcpServers`) becomes a `stderrNotice` step and a warning naming the cause, and the raw `progress` line is kept. Headless only; the ACP transport has no per-line stderr hook. `docs/KIRO.md` gains a "stderr notices" subsection with the remedy.
+- `package-lock.json` is bumped along with the other version sites; 0.5.0 had bumped only `package.json` and `src/version.ts`.
+
+## [0.5.0] - 2026-09-12
+
+### Added
+
+- `harness web` serves a browser dashboard with a terminal-grid home at `/grid`: one live terminal tile per run, plus live aggregates (runs live, tokens, estimated spend), driven by the runs WebSocket and per-run streams.
+- A per-run Observability Trio at `/trio?run=<id>`, reached through a TRIO button on each tile: span-waterfall traces, stat cards with SVG time-series metrics, and a leveled log console. The panels are synced (clicking a span filters the logs and shades the metric window), and an asciinema replay drawer is included.
+- `derive.ts` turns `AgentEvent[]` into spans, cumulative token and cost metrics, and leveled logs.
+- New route `/api/runs/:id/observability`; the existing `/`, `/api/runs`, `/cast`, and `/ws` are unchanged.
+
+## [0.4.2] - 2026-09-12
+
+### Added
+
+- CLI flags for the remaining `KiroConfig` keys on `harness run` and `harness preflight --agent kiro`: `--kiro-startup-ms <ms>` (positive integer; anything else is a usage error), `--kiro-require-model-ack` (run only; preflight never sends a prompt), and a repeatable `--kiro-mcp-server '<json>'` taking one `{name, command, args?, env?}` object per occurrence, validated by the same schema as the MCP tool. Invalid JSON or shape names the flag and value in the error. `preflight` forwards `--kiro-startup-ms` and `--kiro-mcp-server` into the handshake.
+- Opt-in paid calibration test (`tests/kiro-calibration.test.ts`), skipped unless `KIRO_CALIBRATION=1`. It drives the real CLI once per transport, re-sums `metering_usage[].value` from `~/.kiro/sessions/cli/<id>.json`, and asserts the harness, stream, session-store, and tap credit figures are identical.
+- `docs/KIRO.md` gains a "Paid calibration" section and the new flag rows.
+
+### Fixed
+
+- `result.kiro.cliVersion` is now the bare version number (`2.21.2`) on both transports. The headless lane previously reported the raw `kiro-cli 2.21.2` line while ACP reported `2.21.2`. One shared parser, `parseKiroCliVersion`, serves the headless probe and preflight, and falls back to the verbatim output when the version is unparseable.
+
+## [0.4.1] - 2026-09-12
+
+### Added
+
+- The headless Kiro lane (`kiro-cli chat --no-interactive`) forwards `--model`, `--agent`, `--effort`, and `--trust-tools`. The argv passed (minus the prompt) is recorded in `result.kiro.effective.argv` and covered by `configHash`.
+- `result.kiro` is populated on the headless lane (`cliVersion`, `transport: 'headless'`, `requested`, `effective`, `nativeSessionId`, `modelAck`, `configHash`). `modelAck` is `unsupported` on the 2.21.x `Method not found` warning and the new `unverified` when the CLI says nothing.
+- The native session id is read from the first `runStarted` envelope, so the session store is found and context is derived (`ctx ≈ N tok`).
+
+### Changed
+
+- The headless lane no longer passes an implicit `--trust-all-tools`. With `tools` unset, neither lane passes a trust flag and the native agent config decides.
+- The `kiro-cli --version` probe runs concurrently with the spawn and is capped at 3 s (`KIRO_VERSION_PROBE_MS`; adapter option `versionProbeMs`). A binary that hangs on `--version` yields `cliVersion: 'unknown'` instead of holding `wait()` open.
+- `docs/KIRO.md` transports table and limitations are rewritten for the headless lane.
+
+### Fixed
+
+- Kiro's own metadata frame (`extra.source: 'native'`) is no longer summed into the tap figure. A tapped headless run previously reported `tap = 2 × stream` and a false disagreement warning; stream, session store, and tap now agree and the registry total is the native figure.
+- A credits-only record (`tokensAvailable: false`) is no longer sent to the pricer, removing the spurious `pricing: unknown model "unknown"` warning.
+- The MITM record listener is attached synchronously at tap start.
+- `package-lock.json` root version corrected (it had been `0.1.0` since the first release).
+
+## [0.4.0] - 2026-09-12
+
+### Added
+
+- Kiro ACP transport (`src/adapters/kiro-acp.ts`, `kiro-acp-launch.ts`): newline-delimited JSON-RPC over `kiro-cli acp` (`initialize`, `session/new`, `session/set_model`, `session/prompt`), with mode and model verified from the `session/new` result. `result.kiro` reports `{ cliVersion, transport, requested, effective, nativeSessionId, modelAck, configHash }`. Permission requests are denied by policy and recorded; abort sends `session/cancel`, then SIGTERM, then SIGKILL; startup is bounded and names the failing phase (#2).
+- Typed `kiro` config on `harness_run`, `harness_run_async`, and `RunSpec`, with CLI flags `--kiro-transport`, `--kiro-agent`, `--kiro-engine`, `--kiro-effort`, `--kiro-tools`, and `--kiro-require-mcp-startup`. With `tools` unset on the ACP lane, no trust flag is passed.
+- `harness preflight --agent kiro` and the MCP tool `harness_kiro_preflight` check binary/version, auth, agent, model plus `set_model` ack, and MCP state, each reported as `verified`, `failed`, or `unproven`. No prompt is sent.
+- Kiro event normalizer (`kiro-events.ts`) for the `runStarted` / `metadata` / `sessionUpdate` / `runFinished` envelopes: tool starts deduplicated by `toolCallId`, results on `completed|failed`, chunks coalesced, `_kiro.dev/*` preserved as non-turn steps, native `stopReason` surfaced.
+- `result.usage = { tokens, credits, usd, context }`, each with `available/source/scope/cumulative/complete`. Credits are reconciled to one charge across stream, session store, and MITM tap; a disagreement becomes a warning. Context occupancy is derived (`ctx ≈ N tok`) from `contextUsagePercentage × context_window_tokens`. A Kiro session-store reader (`kiro-session-store.ts`) backfills the effective model.
+- `harness web`, a live and replay run dashboard in the browser.
+- Langfuse emitter splits multi-model usage events into per-slice generations.
+- The MCP server exposes 10 tools.
+- `docs/KIRO.md` guide and sanitized kiro-cli 2.21.2 fixtures under `tests/fixtures/kiro/`.
+
+### Changed
+
+- On kiro-cli 2.21.x every token counter in every source is `0`, so tokens render as `n/a` rather than `0`, and USD renders `n/a` rather than `$0.0000`. `--budget-usd` warns that it is unenforceable for Kiro.
+- The version now has a single source in `src/version.ts`.
+
+### Fixed
+
+- `harness emit` inherits `sessionId`, `agent`, and `model` from the `RunResult` input.
+
+### Known limitations
+
+- The headless Kiro lane did not yet forward `agent/engine/effort/tools`, still passed `--trust-all-tools`, reported `result.kiro = null`, and did not normalize the new envelopes. Use `--kiro-transport acp`; headless support followed in 0.4.1.
+- `--trust-tools` on kiro-cli 2.21.2 did not block a `read`; tool restrictions are recorded per tool from evidence rather than asserted from the flag.
+- `mcpServers`, `startupMs`, and `requireModelAck` had no CLI flag yet (MCP and library only); flags followed in 0.4.2.
+
+## [0.3.0] - 2026-09-11
+
+### Added
+
+- `harness serve --http`: Streamable HTTP MCP on loopback (`POST /mcp`, single and batch JSON-RPC), bearer-token auth via `--token` or `AGENT_HARNESS_HTTP_TOKEN` (never argv), unauthenticated `GET /health` readiness, and graceful SIGTERM shutdown. It shares tool implementations with the stdio lane (#1).
+- Async job tools: `harness_run_async` returns `{ runId }` promptly; `harness_run_status`; `harness_run_events` (cursor/limit transcript paging); `harness_run_cancel` (in-process abort, live-pid SIGTERM, honest `cancelled:false`). Synchronous `harness_run` is unchanged.
+- Job IDs are run-registry IDs (`<stateDir>/runs/<runId>.json`). After a restart, in-flight runs report `interrupted` (pid dead or heartbeat stale); terminal states are preserved; runs are not resumed implicitly.
+- Gateway profile: `harness serve --gateway --root <dir> [--max-jobs N] [--max-output-bytes N] [--allow-extra-args ...]` constrains cwd under the root, artifact paths under the state dir, async concurrency, and `extraArgs` (fail-closed allowlist), and disables Langfuse emit. `AGENT_HARNESS_*` env variables mirror the flags.
+- Wall-clock and idle run budgets (`wallMs`, `idleMs`) alongside `usd` and `maxTurns`, all applying to async runs.
+- `docs/TOOLHIVE.md`: topology, secret forwarding, client configs (Claude Code, OpenCode, Kiro, Codex), host PATH/auth inheritance, restart semantics, and a no-paid-tasks verification path. Linked from the README.
+
+### Changed
+
+- The claude adapter's default `maxTurns` goes from 10 to 250.
+- README rewritten with a demo; architecture and token docs updated.
+
+## [0.2.2] - 2026-09-10
+
+### Added
+
+- `harness dash` / `agh dash`: a live terminal dashboard (ANSI alt-screen, `q` quits; `--json` for machine output, `--all` for history). The driver now writes per-run registry records (`<stateDir>/runs/*.json`) with atomic heartbeats carrying token, cost, and credit totals and a last-event preview. The bin gains the `agh` alias.
+- Kiro runs surface the bare native session id (in the token record extra and the CLI summary) for grepping `~/.kiro/sessions/`. Harness session IDs are namespaced `kiro-<uuid>`, while Kiro's on-disk sessions are bare UUIDs.
+
+### Fixed
+
+- The `pricing: unknown model "unknown"` warning, which repeated about 8 times per Kiro run, is suppressed for credit-metered records. Costs are unchanged.
+
+## [0.2.1] - 2026-09-10
+
+### Added
+
+- MCP stdio server (protocolVersion 2025-06-18) exposing `harness_run`, `harness_agents`, `harness_report`, `harness_emit`, and `harness_stats` to any MCP client. Configuration is documented in `docs/MCP.md`.
+
+### Fixed
+
+- `harness stats` now counts per-turn usage from driver-run transcripts. A routing condition previously sent `{type:"usage"}` lines past the event parser into the canonical path, where they were discarded. Driver runs contribute to stats without `harness watch`.
+
+## [0.2.0] - 2026-09-10
+
+First tagged release: a cross-agent CLI driver and token/credit meter for Claude Code, OpenCode, Kiro CLI, Codex, and Gemini.
+
+### Added
+
+- Langfuse sink: OTLP ingest with usage and cost details, verified against a live Langfuse v4 instance.
+- `harness report`: a single-file HTML trial comparison with token and cost charts and per-agent timelines.
+- Kiro MITM auto-tap: per-run credits are captured automatically from the EventStream wire (`meteringEvent`), with a credits parser for the kiro-cli 2.21.2 wire shape and a `KIRO_MITM_DEBUG` frame dump.
+- `--extra-args` CLI passthrough for agent-specific flags.
+- Pricing coverage, a codex `--model` option, and `stats --state-only`.
+
+### Fixed
+
+- kiro: `--engine v3` is replaced by `--agent-engine v2`. kiro-cli 2.21.2 removed `--engine`, and the old spelling exited with code 2 on every launch. v2 is the default because v3's model-catalog fetch fails under the MITM tap (`ModelRegistryUnavailableError`).
+- claude: `--extra-args` are forwarded; the adapter previously dropped them silently.
+- claude: multi-model runs are priced per model instead of every model as haiku, which had undercosted opus runs about 5x (one real run went from $0.0214 to $0.1028).
