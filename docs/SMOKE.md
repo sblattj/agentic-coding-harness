@@ -94,6 +94,17 @@ A tool that ignores `HOME` but reads its own variable still lands in the sandbox
 so a CLI that launches "the browser" never reaches your default browser. The recorded URL is
 handed to browser auth instead.
 
+A step that calls `/usr/bin/open` by absolute path would bypass those PATH shims, so on macOS
+there are two more layers. (1) The step's zsh defines a function named `/usr/bin/open` that runs
+the open shim, so a literal `/usr/bin/open URL` in the step text (also inside functions, `eval`
+and subshells) is recorded like any other open. (2) Shell steps run under
+`sandbox-exec` with a profile that denies exec of `/usr/bin/open` and `/usr/bin/osascript`, so a
+child program (`bash -c`, node, Python's `webbrowser`) cannot reach the host browser; it fails
+with `Operation not permitted`, which is reported as `denied` friction naming the blocked open.
+This layer blocks but cannot record the URL. `sandbox-exec` is probed once per sandbox; if it
+fails (for example the harness already runs inside a sandbox), steps run under plain `/bin/zsh`
+and only layer 1 applies. Prompt steps (`ach run`) are not wrapped.
+
 ### Keychain (macOS)
 
 Without its own keychain, every CLI that stores a token under a fresh `HOME` hangs on a host

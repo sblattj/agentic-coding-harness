@@ -106,6 +106,8 @@ export interface SandboxOptions {
   env?: Record<string, string>;
   /** Keep the root on teardown (default false). */
   keep?: boolean;
+  /** Force the sandbox-exec exec guard off (tests); default: probe it on darwin. */
+  execGuard?: boolean;
 }
 
 export interface TeardownResult {
@@ -124,6 +126,8 @@ export interface Sandbox {
   home: string;
   tmp: string;
   shims: string;
+  /** darwin: shell steps may run under sandbox-exec denying exec of /usr/bin/open and osascript (#139). */
+  execGuard: boolean;
   env: Record<string, string>;
   /** Path of a harness file under <root>/state. */
   statePath(name: string): string;
@@ -340,6 +344,13 @@ exit 0
 `;
 }
 
+/** Probe once whether sandbox-exec works here (it fails when the harness itself is already sandboxed). */
+function probeExecGuard(): boolean {
+  if (process.platform !== 'darwin') return false;
+  const r = spawnSync('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)', '/usr/bin/true'], { timeout: 5_000, stdio: 'ignore' });
+  return !r.error && r.status === 0;
+}
+
 // ---------------------------------------------------------------- createSandbox
 
 export async function createSandbox(opts: SandboxOptions = {}): Promise<Sandbox> {
@@ -421,6 +432,7 @@ export async function createSandbox(opts: SandboxOptions = {}): Promise<Sandbox>
     home,
     tmp,
     shims,
+    execGuard: opts.execGuard === false ? false : probeExecGuard(),
     env,
     keychainPath,
     trackedPgids: reg.pgids,

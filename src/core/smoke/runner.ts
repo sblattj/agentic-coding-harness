@@ -102,6 +102,9 @@ const RE_MISSING = [
   /^zsh:\d*:?\s*no such file or directory:\s*(\S+)/i,
 ];
 const RE_WRONG_FLAG = /unknown option|unrecognized (?:option|argument)|invalid option|Usage:/i;
+/** darwin: shell steps cannot exec the host browser launchers by absolute path (#139). */
+const EXEC_GUARD_PROFILE = '(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript"))';
+const RE_HOST_BROWSER_DENIED = /\/usr\/bin\/(?:open|osascript)\b.*Operation not permitted|Operation not permitted.*\/usr\/bin\/(?:open|osascript)\b/;
 const RE_DENIED = /Permission denied|EACCES|Operation not permitted|not allowed|denied/i;
 const RE_PROMPT = /\(y\/N\)|\[Y\/n\]|Password:|Press (?:Enter|any key)|\? .+[:?]\s*$|not a tty|stdin is not a terminal|Inappropriate ioctl/i;
 const RE_KEYCHAIN = /keychain cannot be found|SecKeychain|errSec/i;
@@ -146,6 +149,9 @@ export function scanOutput(output: string, exitCode: number | null, step: SmokeS
     }
     if (RE_DENIED.test(line)) {
       denials.push(line.trim());
+      if (RE_HOST_BROWSER_DENIED.test(line)) {
+        add({ kind: 'denied', detail: 'A program in the step tried to open the host browser by absolute path (/usr/bin/open or /usr/bin/osascript); the smoke sandbox blocked it. Use `open` from PATH or print the URL instead.', evidence: trimEvidence(line) });
+      }
       add({ kind: 'denied', detail: 'The step was denied (permissions or policy).', evidence: trimEvidence(line) });
     }
     if (RE_ASSUMPTION.test(line)) {
@@ -330,11 +336,20 @@ export async function runStep(sb: Sandbox, step: SmokeStep, opts: RunStepOptions
       `[[ -r "$HOME/.zprofile" ]] && source "$HOME/.zprofile"`,
       `[[ -r "$HOME/.zshrc" ]] && source "$HOME/.zshrc"`,
       `[[ -r ${stQ} ]] && source ${stQ}`,
+      ...(process.platform === 'darwin'
+        ? [`function /usr/bin/open { ${shq(path.join(sb.shims, 'open'))} "$@"; }`]
+        : []),
       `true`,
       step.text,
     ].join('\n');
-    cmd = '/bin/zsh';
-    args = ['-c', script];
+    if (sb.execGuard && process.platform === 'darwin') {
+      // sandbox-exec execs its target: same pid and process group (reaping unchanged).
+      cmd = '/usr/bin/sandbox-exec';
+      args = ['-p', EXEC_GUARD_PROFILE, '/bin/zsh', '-c', script];
+    } else {
+      cmd = '/bin/zsh';
+      args = ['-c', script];
+    }
     background = isBackgrounding(step.text);
   }
 

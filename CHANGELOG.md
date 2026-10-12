@@ -2,6 +2,12 @@
 
 Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes and commit history.
 
+## [Unreleased]
+
+### Fixed
+
+- `ach smoke` on macOS (#139): a step, or a program it runs, that called `/usr/bin/open URL` (or `/usr/bin/osascript`, which Python's `webbrowser` uses) by absolute path bypassed the PATH shims and opened your real browser. A literal `/usr/bin/open` in the step text is now caught by a zsh function that runs the sandbox shim, so the URL is recorded. Shell steps also run under `sandbox-exec` denying exec of those two binaries, so child processes are blocked with `Operation not permitted`, reported as a specific `denied` friction. `sandbox-exec` is probed once per sandbox and skipped (plain `/bin/zsh`) when it is unavailable. Prompt steps are unchanged.
+
 ## [0.20.1] - 2026-10-12
 
 ### Fixed

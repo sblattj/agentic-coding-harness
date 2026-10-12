@@ -277,3 +277,44 @@ process.stdout.write(JSON.stringify(out, null, 2) + "\\n");
     assert.equal(r.tokens, null);
   });
 });
+
+describe("smoke runner: absolute-path browser opens (#139)", { skip: !macOS && "the smoke sandbox is macOS-only (/bin/zsh, sandbox-exec)" }, () => {
+  const opened = (sbx: Sandbox): string => {
+    try {
+      return fs.readFileSync(sbx.statePath("opened-urls.jsonl"), "utf8");
+    } catch {
+      return "";
+    }
+  };
+  it("a literal /usr/bin/open URL is recorded by the shim function", async () => {
+    const r = await runStep(sb, step("/usr/bin/open https://example.test/x-literal"));
+    assert.equal(r.exitCode, 0);
+    assert.match(opened(sb), /https:\/\/example\.test\/x-literal/);
+  });
+  it("a child process calling /usr/bin/open is blocked with specific denied friction", async (t) => {
+    if (!sb.execGuard) return t.skip("sandbox-exec unavailable here");
+    const r = await runStep(sb, step("bash -c '/usr/bin/open https://example.test/y-child'"));
+    assert.notEqual(r.exitCode, 0);
+    const f = r.friction.find((x) => x.kind === "denied");
+    assert.ok(f, JSON.stringify(r.friction));
+    assert.match(f.detail, /host browser by absolute path/);
+    assert.doesNotMatch(opened(sb), /y-child/);
+  });
+  it("control: a normal step passes under the guard", async () => {
+    const r = await runStep(sb, step("echo hi"));
+    assert.equal(r.status, "pass");
+    assert.match(r.outputTail, /hi/);
+  });
+  it("fallback: with the guard forced off, shell steps still run", async () => {
+    const sb2 = await createSandbox({ keychain: false, execGuard: false });
+    try {
+      assert.equal(sb2.execGuard, false);
+      const r = await runStep(sb2, step("echo plain; /usr/bin/open https://example.test/z-fallback"));
+      assert.equal(r.exitCode, 0);
+      assert.match(r.outputTail, /plain/);
+      assert.match(opened(sb2), /z-fallback/);
+    } finally {
+      await sb2.teardown();
+    }
+  });
+});
