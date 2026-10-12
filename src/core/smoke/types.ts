@@ -117,3 +117,43 @@ export interface StubRequest {
   body: string;
   at: string;
 }
+
+// ---------------------------------------------------------------- auth (browser-auth.ts <-> runner.ts)
+
+/** An auth step the runner noticed: a URL the CLI printed or tried to `open`. */
+export interface AuthRequest {
+  stepIndex: number;
+  url: string;
+  /** Device-code flows: the code the reader must enter. */
+  userCode?: string;
+  kind: "device-code" | "browser";
+  /** The account the step needs (fence attr `account=` or --account); undefined = unknown. */
+  account?: string;
+}
+
+export interface AuthOutcome {
+  status: "completed" | "wrong-account" | "policy-blocked" | "needs-human" | "failed";
+  /** One sentence for the friction table. */
+  detail: string;
+  /** Accounts the browser showed as signed in (never cookies or tokens). */
+  seenAccounts: string[];
+  /** wrong-account / needs-human: the one-line command the user runs themselves. */
+  loginScript?: string;
+  /** policy-blocked: the flow the reader will actually use instead. */
+  fallback?: "browser";
+}
+
+export type AuthHandler = (req: AuthRequest) => Promise<AuthOutcome>;
+
+// ---------------------------------------------------------------- message edits (fix.ts -> report.ts)
+
+/** One edit to the message, addressed by 1-based source line of the ORIGINAL message. */
+export interface MessageEdit {
+  line: number;
+  op: "replace" | "insert-before" | "insert-after";
+  /** For replace: the exact original text being replaced (a step's `text`), checked before applying. */
+  original?: string;
+  text: string;
+  /** Why, for the friction table's "fixed" column. */
+  reason: string;
+}
