@@ -127,3 +127,4 @@ These commands have their own exit codes and do not use the ladder above. Each c
 
 - `ach queue run`: `0` drained, `1` a slice or `post` hook failed, `40` `--max-hours` expired, `130` interrupted. See [QUEUE.md](QUEUE.md#exit-codes).
 - `ach replay vet`: `0` pass or warn, `1` usage or `gh` error, `40` a vet check failed. See [REPLAY.md](REPLAY.md).
+- `ach smoke`: `0` every step passed or was fixed, `1` friction left, `2` usage (missing file, bad flag, no runnable steps). See [SMOKE.md](SMOKE.md#exit-codes).

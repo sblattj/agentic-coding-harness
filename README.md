@@ -347,6 +347,10 @@ ach verify-run <runId|runDir> [--json] [--records] [--state-dir <stateDir>]
 ach replay vet <pr-number|pr-url> [--repo owner/name] [--clone PATH] [--fallback-clone PATH]... [--json]
             # read-only vetting of a merged PR as a replay case: merged/approved/trunk/tests/ticket,
             # merge + base commits in the clone, squash vs merge; exit 0 pass/warn, 40 fail (docs/REPLAY.md)
+ach smoke <message-file> [--account EMAIL] [--stub jira=JIRA_BASE_URL]... [--allow-path DIR]...
+            [--cdp URL|--no-browser] [--no-fix|--fix-agent A|--fix-tool REPO] [--out DIR] [--copy] [--json]
+            # run a how-to message's steps literally as a brand-new user (fresh HOME, own keychain),
+            # fix the message in place, print the friction table; exit 0 clean, 1 friction, 2 usage (docs/SMOKE.md)
 ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
@@ -612,6 +616,17 @@ default config instead. Transcripts then land under `~/.claude/projects` and con
 share one config, so pair it with sequential runs when isolation matters. A run that hits this now ends
 `unavailable` with the fix printed (`[warn] unavailable: claude: not logged in for this run ...`).
 
+## Smoke the instructions before you send them: `ach smoke`
+
+`ach smoke howto.md` runs every step of a setup message the way a new reader would. It uses a
+sandbox with its own `HOME`, config dirs, minimal `PATH` and an empty per-sandbox keychain, so
+nothing on your machine helps the steps along. Browser logins are completed in your real
+browser in a new tab, and only when the signed-in account matches. Ticketing writes go to local
+stubs. Missing installs, policy-blocked device-code logins and confirm prompts are fixed in the
+message and rerun. You get a friction table and `howto.smoked.md` (`--copy` puts it on the
+clipboard as rich text). Your keychain search list is verified unchanged, and every background
+process is reaped on exit. See [docs/SMOKE.md](docs/SMOKE.md).
+
 ## Kiro IDE (desktop app)
 
 `--agent kiro-ide` drives the Kiro IDE (the Electron desktop app) over Chrome DevTools Protocol.
@@ -826,6 +841,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 
 - [Cost modes and provenance](docs/PROVENANCE.md), [billing blocks and plan estimates](docs/USAGE-WINDOWS.md), [quota headroom](docs/QUOTA.md).
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
+- [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
 - [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — adapter pattern (headless / ACP / tmux lanes),
