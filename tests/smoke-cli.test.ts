@@ -21,7 +21,8 @@ import { PAGES, startFakeBrowser, type FakeBrowser } from "./support/fake-login-
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(REPO, "src/cli/ach.ts");
 const darwin = process.platform === "darwin";
-const hasZsh = fs.existsSync("/bin/zsh");
+// #139: the smoke sandbox is only built and measured on macOS (CI also runs ubuntu-latest).
+const hasZsh = process.platform === "darwin" && fs.existsSync("/bin/zsh");
 
 interface CliRun {
   code: number | null;
@@ -107,7 +108,7 @@ describe("hostLevelReason: what never runs in the sandbox", () => {
   }
 });
 
-describe("ach smoke end to end", { skip: !hasZsh && "the smoke runner needs /bin/zsh" }, () => {
+describe("ach smoke end to end", { skip: !hasZsh && "the smoke sandbox is macOS-only" }, () => {
   let root: string;
   let bin: string;
   let browser: FakeBrowser;

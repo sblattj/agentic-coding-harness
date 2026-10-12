@@ -308,3 +308,5 @@ Progress lines go to stderr (`smoke: step 3/6: …`).
 - Browser auth works with pages that show the signed-in account. A provider that hides it
   behind a menu gives `auth-needs-human`, never a guess.
 - Steps run under `/bin/zsh`, which is how a macOS reader's terminal runs them.
+- macOS only for now. The process sweeps (`ps -E`, `lsof`) and the keychain are macOS tools,
+  and the test suite skips the sandbox tests on Linux. Linux is untested.

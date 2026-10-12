@@ -11,6 +11,9 @@ import { classifyFriction, runStep, scanOutput } from "../src/core/smoke/runner.
 import { createSandbox, type Sandbox } from "../src/core/smoke/sandbox.ts";
 import type { AuthRequest, SmokeStep } from "../src/core/smoke/types.ts";
 
+// #139: CI also runs ubuntu-latest; the sandbox/runner are only built and measured on macOS.
+const macOS = process.platform === "darwin";
+
 let sb: Sandbox;
 before(async () => {
   sb = await createSandbox({ keychain: false });
@@ -39,7 +42,7 @@ const detectAuth = (t: string) => {
   return m ? { kind: "device-code" as const, url: m[0], userCode: "ABCD-1234" } : null;
 };
 
-describe("smoke runner: one terminal session, literal text", () => {
+describe("smoke runner: one terminal session, literal text", { skip: !macOS && "the smoke sandbox is macOS-only (/bin/zsh, ps -E, lsof sweeps)" }, () => {
   it("persists cwd and exports across steps", async () => {
     const a = await runStep(sb, step(`mkdir -p proj && cd proj && export SMOKE_FOO="a b'c"`));
     assert.equal(a.status, "pass", a.outputTail);
@@ -115,7 +118,7 @@ describe("smoke runner: friction classification", () => {
   });
 });
 
-describe("smoke runner: stdin, timeout, reaping", () => {
+describe("smoke runner: stdin, timeout, reaping", { skip: !macOS && "the smoke sandbox is macOS-only (/bin/zsh, ps -E, lsof sweeps)" }, () => {
   it("stdin is /dev/null: a read prompt is interactive-prompt friction", async () => {
     // zsh's `read -p` means "from coprocess", so the bash-style
     // `read -p "Continue? (y/N) " x` is written as printf + read here.
@@ -164,7 +167,7 @@ describe("smoke runner: stdin, timeout, reaping", () => {
   });
 });
 
-describe("smoke runner: auth hook", () => {
+describe("smoke runner: auth hook", { skip: !macOS && "the smoke sandbox is macOS-only (/bin/zsh, ps -E, lsof sweeps)" }, () => {
   it("detects a URL on stdout and calls onAuth with the step account", async () => {
     const seen: AuthRequest[] = [];
     const r = await runStep(sb, step("echo 'Open https://login.example.test/device to sign in'; sleep 0.5", "shell", { account: "me@example.com" }), {
@@ -236,7 +239,7 @@ describe("smoke runner: auth hook", () => {
   });
 });
 
-describe("smoke runner: prompt steps", () => {
+describe("smoke runner: prompt steps", { skip: !macOS && "the smoke sandbox is macOS-only (/bin/zsh, ps -E, lsof sweeps)" }, () => {
   let achCli: string;
   before(() => {
     // Fake `ach` entry: prints the `ach run --json` shape (RunResult with

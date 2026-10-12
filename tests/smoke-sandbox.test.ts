@@ -15,6 +15,7 @@ import { after, describe, it } from "node:test";
 
 import { createSandbox, SANDBOX_CONFIG_VARS, signalHandlersInstalled, type Sandbox } from "../src/core/smoke/sandbox.ts";
 
+
 const darwin = process.platform === "darwin";
 const open: Sandbox[] = [];
 after(async () => {
@@ -52,7 +53,7 @@ async function waitFor(pred: () => boolean, ms = 3000): Promise<boolean> {
   return pred();
 }
 
-describe("smoke sandbox env", () => {
+describe("smoke sandbox env", { skip: !darwin && "the smoke sandbox is macOS-only (/bin/zsh, ps -E, lsof sweeps)" }, () => {
   it("is built from scratch: no host home, layout under the root, config vars under HOME", async () => {
     const sb = await make({ keychain: false, env: { STUB_URL: "http://127.0.0.1:1" } });
     const realHome = os.homedir();
@@ -143,7 +144,7 @@ describe("smoke sandbox keychain", { skip: !darwin && "darwin only" }, () => {
   });
 });
 
-describe("smoke sandbox teardown reaping", () => {
+describe("smoke sandbox teardown reaping", { skip: !darwin && "the smoke sandbox is macOS-only (/bin/zsh, ps -E, lsof sweeps)" }, () => {
   it("reaps `sleep 1000 &` and a `nohup sleep 1000 &` escapee", async () => {
     const sb = await createSandbox({ keychain: false });
     try {
