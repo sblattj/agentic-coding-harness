@@ -130,6 +130,7 @@ import { creditUnitOfAgent } from "../core/credit-units.ts";
 import { ccusageHintText, cmdImport, parseStatsOrigin, statsOriginIndex, type StatsOrigin } from "./import.ts";
 import { cmdVerifyRun } from "./verify-run.ts";
 import { cmdReplay } from "./replay-vet.ts";
+import { cmdSmoke } from "./smoke.ts";
 import { EXIT_CODES, noDataExitCode, parseExitCodesMode, repeatExitCode, runExitCode } from "./exit-codes.ts";
 import { formatOutcomeLine, summarizeRunOutcomes } from "./run-outcomes.ts";
 import { alertFlagsToBudget } from "./alerts.ts";
@@ -349,6 +350,16 @@ usage:
                  ticket id (title/body/branch), merge + base commits in the clone or a fallback,
                  squash vs merge, diff stat; prints a draft {pr, workItem, merge, base} entry and
                  the next commands; uses gh. exit 0 pass/warn, 40 fail; see docs/REPLAY.md)
+  ach smoke <message-file> [--account EMAIL] [--agent A=claude] [--cdp URL] [--no-browser]
+            [--stub SPEC]... [--block-host HOST]... [--allow-path DIR]... [--timeout SECS=300]
+            [--no-fix] [--fix-agent A] [--fix-tool REPO] [--out DIR] [--copy]
+            [--format text|markdown] [--json] [--keep] [--no-keychain]
+                (smoke the instructions (#139): run a how-to message's steps literally as a
+                 brand-new user in a sandbox (fresh HOME, own keychain, minimal PATH), browser
+                 auth over CDP in a new tab with an account guard, outward writes hit local
+                 stubs (--stub jira=JIRA_BASE_URL), fix the message in place and rerun; prints
+                 the friction table, writes <name>.smoked.md (--out DIR), --copy as rich text.
+                 exit 0 clean, 1 friction left, 2 usage; see docs/SMOKE.md)
   ach status [--compact|--json] [--transcripts] [--budget-usd N] [--exit-codes ladder]
              [--once] [--write-state <path>] [--interval-ms MS=5000]
                 (runs, active runs, trailing-24h spend = \`stats --days 1\`,
@@ -1852,7 +1863,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay",
+  "trial", "queue", "replay", "smoke",
 ]);
 
 /**
@@ -1914,6 +1925,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdVerifyRun(rest);
     case "replay":
       return cmdReplay(rest);
+    case "smoke":
+      return cmdSmoke(rest);
     case "status":
       return cmdStatus(rest);
     case "statusline":

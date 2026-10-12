@@ -24,11 +24,49 @@ function stepCell(r: StepRecord): string {
   return first.length > STEP_MAX ? `${first.slice(0, STEP_MAX - 1)}…` : first;
 }
 
+/**
+ * Role of a record the integration added after a fix (#139 index.ts):
+ * "install" = an inserted install step it executed, "rerun" = the failing
+ * step run again (attempt 2). Stored in step.attrs so the contract types stay
+ * unchanged; attempt-1 records carry neither.
+ */
+export const SMOKE_ROLE_ATTR = "smoke-role";
+
+function role(r: StepRecord): "install" | "rerun" | "original" {
+  const v = r.step.attrs[SMOKE_ROLE_ATTR];
+  return v === "install" || v === "rerun" ? v : r.attempt > 1 ? "rerun" : "original";
+}
+
+function indexCell(r: StepRecord): string {
+  const rl = role(r);
+  return rl === "original" ? String(r.step.index) : `${r.step.index} ${rl === "install" ? "fix" : "rerun"}`;
+}
+
+/**
+ * One outcome per message step (by step.index), ignoring inserted-install
+ * rows: "fixed" when any of its records is fixed, else the status of its last
+ * original/rerun record. Used by the footer and by runSmoke's exit code.
+ */
+export function finalStatuses(records: StepRecord[]): Map<number, { status: StepRecord["status"]; record: StepRecord }> {
+  const out = new Map<number, { status: StepRecord["status"]; record: StepRecord }>();
+  for (const r of records) {
+    if (role(r) === "install") continue;
+    const prev = out.get(r.step.index);
+    const fixed = prev?.status === "fixed" || r.status === "fixed";
+    out.set(r.step.index, { status: fixed ? "fixed" : r.status, record: r });
+  }
+  return out;
+}
+
+const FIX_MAX = 60;
+
+/** First fix of the step (summary clipped), plus a count of the rest; renderFrictionDetails has them all. */
 function fixCell(fixes: FixRecord[], stepIndex: number): string {
-  return fixes
-    .filter((f) => f.stepIndex === stepIndex)
-    .map((f) => `${f.target}: ${f.summary} (${f.where})`)
-    .join("; ");
+  const mine = fixes.filter((f) => f.stepIndex === stepIndex);
+  if (mine.length === 0) return "";
+  const f = mine[0]!;
+  const sum = f.summary.length > FIX_MAX ? `${f.summary.slice(0, FIX_MAX - 1)}…` : f.summary;
+  return `${f.target}: ${sum} (${f.where})${mine.length > 1 ? ` (+${mine.length - 1} more)` : ""}`;
 }
 
 function seconds(ms: number): string {
@@ -39,25 +77,26 @@ const HEADER = ["#", "step", "status", "time", "tokens", "prompts/denials", "fri
 
 function rows(report: SmokeReport): string[][] {
   return report.steps.map((r) => [
-    String(r.step.index),
+    indexCell(r),
     stepCell(r),
     r.status,
     seconds(r.durationMs),
     r.tokens === null ? "-" : String(r.tokens),
     String(r.prompts.length + r.denials.length),
     r.friction.map((f) => f.kind).join(", "),
-    fixCell(report.fixes, r.step.index),
+    role(r) === "original" ? fixCell(report.fixes, r.step.index) : "",
   ]);
 }
 
 function footerLines(report: SmokeReport): string[] {
-  const count = (s: string) => report.steps.filter((r) => r.status === s).length;
+  const finals = [...finalStatuses(report.steps).values()];
+  const count = (s: string) => finals.filter((f) => f.status === s).length;
   const totalMs = report.steps.reduce((n, r) => n + r.durationMs, 0);
   const totalTokens = report.steps.reduce((n, r) => n + (r.tokens ?? 0), 0);
   const keychain =
     report.hostKeychainUnchanged === null ? "n/a" : report.hostKeychainUnchanged ? "yes" : "no";
   return [
-    `steps: ${report.steps.length} (pass ${count("pass")}, fail ${count("fail")}, fixed ${count("fixed")}, skipped ${count("skipped")})`,
+    `steps: ${finals.length} (pass ${count("pass")}, fail ${count("fail")}, fixed ${count("fixed")}, skipped ${count("skipped")})`,
     `total time: ${seconds(totalMs)}, total tokens: ${totalTokens}`,
     `host keychain unchanged: ${keychain}`,
     `reaped pids: ${report.reapedPids.length}`,
@@ -100,12 +139,14 @@ export function renderFrictionTable(
 export function renderFrictionDetails(report: SmokeReport): string {
   const out: string[] = [];
   for (const r of report.steps) {
+    const label = role(r) === "original" ? `step ${r.step.index}` : `step ${indexCell(r)}`;
     for (const f of r.friction) {
-      out.push(`step ${r.step.index} [${f.kind}] ${f.detail}`);
+      out.push(`${label} [${f.kind}] ${f.detail}`);
       if (f.evidence) {
         for (const l of f.evidence.split("\n")) out.push(`    ${l}`);
       }
     }
+    if (role(r) !== "original") continue;
     for (const fx of report.fixes.filter((x) => x.stepIndex === r.step.index)) {
       const rerun = fx.rerunPassed === null ? "not rerun" : fx.rerunPassed ? "pass" : "fail";
       out.push(`  fix (${fx.target}) at ${fx.where}: ${fx.summary}; rerunPassed: ${rerun}`);
