@@ -129,6 +129,8 @@ export interface AuthRequest {
   kind: "device-code" | "browser";
   /** The account the step needs (fence attr `account=` or --account); undefined = unknown. */
   account?: string;
+  /** The step's command text, for the hand-over login script. */
+  command?: string;
 }
 
 export interface AuthOutcome {
