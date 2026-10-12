@@ -2,7 +2,7 @@
 
 Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes and commit history.
 
-## [Unreleased]
+## [0.20.2] - 2026-10-12
 
 ### Fixed
 
