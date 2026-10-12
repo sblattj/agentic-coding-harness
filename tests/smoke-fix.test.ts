@@ -6,7 +6,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentFix, detectToolLie, fixRecordFor, INSTALL_HINTS, planInstructionFixes, type RunFn } from "../src/core/smoke/fix.ts";
-import { applyEdits } from "../src/core/smoke/report.ts";
 import type { Friction, SmokeStep, StepRecord } from "../src/core/smoke/types.ts";
 
 function step(index: number, line: number, text: string, kind: SmokeStep["kind"] = "shell"): SmokeStep {
@@ -86,7 +85,10 @@ test("planInstructionFixes: missing claude with node also missing -> node then c
   assert.ok(edits.every((e) => e.op === "insert-before" && e.line === 5), "inserted before the ```bash fence opener");
   assert.match(edits[0]!.text, /^First install node \(the steps below assume it\):\n\n```bash\nbrew install node\n```\n$/);
   assert.match(edits[1]!.text, /^First install claude .*\n\n```bash\nnpm i -g @anthropic-ai\/claude-code\n```/);
-  const out = applyEdits(MSG, edits);
+  // Same-line insert-befores keep input order (report.ts applyEdits); splice inline, in order.
+  const lines = MSG.split("\n");
+  lines.splice(4, 0, ...edits.flatMap((e) => e.text.split("\n")));
+  const out = lines.join("\n");
   const iNode = out.indexOf("brew install node");
   const iClaude = out.indexOf("npm i -g @anthropic-ai/claude-code");
   const iFence = out.indexOf("```bash\ngit clone");

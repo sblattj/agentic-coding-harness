@@ -257,8 +257,6 @@ function nonInteractive(text: string): string | null {
 
 // ---------------------------------------------------------------- planner
 
-const DEVICE_CODE = /--use-device-code|--device-code|--device(?:-auth|-flow)?\b|--use-device-auth/i;
-
 export function planInstructionFixes(input: {
   steps: SmokeStep[];
   records: StepRecord[];
@@ -343,7 +341,8 @@ export function planInstructionFixes(input: {
           break;
         case "auth-policy-blocked": {
           if (replaced.has(step.index)) break;
-          const fb = DEVICE_CODE.test(step.text) && input.deviceCodeFallback ? input.deviceCodeFallback(step.text) : null;
+          // The injected fallback (browser-auth.ts) decides what counts as device-code; null = nothing to swap.
+          const fb = input.deviceCodeFallback ? input.deviceCodeFallback(step.text) : null;
           if (fb && fb !== step.text) {
             replaced.add(step.index);
             edits.push({
