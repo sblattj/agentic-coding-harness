@@ -108,7 +108,7 @@ const HOST_LEVEL: Array<[RegExp, string]> = [
   [new RegExp(`${CMD}(?:apt|apt-get|dnf|yum|pacman|port|mas|snap)\\s+(?:install|upgrade|remove)`), "a system package manager"],
   [new RegExp(`${CMD}(?:launchctl|pkgutil)\\b|${CMD}defaults\\s+write\\b`), "a system service or preference change"],
   [
-    /(?:>>?|\btee(?:\s+-a)?|\b(?:cp|mv|ln|mkdir|install|rsync|ditto|tar|chown|chmod)\b[^;&|\n]*?)\s*["']?\/(?:usr\/local|opt|etc|Library|Applications|System)\b/,
+    /(?:>>?|\btee(?:\s+-a)?|\b(?:cp|mv|ln|mkdir|install|rsync|ditto|tar|chown|chmod)\b[^;&|\n]*?)\s*["']?(?<![\w~$}.\/-])\/(?:usr\/local|opt|etc|Library|Applications|System)\b/,
     "a write outside the sandbox (/usr/local, /opt, /etc, /Library, /Applications, /System)",
   ],
   [/--prefix[= ]["']?\/(?:usr\/local|opt)\b/, "an install prefix outside the sandbox"],

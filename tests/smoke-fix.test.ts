@@ -294,3 +294,16 @@ test("agentFix default run: kills on timeout (code null)", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("missing agent CLI on a prompt step: the backticked binary wins over the prose (not a bin named CLI)", () => {
+  // Exact friction the runner emits for a prompt step whose agent is absent (src/core/smoke/runner.ts runStep).
+  const s = step(1, 2, "Say hi", "prompt");
+  const r = rec(s, {
+    status: "fail",
+    friction: [{ kind: "missing-prereq", detail: "agent CLI not installed — the message never installs it (`claude` is not on PATH)." }],
+  });
+  const { edits, notes } = planInstructionFixes({ steps: [s], records: [r], which: onPath(["node"]) });
+  assert.deepEqual(notes, []);
+  assert.equal(edits.length, 1);
+  assert.match(edits[0]!.text, /npm i -g @anthropic-ai\/claude-code/);
+});

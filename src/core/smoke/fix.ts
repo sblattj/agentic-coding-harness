@@ -158,6 +158,11 @@ export function detectToolLie(record: StepRecord, which: (bin: string) => boolea
 /** The binary a missing-prereq friction is about, recovered from its evidence/detail. */
 function missingBin(record: StepRecord, f: Friction, which: (bin: string) => boolean): string | null {
   const text = `${f.evidence ?? ""}\n${f.detail}`;
+  // The runner names the binary in backticks ("agent CLI not installed — … (`claude` is not on PATH)"):
+  // prefer that over the prose patterns below, which would read "CLI not installed" as a binary named CLI.
+  for (const m of text.matchAll(/`([\w@.+-]+)`/g)) {
+    if (!which(m[1]!)) return m[1]!;
+  }
   const pats = [
     /command not found:\s*([\w@.+-]+)/i,
     /([\w@.+-]+):\s*command not found/i,

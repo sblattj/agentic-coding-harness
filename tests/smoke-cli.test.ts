@@ -15,6 +15,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { hostLevelReason } from "../src/core/smoke/index.ts";
 import { PAGES, startFakeBrowser, type FakeBrowser } from "./support/fake-login-pages.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,6 +80,32 @@ function tableRows(stdout: string): Map<string, string> {
   }
   return rows;
 }
+
+describe("hostLevelReason: what never runs in the sandbox", () => {
+  for (const c of [
+    "sudo npm i -g x",
+    "brew install gh",
+    'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+    "xcode-select --install",
+    "mkdir -p /Library/Foo",
+    "cp x /etc/y",
+    "echo x > /usr/local/etc/a",
+    "./configure --prefix=/opt/tool",
+  ]) {
+    it(`host-level: ${c}`, () => assert.notEqual(hostLevelReason(c), null));
+  }
+  for (const c of [
+    "npm i -g pnpm",
+    "curl -LsSf https://astral.sh/uv/install.sh | sh",
+    "mkdir -p ~/Library/Application\\ Support/Foo",
+    'cp cfg "$HOME/Library/Preferences/x.plist"',
+    "mkdir -p ~/.local/opt/tool",
+    "cat /etc/hosts",
+    "brewery --help",
+  ]) {
+    it(`stays in the sandbox: ${c}`, () => assert.equal(hostLevelReason(c), null));
+  }
+});
 
 describe("ach smoke end to end", { skip: !hasZsh && "the smoke runner needs /bin/zsh" }, () => {
   let root: string;
