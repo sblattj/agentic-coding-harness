@@ -386,15 +386,17 @@ export async function createSandbox(opts: SandboxOptions = {}): Promise<Sandbox>
   if (useKeychain) {
     const kc = path.join(home, 'Library', 'Keychains', 'login.keychain-db');
     fs.mkdirSync(path.dirname(kc), { recursive: true });
-    // A random password, not an empty one: GitHub's macos-15 runners reject
-    // `unlock-keychain -p ""` ("The user name or passphrase you entered is not
-    // correct") although this Mac accepts it. Kept in <state>/keychain-password
-    // (0600) so a step or a --keep'd sandbox can unlock it again.
+    // create-keychain leaves the keychain unlocked, and set-keychain-settings
+    // with no -l/-u turns auto-lock off, so there is no unlock step: on
+    // GitHub's macOS 26 runners `unlock-keychain -p <the right password>` on a
+    // fresh keychain fails ("The user name or passphrase you entered is not
+    // correct") while add/find-generic-password on it work. The random
+    // password is kept in <state>/keychain-password (0600) so a step or a
+    // --keep'd sandbox can unlock it later.
     const pw = randomBytes(18).toString('base64url');
     fs.writeFileSync(path.join(state, 'keychain-password'), pw + '\n', { mode: 0o600 });
     for (const args of [
       ['create-keychain', '-p', pw, kc],
-      ['unlock-keychain', '-p', pw, kc],
       ['set-keychain-settings', kc],
     ]) {
       const r = security(args, env);
