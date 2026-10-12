@@ -110,7 +110,7 @@ describe("smoke runner: friction classification", () => {
     assert.match(r.friction[0]!.detail, /`gh`/);
     assert.deepEqual(r.denials, ["open: Operation not permitted"]);
   });
-  it("a real missing command in the sandbox", async () => {
+  it("a real missing command in the sandbox", { skip: !macOS && "spawns the macOS sandbox shell" }, async () => {
     const r = await runStep(sb, step("nosuchcmd-smoke139 --version"));
     assert.equal(r.exitCode, 127);
     assert.equal(r.friction[0]?.kind, "missing-prereq");

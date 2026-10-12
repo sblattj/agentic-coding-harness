@@ -18,7 +18,7 @@
 //     those lines into auth requests (src/core/smoke/runner.ts).
 //   * Keychain (darwin): the host search list + default keychain are
 //     snapshotted with the REAL env before anything else. The sandbox gets its
-//     own <home>/Library/Keychains/login.keychain-db (empty password,
+//     own <home>/Library/Keychains/login.keychain-db (random password,
 //     unlocked, no auto-lock), which under that HOME is the default keychain
 //     and the whole search list. Without it `security` (and every CLI that
 //     stores a token) hangs on a host GUI popup, so every `security` call has a
@@ -44,6 +44,7 @@
 //     teardown unregisters the sandbox.
 
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -385,9 +386,15 @@ export async function createSandbox(opts: SandboxOptions = {}): Promise<Sandbox>
   if (useKeychain) {
     const kc = path.join(home, 'Library', 'Keychains', 'login.keychain-db');
     fs.mkdirSync(path.dirname(kc), { recursive: true });
+    // A random password, not an empty one: GitHub's macos-15 runners reject
+    // `unlock-keychain -p ""` ("The user name or passphrase you entered is not
+    // correct") although this Mac accepts it. Kept in <state>/keychain-password
+    // (0600) so a step or a --keep'd sandbox can unlock it again.
+    const pw = randomBytes(18).toString('base64url');
+    fs.writeFileSync(path.join(state, 'keychain-password'), pw + '\n', { mode: 0o600 });
     for (const args of [
-      ['create-keychain', '-p', '', kc],
-      ['unlock-keychain', '-p', '', kc],
+      ['create-keychain', '-p', pw, kc],
+      ['unlock-keychain', '-p', pw, kc],
       ['set-keychain-settings', kc],
     ]) {
       const r = security(args, env);

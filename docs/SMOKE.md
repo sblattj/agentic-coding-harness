@@ -101,8 +101,8 @@ popup ("A keychain cannot be found"). Each sandbox therefore gets its own keycha
 
 1. Before anything else, the host's user search list and default keychain are read with your
    real environment.
-2. A fresh `~/Library/Keychains/login.keychain-db` is created under the sandbox `HOME`, with an
-   empty password, unlocked, and without auto-lock. Under that `HOME` it is the default keychain
+2. A fresh `~/Library/Keychains/login.keychain-db` is created under the sandbox `HOME`, with a
+   random password (kept in the sandbox's `state/keychain-password`, mode 0600), unlocked, and without auto-lock. Under that `HOME` it is the default keychain
    and the whole search list. Every `security` call has a 15 s deadline, because a hang means a
    host popup.
 3. At teardown the sandbox keychain is deleted. The host list and default are read again and
