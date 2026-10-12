@@ -97,7 +97,7 @@ function footerLines(report: SmokeReport): string[] {
     report.hostKeychainUnchanged === null ? "n/a" : report.hostKeychainUnchanged ? "yes" : "no";
   return [
     `steps: ${finals.length} (pass ${count("pass")}, fail ${count("fail")}, fixed ${count("fixed")}, skipped ${count("skipped")})`,
-    `total time: ${seconds(totalMs)}, total tokens: ${totalTokens}`,
+    `total time: ${seconds(totalMs)}, total tokens: ${totalTokens}${report.fixAgentTokens ? ` (+ ${report.fixAgentTokens} fix-agent)` : ""}`,
     `host keychain unchanged: ${keychain}`,
     `reaped pids: ${report.reapedPids.length}`,
     `stubbed requests: ${report.stubbedRequests.length}`,
@@ -295,6 +295,17 @@ export interface RunResult {
   /** Present for tools whose output feeds the next stage (textutil -> pbcopy). */
   stdout?: string;
 }
+/** JXA: read {html, rtf, plain} JSON on stdin, write all three flavors to the general pasteboard. */
+const PASTEBOARD_JXA = [
+  'ObjC.import("AppKit");',
+  "var d = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;",
+  "var p = JSON.parse($.NSString.alloc.initWithDataEncoding(d, $.NSUTF8StringEncoding).js);",
+  "var pb = $.NSPasteboard.generalPasteboard;",
+  "pb.clearContents;",
+  'var ok = pb.setStringForType($(p.html), "public.html") && pb.setStringForType($(p.rtf), "public.rtf") && pb.setStringForType($(p.plain), "public.utf8-plain-text");',
+  'ok ? "ok" : "fail";',
+].join("\n");
+
 export type RunTool = (cmd: string, args: string[], input: string) => RunResult;
 
 const defaultRun: RunTool = (cmd, args, input) => {
@@ -313,16 +324,21 @@ export function copyRichText(
 ): { copied: boolean; how: string } {
   const platform = deps.platform ?? process.platform;
   const run = deps.run ?? defaultRun;
-  void plain;
   try {
     if (platform === "darwin") {
       const conv = run("/usr/bin/textutil", ["-convert", "rtf", "-format", "html", "-stdin", "-stdout"], html);
       if (conv.status !== 0 || !conv.stdout) {
         return { copied: false, how: `textutil failed (status ${conv.status}): ${conv.stderr.trim()}` };
       }
-      const cp = run("/usr/bin/pbcopy", ["-Prefer", "rtf"], conv.stdout);
-      if (cp.status !== 0) return { copied: false, how: `pbcopy failed (status ${cp.status}): ${cp.stderr.trim()}` };
-      return { copied: true, how: "textutil -> pbcopy -Prefer rtf" };
+      // `pbcopy -Prefer rtf` puts ONLY the RTF flavor on the pasteboard: pbpaste
+      // and plain-text fields then get nothing, and Chrome (Gmail, Slack web)
+      // reads HTML, not RTF. One NSPasteboard write carries all three flavors.
+      const payload = JSON.stringify({ html, rtf: conv.stdout, plain });
+      const cp = run("/usr/bin/osascript", ["-l", "JavaScript", "-e", PASTEBOARD_JXA], payload);
+      if (cp.status !== 0 || (cp.stdout ?? "").trim() !== "ok") {
+        return { copied: false, how: `pasteboard write failed (status ${cp.status}): ${cp.stderr.trim() || (cp.stdout ?? "").trim()}` };
+      }
+      return { copied: true, how: "textutil -> NSPasteboard (html, rtf, plain text)" };
     }
     const tools: Array<[string, string[]]> = [
       ["xclip", ["-selection", "clipboard", "-t", "text/html"]],

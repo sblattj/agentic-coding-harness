@@ -217,7 +217,8 @@ therefore see the fixed environment, the same one a reader of the revised messag
     the missing install is inserted.
 - **Agent fix**: `--fix-agent A`. For friction no rule covers (unknown failures, wrong flags,
   unstated assumptions), agent A runs on the host through `ach run`. It replies with the
-  replacement step, which is applied and rerun.
+  replacement step, which is applied and rerun. With `claude` it runs with
+  `--claude-default-config`, so it uses your own Claude login rather than a per-run config dir.
 - **Tool fix**: `--fix-tool REPO`. When a tool lied, an agent patches the tool's git checkout so
   it reports the truth, and adds a test. Passing `--fix-tool` is your consent for that agent to
   edit files: it runs with `--permission-mode dontAsk`. It never commits or pushes; the table
@@ -280,8 +281,10 @@ After the table the output has these sections, in order:
 - **revised message:** the path it was written to. The file is `<out>/<name>.smoked.md`, where
   `<out>` defaults to the current directory. The input file is never overwritten.
 
-`--copy` converts the revised message to HTML, then to RTF (`textutil`), and copies it with
-`pbcopy -Prefer rtf`, so Mail, Slack and Docs paste it as rich text. On Linux it uses
+`--copy` converts the revised message to HTML, then to RTF (`textutil`), and writes HTML, RTF
+and the plain markdown to the pasteboard in one go (`osascript -l JavaScript`, NSPasteboard), so
+Mail, Slack and Docs paste it as rich text, Chrome pages such as Gmail get the HTML, and plain-text
+fields and `pbpaste` get the markdown. On Linux it uses
 `xclip` / `wl-copy` with `text/html`.
 
 `--json` prints the report alone. Its fields are the SmokeReport (`src/core/smoke/types.ts`)
@@ -295,6 +298,7 @@ plus these:
 | `editsApplied` | number of edits applied to the message |
 | `revisedMessagePath` | where the revised message was written |
 | `copied` | only with `--copy` |
+| `fixAgentTokens` | tokens the `--fix-agent` / `--fix-tool` agents used; the text footer shows them as `(+ N fix-agent)` after the step total |
 
 Progress lines go to stderr (`smoke: step 3/6: …`).
 

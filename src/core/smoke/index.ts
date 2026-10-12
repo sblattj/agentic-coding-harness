@@ -213,6 +213,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
   const records: RunnerStepRecord[] = [];
   const windows: Array<{ rec: RunnerStepRecord; start: number; end: number }> = [];
   const fixes: FixRecord[] = [];
+  let fixAgentTokens = 0;
   const edits: MessageEdit[] = [];
   const editKeys = new Set<string>();
   const notes: string[] = [];
@@ -311,6 +312,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
           record: rec,
           ...(opts.agentRun ? { run: opts.agentRun } : {}),
         });
+        fixAgentTokens += r.tokens ?? 0;
         if (r.edit) take(r.edit);
         else notes.push(`step ${step.index}: agent fix failed: ${r.error ?? "no edit"}`);
       }
@@ -331,6 +333,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
           achArgs: ["--permission-mode", "dontAsk"],
           ...(opts.agentRun ? { run: opts.agentRun } : {}),
         });
+        fixAgentTokens += r.tokens ?? 0;
         if (r.toolPatch) {
           const stat = r.toolPatch.diffStat.split("\n").pop()?.trim() ?? "";
           const fx: FixRecord = { stepIndex: step.index, target: "tool", summary: `${r.toolPatch.summary}${stat ? ` (${stat})` : ""}`, where: r.toolPatch.repo, rerunPassed: null };
@@ -480,6 +483,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
     hostKeychainUnchanged: teardown?.hostKeychainUnchanged ?? null,
     reapedPids: teardown?.reapedPids ?? [],
     stubbedRequests: stubbed,
+    fixAgentTokens,
     exitCode: clean ? 0 : 1,
     notes,
     loginScripts,

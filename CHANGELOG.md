@@ -7,6 +7,10 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 ### Fixed
 
 - `ach smoke` on macOS (#139): a step, or a program it runs, that called `/usr/bin/open URL` (or `/usr/bin/osascript`, which Python's `webbrowser` uses) by absolute path bypassed the PATH shims and opened your real browser. A literal `/usr/bin/open` in the step text is now caught by a zsh function that runs the sandbox shim, so the URL is recorded. Shell steps also run under `sandbox-exec` denying exec of those two binaries, so child processes are blocked with `Operation not permitted`, reported as a specific `denied` friction. `sandbox-exec` is probed once per sandbox and skipped (plain `/bin/zsh`) when it is unavailable. Prompt steps are unchanged.
+- `ach smoke --fix-agent claude` and `--fix-tool` with claude failed with "Not logged in": the fix agent ran `ach run --agent claude` with a fresh per-run config dir, which cannot see your Claude login. The fix agent works on the host on your behalf, so with claude it now passes `--claude-default-config` and uses your login. Found in a live run.
+- `ach smoke --copy` on macOS put only RTF on the clipboard (`pbcopy -Prefer rtf`), so `pbpaste` and plain-text fields got nothing and Chrome pages such as Gmail could not paste it as rich text. It now writes HTML, RTF and the plain markdown in one pasteboard write.
+- `ach smoke --fix-agent`: when the agent wrapped its replacement step in a markdown fence (```` ```sh ````), the fence was kept. The revised message then had nested fences, and the rerun passed the backticks to zsh as a command substitution. A fence around the whole replacement is now dropped, and the prompt asks for plain command text. Found in a live run.
+- `ach smoke`: tokens spent by the `--fix-agent` / `--fix-tool` agents were dropped, so the footer said `total tokens: 0` after a run that called Claude. They are now in the report as `fixAgentTokens` and in the footer as `(+ N fix-agent)`.
 
 ## [0.20.1] - 2026-10-12
 

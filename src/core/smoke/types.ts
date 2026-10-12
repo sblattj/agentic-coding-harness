@@ -108,6 +108,8 @@ export interface SmokeReport {
   reapedPids: number[];
   /** Outward requests captured by stubs. */
   stubbedRequests: StubRequest[];
+  /** Tokens the --fix-agent / --fix-tool agents used (not counted in any step's tokens). */
+  fixAgentTokens?: number;
 }
 
 export interface StubRequest {

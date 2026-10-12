@@ -207,6 +207,32 @@ function runJson(reply: string, tokens = [{ inputTokens: 10, outputTokens: 5, ca
   );
 }
 
+test("agentFix with claude uses the user's own login (--claude-default-config), other agents do not", async () => {
+  const s = step(2, 7, "claude --version");
+  const seen: string[][] = [];
+  const run: RunFn = async (argv) => {
+    seen.push(argv);
+    return { code: 0, stdout: runJson("<<<STEP\nclaude --version\nSTEP>>>\n"), stderr: "" };
+  };
+  await agentFix({ target: "instructions", agent: "claude", achCli: "/x/ach.ts", message: MSG, step: s, record: rec(s), run });
+  await agentFix({ target: "instructions", agent: "codex", achCli: "/x/ach.ts", message: MSG, step: s, record: rec(s), run });
+  assert.deepEqual(seen[0]!.slice(2, 7), ["run", "--agent", "claude", "--json", "--claude-default-config"]);
+  assert.ok(!seen[1]!.includes("--claude-default-config"));
+});
+
+test("agentFix instructions: a markdown fence the agent wrapped around the step is dropped", async () => {
+  const s = step(2, 12, "ls --frobnicate-oldest");
+  for (const reply of ["<<<STEP\n```sh\nls -ltr\n```\nSTEP>>>", "<<<STEP\n~~~bash\nls -ltr\n~~~\nSTEP>>>"]) {
+    const run: RunFn = async () => ({ code: 0, stdout: runJson(reply), stderr: "" });
+    const out = await agentFix({ target: "instructions", agent: "null", achCli: "/x/ach.ts", message: MSG, step: s, record: rec(s), run });
+    assert.equal(out.edit?.text, "ls -ltr", reply);
+  }
+  // A fence that only opens is not a wrapper: the text is kept as written.
+  const run: RunFn = async () => ({ code: 0, stdout: runJson("<<<STEP\n```sh\nls -ltr\nSTEP>>>"), stderr: "" });
+  const kept = await agentFix({ target: "instructions", agent: "null", achCli: "/x/ach.ts", message: MSG, step: s, record: rec(s), run });
+  assert.equal(kept.edit?.text, "```sh\nls -ltr");
+});
+
 test("agentFix instructions: argv uses real ach run flags; markers parsed into a replace edit; tokens summed", async () => {
   const s = step(2, 7, "claude --version");
   let seenArgv: string[] = [];

@@ -1,5 +1,6 @@
 // #139: friction table, edits, markdown->html, rich-text clipboard.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 
 import {
@@ -72,6 +73,9 @@ describe("renderFrictionTable", () => {
     assert.equal([...step2].length, 48);
     assert.ok(out.includes("steps: 3 (pass 1, fail 0, fixed 1, skipped 1)"));
     assert.ok(out.includes("total time: 4.6s, total tokens: 1500"));
+    assert.ok(!out.includes("fix-agent)"), "no fix-agent suffix when no fix agent ran");
+    const withFix = renderFrictionTable({ ...report(), fixAgentTokens: 2400 });
+    assert.ok(withFix.includes("total tokens: 1500 (+ 2400 fix-agent)"));
     assert.ok(out.includes("host keychain unchanged: yes"));
     assert.ok(out.includes("reaped pids: 2"));
     assert.ok(out.includes("stubbed requests: 1"));
@@ -180,20 +184,42 @@ describe("markdownToHtml", () => {
 });
 
 describe("copyRichText", () => {
-  it("darwin: textutil then pbcopy -Prefer rtf", () => {
+  it("darwin: textutil, then one NSPasteboard write with html, rtf and plain text", () => {
     const calls: Array<{ cmd: string; args: string[]; input: string }> = [];
     const r = copyRichText("<p>hi</p>", "hi", {
       platform: "darwin",
       run: (cmd, args, input) => {
         calls.push({ cmd, args, input });
-        return { status: 0, stderr: "", stdout: cmd.endsWith("textutil") ? "{\\rtf1 hi}" : "" };
+        return { status: 0, stderr: "", stdout: cmd.endsWith("textutil") ? "{\\rtf1 hi}" : "ok\n" };
       },
     });
     assert.equal(r.copied, true);
-    assert.deepEqual(calls, [
-      { cmd: "/usr/bin/textutil", args: ["-convert", "rtf", "-format", "html", "-stdin", "-stdout"], input: "<p>hi</p>" },
-      { cmd: "/usr/bin/pbcopy", args: ["-Prefer", "rtf"], input: "{\\rtf1 hi}" },
-    ]);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], { cmd: "/usr/bin/textutil", args: ["-convert", "rtf", "-format", "html", "-stdin", "-stdout"], input: "<p>hi</p>" });
+    assert.equal(calls[1]!.cmd, "/usr/bin/osascript");
+    assert.deepEqual(calls[1]!.args.slice(0, 3), ["-l", "JavaScript", "-e"]);
+    assert.deepEqual(JSON.parse(calls[1]!.input), { html: "<p>hi</p>", rtf: "{\\rtf1 hi}", plain: "hi" });
+  });
+  it("darwin: a pasteboard script that does not print ok is a failed copy", () => {
+    const r = copyRichText("<p>x</p>", "x", {
+      platform: "darwin",
+      run: (cmd) => ({ status: 0, stderr: "", stdout: cmd.endsWith("textutil") ? "{\\rtf1 x}" : "fail\n" }),
+    });
+    assert.equal(r.copied, false);
+    assert.match(r.how, /pasteboard write failed/);
+  });
+  it("darwin, live: pbpaste returns the plain text and the pasteboard holds HTML and RTF", { skip: process.platform !== "darwin" && "macOS pasteboard" }, () => {
+    const before = spawnSync("/usr/bin/pbpaste", [], { encoding: "utf8" }).stdout;
+    try {
+      const r = copyRichText("<p><b>smoke</b> copy</p>", "**smoke** copy");
+      assert.equal(r.copied, true, r.how);
+      assert.equal(spawnSync("/usr/bin/pbpaste", [], { encoding: "utf8" }).stdout, "**smoke** copy");
+      const info = spawnSync("/usr/bin/osascript", ["-e", "clipboard info"], { encoding: "utf8" }).stdout;
+      assert.match(info, /HTML/);
+      assert.match(info, /RTF/);
+    } finally {
+      spawnSync("/usr/bin/pbcopy", [], { input: before });
+    }
   });
   it("returns copied:false when a tool exits 1, and does not throw", () => {
     const r = copyRichText("<p>x</p>", "x", { platform: "darwin", run: () => ({ status: 1, stderr: "boom" }) });

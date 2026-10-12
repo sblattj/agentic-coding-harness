@@ -489,9 +489,24 @@ function lastMarked(texts: string[]): string | null {
   for (let i = texts.length - 1; i >= 0; i--) {
     const all = [...texts[i]!.matchAll(STEP_MARKERS)];
     const m = all[all.length - 1];
-    if (m) return m[1]!.trim();
+    if (m) return unfence(m[1]!.trim());
   }
   return null;
+}
+
+/**
+ * Drop a markdown fence the agent wrapped around the whole replacement. The
+ * edit lands INSIDE the message's existing fence, so a kept fence nests, and the
+ * rerun hands its backticks to zsh as a command substitution (seen live:
+ * ```sh / ls -ltr / ``` reran as `total: command not found`).
+ */
+function unfence(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const open = /^[ \t]*(`{3,}|~{3,})[^`]*$/.exec(lines[0] ?? "");
+  if (!open || lines.length < 2) return text;
+  const close = lines[lines.length - 1]!.trim();
+  if (!close.startsWith(open[1]!) || close.replace(/[`~]/g, "") !== "") return text;
+  return lines.slice(1, -1).join("\n").trim();
 }
 
 function frictionLines(record: StepRecord): string {
@@ -528,6 +543,10 @@ export async function agentFix(input: {
     "--agent",
     input.agent,
     "--json",
+    // The fix agent works on the HOST for the user, so claude uses the user's
+    // own login: a per-run CLAUDE_CONFIG_DIR cannot see the keychain session
+    // and fails "Not logged in" (src/cli/ach.ts --claude-default-config).
+    ...(input.agent === "claude" ? ["--claude-default-config"] : []),
     ...(input.achArgs ?? []),
     prompt,
   ];
@@ -551,7 +570,7 @@ export async function agentFix(input: {
       frictionLines(input.record),
       "",
       "Reply with ONLY the replacement text for that step (it may be several lines if a step was missing),",
-      "on its own lines between a line containing <<<STEP and a line containing STEP>>>. Do not edit any files.",
+      "on its own lines between a line containing <<<STEP and a line containing STEP>>>, as plain command text with no markdown fence. Do not edit any files.",
     ].join("\n");
     const cwd = mkdtempSync(join(tmpdir(), "ach-smoke-fix-"));
     try {
