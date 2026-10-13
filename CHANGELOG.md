@@ -2,6 +2,16 @@
 
 Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes and commit history.
 
+## [0.20.3] - 2026-10-12
+
+### Fixed
+
+- README Quickstart (#139, found by running `ach smoke` on it): it now says what you need before the first command. That is Node.js 22+ and an agent CLI that is installed and signed in, with the Claude Code and Codex installs as commands you can copy. It explains that each `ach run` gives Claude Code a fresh config dir, so the examples pass `--claude-default-config` (or you set `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`). It also says `ach web` keeps running, so start it in its own terminal (`--no-open` skips the browser).
+- `ach smoke`: `spawn claude ENOENT` is reported as a missing prerequisite that names the agent CLI, not as a bare failure. Friction evidence skips npm `notice`/`warn` lines. A command missing because an earlier Homebrew install was skipped (host-level) now says so, and no fix is planned for it.
+- `ach smoke`: opening a loopback URL (`127.x`, `localhost`, `[::1]`, `0.0.0.0`) is never treated as a browser login. It is recorded as `localUrls`. A step that is still running after 8 s while listening on a TCP port (`ach web`, a dev server) passes as a service and is stopped at teardown, instead of failing on the step timeout.
+- `ach smoke`: an agent CLI that runs but is not signed in ("Not logged in", "please run /login", "not authenticated") is `auth-needs-human` friction. A step that refuses to run outside a git repository (codex: "Not inside a trusted directory") is an `unstated-assumption`.
+- `ach smoke`: the sandbox pre-creates `.codex`, because codex exits when `CODEX_HOME` points at a missing directory.
+
 ## [0.20.2] - 2026-10-12
 
 ### Fixed
