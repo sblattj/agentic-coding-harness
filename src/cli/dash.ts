@@ -18,6 +18,7 @@ import {
 } from "../core/registry.ts";
 import { collectQuota, dashQuotaCell, type QuotaRow } from "../core/quota.ts";
 import { markerFor, PROVENANCE_LEGEND, PROVENANCE_MARKER, provenanceOf } from "../core/provenance.ts";
+import { modelChipsText } from "../core/model-chips.ts";
 import { modelProvenanceText, usageScopeBadge } from "../core/usage-scope.ts";
 
 import { collectQueueViews, fmtDuration, queueSummaryLine, sliceDetail, QUEUE_RECENT_HOURS, type QueueView } from "../core/queue-view.ts";
@@ -371,6 +372,12 @@ export function frame(
   for (const r of visible) {
     const line = usageDetailLine(r);
     if (line !== undefined) lines.push(line);
+  }
+  // #67: runs that used 2+ models get one per-model cost line; single-model
+  // and slice-less runs print nothing extra (the plain aggregate stays).
+  for (const r of visible) {
+    const chips = usdUnavailable(r) ? null : modelChipsText(r.totals?.byModel);
+    if (chips !== null) lines.push(`models ${r.runId.slice(0, COL.runId)} ${chips}`);
   }
   for (const r of visible) {
     const latest = r.regrades?.at(-1);

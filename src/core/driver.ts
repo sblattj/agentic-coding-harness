@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeAuto } from './normalize.js';
-import { createPricer, isVendorMetered, pricedSources, type Pricer } from './pricing.js';
+import { createPricer, isVendorMetered, pricedSources, sortModelCosts, type Pricer } from './pricing.js';
 import { notifyRunEnd, type NotifyExec } from './notify.ts';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
@@ -501,6 +501,8 @@ export function createDriver(options: DriverOptions): Driver {
         // multi-model ones. totals.costSource is set only when ONE path fed it.
         let costFromReported = false;
         let costFromComputed = false;
+        // Per-model cost split (#67) across every priced usage record.
+        const modelCosts = new Map<string, { costUsd: number | null; tokens: number }>();
 
         // --- wall-clock / idle budget timers ---
         // Armed right after launch (wallMs measures from launch) and the idle
@@ -563,6 +565,7 @@ export function createDriver(options: DriverOptions): Driver {
           if (costFromReported !== costFromComputed) totals.costSource = costFromReported ? 'reported' : 'computed';
           else delete totals.costSource;
           totals.provenance = runTotalsProvenance(totals, rec.usage);
+          if (modelCosts.size >= 2) totals.byModel = sortModelCosts(modelCosts);
           try {
             writeRunRecord(registryStateDir, rec);
           } catch (err) {
@@ -756,6 +759,12 @@ export function createDriver(options: DriverOptions): Driver {
                   // pricing them would only add an "unknown model" warning.
                 } else {
                   const cost = pricer.price(normalized);
+                  for (const m of pricer.priceByModel?.(normalized) ?? []) {
+                    const cur = modelCosts.get(m.model) ?? { costUsd: 0, tokens: 0 };
+                    cur.costUsd = cur.costUsd === null || m.costUsd === null ? null : cur.costUsd + m.costUsd;
+                    cur.tokens += m.tokens;
+                    modelCosts.set(m.model, cur);
+                  }
                   if (Number.isNaN(cost)) {
                     drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
                   } else {

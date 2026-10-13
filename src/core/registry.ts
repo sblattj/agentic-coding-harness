@@ -49,6 +49,11 @@ export interface RunRecord {
     contextTokens?: number;
     /** Per-field provenance (issue #33): reported | computed | estimated; a lane with no entry is n/a. */
     provenance?: ProvenanceMap;
+    /**
+     * Per-model cost split (#67), present only when the run used 2+ models,
+     * ordered by cost desc (unpriced last). costUsd null = unpriced model.
+     */
+    byModel?: Array<{ model: string; costUsd: number | null; tokens: number }>;
   };
   lastEvent?: string; // one-line preview of the latest event
   rawTranscript?: string; // absolute path to <stateDir>/raw/<agent>-<session>.jsonl (LOCAL-PROCESS-ONLY)
@@ -153,6 +158,7 @@ const TotalsSchema = z.object({
   credits: z.number().optional(),
   contextTokens: z.number().optional(),
   provenance: z.record(z.string(), z.enum(PROVENANCE_CLASSES)).optional(),
+  byModel: z.array(z.object({ model: z.string(), costUsd: z.number().nullable(), tokens: z.number() })).optional(),
 });
 
 export const RunRecordSchema = z.object({

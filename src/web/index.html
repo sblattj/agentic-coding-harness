@@ -97,6 +97,8 @@ body {
 }
 #metastrip .kv { white-space: nowrap; }
 #metastrip .k { color: var(--dim); margin-right: 5px; }
+#metastrip .chip { white-space: nowrap; padding: 1px 7px; border: 1px solid var(--line); border-radius: 9px; color: var(--dim); }
+#metastrip .chip.unpriced { border-style: dashed; }
 #statsbar {
   display: flex;
   flex-wrap: wrap;
@@ -423,6 +425,11 @@ function renderMeta() {
     box.appendChild(kv("regrade " + (i + 1), v.status + " · " + v.command + " · " + (v.at == null ? "n/a" : new Date(v.at).toISOString())));
   });
   box.appendChild(kv("cost", fmtCost(runCost(r)) + (runCost(r) == null ? "" : provMark(r, "costUsd"))));
+  modelChips(r).forEach(function (c) {
+    var chip = el("span", "chip" + (c.unpriced ? " unpriced" : ""), c.text);
+    if (c.unpriced) chip.title = "unpriced model: cost not computed (see run warnings)";
+    box.appendChild(chip);
+  });
   var ctxTxt = fmtCtx(r);
   if (ctxTxt) box.appendChild(kv("ctx", ctxTxt));
   if (t.credits != null) box.appendChild(kv(r.agent === "copilot" ? "AI credits (copilot)" : "credits", String(t.credits)));
@@ -442,6 +449,21 @@ function renderMeta() {
   box.appendChild(lastKv);
   box.appendChild(el("span", "status " + (r.status || ""), (GLYPH[r.status] || "\u00b7") + " " + (r.status || "?")));
 }
+
+/* modelchips:begin */
+/* #67: per-model cost chips from totals.byModel (2+ models only). Unpriced = n/a, never a number. */
+function modelChips(r) {
+  var bm = r && r.totals && r.totals.byModel;
+  if (!bm || bm.length < 2 || runCost(r) == null) return [];
+  return bm.map(function (c) {
+    var priced = typeof c.costUsd === "number" && isFinite(c.costUsd);
+    return {
+      text: c.model + " " + (priced ? "$" + c.costUsd.toFixed(2) : "n/a") + " \u00b7 " + fmtTok(c.tokens),
+      unpriced: !priced
+    };
+  });
+}
+/* modelchips:end */
 
 /* ===== usage scope + model provenance (#140/#142); mirrors src/core/usage-scope.ts ===== */
 function usageScopeText(u) {
