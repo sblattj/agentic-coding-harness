@@ -6,8 +6,8 @@ class Ach < Formula
   # Bump both together at release time — see docs/PACKAGING.md ("Homebrew
   # formula: sha256 update procedure"). The version segment in the URL
   # does NOT track package.json automatically; update it by hand.
-  url "https://registry.npmjs.org/agentic-coding-harness/-/agentic-coding-harness-0.20.2.tgz"
-  sha256 "050205350ab0087f029e93f458caa0d9809f625e538ac27db397e1ba17f8d5cc"
+  url "https://registry.npmjs.org/agentic-coding-harness/-/agentic-coding-harness-0.20.3.tgz"
+  sha256 "9d29a104335f41fffbbf8c4240d98f49320d45dda7d1c87f7031b923f7331b34"
   license "MIT"
 
   depends_on "node"
