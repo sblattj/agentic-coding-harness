@@ -50,7 +50,7 @@ az login --use-device-code
 | attr | overrides | meaning |
 |---|---|---|
 | `account=` | `--account` | the account the auth step must use |
-| `timeout=` | `--timeout` | seconds before the step is killed (friction `timeout`) |
+| `timeout=` | `--timeout` | seconds before the step is killed (friction `timeout`), unless it is a service (below) |
 | `agent=` | `--agent` | agent for a `prompt` fence |
 
 ## The sandbox
@@ -92,7 +92,16 @@ A tool that ignores `HOME` but reads its own variable still lands in the sandbox
 
 `open`, `xdg-open` and `BROWSER` are shims. They record the URL a CLI tries to open and exit 0,
 so a CLI that launches "the browser" never reaches your default browser. The recorded URL is
-handed to browser auth instead.
+handed to browser auth instead, except loopback URLs (`127.0.0.1`, `localhost`, `[::1]`,
+`0.0.0.0`): a program opening its own local dashboard or OAuth callback listener is never an auth
+request. Such URLs are recorded on the step (`localUrls`) and otherwise ignored.
+
+**Long-running services.** A shell step that is still running after a grace period (8 s) and whose
+process group holds a listening TCP socket (checked with `lsof`) is treated as a started server
+(for example `ach web`): the step passes with no timeout friction, its output ends with
+`left running as a service (listening on 127.0.0.1:PORT) until teardown`, and the run moves on to
+the next step. The server keeps running and is reaped with the sandbox at teardown. A step that is
+still running but listens on nothing keeps the normal `timeout` behaviour.
 
 A step that calls `/usr/bin/open` by absolute path would bypass those PATH shims, so on macOS
 there are two more layers. (1) The step's zsh defines a function named `/usr/bin/open` that runs

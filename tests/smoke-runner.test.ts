@@ -350,3 +350,53 @@ describe("smoke runner: absolute-path browser opens (#139)", { skip: !macOS && "
     }
   });
 });
+
+describe("smoke runner: loopback opens and long-running services", { skip: !macOS && "the smoke sandbox is macOS-only (/bin/zsh, lsof)" }, () => {
+  it("a loopback URL handed to the open shim is not an auth request; a remote one still is", async () => {
+    const seen: AuthRequest[] = [];
+    const onAuth = async (req: AuthRequest) => {
+      seen.push(req);
+      return { status: "completed" as const, detail: "ok", seenAccounts: [] };
+    };
+    for (const u of ["http://127.0.0.1:8399", "http://localhost:8399/", "http://[::1]:8399", "http://0.0.0.0:8399"]) {
+      const r = await runStep(sb, step(`open '${u}'; sleep 0.5`), { detectAuth, onAuth });
+      assert.equal(r.status, "pass");
+      assert.deepEqual((r as { localUrls?: string[] }).localUrls, [u]);
+    }
+    assert.equal(seen.length, 0, "a loopback URL reached the auth handler");
+    await runStep(sb, step("open 'https://login.example.test/oauth/authorize?client_id=x'; sleep 0.5"), { detectAuth, onAuth });
+    assert.equal(seen.length, 1, "control: a remote authorize URL must reach the auth handler");
+  });
+
+  it("a step that starts a listening server passes after the grace period, the next step runs, teardown kills it", async () => {
+    const own = await createSandbox({ keychain: false });
+    let pid = 0;
+    try {
+      const pidFile = path.join(own.tmp, "srv.pid");
+      const js = `const s=require('http').createServer((q,r)=>r.end('ok')).listen(0,'127.0.0.1',()=>{require('fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));console.log('http://127.0.0.1:'+s.address().port)})`;
+      const t0 = Date.now();
+      const r = await runStep(own, step(`${JSON.stringify(process.execPath)} -e ${JSON.stringify(js)}`), { timeoutMs: 60_000, serviceGraceMs: 1000 });
+      assert.ok(Date.now() - t0 < 10_000, `took ${Date.now() - t0} ms`);
+      assert.equal(r.status, "pass");
+      assert.deepEqual(r.friction, []);
+      assert.match(r.outputTail, /left running as a service \(listening on 127\.0\.0\.1:\d+\) until teardown/);
+      assert.equal((r as { service?: unknown }).service !== undefined, true);
+      pid = Number(fs.readFileSync(pidFile, "utf8"));
+      assert.equal(alive(pid), true, "the service was killed when its step ended");
+      const r2 = await runStep(own, step("echo next"));
+      assert.equal(r2.status, "pass");
+      assert.equal(alive(pid), true, "the service died during a later step");
+    } finally {
+      await own.teardown();
+    }
+    assert.ok(pid > 0);
+    assert.equal(alive(pid), false, "the service survived teardown");
+  });
+
+  it("control: a long-running step that listens on nothing still times out", async () => {
+    const r = await runStep(sb, step("sleep 30", "shell", { timeout: "3" }), { serviceGraceMs: 500 });
+    assert.equal(r.status, "fail");
+    assert.equal(r.friction[0]?.kind, "timeout");
+    assert.equal((r as { service?: unknown }).service, undefined);
+  });
+});
