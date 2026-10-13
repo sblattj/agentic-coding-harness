@@ -2,6 +2,17 @@
 
 Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes and commit history.
 
+## [0.21.0] - 2026-10-12
+
+### Added
+
+- Opt-in desktop notifications when a run finishes, fails or hits its budget (#63). Set `AGENTIC_CODING_HARNESS_NOTIFY=finish,fail,budget` (or `all`), and `AGENTIC_CODING_HARNESS_NOTIFY_SOUND=1` for the alert sound. Nothing is sent by default.
+- macOS uses `osascript` and Linux uses `notify-send`; a missing tool is a silent no-op. The text comes from run metadata only (prompt's first line, agent, run id, status, cost), never the transcript.
+
+### Changed
+
+- `ach queue run --notify` shares the same helper, so it now also works on Linux.
+
 ## [0.20.3] - 2026-10-12
 
 ### Fixed
