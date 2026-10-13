@@ -9,6 +9,7 @@ import { VERSION } from "../version.ts";
 import { repeatStats } from "../core/repeat-stats.ts";
 import { NO_BRANCH } from "../cli/stats-dims.ts";
 import { markerFor, PROVENANCE_LEGEND } from "../core/provenance.ts";
+import { modelProvenanceText, usageScopeBadge } from "../core/usage-scope.ts";
 
 const MESSAGE_CAP = 2000;
 const TIMELINE_CAP = 500;
@@ -316,6 +317,13 @@ function statusBadge(s: string): string {
   return `<span class="badge st-${esc(s)}">${esc(s)}</span>`;
 }
 
+/** Token-scope cell (#142): `partial · parent-only (…)`, reasons in the tooltip; n/a when no claim. */
+function scopeCell(r: LoadedRun): string {
+  const b = usageScopeBadge(r.usage);
+  if (b === undefined) return `<td data-v="" class="na">n/a</td>`;
+  return `<td data-v="${esc(b.text)}" class="scope-${b.status}" title="${esc(b.reasons.join("; "))}">${esc(b.text)}</td>`;
+}
+
 /** `n/a` cell — the honest rendering of an unknowable number (never `0`). */
 const NA_CELL = `<td data-v="" class="num na">n/a</td>`;
 
@@ -335,6 +343,8 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
   const showContext = runs.some((r) => r.usage?.context?.available === true);
   const showVerify = runs.some((r) => r.verify !== undefined);
   const showSeal = runs.some((r) => r.seal !== undefined);
+  // #142: counter completeness / scope, only when some run's verdict states it.
+  const showScope = runs.some((r) => usageScopeBadge(r.usage) !== undefined);
   // Identity column (spec §6.3): when ANY run carries a variant label the
   // comparison groups by variant (matching the live /compare view's default
   // experiment×variant rollup); otherwise the historical by-agent column.
@@ -357,6 +367,7 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
     `<th data-k="exit" data-t="s">exit status</th>`,
     ...(showVerify ? [`<th data-k="verify" data-t="s">verify</th>`] : []),
     ...(showSeal ? [`<th data-k="seal" data-t="s">seal</th>`] : []),
+    ...(showScope ? [`<th data-k="usagescope" data-t="s">token scope</th>`] : []),
   ].join("");
   const rows = runs
     .map((r) => {
@@ -407,6 +418,7 @@ function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
                 : `<td data-v="${esc(r.seal.status)}" title="${esc(r.seal.detail)}">${esc(sealText(r.seal.status))}</td>`,
             ]
           : []),
+        ...(showScope ? [scopeCell(r)] : []),
       ];
       return `      <tr data-agent="${esc(r.agent)}" data-trial="${esc(r.trialLabel)}">${cells.join("")}</tr>`;
     })
@@ -561,6 +573,9 @@ function renderAgentSection(r: LoadedRun): string {
   const meta = [
     `session <code>${esc(r.result.sessionId ?? "?")}</code>`,
     r.model ? `model <code>${esc(r.model)}</code>` : null,
+    // #140: observed vs requested, labelled; #142: counter scope.
+    modelProvenanceText(r.usage?.model) !== undefined ? `model provenance ${esc(modelProvenanceText(r.usage?.model)!)}` : null,
+    usageScopeBadge(r.usage) !== undefined ? `tokens ${esc(usageScopeBadge(r.usage)!.text)}` : null,
     r.wallSecs !== null ? `wall ${r.wallSecs}s` : null,
     r.hasStderr ? "stderr captured" : null,
   ]

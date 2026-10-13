@@ -4,6 +4,7 @@
 import path from "node:path";
 
 import { HarnessError, type AgentEvent, type UsageAvailability } from "../core/types.ts";
+import { modelProvenanceText, usageScopeBadge } from "../core/usage-scope.ts";
 import { bucketKey, type TimeGranularity } from "./time-window.ts";
 import type { LatencyMetrics } from "../web/derive.ts";
 
@@ -216,6 +217,20 @@ export function formatSummary(r: RunSummaryInput): string {
       : `tokens     input=${fmtInt(t.input)} output=${fmtInt(t.output)} cacheRead=${fmtInt(t.cacheRead)} cacheWrite=${fmtInt(t.cacheWrite)} reasoning=${fmtInt(t.reasoning)}`,
     `cost       ${usdUnavailable ? "n/a" : fmtUsd(r.costUsd)}`,
   ];
+  // #142: what the counters include and whether anything is missing.
+  const badge = usageScopeBadge(r.usage);
+  if (badge !== undefined) {
+    lines.push(`usage      ${badge.text}${badge.reasons.length > 0 ? ` — ${badge.reasons.join("; ")}` : ""}`);
+    const ci = r.usage?.tokens.childInclusive;
+    if (ci !== undefined) {
+      lines.push(
+        `with kids  input=${fmtInt(ci.inputTokens)} output=${fmtInt(ci.outputTokens)} cacheRead=${fmtInt(ci.cacheReadTokens)} cacheWrite=${fmtInt(ci.cacheWriteTokens)} (child-inclusive, ${ci.complete ? "complete" : "partial"}, ${ci.countedChildSessions} child session${ci.countedChildSessions === 1 ? "" : "s"} counted)`,
+      );
+    }
+  }
+  // #140: which model actually ran, next to the one requested.
+  const modelText = modelProvenanceText(r.usage?.model);
+  if (modelText !== undefined) lines.push(`model      ${modelText}`);
   const ctx = r.usage?.context;
   if (ctx?.available === true && ctx.tokens !== undefined) {
     lines.push(

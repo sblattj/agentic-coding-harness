@@ -195,6 +195,23 @@ function sumRecordTokens(tokens: CanonicalTokenRecord[]): NormalizedUsageTokens 
 }
 
 /**
+ * Usage verdict for a run still in flight (#142): what the stream has shown
+ * SO FAR. Before the first record with real counters, tokens are unavailable
+ * (renderers print n/a, never a fabricated 0); usd likewise until something
+ * was priced. Never complete: the run has not ended. Replaced by
+ * computeUsageAvailability's verdict when the run finalizes.
+ */
+export function liveUsageAvailability(tokens: CanonicalTokenRecord[], pricerPriced: boolean, totalCost: number): UsageAvailability {
+  return {
+    tokens: tokens.some(recordHasTokens)
+      ? { available: true, source: 'tap', scope: 'call', cumulative: false, complete: false }
+      : { available: false },
+    credits: { available: false },
+    usd: pricerPriced && Number.isFinite(totalCost) ? { available: true, source: 'pricer', value: totalCost } : { available: false },
+  };
+}
+
+/**
  * Decide what this run actually knows about tokens, credits, USD and context.
  *
  * Credits authority order (PLAN amendment rule 4): live stream > session store

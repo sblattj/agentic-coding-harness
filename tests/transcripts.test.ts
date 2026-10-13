@@ -81,6 +81,8 @@ test("parseCodexRollout: emits deltas from cumulative thread_token_usage", async
       cacheRead: 30,
       cacheWrite: 10,
       reasoning: 20,
+      // #140/#142: native provenance rides on extra.codex.
+      extra: { codex: { format: "token_usage_record" } },
     },
     {
       agent: "codex",
@@ -92,6 +94,7 @@ test("parseCodexRollout: emits deltas from cumulative thread_token_usage", async
       cacheRead: 10,
       cacheWrite: 2,
       reasoning: 15,
+      extra: { codex: { format: "token_usage_record" } },
     },
   ];
   assert.deepStrictEqual(records, expected);

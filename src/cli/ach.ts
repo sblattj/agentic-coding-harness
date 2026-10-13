@@ -64,6 +64,8 @@ import { emitToLangfuse } from "../emitters/langfuse.ts";
 import {
   parseClaudeTranscript,
   parseCodexRollout,
+  codexSessionUsageFromRecords,
+  reconcileCodexSessions,
   parseGeminiChat,
   scanAll,
   transcriptAgentNames,
@@ -1545,6 +1547,25 @@ async function cmdStats(rest: string[]): Promise<number> {
   if (wantOrigin !== "all") records = records.filter((r) => r.origin === wantOrigin);
   disagreements.push(...records.flatMap((r) => r.costDisagreement ? [r.costDisagreement] : []));
   const agg = aggregate(records, { timeZone, by });
+  // #142: codex parent/child reconciliation over the windowed codex rows —
+  // which totals include child sessions, and which trees miss some.
+  const codexRows = records.filter((r) => r.agent === "codex");
+  const codexAccounting = codexRows.length > 0 ? reconcileCodexSessions(codexSessionUsageFromRecords(codexRows)) : undefined;
+  const codexAccountingJson =
+    codexAccounting === undefined
+      ? undefined
+      : {
+          ...codexAccounting.summary,
+          incomplete: codexAccounting.roots
+            .filter((r) => !r.complete)
+            .map((r) => ({
+              rootSessionId: r.rootSessionId,
+              rootFound: r.rootFound,
+              scope: r.scope,
+              countedChildSessions: r.countedChildSessionIds.length,
+              missingChildSessionIds: r.missingChildSessionIds,
+            })),
+        };
   const showProject = dimsBy.has("project") || wantProject !== undefined;
   const dims = aggregateDims(records, {
     costMode, timeZone,
@@ -1640,6 +1661,8 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(args.values["merge-models"] ? { mergedModels: true, modelAliases } : {}),
           ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
           ...(dims.byBranch ? { byBranch: dims.byBranch } : {}),
+          // #142: codex token-accounting scope and completeness.
+          ...(codexAccountingJson !== undefined ? { codexAccounting: codexAccountingJson } : {}),
           // #21: per-run context-window pressure from the run registry.
           runs: runContextRows(windowedRunRecords, { agent }),
           // #60: run-outcome rollup. Named runOutcomes (not `runs`) because
@@ -1680,6 +1703,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for (const [a, b] of Object.entries(agg.byAgent).sort()) {
       process.stdout.write(line(a, view(b), prov.byAgent[a]) + "\n");
       if (a === "claude" && extras.planLine) process.stdout.write(extras.planLine + "\n");
+      if (a === "codex" && codexAccounting !== undefined) process.stdout.write(formatCodexAccountingLine(codexAccounting.summary) + "\n");
     }
     if (extras.planLine && !agg.byAgent.claude) process.stdout.write(extras.planLine + "\n");
     for (const m of Object.values(timeMaps)) {
@@ -1698,6 +1722,13 @@ async function cmdStats(rest: string[]): Promise<number> {
   }
   hintCcusage();
   return noDataExitCode(records.length + runRecords.length, exitMode);
+}
+
+/** One stats line: how many codex root sessions are complete, and what their totals include (#142). */
+function formatCodexAccountingLine(s: ReturnType<typeof reconcileCodexSessions>["summary"]): string {
+  const missing = s.missingChildSessions > 0 ? `, ${fmtInt(s.missingChildSessions)} missing: usage unknown` : "";
+  const roots = s.missingRootSessions > 0 ? ` · ${fmtInt(s.missingRootSessions)} parent session(s) not found` : "";
+  return `  scope   codex sessions: ${fmtInt(s.roots)} root${s.roots === 1 ? "" : "s"}, ${fmtInt(s.complete)} complete, ${fmtInt(s.partial)} partial · session=${fmtInt(s.scopes.session)} child-inclusive=${fmtInt(s.scopes["child-inclusive"])} parent-only=${fmtInt(s.scopes["parent-only"])} · child sessions ${fmtInt(s.countedChildSessions)}/${fmtInt(s.childSessions)} counted${missing}${roots}`;
 }
 
 function hintCcusage(): void {

@@ -331,9 +331,15 @@ function renderMeta() {
   var runKv = kv("run", (r.agent || "?") + " / " + String(r.runId || "").slice(0, 8));
   runKv.title = r.runId || "";
   box.appendChild(runKv);
-  box.appendChild(kv("in", fmtTok(t.inputTokens)));
-  box.appendChild(kv("out", fmtTok(t.outputTokens)));
-  box.appendChild(kv("cache", fmtTok(t.cacheReadTokens) + "r " + fmtTok(t.cacheWriteTokens) + "w"));
+  /* #142: tokens the verdict calls unavailable (incl. a live run with no usage yet) read n/a, never 0. */
+  var tokNa = !!(r.usage && r.usage.tokens && r.usage.tokens.available === false);
+  box.appendChild(kv("in", tokNa ? "n/a" : fmtTok(t.inputTokens)));
+  box.appendChild(kv("out", tokNa ? "n/a" : fmtTok(t.outputTokens)));
+  box.appendChild(kv("cache", tokNa ? "n/a" : fmtTok(t.cacheReadTokens) + "r " + fmtTok(t.cacheWriteTokens) + "w"));
+  var scope = usageScopeText(r.usage);
+  if (scope) { var scopeKv = kv("usage", scope.text); scopeKv.title = scope.reasons; scopeKv.className += " usage-scope " + scope.status; box.appendChild(scopeKv); }
+  var modelTxt = modelProvText(r.usage && r.usage.model);
+  if (modelTxt) box.appendChild(kv("model", modelTxt));
   // cache-hit = cacheRead / (input + cacheRead + cacheWrite) — same definition
   // as src/core/cache-ratio.ts; n/a when the run has no prompt tokens.
   var hitDen = (t.inputTokens || 0) + (t.cacheReadTokens || 0) + (t.cacheWriteTokens || 0);
@@ -380,6 +386,31 @@ function renderMeta() {
   lastKv.title = lastTxt || "";
   box.appendChild(lastKv);
   box.appendChild(el("span", "status " + (r.status || ""), (GLYPH[r.status] || "\u00b7") + " " + (r.status || "?")));
+}
+
+/* ===== usage scope + model provenance (#140/#142); mirrors src/core/usage-scope.ts ===== */
+function usageScopeText(u) {
+  var t = u && u.tokens;
+  if (!t || t.available !== true || (t.complete === undefined && t.coverage === undefined)) return null;
+  var status = t.complete === true ? "complete" : "partial";
+  var kids = (t.childSessionIds || []).length, missing = (t.missingChildSessionIds || []).length;
+  var detail = kids > 0 ? " (" + kids + " child session" + (kids === 1 ? "" : "s") + (missing > 0 ? ", " + missing + " missing" : "") + ")" : "";
+  var parts = [status];
+  if (t.coverage !== undefined) parts.push(t.coverage + detail);
+  else if (status === "partial") parts.push("completeness not established");
+  return { status: status, text: parts.join(" \u00b7 "), reasons: (t.incompleteReasons || []).join("; ") };
+}
+function modelProvText(m) {
+  if (!m) return null;
+  function eff(xs) { return xs && xs.length ? " effort " + xs.join(", ") : ""; }
+  if (m.observed && m.observed.length) {
+    var req = m.requested !== undefined
+      ? " (requested " + m.requested + (m.requestedEffort !== undefined ? " effort " + m.requestedEffort : "") + (m.mismatch || m.effortMismatch ? ", MISMATCH" : "") + ")"
+      : " (no model requested)";
+    return "observed " + m.observed.join(", ") + eff(m.observedEffort) + req;
+  }
+  if (m.requested !== undefined) return "requested " + m.requested + (m.requestedEffort !== undefined ? " effort " + m.requestedEffort : "") + " (unverified: not observed)";
+  return "unknown (not observed, none requested)";
 }
 
 /* ===== feed pane ===== */

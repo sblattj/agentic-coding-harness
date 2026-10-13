@@ -74,8 +74,27 @@ Event: `codex exec --json` → `turn.completed` with `usage`.
 cached_input_tokens` — uncached-input convention applied in `normalizeCodex` and in the adapter
 stream path alike.
 
-The session-cumulative counterpart (`info.total_token_usage` / `info.last_token_usage` in the
-protocol) is not yet handled — see Trap 2 for why it must stay delta-based when it lands.
+**Rollout files (`~/.codex/sessions/**/rollout-*-<threadId>.jsonl`, #140/#142).** Two
+cumulative per-thread formats: legacy `token_usage_record.thread_token_usage` and modern
+`event_msg`/`token_count` `info.total_token_usage` (with `info.last_token_usage` = the latest
+call and `info.model_context_window`). Real files write both, but they are not one counter: a
+context-compaction call is in the legacy total only, so the modern total lags after it. The
+reader counts ONE format per file (legacy when present, else modern), deltas consecutive
+snapshots (Trap 2), skips repeated snapshots, and lets the other format only enrich the latest
+record (`extra.codex.lastCall`, `extra.codex.contextWindow`, `contextWindowSource:'token_count'`).
+`turn_context` gives the observed `model` and `effort` per turn (`extra.codex.modelSource:
+'turn_context'`). A spawned or forked child first replays its parent's history (session_meta,
+turn_context, and for a fork the cumulative snapshots): the first `session_meta` is the session,
+replayed lines are never attributed to it, and replayed snapshots only seed the baseline. Child
+sessions are found from the parent's `SubAgentActivity` events (agent_path under the parent's)
+and from the child's `parent_thread_id`; `ach stats` reconciles each tree and reports how many
+are complete, child-inclusive, or missing children (unknown, never zero).
+
+For `ach run --agent codex` the stream names no model, so after the run the driver reads the
+thread's rollout: observed model/effort go into `usage.model` (requested values stay labelled
+`requested`), records whose model was `unknown` get the observed one (pricing is not redone),
+and `usage.tokens.coverage` / `complete` say whether the stream's totals include child sessions
+(they never do: `parent-only`, with `childInclusive` totals when child rollouts exist).
 
 ### Prime Agent (stream tap `prime`)
 
@@ -186,8 +205,8 @@ tap writes per-line records, the stream tap writes per-usage-event records, neve
 **Trap 2 — cumulative vs delta.** Codex's protocol exposes `total_token_usage`
 (session-cumulative) alongside `last_token_usage` (this turn). Writing cumulative numbers into
 per-turn rows makes every turn repeat the whole session and inflates dashboards quadratically.
-Use the per-turn delta, or delta consecutive cumulative records. The current code only consumes
-`turn.completed` usage (per-turn), which is safe — keep it that way when cumulative lands.
+Use the per-turn delta, or delta consecutive cumulative records. The stream tap consumes
+`turn.completed` usage (per-turn); the rollout reader deltas consecutive cumulative snapshots.
 
 **Trap 3 — cached-in-input asymmetry.** Three conventions:
 

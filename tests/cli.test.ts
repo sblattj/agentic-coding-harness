@@ -177,6 +177,8 @@ describe("harness cli", () => {
       "byDay",
       "byModel",
       "cacheHitRatio",
+      // #142: additive, present when codex rows are in the window.
+      "codexAccounting",
       "pace",
       "runs",
       "timezone",
@@ -184,6 +186,8 @@ describe("harness cli", () => {
       "unpricedModels",
       "window",
     ]);
+    assert.equal(out.codexAccounting.roots, 1);
+    assert.equal(out.codexAccounting.complete, 1);
     assert.deepEqual(out.window, { since: null, until: null });
     // 3 stateDir records + 1 scanAll record, with the sess-aaa duplicate
     // counted once (dedupe).
