@@ -1,7 +1,8 @@
 // `ach queue` (issue #115 part A): a plan-file run queue that keeps at most N
 // `ach run` processes live machine-wide. See docs/QUEUE.md. Scheduling lives in
 // src/core/queue-engine.ts; the state-file contract in src/core/queue-state.ts.
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { sendNotification } from "../core/notify.ts";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -263,12 +264,6 @@ export function validatePlan(slices: PlanSlice[]): string[] {
   return problems;
 }
 
-function notify(title: string, message: string): void {
-  if (process.platform !== "darwin") return;
-  const esc = (x: string) => x.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  execFile("osascript", ["-e", `display notification "${esc(message)}" with title "${esc(title)}"`], () => {});
-}
-
 export function formatStatusTable(q: QueueState, now = Date.now()): string {
   const c = sliceCounts(q);
   const alive = q.phase === "running" && pidAlive(q.queuePid);
@@ -381,7 +376,7 @@ async function cmdQueueRun(rest: string[]): Promise<number> {
   const c = sliceCounts(final);
   const summary = `queue ${final.id} ${final.phase}: done=${c.done} failed=${c.failed} pre-failed=${c["pre-failed"]} running=${c.running} queued=${c.queued}`;
   deps.log(summary);
-  if (v.notify) notify("ach queue", summary);
+  if (v.notify) sendNotification("ach queue", summary);
   return exitCodeFor(final);
 }
 
