@@ -223,5 +223,12 @@ describe("web dashboard markers (index.html)", () => {
     assert.equal(provMark({ source: "external", totals: tokenTotals }, "costUsd"), "");
     assert.equal(fmtCtx(local), "≈10,000 tok");
     assert.equal(fmtCtx({ totals: tokenTotals }), "");
+    // #141: a pre-#141 turn-total record stored its cumulative sum as contextTokens; never show it as occupancy.
+    const legacyAgg = {
+      totals: { ...tokenTotals, contextTokens: 3000 },
+      usage: { context: { available: true, source: "derived", percentage: 300, tokens: 3000, basis: "turn-total" } },
+    };
+    assert.equal(fmtCtx(legacyAgg), "n/a (cumulative 3,000 tok, not occupancy)");
+    assert.equal(provMark(legacyAgg, "costUsd"), "*");
   });
 });

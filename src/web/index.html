@@ -258,8 +258,15 @@ function provMark(r, field) {
   var p = provOf(r)[field];
   return p ? PROV_MARK[p] || "" : "";
 }
-/* Context occupancy is DERIVED: always rendered with the estimated marker. */
+/* Context occupancy is DERIVED: always rendered with the estimated marker.
+   #141: a turn-total reading is cumulative usage, never occupancy (records
+   written before #141 still set totals.contextTokens from it). */
 function fmtCtx(r) {
+  var c = r && r.usage && r.usage.context;
+  if (c && c.basis === "turn-total") {
+    var cum = c.cumulativeTokens != null ? c.cumulativeTokens : c.tokens;
+    return cum == null ? "n/a" : "n/a (cumulative " + Number(cum).toLocaleString("en-US") + " tok, not occupancy)";
+  }
   var t = r && r.totals;
   if (!t || t.contextTokens == null) return "";
   return PROV_MARK.estimated + Number(t.contextTokens).toLocaleString("en-US") + " tok";
