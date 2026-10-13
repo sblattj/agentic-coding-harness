@@ -18,6 +18,7 @@ import {
 } from "../core/registry.ts";
 import { collectQuota, dashQuotaCell, type QuotaRow } from "../core/quota.ts";
 import { markerFor, PROVENANCE_LEGEND, PROVENANCE_MARKER, provenanceOf } from "../core/provenance.ts";
+import { modelProvenanceText, usageScopeBadge } from "../core/usage-scope.ts";
 
 import { collectQueueViews, fmtDuration, queueSummaryLine, sliceDetail, QUEUE_RECENT_HOURS, type QueueView } from "../core/queue-view.ts";
 import { CreditTotals, creditUnitOfAgent } from "../core/credit-units.ts";
@@ -66,6 +67,22 @@ function fmtContext(rec: RunRecord): string {
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
   // An upper-bound (turn-total) estimate is marked "≤".
   return `${PROVENANCE_MARKER.estimated}${ctx.basis === "turn-total" ? "≤" : ""}${compact(ctx.tokens)}${pct}`;
+}
+
+/**
+ * `usage <run8> partial · parent-only (2 child sessions, 1 missing) · model observed X (requested Y)`
+ * for a run whose verdict carries coverage or model provenance; undefined otherwise.
+ */
+export function usageDetailLine(rec: RunRecord): string | undefined {
+  const u = rec.usage;
+  if (u === undefined || (u.tokens.coverage === undefined && u.model === undefined)) return undefined;
+  const parts: string[] = [];
+  const badge = usageScopeBadge(u);
+  if (badge !== undefined) parts.push(badge.text);
+  else if (u.tokens.available === false) parts.push("tokens n/a");
+  const model = modelProvenanceText(u.model);
+  if (model !== undefined) parts.push(`model ${model}`);
+  return `usage ${rec.runId.slice(0, 8)} ${parts.join(" · ")}`;
 }
 
 function fmtElapsed(ms: number): string {
@@ -343,6 +360,12 @@ export function frame(
   } else {
     lines.push(PROVENANCE_LEGEND);
     for (const r of visible) lines.push(tableRow(r, now, ansi, lastW, quota));
+  }
+  // #140/#142: runs whose usage verdict consulted native evidence (codex
+  // rollout) get one detail line: counter scope/completeness + model provenance.
+  for (const r of visible) {
+    const line = usageDetailLine(r);
+    if (line !== undefined) lines.push(line);
   }
   for (const r of visible) {
     const latest = r.regrades?.at(-1);

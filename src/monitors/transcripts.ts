@@ -2,7 +2,8 @@
 //
 // Sources:
 //  - Claude Code: ~/.claude/projects/**/*.jsonl (assistant message usage)
-//  - Codex CLI:   ~/.codex/sessions/**/rollout-*.jsonl (cumulative token_usage_record)
+//  - Codex CLI:   ~/.codex/sessions/**/rollout-*.jsonl (cumulative token_usage_record
+//                 and event_msg/token_count snapshots, deduped; #142)
 //  - Gemini CLI:  ~/.gemini/tmp/*/chats/*.json (per-message token usage)
 //  - Prime Agent: ~/.prime/agent/sessions + session-artifacts (see ./prime.ts)
 //  - Amp / Goose / Qwen Code: read-only sources registered in
@@ -206,22 +207,57 @@ const CodexLineSchema = z.object({
   payload: z.unknown().optional(),
 });
 
+const CodexThreadSpawnSchema = z.object({
+  parent_thread_id: z.string().nullish(),
+  depth: z.number().nullish(),
+});
+
 const CodexSessionMetaPayloadSchema = z.object({
   id: z.string().nullish(),
   cwd: z.string().nullish(),
+  timestamp: z.string().nullish(),
+  parent_thread_id: z.string().nullish(),
+  forked_from_id: z.string().nullish(),
+  subagent_history_start_ordinal: z.number().int().nullish(),
+  /** Spawn path of a sub-agent ("/root/<name>"); absent on a top-level session. */
+  agent_path: z.string().nullish(),
+  // `source` is a string ("cli", "exec", ...) for a top-level session and
+  // {subagent:{thread_spawn:{parent_thread_id, depth}}} for a spawned child.
+  source: z.unknown().optional(),
 });
 
+const CodexCountsSchema = z.object({
+  input_tokens: z.number().nullish(),
+  cached_input_tokens: z.number().nullish(),
+  cache_write_input_tokens: z.number().nullish(),
+  output_tokens: z.number().nullish(),
+  reasoning_output_tokens: z.number().nullish(),
+});
+
+/** Legacy line: {type:"token_usage_record", payload:{thread_token_usage, usage?, turn_id?}}. */
 const CodexTokenUsagePayloadSchema = z.object({
-  thread_token_usage: z
+  thread_id: z.string().nullish(),
+  turn_id: z.string().nullish(),
+  thread_token_usage: CodexCountsSchema.extend({ thread_id: z.string().nullish() }).nullish(),
+  usage: CodexCountsSchema.nullish(),
+});
+
+/** Modern line: {type:"event_msg", payload:{type:"token_count", info:{total_token_usage, last_token_usage, model_context_window}}}. */
+const CodexTokenCountPayloadSchema = z.object({
+  type: z.literal("token_count"),
+  info: z
     .object({
-      thread_id: z.string().nullish(),
-      input_tokens: z.number().nullish(),
-      cached_input_tokens: z.number().nullish(),
-      cache_write_input_tokens: z.number().nullish(),
-      output_tokens: z.number().nullish(),
-      reasoning_output_tokens: z.number().nullish(),
+      total_token_usage: CodexCountsSchema.nullish(),
+      last_token_usage: CodexCountsSchema.nullish(),
+      model_context_window: z.number().nullish(),
     })
     .nullish(),
+});
+
+const CodexTurnContextPayloadSchema = z.object({
+  turn_id: z.string().nullish(),
+  model: z.string().nullish(),
+  effort: z.string().nullish(),
 });
 
 interface Cumulative {
@@ -233,76 +269,606 @@ interface Cumulative {
 }
 
 /**
- * Parse one Codex rollout (.jsonl) into canonical records.
+ * Tokens of ONE model call from a native per-call usage object (modern
+ * `last_token_usage`, legacy `usage`). Same convention as the record: `input`
+ * is UNCACHED (cached_input_tokens subtracted), reasoning is inside output.
+ */
+export interface CodexCallTokens {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  reasoning: number;
+}
+
+/**
+ * Codex-native provenance riding on a record's `extra.codex` (issues #140,
+ * #142). Every field is optional: present only when the rollout stated it.
+ */
+export interface CodexRecordMeta {
+  /** Which native line produced the counted delta. */
+  format: "token_usage_record" | "token_count";
+  /** Native turn the usage belongs to (turn_context / token_usage_record turn_id). */
+  turnId?: string;
+  /** Where `model` came from: the session's own turn_context (observed, never requested). */
+  modelSource?: "turn_context";
+  /** Observed reasoning effort from the same turn_context. */
+  effort?: string;
+  /** Latest model call's tokens (token_count `last_token_usage` or legacy `usage`). */
+  lastCall?: CodexCallTokens;
+  /** Context window the CLI stated for that call (token_count `model_context_window`). */
+  contextWindow?: number;
+  /** Provenance of contextWindow: stated natively by the rollout's token_count line. */
+  contextWindowSource?: "token_count";
+  /** Parent thread of a spawned child session (session_meta parent_thread_id / source.subagent.thread_spawn). */
+  parentSessionId?: string;
+  /** Spawn depth of a child session (source.subagent.thread_spawn.depth). */
+  depth?: number;
+  /** Session this one was forked from; its replayed history is never counted here. */
+  forkedFromId?: string;
+  /** Child threads this session spawned, discovered from its own events. */
+  childSessionIds?: string[];
+}
+
+/** Session-level view of one rollout file (records plus the relationships around them). */
+export interface CodexRolloutSession {
+  sessionId: string | null;
+  parentSessionId: string | null;
+  forkedFromId: string | null;
+  depth: number | null;
+  /** Child thread ids discovered from this session's own (non-replayed) events. */
+  childSessionIds: string[];
+  /** Observed models / efforts from this session's own turn_context lines, first-seen order. */
+  models: string[];
+  efforts: string[];
+  /** This session's own turns in order, with the model/effort each turn_context observed. */
+  turns: Array<{ turnId: string; model?: string; effort?: string }>;
+  /** Lines treated as replayed ancestor history (not counted, not attributed). */
+  replayedLines: number;
+  /** Usage snapshots seen per format, and snapshots skipped as repeats of an already counted total. */
+  snapshots: { legacy: number; modern: number; repeated: number };
+  records: CanonicalTokenRecord[];
+}
+
+function sameCumulative(a: Cumulative, b: Cumulative): boolean {
+  return a.input === b.input && a.output === b.output && a.cacheRead === b.cacheRead && a.cacheWrite === b.cacheWrite && a.reasoning === b.reasoning;
+}
+
+/** A native snapshot field that is absent keeps the previous value (never resets to 0). */
+function cumulativeOf(c: z.infer<typeof CodexCountsSchema>, prev: Cumulative | undefined): Cumulative {
+  return {
+    input: c.input_tokens ?? prev?.input ?? 0,
+    output: c.output_tokens ?? prev?.output ?? 0,
+    cacheRead: c.cached_input_tokens ?? prev?.cacheRead ?? 0,
+    cacheWrite: c.cache_write_input_tokens ?? prev?.cacheWrite ?? 0,
+    reasoning: c.reasoning_output_tokens ?? prev?.reasoning ?? 0,
+  };
+}
+
+function callTokensOf(c: z.infer<typeof CodexCountsSchema>): CodexCallTokens {
+  const cached = c.cached_input_tokens ?? 0;
+  return {
+    input: Math.max(0, (c.input_tokens ?? 0) - cached),
+    cacheRead: cached,
+    cacheWrite: c.cache_write_input_tokens ?? 0,
+    output: c.output_tokens ?? 0,
+    reasoning: c.reasoning_output_tokens ?? 0,
+  };
+}
+
+/** Millisecond time of a UUIDv7 (codex thread/turn ids), else undefined. */
+export function uuidV7Ms(id: string | null | undefined): number | undefined {
+  if (typeof id !== "string") return undefined;
+  const hex = id.replace(/-/g, "");
+  if (!/^[0-9a-fA-F]{32}$/.test(hex) || hex[12] !== "7") return undefined;
+  return parseInt(hex.slice(0, 12), 16);
+}
+
+/**
+ * Child thread ids a codex event names as THIS session's sub-agents.
+ * SubAgentActivity (item_completed item, or the event_msg form) also reports
+ * activity of the session's own parent and siblings (a child "interacting"
+ * with `/root`), so an id counts as a child only when its agent_path is a
+ * strict descendant of this session's agent_path (`/root` for a top-level
+ * session); a pathless report counts only when it is a spawn (`started`).
+ * Structured fields only, never free text.
+ */
+function childIdsOf(payload: unknown, ownPath: string): string[] {
+  if (payload === null || typeof payload !== "object") return [];
+  const p = payload as Record<string, unknown>;
+  const activity =
+    p.type === "sub_agent_activity"
+      ? p
+      : p.type === "item_completed" && p.item !== null && typeof p.item === "object" && (p.item as Record<string, unknown>).type === "SubAgentActivity"
+        ? (p.item as Record<string, unknown>)
+        : undefined;
+  if (activity === undefined) return [];
+  const id = activity.agent_thread_id;
+  if (typeof id !== "string" || id === "") return [];
+  const path = activity.agent_path;
+  if (typeof path === "string") return path.startsWith(`${ownPath.replace(/\/+$/, "")}/`) ? [id] : [];
+  return activity.kind === "started" ? [id] : [];
+}
+
+/**
+ * Which lines of a rollout are replayed ancestor history (true) rather than
+ * this session's own (false). The first session_meta is the session's own;
+ * any later one is replayed. With `subagent_history_start_ordinal` N the N
+ * lines after the session's meta are the replay; a fork without it replays
+ * until the first task_started whose UUIDv7 turn id postdates the session's
+ * creation (an undatable turn id ends the replay early: under-claiming the
+ * parent's history beats silently counting it twice).
+ */
+function codexReplayFlags(lines: unknown[]): boolean[] {
+  const flags: boolean[] = [];
+  let metaSeen = false;
+  let throughIndex = -1;
+  let untilOwnTurnAfterMs: number | undefined;
+  lines.forEach((raw, index) => {
+    const line = CodexLineSchema.safeParse(raw);
+    if (!line.success) {
+      flags.push(index <= throughIndex || untilOwnTurnAfterMs !== undefined);
+      return;
+    }
+    const { type, timestamp, payload } = line.data;
+    const p = (payload !== null && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+    if (type === "session_meta") {
+      flags.push(metaSeen);
+      if (metaSeen) return;
+      const meta = CodexSessionMetaPayloadSchema.safeParse(payload);
+      if (!meta.success) return;
+      metaSeen = true;
+      const m = meta.data;
+      if (typeof m.subagent_history_start_ordinal === "number") {
+        throughIndex = index + m.subagent_history_start_ordinal;
+      } else if (m.forked_from_id) {
+        const created = m.timestamp ? Date.parse(m.timestamp) : timestamp ? Date.parse(timestamp) : NaN;
+        untilOwnTurnAfterMs = Number.isFinite(created) ? created : Number.NEGATIVE_INFINITY;
+      }
+      return;
+    }
+    if (untilOwnTurnAfterMs !== undefined && type === "event_msg" && p.type === "task_started") {
+      const turnMs = uuidV7Ms(typeof p.turn_id === "string" ? p.turn_id : undefined);
+      if (turnMs === undefined || turnMs >= untilOwnTurnAfterMs) untilOwnTurnAfterMs = undefined;
+    }
+    flags.push(index <= throughIndex || untilOwnTurnAfterMs !== undefined);
+  });
+  return flags;
+}
+
+/**
+ * Parse one Codex rollout (.jsonl) into a session view: canonical records plus
+ * parent/child relationships and observed model/effort (issues #140, #142).
  *
- * payload.thread_token_usage is CUMULATIVE per thread; records are deltas
- * against the last seen cumulative for that thread. The first record of a
- * thread yields its full cumulative value. If a counter ever decreases
- * (thread reset), the negative delta is clamped to 0 per field.
+ * Usage: two native formats carry CUMULATIVE per-thread totals — legacy
+ * `token_usage_record.thread_token_usage` and modern `event_msg`/`token_count`
+ * `info.total_token_usage`. Real rollouts write both, usually with identical
+ * totals one line apart, but they are NOT one counter: a context-compaction
+ * call lands in the legacy total only, after which the modern total lags it
+ * for the rest of the file. So exactly one format counts per file — legacy
+ * when the file has any token_usage_record, else modern — and the other only
+ * contributes per-call metadata (lastCall, contextWindow) to the latest
+ * counted record. Each counted snapshot becomes a delta against the previous
+ * one of its thread; a snapshot equal to the previous one is a repeat and is
+ * never counted again. A counter that decreases (thread reset) clamps that
+ * field's delta to 0.
  *
  * OpenAI accounting: input_tokens INCLUDES cached_input_tokens (same rule as
- * src/core/normalize.ts), so cached is subtracted from the input delta to
- * keep canonical input uncached-only.
+ * src/core/normalize.ts), so cached is subtracted to keep canonical input
+ * uncached-only; reasoning is a subset of output and is never added to it.
+ *
+ * Identity: the FIRST session_meta is this session. A spawned/forked child
+ * replays its ancestor's history first (the parent's session_meta and
+ * turn_context, and for a fork its cumulative token snapshots). Those lines
+ * are never attributed here: their snapshots only seed the baseline, and
+ * their models/children belong to the parent. The replay ends after
+ * `subagent_history_start_ordinal` lines when the CLI states it, else (a
+ * fork without it) at the first task_started whose UUIDv7 turn id postdates
+ * this session's creation.
  */
-export async function parseCodexRollout(
-  path: string,
-): Promise<CanonicalTokenRecord[]> {
+export async function parseCodexRolloutSession(path: string): Promise<CodexRolloutSession> {
   const lastByThread = new Map<string, Cumulative>();
-  let sessionId: string | null = null;
+  const lastRecordByThread = new Map<string, CanonicalTokenRecord>();
+  const turns = new Map<string, { model?: string; effort?: string }>();
+  const session: CodexRolloutSession = {
+    sessionId: null,
+    parentSessionId: null,
+    forkedFromId: null,
+    depth: null,
+    childSessionIds: [],
+    models: [],
+    efforts: [],
+    turns: [],
+    replayedLines: 0,
+    snapshots: { legacy: 0, modern: 0, repeated: 0 },
+    records: [],
+  };
+  const children = new Set<string>();
   let cwd: string | undefined;
-  const records: CanonicalTokenRecord[] = [];
+  let ownPath = "/root";
+  let currentTurn: string | undefined;
+  let current: { model?: string; effort?: string } = {};
+  let index = -1;
 
-  for await (const raw of readJsonlLines(path)) {
+  const metaOf = (): Partial<CodexRecordMeta> => ({
+    ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+    ...(session.depth !== null ? { depth: session.depth } : {}),
+    ...(session.forkedFromId ? { forkedFromId: session.forkedFromId } : {}),
+  });
+
+  const lines: unknown[] = [];
+  for await (const raw of readJsonlLines(path)) lines.push(raw);
+  const replayedAt = codexReplayFlags(lines);
+  // Format preference (see above): legacy counts whenever the session's OWN
+  // lines have it (a replayed legacy prefix says nothing about this session).
+  const countedFormat: CodexRecordMeta["format"] = lines.some(
+    (l, i) => !replayedAt[i] && l !== null && typeof l === "object" && (l as { type?: unknown }).type === "token_usage_record",
+  )
+    ? "token_usage_record"
+    : "token_count";
+
+  for (const raw of lines) {
+    index += 1;
     const line = CodexLineSchema.safeParse(raw);
     if (!line.success) continue;
     const { type, timestamp, payload } = line.data;
+    const p = (payload !== null && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
 
+    // ---- identity: the first session_meta is this session; later ones are replayed ancestors.
     if (type === "session_meta") {
+      if (session.sessionId !== null) {
+        session.replayedLines += 1;
+        continue;
+      }
       const meta = CodexSessionMetaPayloadSchema.safeParse(payload);
-      if (meta.success && meta.data.id) sessionId = meta.data.id;
-      if (meta.success && meta.data.cwd) cwd = meta.data.cwd;
+      if (!meta.success) continue;
+      const m = meta.data;
+      if (m.id) session.sessionId = m.id;
+      if (m.cwd) cwd = m.cwd;
+      if (m.agent_path) ownPath = m.agent_path;
+      const spawn =
+        m.source !== null && typeof m.source === "object"
+          ? CodexThreadSpawnSchema.safeParse(((m.source as Record<string, unknown>).subagent as Record<string, unknown> | undefined)?.thread_spawn)
+          : undefined;
+      const parent = m.parent_thread_id ?? (spawn?.success ? spawn.data.parent_thread_id : null) ?? null;
+      if (parent) session.parentSessionId = parent;
+      if (spawn?.success && typeof spawn.data.depth === "number") session.depth = spawn.data.depth;
+      if (m.forked_from_id) session.forkedFromId = m.forked_from_id;
       continue;
     }
-    if (type !== "token_usage_record") continue;
 
-    const parsed = CodexTokenUsagePayloadSchema.safeParse(payload);
-    const usage = parsed.success ? parsed.data.thread_token_usage : undefined;
-    if (!usage) continue;
+    const replayed = replayedAt[index] === true;
+    if (replayed) session.replayedLines += 1;
 
-    const key = usage.thread_id ?? "default";
-    const current: Cumulative = {
-      input: usage.input_tokens ?? 0,
-      output: usage.output_tokens ?? 0,
-      cacheRead: usage.cached_input_tokens ?? 0,
-      cacheWrite: usage.cache_write_input_tokens ?? 0,
-      reasoning: usage.reasoning_output_tokens ?? 0,
+    // ---- observed model / effort (own turns only)
+    if (type === "turn_context") {
+      if (replayed) continue;
+      const ctx = CodexTurnContextPayloadSchema.safeParse(payload);
+      if (!ctx.success) continue;
+      current = {
+        ...(ctx.data.model ? { model: ctx.data.model } : {}),
+        ...(ctx.data.effort ? { effort: ctx.data.effort } : {}),
+      };
+      if (ctx.data.turn_id) {
+        currentTurn = ctx.data.turn_id;
+        if (!turns.has(ctx.data.turn_id)) session.turns.push({ turnId: ctx.data.turn_id, ...current });
+        turns.set(ctx.data.turn_id, current);
+      }
+      if (current.model && !session.models.includes(current.model)) session.models.push(current.model);
+      if (current.effort && !session.efforts.includes(current.effort)) session.efforts.push(current.effort);
+      continue;
+    }
+
+    if (type === "event_msg" && !replayed) {
+      for (const id of childIdsOf(payload, ownPath)) if (id !== session.sessionId) children.add(id);
+    }
+
+    // ---- usage snapshots (both formats feed one cumulative tracker per thread)
+    let snapshot: z.infer<typeof CodexCountsSchema> | null | undefined;
+    let call: z.infer<typeof CodexCountsSchema> | null | undefined;
+    let window: number | undefined;
+    let threadKey: string;
+    let turnId: string | undefined;
+    let format: CodexRecordMeta["format"];
+    if (type === "token_usage_record") {
+      const parsed = CodexTokenUsagePayloadSchema.safeParse(payload);
+      if (!parsed.success || !parsed.data.thread_token_usage) continue;
+      snapshot = parsed.data.thread_token_usage;
+      call = parsed.data.usage;
+      threadKey = parsed.data.thread_token_usage.thread_id ?? parsed.data.thread_id ?? session.sessionId ?? "default";
+      turnId = parsed.data.turn_id ?? undefined;
+      format = "token_usage_record";
+      if (!replayed) session.snapshots.legacy += 1;
+    } else if (type === "event_msg" && p.type === "token_count") {
+      const parsed = CodexTokenCountPayloadSchema.safeParse(payload);
+      const info = parsed.success ? parsed.data.info : undefined;
+      if (!info?.total_token_usage) continue;
+      snapshot = info.total_token_usage;
+      call = info.last_token_usage;
+      window = typeof info.model_context_window === "number" && info.model_context_window > 0 ? info.model_context_window : undefined;
+      threadKey = session.sessionId ?? "default";
+      turnId = currentTurn;
+      format = "token_count";
+      if (!replayed) session.snapshots.modern += 1;
+    } else {
+      continue;
+    }
+
+    const callMeta: Partial<CodexRecordMeta> = {
+      ...(call ? { lastCall: callTokensOf(call) } : {}),
+      ...(window !== undefined ? { contextWindow: window, contextWindowSource: "token_count" as const } : {}),
     };
-    const prev = lastByThread.get(key);
+    const counts = format === countedFormat;
+    const prev = counts ? lastByThread.get(threadKey) : undefined;
+    const cur = counts ? cumulativeOf(snapshot, prev) : undefined;
+    if (counts) lastByThread.set(threadKey, cur!);
+    // Replayed ancestor snapshots only seed the baseline (a fork's counter continues from them).
+    if (replayed) continue;
+
+    if (!counts || (prev !== undefined && sameCumulative(prev, cur!))) {
+      // The non-counting format, or a repeat of an already counted total:
+      // enrich the latest counted record, never count again.
+      if (counts) session.snapshots.repeated += 1;
+      const last = lastRecordByThread.get(counts ? threadKey : session.sessionId ?? "default") ?? session.records.at(-1);
+      const meta = last?.extra?.codex as CodexRecordMeta | undefined;
+      if (meta) {
+        if (meta.lastCall === undefined && callMeta.lastCall) meta.lastCall = callMeta.lastCall;
+        if (meta.contextWindow === undefined && callMeta.contextWindow !== undefined) {
+          meta.contextWindow = callMeta.contextWindow;
+          meta.contextWindowSource = "token_count";
+        }
+        if (meta.turnId === undefined && turnId !== undefined) meta.turnId = turnId;
+      }
+      continue;
+    }
+
+    const now = cur!;
     const delta: Cumulative = prev
       ? {
-          input: Math.max(0, current.input - prev.input),
-          output: Math.max(0, current.output - prev.output),
-          cacheRead: Math.max(0, current.cacheRead - prev.cacheRead),
-          cacheWrite: Math.max(0, current.cacheWrite - prev.cacheWrite),
-          reasoning: Math.max(0, current.reasoning - prev.reasoning),
+          input: Math.max(0, now.input - prev.input),
+          output: Math.max(0, now.output - prev.output),
+          cacheRead: Math.max(0, now.cacheRead - prev.cacheRead),
+          cacheWrite: Math.max(0, now.cacheWrite - prev.cacheWrite),
+          reasoning: Math.max(0, now.reasoning - prev.reasoning),
         }
-      : current;
-    lastByThread.set(key, current);
+      : now;
 
-    records.push({
+    const turn = (turnId !== undefined ? turns.get(turnId) : undefined) ?? current;
+    const meta: CodexRecordMeta = {
+      format,
+      ...(turnId !== undefined ? { turnId } : {}),
+      ...(turn.model ? { modelSource: "turn_context" as const } : {}),
+      ...(turn.effort ? { effort: turn.effort } : {}),
+      ...callMeta,
+      ...metaOf(),
+    };
+    const record: CanonicalTokenRecord = {
       agent: "codex",
-      sessionId,
+      sessionId: session.sessionId,
       timestamp: timestamp ?? null,
-      model: null,
+      model: turn.model ?? null,
       input: Math.max(0, delta.input - delta.cacheRead),
       output: delta.output,
       cacheRead: delta.cacheRead,
       cacheWrite: delta.cacheWrite,
       reasoning: delta.reasoning,
       ...(cwd ? { cwd } : {}),
+      extra: { codex: meta },
+    };
+    session.records.push(record);
+    lastRecordByThread.set(threadKey, record);
+  }
+
+  session.childSessionIds = [...children];
+  if (session.childSessionIds.length > 0) {
+    for (const r of session.records) (r.extra!.codex as CodexRecordMeta).childSessionIds = session.childSessionIds;
+  }
+  return session;
+}
+
+/** Parse one Codex rollout (.jsonl) into canonical records (see parseCodexRolloutSession). */
+export async function parseCodexRollout(
+  path: string,
+): Promise<CanonicalTokenRecord[]> {
+  return (await parseCodexRolloutSession(path)).records;
+}
+
+// ---------------------------------------------------------------------------
+// Codex parent/child reconciliation (#142)
+// ---------------------------------------------------------------------------
+
+/** Token totals in canonical lanes (input uncached-only; reasoning inside output). */
+export interface CodexTokenTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+}
+
+/** One session's usage as the reconciler sees it. */
+export interface CodexSessionUsage {
+  sessionId: string;
+  parentSessionId?: string | null;
+  childSessionIds?: string[];
+  tokens: CodexTokenTotals;
+  records: number;
+}
+
+/**
+ * Accounting scope of one root session tree:
+ * - `session`: no child session was discovered; the root's own usage is the whole.
+ * - `parent-only`: children exist but none of their usage was found.
+ * - `child-inclusive`: the total includes at least one child's usage.
+ */
+export type CodexAccountingScope = "session" | "parent-only" | "child-inclusive";
+
+export interface CodexAccountingRoot {
+  rootSessionId: string;
+  /** False when a child names a parent whose usage was not found: the root's own usage is unknown. */
+  rootFound: boolean;
+  /** Every descendant id discovered from either side (parent events or child session_meta). */
+  childSessionIds: string[];
+  countedChildSessionIds: string[];
+  /** Discovered children with no usage found: their usage is UNKNOWN, not zero. */
+  missingChildSessionIds: string[];
+  scope: CodexAccountingScope;
+  /** True only when the root and every discovered child were found. */
+  complete: boolean;
+  /** Sum over the sessions found (each counted once). */
+  tokens: CodexTokenTotals;
+}
+
+export interface CodexAccounting {
+  roots: CodexAccountingRoot[];
+  summary: {
+    roots: number;
+    complete: number;
+    partial: number;
+    scopes: Record<CodexAccountingScope, number>;
+    childSessions: number;
+    countedChildSessions: number;
+    missingChildSessions: number;
+    missingRootSessions: number;
+  };
+}
+
+function zeroTotals(): CodexTokenTotals {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+}
+
+function addTotals(a: CodexTokenTotals, b: CodexTokenTotals): void {
+  a.input += b.input;
+  a.output += b.output;
+  a.cacheRead += b.cacheRead;
+  a.cacheWrite += b.cacheWrite;
+  a.reasoning += b.reasoning;
+}
+
+/**
+ * Reconcile codex sessions into root trees (#142). Each session's usage is
+ * counted once (sessions sharing an id are merged); a child's total never
+ * includes its parent's replayed history (parseCodexRolloutSession drops it),
+ * so summing the tree double-counts nothing. A tree is `complete` only when
+ * the root and every discovered child were found; missing children are
+ * listed, never zero-filled.
+ */
+export function reconcileCodexSessions(sessions: Iterable<CodexSessionUsage>): CodexAccounting {
+  const byId = new Map<string, CodexSessionUsage>();
+  for (const s of sessions) {
+    const prev = byId.get(s.sessionId);
+    if (prev === undefined) {
+      byId.set(s.sessionId, { ...s, tokens: { ...s.tokens }, childSessionIds: [...(s.childSessionIds ?? [])] });
+      continue;
+    }
+    addTotals(prev.tokens, s.tokens);
+    prev.records += s.records;
+    prev.parentSessionId = prev.parentSessionId ?? s.parentSessionId;
+    for (const c of s.childSessionIds ?? []) if (!prev.childSessionIds!.includes(c)) prev.childSessionIds!.push(c);
+  }
+  const parentOf = new Map<string, string>();
+  const kids = new Map<string, Set<string>>();
+  const link = (parent: string, child: string): void => {
+    if (parent === child) return;
+    if (!parentOf.has(child)) parentOf.set(child, parent);
+    let set = kids.get(parent);
+    if (!set) kids.set(parent, (set = new Set()));
+    set.add(child);
+  };
+  for (const s of byId.values()) {
+    if (s.parentSessionId) link(s.parentSessionId, s.sessionId);
+    for (const c of s.childSessionIds ?? []) link(s.sessionId, c);
+  }
+  const rootOf = (id: string): string => {
+    const seen = new Set<string>();
+    let cur = id;
+    while (parentOf.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      cur = parentOf.get(cur)!;
+    }
+    return cur;
+  };
+  const rootIds = new Set<string>();
+  for (const id of byId.keys()) rootIds.add(rootOf(id));
+
+  const roots: CodexAccountingRoot[] = [];
+  for (const rootId of [...rootIds].sort()) {
+    const descendants: string[] = [];
+    const queue = [...(kids.get(rootId) ?? [])];
+    const seen = new Set<string>([rootId]);
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      descendants.push(id);
+      queue.push(...(kids.get(id) ?? []));
+    }
+    const tokens = zeroTotals();
+    const rootFound = byId.has(rootId);
+    if (rootFound) addTotals(tokens, byId.get(rootId)!.tokens);
+    const counted: string[] = [];
+    const missing: string[] = [];
+    for (const id of descendants) {
+      const s = byId.get(id);
+      if (s === undefined) missing.push(id);
+      else {
+        counted.push(id);
+        addTotals(tokens, s.tokens);
+      }
+    }
+    const scope: CodexAccountingScope = descendants.length === 0 ? "session" : counted.length === 0 ? "parent-only" : "child-inclusive";
+    roots.push({
+      rootSessionId: rootId,
+      rootFound,
+      childSessionIds: descendants,
+      countedChildSessionIds: counted,
+      missingChildSessionIds: missing,
+      scope,
+      complete: rootFound && missing.length === 0,
+      tokens,
     });
   }
-  return records;
+  const scopes: Record<CodexAccountingScope, number> = { session: 0, "parent-only": 0, "child-inclusive": 0 };
+  for (const r of roots) scopes[r.scope] += 1;
+  return {
+    roots,
+    summary: {
+      roots: roots.length,
+      complete: roots.filter((r) => r.complete).length,
+      partial: roots.filter((r) => !r.complete).length,
+      scopes,
+      childSessions: roots.reduce((n, r) => n + r.childSessionIds.length, 0),
+      countedChildSessions: roots.reduce((n, r) => n + r.countedChildSessionIds.length, 0),
+      missingChildSessions: roots.reduce((n, r) => n + r.missingChildSessionIds.length, 0),
+      missingRootSessions: roots.filter((r) => !r.rootFound).length,
+    },
+  };
+}
+
+/**
+ * Group codex records (parseCodexRollout / scanAll rows, read via
+ * `extra.codex`) into per-session usage for reconcileCodexSessions. Records
+ * without a session id are skipped: they cannot join a tree.
+ */
+export function codexSessionUsageFromRecords(
+  records: Iterable<{ agent: string; sessionId?: string | null; input?: number; inputTokens?: number; output?: number; outputTokens?: number; cacheRead?: number; cacheReadTokens?: number; cacheWrite?: number; cacheWriteTokens?: number; reasoning?: number; reasoningTokens?: number; extra?: Record<string, unknown> }>,
+): CodexSessionUsage[] {
+  const out = new Map<string, CodexSessionUsage>();
+  for (const r of records) {
+    if (r.agent !== "codex" || !r.sessionId || r.sessionId === "unknown") continue;
+    let s = out.get(r.sessionId);
+    if (!s) out.set(r.sessionId, (s = { sessionId: r.sessionId, parentSessionId: null, childSessionIds: [], tokens: zeroTotals(), records: 0 }));
+    s.records += 1;
+    s.tokens.input += r.input ?? r.inputTokens ?? 0;
+    s.tokens.output += r.output ?? r.outputTokens ?? 0;
+    s.tokens.cacheRead += r.cacheRead ?? r.cacheReadTokens ?? 0;
+    s.tokens.cacheWrite += r.cacheWrite ?? r.cacheWriteTokens ?? 0;
+    s.tokens.reasoning += r.reasoning ?? r.reasoningTokens ?? 0;
+    const meta = r.extra?.codex as CodexRecordMeta | undefined;
+    if (meta?.parentSessionId) s.parentSessionId = meta.parentSessionId;
+    for (const c of meta?.childSessionIds ?? []) if (!s.childSessionIds!.includes(c)) s.childSessionIds!.push(c);
+  }
+  return [...out.values()];
 }
 
 // ---------------------------------------------------------------------------

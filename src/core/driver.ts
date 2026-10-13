@@ -8,7 +8,8 @@ import { notifyRunEnd, type NotifyExec } from './notify.ts';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { ChainWriter, canonicalTotals } from './hash-chain.ts';
-import { computeUsageAvailability } from './usage-availability.js';
+import { computeUsageAvailability, liveUsageAvailability } from './usage-availability.js';
+import { codexSessionsRoot, readCodexNativeUsage, requestedCodexEffort } from './codex-native.ts';
 import { createContextMeter } from './context-meter.js';
 import { classifyLaunchError, classifyUnavailable } from './availability.ts';
 import { gitBranchInfo } from './git-branch.ts';
@@ -29,7 +30,7 @@ import { KiroIdeAdapter } from '../adapters/kiro-ide.js';
 import { CopilotAdapter } from '../adapters/copilot.js';
 import { CursorAdapter } from '../adapters/cursor.js';
 import { NullAdapter } from '../adapters/null.js';
-import { takeOnOutput } from '../adapters/shared.js';
+import { scrubEnvVars, takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
 import type { BudgetAlertEvent } from './types.js';
 import { deriveLatency, hasLatency } from './latency.ts';
@@ -123,6 +124,11 @@ export function countsAsTurn(agent: string, event: AgentEvent): boolean {
 
 export interface DriverOptions {
   adapters: Record<string, AgentAdapter>;
+  /**
+   * Codex sessions root the post-run native lookup reads (#140/#142); default
+   * $CODEX_HOME/sessions, else ~/.codex/sessions. Tests point it at a fixture.
+   */
+  codexSessionsRoot?: string;
   /** Directory for raw NDJSON transcripts (written under <stateDir>/raw/). */
   stateDir: string;
   /** Optional pricer; defaults to the embedded per-1M cost map. */
@@ -536,6 +542,7 @@ export function createDriver(options: DriverOptions): Driver {
         // 500ms; the final write is always forced through.
         const registryStateDir = options.registry?.stateDir;
         let rec: RunRecord | null = null;
+        let usageFinal = false;
         // totals became optional on RunRecord (external producers omit it); the
         // driver always keeps this local object and hands it to the record.
         const totals: RunRecord["totals"] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
@@ -549,6 +556,9 @@ export function createDriver(options: DriverOptions): Driver {
           if (!force && now - lastRegistryWrite < 500) return;
           lastRegistryWrite = now;
           rec.updatedAt = now;
+          // Until the final verdict lands, the record's usage says only what
+          // the stream has shown so far: no usage yet reads n/a, never 0 (#142).
+          if (!usageFinal) rec.usage = liveUsageAvailability(tokens, pricerPriced, cumulativeCost);
           totals.costUsd = cumulativeCost;
           if (costFromReported !== costFromComputed) totals.costSource = costFromReported ? 'reported' : 'computed';
           else delete totals.costSource;
@@ -920,10 +930,37 @@ export function createDriver(options: DriverOptions): Driver {
           pricerPriced,
         });
         warnings.push(...usageWarnings);
+        // Codex (#140/#142): the stream never names the model, never reports
+        // child-session usage. The native rollout does: observed model/effort,
+        // child sessions, and whether the stream's totals are proven complete.
+        // Skipped when the stream never named a thread (a launch that died
+        // before thread.started has no rollout to read).
+        const codexThreadId = handle.sessionId || (typeof rec?.sessionId === 'string' && rec.sessionId !== '' ? rec.sessionId : undefined);
+        if (agentName === 'codex' && codexThreadId) {
+          try {
+            const native = await readCodexNativeUsage({
+              sessionId: codexThreadId,
+              tokens,
+              ...(parsed.model !== undefined ? { requestedModel: parsed.model } : {}),
+              ...(requestedCodexEffort(parsed.extraArgs) !== undefined ? { requestedEffort: requestedCodexEffort(parsed.extraArgs) } : {}),
+              // The root the CHILD wrote to: its env is process.env + the run's
+              // env overrides, minus scrubEnv (src/adapters/shared.ts runJsonlCli).
+              sessionsRoot:
+                options.codexSessionsRoot ??
+                codexSessionsRoot(scrubEnvVars({ ...process.env, ...(parsed.env ?? {}) }, parsed.sandbox?.scrubEnv)),
+            });
+            usage.model = native.model;
+            if (usage.tokens.available) usage.tokens = { ...usage.tokens, ...native.tokens };
+            warnings.push(...native.warnings);
+          } catch (err) {
+            warnings.push(`codex: native rollout read failed (${err instanceof Error ? err.message : String(err)})`);
+          }
+        }
         const meteredContext = contextMeter?.snapshot();
         if (meteredContext !== undefined && usage.context?.available !== true) usage.context = meteredContext;
         if (rec) {
           rec.usage = usage;
+          usageFinal = true;
           if (usage.context?.available === true && usage.context.tokens !== undefined) {
             totals.contextTokens = usage.context.tokens;
           }

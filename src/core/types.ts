@@ -795,6 +795,50 @@ export interface UsageAvailability {
     scope?: "run" | "turn" | "call";
     cumulative?: boolean;
     complete?: boolean;
+    /**
+     * What the counters include (#142): 'session' = one session that spawned
+     * no child sessions; 'parent-only' = child sessions exist and are NOT in
+     * these counters; 'child-inclusive' = child sessions' usage is included.
+     * Absent = not established.
+     */
+    coverage?: "session" | "parent-only" | "child-inclusive";
+    /** Child session ids discovered from native evidence (codex SubAgentActivity). */
+    childSessionIds?: string[];
+    /** Discovered children whose usage could not be found: UNKNOWN, never zero. */
+    missingChildSessionIds?: string[];
+    /** Why `complete` is false, in plain words. */
+    incompleteReasons?: string[];
+    /** Parent counters plus every child session found (#142 reconciliation). */
+    childInclusive?: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+      reasoningTokens?: number;
+      /** True only when the parent is complete and no child is missing. */
+      complete: boolean;
+      countedChildSessions: number;
+    };
+  };
+  /**
+   * Requested vs observed model / reasoning effort (#140). `requested` is what
+   * the run asked for (`-m`, `-c model_reasoning_effort=`); `observed` is what
+   * the agent's own native record says ran. `source` names what a consumer
+   * should treat as the run's model: 'native' (observed), 'requested'
+   * (unverified fallback), or 'unknown'.
+   */
+  model?: {
+    source: "native" | "requested" | "unknown";
+    requested?: string;
+    observed?: string[];
+    requestedEffort?: string;
+    observedEffort?: string[];
+    /** Where `observed` was read ('rollout' = codex ~/.codex/sessions rollout file). */
+    observedSource?: string;
+    /** An observed model differs from the requested one. */
+    mismatch?: boolean;
+    /** An observed effort differs from the requested one. */
+    effortMismatch?: boolean;
   };
   credits: {
     available: boolean;
@@ -855,7 +899,34 @@ export const UsageAvailabilitySchema = z.object({
     scope: z.enum(["run", "turn", "call"]).optional(),
     cumulative: z.boolean().optional(),
     complete: z.boolean().optional(),
+    coverage: z.enum(["session", "parent-only", "child-inclusive"]).optional(),
+    childSessionIds: z.array(z.string()).optional(),
+    missingChildSessionIds: z.array(z.string()).optional(),
+    incompleteReasons: z.array(z.string()).optional(),
+    childInclusive: z
+      .object({
+        inputTokens: z.number(),
+        outputTokens: z.number(),
+        cacheReadTokens: z.number(),
+        cacheWriteTokens: z.number(),
+        reasoningTokens: z.number().optional(),
+        complete: z.boolean(),
+        countedChildSessions: z.number(),
+      })
+      .optional(),
   }),
+  model: z
+    .object({
+      source: z.enum(["native", "requested", "unknown"]),
+      requested: z.string().optional(),
+      observed: z.array(z.string()).optional(),
+      requestedEffort: z.string().optional(),
+      observedEffort: z.array(z.string()).optional(),
+      observedSource: z.string().optional(),
+      mismatch: z.boolean().optional(),
+      effortMismatch: z.boolean().optional(),
+    })
+    .optional(),
   // A record whose usage predates or omits `credits` (older writers, external
   // producers) parses with credits UNKNOWN — available: false, no value —
   // instead of failing the whole record and vanishing from listRunRecords.
