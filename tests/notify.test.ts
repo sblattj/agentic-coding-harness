@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 
 import { createDriver } from "../src/core/driver.ts";
 import { NullAdapter } from "../src/adapters/null.ts";
+import { HarnessError, type AgentAdapter } from "../src/core/types.ts";
 import {
   NOTIFY_ENV,
   NOTIFY_SOUND_ENV,
@@ -81,6 +82,29 @@ describe("notify: driver lifecycle (acceptance)", () => {
     assert.doesNotMatch(script, /deterministic reply/); // the agent's transcript message
     assert.doesNotMatch(script, /secret-token-sk-12345/); // transcript-only prompt tail
     assert.match(script, /short task/);
+  });
+});
+
+describe("notify: launch-unavailable path", () => {
+  it("a launch() that throws spawn ENOENT notifies once with status: unavailable (event fail)", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-notify-"));
+    const calls: Call[] = [];
+    const adapter: AgentAdapter = {
+      name: "mock",
+      launch: async () => {
+        throw Object.assign(new Error("spawn kiro-cli ENOENT"), { code: "ENOENT" });
+      },
+    };
+    const driver = createDriver({
+      adapters: { mock: adapter },
+      stateDir,
+      notify: { env: { [NOTIFY_ENV]: "fail" }, platform: "darwin", exec: (file, args) => void calls.push({ file, args }) },
+    });
+    await assert.rejects(driver.run("mock", { prompt: "do the thing" }), (err: unknown) => err instanceof HarnessError && err.code === "UNAVAILABLE");
+    assert.equal(calls.length, 1);
+    const script = calls[0]!.args.join(" ");
+    assert.match(script, /status: unavailable/);
+    assert.match(script, /ach: run failed/);
   });
 });
 

@@ -974,6 +974,7 @@ export function createDriver(options: DriverOptions): Driver {
         const launchUnavailable = classifyLaunchError(err, typeof parsed.cwd === 'string' ? parsed.cwd : undefined);
         if (launchUnavailable !== null) {
           await settleArtifacts('unavailable');
+          notifyRunEnd({ runId, agent: agentName, prompt: parsed.prompt, exitStatus: 'unavailable' }, options.notify);
           throw new HarnessError(`agent "${agentName}" unavailable: ${launchUnavailable}`, 'UNAVAILABLE');
         }
         await settleArtifacts('error');
