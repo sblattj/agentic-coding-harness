@@ -629,6 +629,16 @@ The binary is `ach` (the npm/PyPI package name is `agentic-coding-harness`). Bud
 `AGENTIC_CODING_HARNESS_WALL_MS`, `AGENTIC_CODING_HARNESS_IDLE_MS` supply env defaults. State lives under
 `~/.agentic-coding-harness` (`AGENTIC_CODING_HARNESS_STATE_DIR`).
 
+**Desktop notifications (opt-in).** Set `AGENTIC_CODING_HARNESS_NOTIFY` to a comma list of events
+(`finish`, `fail`, `budget`, or `all`) and `ach` raises an OS notification when a run's final status is
+durable: `finish` = `success`; `fail` = `error` or `unavailable`; `budget` = `budget_exceeded`,
+`turn_limit` or `timeout`. A deliberate `aborted`/`cancelled` stop never notifies. Unset (the default)
+sends nothing. `AGENTIC_CODING_HARNESS_NOTIFY_SOUND=1` also plays the platform alert sound (macOS
+`sound name "default"`; Linux best-effort via the `sound-name` hint). Delivery is `osascript` on macOS
+and `notify-send` on Linux; a missing tool (or any other platform) is a silent no-op. The text is built
+only from run metadata (first line of the task, agent, short run id, status, cost), never from the
+transcript. `ach queue run --notify` shares the same delivery helper.
+
 Claude runs get a fresh per-run `CLAUDE_CONFIG_DIR` under the state dir so transcripts are captured
 by construction. On a Mac whose Claude Code login is keychain-bound OAuth (no
 `~/.claude/.credentials.json`) that dir cannot see the token and every run ends `Not logged in`;

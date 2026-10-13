@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeAuto } from './normalize.js';
 import { createPricer, isVendorMetered, pricedSources, type Pricer } from './pricing.js';
+import { notifyRunEnd, type NotifyExec } from './notify.ts';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { ChainWriter, canonicalTotals } from './hash-chain.ts';
@@ -144,6 +145,12 @@ export interface DriverOptions {
    * they drain into run warnings.
    */
   registry?: { stateDir: string };
+  /**
+   * Run-lifecycle desktop notifications (#63). Opt-in via
+   * AGENTIC_CODING_HARNESS_NOTIFY (src/core/notify.ts); these fields exist so
+   * tests can inject env/platform/exec. Absent = real process.env + OS tools.
+   */
+  notify?: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; exec?: NotifyExec };
   /**
    * Workspace root for confinement (issue #9). Used only when
    * confineToWorkspace is true; defaults to process.cwd() at run time.
@@ -957,6 +964,9 @@ export function createDriver(options: DriverOptions): Driver {
         // Run-to-directory settle (#6): the terminal status.json lands last,
         // after every other artifact (result.json included) is on disk.
         await settleArtifacts(exitStatusToRunStatus(exitStatus, budgetTripKind), result);
+        // Run lifecycle notification (#63): fired only here, after the RunRecord
+        // (finalizeRunRecord) and status.json are durable. Metadata only.
+        notifyRunEnd({ runId, agent: agentName, prompt: parsed.prompt, exitStatus, costUsd: cumulativeCost }, options.notify);
         return result;
       } catch (err) {
         // A launch that cannot even start the CLI (#60) is an outage, not a
@@ -967,6 +977,7 @@ export function createDriver(options: DriverOptions): Driver {
           throw new HarnessError(`agent "${agentName}" unavailable: ${launchUnavailable}`, 'UNAVAILABLE');
         }
         await settleArtifacts('error');
+        notifyRunEnd({ runId, agent: agentName, prompt: parsed.prompt, exitStatus: 'error' }, options.notify);
         throw err;
       }
     },
