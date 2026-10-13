@@ -439,6 +439,30 @@ describe("readCodexNativeUsage: requested vs observed (#140) and run completenes
 });
 
 describe("driver: codex run carries observed model + scope into RunResult and the registry", () => {
+  it("replaces the stale 'unknown model \"unknown\"' pricing warning with the observed model", async () => {
+    const sessions = tmp("cdx-driver-sessions-");
+    const stateDir = tmp("cdx-driver-state-");
+    const turn = v7(T0 + 600, "999999000000000011");
+    writeRollout(sessions, PARENT, [meta(PARENT, { source: "exec" }), ctx(turn, "observed-model", "medium"), tur(PARENT, turn, counts(120, 80, 10), counts(120, 80, 10))]);
+    const child = new FakeChild();
+    const adapter = new CodexAdapter({ spawnFn: fakeSpawnFn(child) });
+    const driver = createDriver({ adapters: { codex: adapter }, stateDir, registry: { stateDir }, codexSessionsRoot: sessions });
+    const running = driver.run("codex", { prompt: "hi" });
+    setTimeout(() => {
+      child.writeStdout(
+        jsonl([
+          { type: "thread.started", thread_id: PARENT },
+          { type: "turn.started" },
+          { type: "turn.completed", usage: { input_tokens: 120, cached_input_tokens: 80, output_tokens: 10 } },
+        ]),
+      );
+      child.close(0);
+    }, 10);
+    const result = await running;
+    assert.ok(!result.warnings.some((w) => w.startsWith('pricing: unknown model "unknown"')), result.warnings.join("\n"));
+    assert.ok(result.warnings.some((w) => w.startsWith("pricing: run cost not computed") && w.includes("'observed-model'")), result.warnings.join("\n"));
+  });
+
   it("backfills the observed model, labels requested vs observed, and states parent-only scope", async () => {
     const sessions = tmp("cdx-driver-sessions-");
     const stateDir = tmp("cdx-driver-state-");

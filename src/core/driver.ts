@@ -952,6 +952,17 @@ export function createDriver(options: DriverOptions): Driver {
             usage.model = native.model;
             if (usage.tokens.available) usage.tokens = { ...usage.tokens, ...native.tokens };
             warnings.push(...native.warnings);
+            // The pricer saw the stream's model-less records as "unknown". Once the
+            // rollout names the model, that warning misleads: say what ran instead.
+            // Cost stays as sealed (pricing is not redone after the seal).
+            const observed = native.model.observed ?? [];
+            if (observed.length > 0) {
+              const stale = warnings.findIndex((w) => w.startsWith('pricing: unknown model "unknown"'));
+              if (stale !== -1) {
+                warnings[stale] =
+                  `pricing: run cost not computed: the codex stream names no model (the session file, read after the cost was sealed, shows ${observed.map((m) => `'${m}'`).join(', ')}); \`ach stats\` prices the session by that model`;
+              }
+            }
             // #141: the stream's turn.completed usage is cumulative, never
             // occupancy. The rollout's latest per-call reading is, so it is fed
             // to the meter as native latest-call usage BEFORE the final
