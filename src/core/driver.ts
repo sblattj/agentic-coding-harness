@@ -961,7 +961,8 @@ export function createDriver(options: DriverOptions): Driver {
         if (rec) {
           rec.usage = usage;
           usageFinal = true;
-          if (usage.context?.available === true && usage.context.tokens !== undefined) {
+          // #141: totals.contextTokens is occupancy; aggregate (turn-total) usage is not.
+          if (usage.context?.available === true && usage.context.basis !== 'turn-total' && usage.context.tokens !== undefined) {
             totals.contextTokens = usage.context.tokens;
           }
         }

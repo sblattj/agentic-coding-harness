@@ -330,17 +330,32 @@ const NA_CELL = `<td data-v="" class="num na">n/a</td>`;
 /** DERIVED context occupancy, worded so it can't be mistaken for billed tokens. */
 function contextCell(r: LoadedRun): string {
   const ctx = r.usage?.context;
+  // #141: aggregate (turn-total) usage is cumulative, NOT occupancy. Occupancy
+  // renders n/a and the cumulative count sits beside it, labelled; a stored
+  // percentage (pre-#141 records) is never shown and data-v stays empty so the
+  // column does not sort it among occupancy readings.
+  if (ctx?.basis === "turn-total") {
+    const cum = ctx.cumulativeTokens ?? ctx.tokens;
+    if (cum === undefined) return NA_CELL;
+    return (
+      `<td data-v="" class="num na ctx-aggregate" title="occupancy unavailable: only usage summed over a turn's model calls was reported">` +
+      `ctx n/a <span class="ctx-cum">· cumulative ${fmtInt(cum)} tok</span></td>`
+    );
+  }
   if (ctx?.available !== true || ctx.tokens === undefined) return NA_CELL;
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
-  const title = ctx.windowSource === "assumed" ? " title=\"context window assumed, not reported\"" : "";
-  // #21: a turn-total basis is an upper bound on occupancy.
-  const approx = ctx.basis === "turn-total" ? "≤" : "≈";
-  return `<td data-v="${ctx.tokens}" class="num"${title}>ctx ${approx} ${fmtInt(ctx.tokens)} tok${esc(pct)}</td>`;
+  const title =
+    ctx.windowSource === "assumed"
+      ? " title=\"context window assumed, not reported\""
+      : ctx.windowSource === "reported"
+        ? " title=\"context window reported by the agent\""
+        : "";
+  return `<td data-v="${ctx.tokens}" class="num"${title}>ctx ≈ ${fmtInt(ctx.tokens)} tok${esc(pct)}</td>`;
 }
 
 function renderComparisonTable(runs: LoadedRun[], multiTrial: boolean): string {
   const showCredits = runs.some((r) => r.credits !== null);
-  const showContext = runs.some((r) => r.usage?.context?.available === true);
+  const showContext = runs.some((r) => r.usage?.context?.available === true || r.usage?.context?.basis === "turn-total");
   const showVerify = runs.some((r) => r.verify !== undefined);
   const showSeal = runs.some((r) => r.seal !== undefined);
   // #142: counter completeness / scope, only when some run's verdict states it.

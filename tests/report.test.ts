@@ -311,6 +311,45 @@ describe("report — truthful usage rendering", () => {
     assert.ok(naCells.length >= 6, `expected >=6 n/a cells (5 token + cost), got ${naCells.length}`);
   });
 
+  test("an aggregate-only (turn-total) run renders occupancy n/a beside a labelled cumulative count (#141)", () => {
+    const html = renderReport({
+      rootDir: "/tmp/t",
+      labels: ["t"],
+      runs: [
+        fakeRun({
+          agent: "codex",
+          usage: {
+            tokens: { available: true },
+            credits: { available: false },
+            usd: { available: false },
+            context: { available: true, source: "derived", windowTokens: 1000, windowSource: "assumed", tokens: 3000, cumulativeTokens: 3000, model: "fixture-model", basis: "turn-total", estimated: true },
+          } as never,
+        }),
+        // A pre-#141 record that stored a turn-total percentage renders the same way.
+        fakeRun({
+          agent: "codex-legacy",
+          usage: {
+            tokens: { available: true },
+            credits: { available: false },
+            usd: { available: false },
+            context: { available: true, source: "derived", percentage: 300, windowTokens: 1000, windowSource: "assumed", tokens: 3000, basis: "turn-total", estimated: true },
+          } as never,
+        }),
+      ],
+    }, { version: "0.0.0-test", generatedAt: new Date(0) });
+    assert.ok(html.includes('data-k="context"'), "context column shown");
+    const cells = html.match(/<td[^>]*ctx-aggregate[^>]*>.*?<\/td>/g) ?? [];
+    assert.equal(cells.length, 2, html);
+    for (const c of cells) {
+      assert.match(c, /ctx n\/a/);
+      assert.match(c, /cumulative 3,000 tok/);
+      assert.match(c, /occupancy unavailable/);
+      assert.ok(!c.includes("%"), `no percentage at all (neither 300% nor a clamp to 100%): ${c}`);
+    }
+    assert.ok(!html.includes("300.0%"), "no >100% occupancy");
+    assert.ok(!html.includes("ctx ≤"), "no upper-bound occupancy symbol");
+  });
+
   test("a run WITHOUT usage still renders real numbers and no context column", () => {
     const html = renderReport({
       rootDir: "/tmp/t",

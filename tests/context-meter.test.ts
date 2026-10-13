@@ -196,7 +196,7 @@ describe('context meter', () => {
     assert.match(warnings[0]!, /86\.0%/);
   });
 
-  it('never warns off an upper-bound (turn-total) basis', () => {
+  it('never warns off a cumulative (turn-total) basis', () => {
     const m = createContextMeter({ agent: 'codex', requestedModel: 'gpt-5-codex' })!;
     assert.equal(m.observe(usageEv(rec('unknown', 270_000))), undefined);
     assert.equal(m.snapshot()!.basis, 'turn-total');
@@ -218,6 +218,135 @@ describe('context meter', () => {
     const ctx = m.snapshot()!;
     assert.equal('toolOutputShare' in ctx, false);
     assert.equal('toolOutputTokens' in ctx, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #141: cumulative (aggregate) usage vs latest-call occupancy — synthetic
+// ---------------------------------------------------------------------------
+
+describe('context meter: aggregate vs latest-call occupancy (#141)', () => {
+  const FIXTURE_TABLE = new Map([['fixture-model', 1000]]);
+  const fixtureRec = (input: number, cacheRead: number, extra?: Record<string, unknown>): CanonicalTokenRecord => ({
+    agent: 'codex',
+    model: 'fixture-model',
+    timestamp: 0,
+    inputTokens: input,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: 0,
+    outputTokens: 10,
+    ...(extra !== undefined ? { extra } : {}),
+  });
+
+  it('aggregate-only (the #141 repro): cumulative tokens, NO percentage, never clamped', () => {
+    const m = createContextMeter({ agent: 'codex', requestedModel: 'fixture-model', table: FIXTURE_TABLE })!;
+    assert.equal(m.observe(usageEv(fixtureRec(100, 2_900))), undefined, 'no warning off aggregate usage');
+    const ctx = m.snapshot()!;
+    assert.equal(ctx.basis, 'turn-total');
+    assert.equal(ctx.percentage, undefined, 'aggregate usage is not occupancy: no percentage (was 300)');
+    assert.equal(ctx.tokens, 3_000);
+    assert.equal(ctx.cumulativeTokens, 3_000);
+    assert.equal(ctx.windowTokens, 1_000);
+    assert.equal(ctx.windowSource, 'assumed');
+    assert.ok(UsageAvailabilitySchema.shape.context.safeParse(ctx).success);
+  });
+
+  it('aggregate-only with a small sum still carries no percentage (not just the >100% case)', () => {
+    const m = createContextMeter({ agent: 'codex', requestedModel: 'fixture-model', table: FIXTURE_TABLE })!;
+    m.observe(usageEv(fixtureRec(100, 0)));
+    assert.equal(m.snapshot()!.percentage, undefined);
+  });
+
+  it('native latest-call usage + reported window: last-call occupancy with provenance', () => {
+    const m = createContextMeter({ agent: 'codex', requestedModel: 'fixture-model', table: FIXTURE_TABLE })!;
+    // Turn totals 3000 (cumulative); the latest single call's prompt was 400 of a reported 2000 window.
+    m.observe(usageEv(fixtureRec(100, 2_900, { lastTokenUsage: { inputTokens: 150, cacheReadTokens: 250 }, modelContextWindow: 2_000 })));
+    const ctx = m.snapshot()!;
+    assert.deepEqual(ctx, {
+      available: true,
+      source: 'derived',
+      windowTokens: 2_000,
+      windowSource: 'reported',
+      tokens: 400,
+      model: 'fixture-model',
+      basis: 'last-call',
+      estimated: false,
+      percentage: 20,
+    });
+    assert.ok(UsageAvailabilitySchema.shape.context.safeParse(ctx).success);
+    assert.equal(m.reading()!.basis, 'last-call');
+    assert.equal(m.reading()!.tokens, 400);
+  });
+
+  it('native latest-call without a reported window falls back to the bundled table (assumed)', () => {
+    const m = createContextMeter({ agent: 'codex', requestedModel: 'fixture-model', table: FIXTURE_TABLE })!;
+    m.observe(usageEv(fixtureRec(100, 2_900, { lastTokenUsage: { inputTokens: 500 } })));
+    const ctx = m.snapshot()!;
+    assert.equal(ctx.basis, 'last-call');
+    assert.equal(ctx.windowSource, 'assumed');
+    assert.equal(ctx.estimated, true);
+    assert.equal(ctx.percentage, 50);
+  });
+
+  it('compaction: a later, smaller latest call REPLACES the reading (never a max over the run)', () => {
+    const m = createContextMeter({ agent: 'codex', table: FIXTURE_TABLE })!;
+    const call = (last: number, turnSum: number) =>
+      usageEv(fixtureRec(turnSum, 0, { lastTokenUsage: { inputTokens: last }, modelContextWindow: 10_000 }));
+    m.observe(call(8_000, 30_000));
+    assert.equal(m.snapshot()!.percentage, 80);
+    m.observe(call(1_500, 45_000)); // compacted
+    const ctx = m.snapshot()!;
+    assert.equal(ctx.tokens, 1_500);
+    assert.equal(ctx.percentage, 15);
+    assert.equal(ctx.windowSource, 'reported');
+  });
+
+  it('a later aggregate-only record does not displace the native latest-call reading', () => {
+    const m = createContextMeter({ agent: 'codex', table: FIXTURE_TABLE })!;
+    m.observe(usageEv(fixtureRec(0, 0, { lastTokenUsage: { inputTokens: 700 }, modelContextWindow: 1_000 })));
+    m.observe(usageEv(fixtureRec(5_000, 0)));
+    const ctx = m.snapshot()!;
+    assert.equal(ctx.basis, 'last-call');
+    assert.equal(ctx.tokens, 700);
+    assert.equal(ctx.percentage, 70);
+  });
+
+  it('missing window: unknown model + no reported window is unavailable on either basis', () => {
+    const native = createContextMeter({ agent: 'codex', table: FIXTURE_TABLE })!;
+    native.observe(usageEv({ ...fixtureRec(100, 0, { lastTokenUsage: { inputTokens: 40 } }), model: 'no-such-model' }));
+    const n = native.snapshot()!;
+    assert.equal(n.available, false);
+    assert.equal(n.basis, 'last-call');
+    assert.equal(n.percentage, undefined);
+    assert.equal(n.windowTokens, undefined);
+    const agg = createContextMeter({ agent: 'codex', table: FIXTURE_TABLE })!;
+    agg.observe(usageEv({ ...fixtureRec(100, 2_900), model: 'no-such-model' }));
+    const a = agg.snapshot()!;
+    assert.equal(a.available, false);
+    assert.equal(a.basis, 'turn-total');
+    assert.equal(a.cumulativeTokens, 3_000, 'cumulative count survives an unknown window, labelled');
+    assert.equal(a.percentage, undefined);
+    assert.ok(UsageAvailabilitySchema.shape.context.safeParse(a).success);
+  });
+
+  it('a reported window rescues an otherwise unknown model', () => {
+    const m = createContextMeter({ agent: 'codex', table: FIXTURE_TABLE })!;
+    m.observe(usageEv({ ...fixtureRec(0, 0, { lastTokenUsage: { inputTokens: 250 }, modelContextWindow: 1_000 }), model: 'no-such-model' }));
+    const ctx = m.snapshot()!;
+    assert.equal(ctx.available, true);
+    assert.equal(ctx.percentage, 25);
+    assert.equal(ctx.windowSource, 'reported');
+  });
+
+  it('the overflow warning fires off native latest-call occupancy and names the reported window', () => {
+    const m = createContextMeter({ agent: 'codex', table: FIXTURE_TABLE })!;
+    const w = m.observe(usageEv(fixtureRec(0, 0, { lastTokenUsage: { inputTokens: 900 }, modelContextWindow: 1_000 })));
+    assert.ok(w !== undefined);
+    assert.match(w, /90\.0%/);
+    assert.match(w, /reported window/);
+    // Control: the same 900 as an aggregate never warns.
+    const agg = createContextMeter({ agent: 'codex', requestedModel: 'fixture-model', table: FIXTURE_TABLE })!;
+    assert.equal(agg.observe(usageEv(fixtureRec(900, 0))), undefined);
   });
 });
 
@@ -253,12 +382,16 @@ describe('driver: usage.context for claude and codex fixtures', () => {
     assert.equal(ctx?.available, true);
     assert.equal(ctx?.tokens, 1_200);
     assert.equal(ctx?.windowTokens, 272_000);
-    assert.equal(ctx?.percentage, (1_200 / 272_000) * 100);
+    // #141: turn-total usage is cumulative, not occupancy: no percentage.
+    assert.equal(ctx?.percentage, undefined);
+    assert.equal(ctx?.cumulativeTokens, 1_200);
     assert.equal(ctx?.windowSource, 'assumed');
     assert.equal(ctx?.basis, 'turn-total');
     assert.equal(ctx?.estimated, true);
-    // Tool events exist in the fixture (command_execution) -> share present.
-    assert.equal(typeof ctx?.toolOutputShare, 'number');
+    // Tool events exist in the fixture (command_execution) -> tokens present;
+    // a share of cumulative usage is not an occupancy share, so it is omitted.
+    assert.equal(typeof ctx?.toolOutputTokens, 'number');
+    assert.equal(ctx?.toolOutputShare, undefined);
   });
 
   it('codex with no model anywhere: context unavailable (n/a), never a guessed window', async () => {
@@ -345,7 +478,7 @@ describe('dash ctx column (#21)', () => {
     assert.equal((row.match(/n\/a/g) ?? []).length, 1, row);
   });
 
-  it('an upper-bound (turn-total) estimate is marked ≤', () => {
+  it('a turn-total reading renders occupancy n/a plus a labelled cumulative count, even with a stored pre-#141 percentage', () => {
     const row = rowOf(
       runRec({
         runId: 'ctx-upper',
@@ -356,7 +489,8 @@ describe('dash ctx column (#21)', () => {
         },
       }),
     );
-    assert.ok(row.includes('≤27.2k (10.0%)'), row);
+    assert.ok(row.includes('n/a (cum 27.2k)'), row);
+    assert.ok(!row.includes('10.0%'), row);
   });
 
   it('a record without usage.context stays blank (pre-#21 records unchanged)', () => {
@@ -390,6 +524,7 @@ describe('stats JSON per-run context (#21)', () => {
       model: 'claude-sonnet-4-5',
       contextPercentage: 7.3585,
       contextTokens: 14_717,
+      cumulativeTokens: null,
       windowTokens: 200_000,
       windowSource: 'assumed',
       basis: 'last-call',
@@ -401,6 +536,22 @@ describe('stats JSON per-run context (#21)', () => {
     assert.equal(u.windowTokens, null);
     assert.equal('toolOutputShare' in u, false);
     assert.equal(rows.find((r) => r.runId === 'r-legacy')!.contextPercentage, null);
+  });
+
+  it('a turn-total run: occupancy null, cumulativeTokens set, even for a pre-#141 stored percentage (#141)', () => {
+    const agg = runRec({
+      runId: 'r-agg',
+      agent: 'codex',
+      usage: {
+        ...BASE_USAGE,
+        context: { available: true, source: 'derived', percentage: 300, windowTokens: 1_000, windowSource: 'assumed', tokens: 3_000, basis: 'turn-total', estimated: true },
+      },
+    });
+    const [row] = runContextRows([agg]);
+    assert.equal(row!.contextPercentage, null);
+    assert.equal(row!.contextTokens, null);
+    assert.equal(row!.cumulativeTokens, 3_000);
+    assert.equal(row!.basis, 'turn-total');
   });
 
   it('filters by agent and since', () => {

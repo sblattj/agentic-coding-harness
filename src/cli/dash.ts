@@ -62,11 +62,16 @@ function usdUnavailable(rec: RunRecord): boolean {
 function fmtContext(rec: RunRecord): string {
   const ctx = rec.usage?.context;
   if (ctx === undefined) return ""; // pre-#21 record: unchanged
+  // #141: aggregate (turn-total) usage is cumulative, not occupancy: n/a plus
+  // the labelled cumulative count; a stored percentage is never shown.
+  if (ctx.basis === "turn-total") {
+    const cum = ctx.cumulativeTokens ?? ctx.tokens;
+    return cum === undefined ? "n/a" : `n/a (cum ${compact(cum)})`;
+  }
   // #21: a run whose occupancy is unknowable (e.g. unknown model window) is n/a, never guessed.
   if (ctx.available !== true || ctx.tokens === undefined) return "n/a";
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
-  // An upper-bound (turn-total) estimate is marked "≤".
-  return `${PROVENANCE_MARKER.estimated}${ctx.basis === "turn-total" ? "≤" : ""}${compact(ctx.tokens)}${pct}`;
+  return `${PROVENANCE_MARKER.estimated}${compact(ctx.tokens)}${pct}`;
 }
 
 /**

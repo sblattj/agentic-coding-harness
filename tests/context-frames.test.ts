@@ -175,14 +175,35 @@ describe('context frame annotator', () => {
     assert.equal(frames[1]!.seq, 2);
   });
 
-  it('codex: a turn-total usage is fresh with basis turn-total (an upper bound)', () => {
+  it('codex: a turn-total usage is fresh, cumulative, and carries no window/pct (#141)', () => {
+    assert.equal(typeof lookupContextWindow('gpt-5-codex'), 'number', 'control: gpt-5-codex is in the bundled table');
     const a = createFrameAnnotator({ agent: 'codex', requestedModel: 'gpt-5-codex' })!;
     const f = a.annotate({ type: 'usage', agent: 'codex', usage: usage('unknown', 30_000) } as unknown as AgentEvent)!;
     assert.equal(f.basis, 'turn-total');
     assert.equal(f.fresh, true);
     assert.equal(f.tokens, 30_000);
-    assert.equal(typeof f.window, 'number', 'gpt-5-codex is in the bundled table');
-    assert.equal(f.window, lookupContextWindow('gpt-5-codex'));
+    assert.equal(f.window, undefined, 'cumulative usage is not occupancy: no window');
+    assert.equal(f.pct, undefined);
+    assert.equal(f.warnAt, undefined);
+  });
+
+  it('codex: native latest-call usage + reported window gives a last-call frame; compaction lowers it (#141)', () => {
+    const a = createFrameAnnotator({ agent: 'codex' })!;
+    const ev = (lastInput: number, turnInput: number) =>
+      ({
+        type: 'usage',
+        agent: 'codex',
+        usage: { ...usage('unknown', turnInput), extra: { lastTokenUsage: { inputTokens: lastInput }, modelContextWindow: 100_000 } },
+      }) as unknown as AgentEvent;
+    const f1 = a.annotate(ev(60_000, 500_000))!;
+    assert.equal(f1.basis, 'last-call');
+    assert.equal(f1.tokens, 60_000);
+    assert.equal(f1.window, 100_000);
+    assert.equal(f1.pct, 60);
+    const f2 = a.annotate(ev(20_000, 900_000))!;
+    assert.equal(f2.tokens, 20_000);
+    assert.equal(f2.pct, 20);
+    assert.equal(f2.delta, -40_000);
   });
 
   it('unmetered agents get no annotator (no field on any event)', () => {

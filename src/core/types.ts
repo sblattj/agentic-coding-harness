@@ -854,15 +854,22 @@ export interface UsageAvailability {
   /**
    * Context-window occupancy — DERIVED, never billed tokens. `tokens` here is
    * round(percentage/100 * windowTokens); `windowSource:'assumed'` marks a
-   * window taken from the fallback table rather than kiro's session store.
+   * window taken from the fallback table rather than kiro's session store,
+   * `'reported'` a window the provider stated for this run (#141).
    */
   context?: {
     available: boolean;
     source: "derived";
     percentage?: number;
     windowTokens?: number;
-    windowSource?: "session-store" | "derived" | "assumed";
+    windowSource?: "session-store" | "derived" | "assumed" | "reported";
     tokens?: number;
+    /**
+     * Issue #141: input + cache tokens of the latest AGGREGATE (turn-total)
+     * usage record — cumulative over a turn's calls, NOT occupancy. Present
+     * only on a turn-total reading (equals `tokens` there).
+     */
+    cumulativeTokens?: number;
     /** FIRST context reading of the run (v2: first metadata frame; v3: first nonzero context_usage). `percentage`/`tokens` stay the END value. */
     startPercentage?: number;
     startTokens?: number;
@@ -872,15 +879,17 @@ export interface UsageAvailability {
     /**
      * Issue #21 (non-kiro agents, src/core/context-meter.ts): what `tokens`
      * measures. 'last-call' = the prompt of the latest model call (occupancy);
-     * 'turn-total' = a usage record summed over a turn's calls — an UPPER
-     * BOUND on occupancy, exact only when the turn made one call.
+     * 'turn-total' = a usage record summed over a turn's calls — CUMULATIVE
+     * tokens, not occupancy (#141): `tokens` is that cumulative count and
+     * `percentage` is absent. Records written before #141 may still carry a
+     * turn-total percentage; renderers ignore it.
      */
     basis?: "last-call" | "turn-total";
-    /** True when computed by the context meter from usage + the bundled window table. */
+    /** True when computed by the context meter from usage + the bundled window table (false with a reported window). */
     estimated?: boolean;
     /** Estimated tokens of tool output seen in the stream (chars/4). Absent when no tool events. */
     toolOutputTokens?: number;
-    /** toolOutputTokens / tokens, capped at 1. Absent (never 0) when no tool events. */
+    /** toolOutputTokens / tokens, capped at 1 (a share of occupancy, last-call only). Absent (never 0) when no tool events. */
     toolOutputShare?: number;
   };
   /**
@@ -958,8 +967,9 @@ export const UsageAvailabilitySchema = z.object({
       source: z.literal("derived"),
       percentage: z.number().optional(),
       windowTokens: z.number().optional(),
-      windowSource: z.enum(["session-store", "derived", "assumed"]).optional(),
+      windowSource: z.enum(["session-store", "derived", "assumed", "reported"]).optional(),
       tokens: z.number().optional(),
+      cumulativeTokens: z.number().optional(),
       startPercentage: z.number().optional(),
       startTokens: z.number().optional(),
       breakdown: z.record(z.string(), z.number()).optional(),

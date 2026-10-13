@@ -536,6 +536,34 @@ describe("run summary — truthful usage", () => {
     assert.match(summary, /context {4}ctx ~= 20,000 tok \(10\.0%\) \(assumed window\)/);
   });
 
+  test("a turn-total context is cumulative: occupancy n/a, no percentage (#141)", () => {
+    const summary = formatSummary({
+      agent: "codex",
+      sessionId: "s",
+      tokens,
+      costUsd: 0,
+      durationMs: 1,
+      exitStatus: "success",
+      usage: {
+        tokens: { available: true },
+        credits: { available: false },
+        usd: { available: false },
+        context: {
+          available: true,
+          source: "derived",
+          percentage: 300,
+          windowTokens: 1000,
+          windowSource: "assumed",
+          tokens: 3000,
+          basis: "turn-total",
+        },
+      },
+    });
+    assert.match(summary, /context {4}ctx n\/a \(cumulative 3,000 tok, not occupancy\)\n/);
+    assert.ok(!summary.includes("300.0%"), summary);
+    assert.ok(!summary.includes("assumed window"), summary);
+  });
+
   test("shows the start context reading next to the end reading (#137)", () => {
     const summary = formatSummary({
       agent: "kiro",
