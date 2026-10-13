@@ -137,6 +137,16 @@ describe("smoke runner: friction classification", () => {
     assert.equal(f[0]?.kind, "failed");
     assert.equal(f[0]?.evidence, "boom happened");
   });
+  it("an agent that refuses to run outside a git repository is an unstated assumption", () => {
+    const f = classifyFriction(
+      "[17:33:43] error   codex exited with code 1: Not inside a trusted directory and --skip-git-repo-check was not specified.\nexit       unavailable",
+      1,
+      step("ach run --agent codex \"fix the failing test\""),
+    );
+    assert.deepEqual(f.map((x) => x.kind), ["unstated-assumption"]);
+    assert.match(f[0]!.detail, /git repository/);
+  });
+
   it("an installed but signed-out CLI is auth-needs-human, not a bare failure", () => {
     const out = [
       "[17:29:49] error   claude: not logged in. Run `claude /login`, or set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY.",

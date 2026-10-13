@@ -145,6 +145,8 @@ const RE_PROMPT = /\(y\/N\)|\[Y\/n\]|Password:|Press (?:Enter|any key)|\? .+[:?]
 const RE_KEYCHAIN = /keychain cannot be found|SecKeychain|errSec/i;
 /** A CLI that ran but has no login: a fresh reader has to sign in first (`claude`: "Not logged in · Please run /login"). */
 const RE_NOT_SIGNED_IN = /\bnot logged in\b|please run \/login|\bnot authenticated\b|\b(?:log|sign)[ -]?in (?:is )?required\b/i;
+/** The step needs a git repository as its cwd (`codex`: "Not inside a trusted directory"); the sandbox workdir is not one. */
+const RE_NOT_A_REPO = /not inside a trusted directory|not a git repository/i;
 const RE_ASSUMPTION = /ENOENT\b.*\.(?:json|ya?ml|env)\b|missing (?:env|environment variable)|is not set/i;
 
 /** Classify a step's output: friction rows plus the prompt and denial lines. */
@@ -201,6 +203,9 @@ export function scanOutput(output: string, exitCode: number | null, step: SmokeS
     }
     if (RE_NOT_SIGNED_IN.test(line)) {
       add({ kind: 'auth-needs-human', detail: 'The CLI is installed but not signed in; the reader has to sign in before this step, and the message should say so.', evidence: trimEvidence(line) });
+    }
+    if (RE_NOT_A_REPO.test(line)) {
+      add({ kind: 'unstated-assumption', detail: 'The step has to run inside a git repository and the smoke sandbox is not one; the message must say where to run it.', evidence: trimEvidence(line) });
     }
     if (RE_ASSUMPTION.test(line)) {
       add({ kind: 'unstated-assumption', detail: 'The step needed a file or variable the message never set up.', evidence: trimEvidence(line) });
