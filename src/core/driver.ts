@@ -8,7 +8,7 @@ import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { ChainWriter, canonicalTotals } from './hash-chain.ts';
 import { computeUsageAvailability, liveUsageAvailability } from './usage-availability.js';
-import { readCodexNativeUsage, requestedCodexEffort } from './codex-native.ts';
+import { codexSessionsRoot, readCodexNativeUsage, requestedCodexEffort } from './codex-native.ts';
 import { createContextMeter } from './context-meter.js';
 import { classifyLaunchError, classifyUnavailable } from './availability.ts';
 import { gitBranchInfo } from './git-branch.ts';
@@ -29,7 +29,7 @@ import { KiroIdeAdapter } from '../adapters/kiro-ide.js';
 import { CopilotAdapter } from '../adapters/copilot.js';
 import { CursorAdapter } from '../adapters/cursor.js';
 import { NullAdapter } from '../adapters/null.js';
-import { takeOnOutput } from '../adapters/shared.js';
+import { scrubEnvVars, takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
 import type { BudgetAlertEvent } from './types.js';
 import { deriveLatency, hasLatency } from './latency.ts';
@@ -936,7 +936,11 @@ export function createDriver(options: DriverOptions): Driver {
               tokens,
               ...(parsed.model !== undefined ? { requestedModel: parsed.model } : {}),
               ...(requestedCodexEffort(parsed.extraArgs) !== undefined ? { requestedEffort: requestedCodexEffort(parsed.extraArgs) } : {}),
-              ...(options.codexSessionsRoot !== undefined ? { sessionsRoot: options.codexSessionsRoot } : {}),
+              // The root the CHILD wrote to: its env is process.env + the run's
+              // env overrides, minus scrubEnv (src/adapters/shared.ts runJsonlCli).
+              sessionsRoot:
+                options.codexSessionsRoot ??
+                codexSessionsRoot(scrubEnvVars({ ...process.env, ...(parsed.env ?? {}) }, parsed.sandbox?.scrubEnv)),
             });
             usage.model = native.model;
             if (usage.tokens.available) usage.tokens = { ...usage.tokens, ...native.tokens };

@@ -12,7 +12,7 @@ import {
   reconcileCodexSessions,
   type CodexRecordMeta,
 } from "../src/monitors/transcripts.ts";
-import { readCodexNativeUsage, requestedCodexEffort } from "../src/core/codex-native.ts";
+import { codexSessionsRoot, readCodexNativeUsage, requestedCodexEffort } from "../src/core/codex-native.ts";
 import { computeUsageAvailability, liveUsageAvailability } from "../src/core/usage-availability.ts";
 import { modelProvenanceText, usageScopeBadge } from "../src/core/usage-scope.ts";
 import { formatSummary } from "../src/cli/lib.ts";
@@ -280,6 +280,26 @@ describe("codex parent/child sessions (#142)", () => {
     assert.equal(s.sessionId, id);
   });
 
+  it("a replayed legacy prefix does not stop a modern-only fork from counting its own usage", async () => {
+    const dir = tmp("cdx142-fork-fmt-");
+    const forkCreated = T0 + 700_000;
+    const oldTurn = v7(T0 + 1000, "777777000000000014");
+    const ownTurn = v7(forkCreated + 5000, "888888000000000015");
+    const id = v7(forkCreated, "676767000000000016");
+    const path = writeRollout(dir, id, [
+      meta(id, { forked_from_id: PARENT }, forkCreated),
+      meta(PARENT),
+      taskStarted(oldTurn, forkCreated),
+      tur(PARENT, oldTurn, counts(5000, 4000, 100), counts(5000, 4000, 100), forkCreated),
+      tc(counts(5000, 4000, 100), counts(5000, 4000, 100), 1000, forkCreated),
+      taskStarted(ownTurn, forkCreated + 5000),
+      ctx(ownTurn, "fork-model", "low", forkCreated + 5000),
+      tc(counts(5300, 4100, 110), counts(300, 100, 10), 1000, forkCreated + 6000),
+    ]);
+    const s = await parseCodexRolloutSession(path);
+    assert.deepEqual(s.records.map((r) => [r.input, r.cacheRead, r.output, codexMeta(r).format]), [[200, 100, 10, "token_count"]]);
+  });
+
   it("two child sessions: the tree is child-inclusive and complete, each session counted once", async () => {
     const dir = tmp("cdx142-two-");
     const paths = [
@@ -405,6 +425,11 @@ describe("readCodexNativeUsage: requested vs observed (#140) and run completenes
     assert.equal(out.tokens.complete, false);
     assert.match(out.warnings[0]!, /'asked-model' is the REQUESTED model, not verified/);
     assert.equal(modelProvenanceText(out.model), "requested asked-model (unverified: not observed)");
+  });
+
+  it("codexSessionsRoot follows the child's env: CODEX_HOME, else HOME/.codex", () => {
+    assert.equal(codexSessionsRoot({ CODEX_HOME: "/x/codex", HOME: "/h" }), "/x/codex/sessions");
+    assert.equal(codexSessionsRoot({ HOME: "/sandbox/home" }), "/sandbox/home/.codex/sessions");
   });
 
   it("requestedCodexEffort reads -c model_reasoning_effort=… (last wins)", () => {

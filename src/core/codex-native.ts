@@ -24,10 +24,17 @@ import {
 } from "../monitors/transcripts.ts";
 import type { CanonicalTokenRecord, UsageAvailability } from "./types.ts";
 
-/** Default codex sessions root: $CODEX_HOME/sessions, else ~/.codex/sessions. */
+/**
+ * Codex sessions root as the codex CHILD resolves it: $CODEX_HOME/sessions,
+ * else $HOME/.codex/sessions. Pass the env the child actually ran with (the
+ * run's env overrides, after scrubEnv) so a run under a different HOME or
+ * CODEX_HOME is looked up where its rollout was written.
+ */
 export function codexSessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.CODEX_HOME;
-  return home !== undefined && home !== "" ? join(home, "sessions") : join(homedir(), ".codex", "sessions");
+  const codexHome = env.CODEX_HOME;
+  if (codexHome !== undefined && codexHome !== "") return join(codexHome, "sessions");
+  const home = env.HOME !== undefined && env.HOME !== "" ? env.HOME : homedir();
+  return join(home, ".codex", "sessions");
 }
 
 const ROLLOUT_ID_RE = /-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$/;

@@ -391,6 +391,52 @@ function childIdsOf(payload: unknown, ownPath: string): string[] {
 }
 
 /**
+ * Which lines of a rollout are replayed ancestor history (true) rather than
+ * this session's own (false). The first session_meta is the session's own;
+ * any later one is replayed. With `subagent_history_start_ordinal` N the N
+ * lines after the session's meta are the replay; a fork without it replays
+ * until the first task_started whose UUIDv7 turn id postdates the session's
+ * creation (an undatable turn id ends the replay early: under-claiming the
+ * parent's history beats silently counting it twice).
+ */
+function codexReplayFlags(lines: unknown[]): boolean[] {
+  const flags: boolean[] = [];
+  let metaSeen = false;
+  let throughIndex = -1;
+  let untilOwnTurnAfterMs: number | undefined;
+  lines.forEach((raw, index) => {
+    const line = CodexLineSchema.safeParse(raw);
+    if (!line.success) {
+      flags.push(index <= throughIndex || untilOwnTurnAfterMs !== undefined);
+      return;
+    }
+    const { type, timestamp, payload } = line.data;
+    const p = (payload !== null && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+    if (type === "session_meta") {
+      flags.push(metaSeen);
+      if (metaSeen) return;
+      const meta = CodexSessionMetaPayloadSchema.safeParse(payload);
+      if (!meta.success) return;
+      metaSeen = true;
+      const m = meta.data;
+      if (typeof m.subagent_history_start_ordinal === "number") {
+        throughIndex = index + m.subagent_history_start_ordinal;
+      } else if (m.forked_from_id) {
+        const created = m.timestamp ? Date.parse(m.timestamp) : timestamp ? Date.parse(timestamp) : NaN;
+        untilOwnTurnAfterMs = Number.isFinite(created) ? created : Number.NEGATIVE_INFINITY;
+      }
+      return;
+    }
+    if (untilOwnTurnAfterMs !== undefined && type === "event_msg" && p.type === "task_started") {
+      const turnMs = uuidV7Ms(typeof p.turn_id === "string" ? p.turn_id : undefined);
+      if (turnMs === undefined || turnMs >= untilOwnTurnAfterMs) untilOwnTurnAfterMs = undefined;
+    }
+    flags.push(index <= throughIndex || untilOwnTurnAfterMs !== undefined);
+  });
+  return flags;
+}
+
+/**
  * Parse one Codex rollout (.jsonl) into a session view: canonical records plus
  * parent/child relationships and observed model/effort (issues #140, #142).
  *
@@ -442,9 +488,6 @@ export async function parseCodexRolloutSession(path: string): Promise<CodexRollo
   let ownPath = "/root";
   let currentTurn: string | undefined;
   let current: { model?: string; effort?: string } = {};
-  // Replay state (child/fork sessions only).
-  let replayThroughIndex = -1;
-  let replayUntilOwnTurnAfterMs: number | undefined;
   let index = -1;
 
   const metaOf = (): Partial<CodexRecordMeta> => ({
@@ -455,9 +498,11 @@ export async function parseCodexRolloutSession(path: string): Promise<CodexRollo
 
   const lines: unknown[] = [];
   for await (const raw of readJsonlLines(path)) lines.push(raw);
-  // Format preference (see above): legacy counts whenever the file has it.
+  const replayedAt = codexReplayFlags(lines);
+  // Format preference (see above): legacy counts whenever the session's OWN
+  // lines have it (a replayed legacy prefix says nothing about this session).
   const countedFormat: CodexRecordMeta["format"] = lines.some(
-    (l) => l !== null && typeof l === "object" && (l as { type?: unknown }).type === "token_usage_record",
+    (l, i) => !replayedAt[i] && l !== null && typeof l === "object" && (l as { type?: unknown }).type === "token_usage_record",
   )
     ? "token_usage_record"
     : "token_count";
@@ -489,24 +534,10 @@ export async function parseCodexRolloutSession(path: string): Promise<CodexRollo
       if (parent) session.parentSessionId = parent;
       if (spawn?.success && typeof spawn.data.depth === "number") session.depth = spawn.data.depth;
       if (m.forked_from_id) session.forkedFromId = m.forked_from_id;
-      if (typeof m.subagent_history_start_ordinal === "number") {
-        replayThroughIndex = index + m.subagent_history_start_ordinal;
-      } else if (m.forked_from_id) {
-        const created = m.timestamp ? Date.parse(m.timestamp) : timestamp ? Date.parse(timestamp) : NaN;
-        replayUntilOwnTurnAfterMs = Number.isFinite(created) ? created : undefined;
-        if (replayUntilOwnTurnAfterMs === undefined) replayUntilOwnTurnAfterMs = Number.NEGATIVE_INFINITY;
-      }
       continue;
     }
 
-    // ---- replay boundary
-    if (replayUntilOwnTurnAfterMs !== undefined && type === "event_msg" && p.type === "task_started") {
-      const turnMs = uuidV7Ms(typeof p.turn_id === "string" ? p.turn_id : undefined);
-      // An id we cannot date ends the replay: under-claiming the parent's
-      // history is safer than silently counting it twice.
-      if (turnMs === undefined || turnMs >= replayUntilOwnTurnAfterMs) replayUntilOwnTurnAfterMs = undefined;
-    }
-    const replayed = index <= replayThroughIndex || replayUntilOwnTurnAfterMs !== undefined;
+    const replayed = replayedAt[index] === true;
     if (replayed) session.replayedLines += 1;
 
     // ---- observed model / effort (own turns only)
