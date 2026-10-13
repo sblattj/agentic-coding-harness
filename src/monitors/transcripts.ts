@@ -296,10 +296,19 @@ export interface CodexRecordMeta {
   effort?: string;
   /** Latest model call's tokens (token_count `last_token_usage` or legacy `usage`). */
   lastCall?: CodexCallTokens;
-  /** Context window the CLI stated for that call (token_count `model_context_window`). */
+  /**
+   * Context window the CLI stated for that call: token_count
+   * `info.model_context_window`, else the turn's task_started
+   * `model_context_window`.
+   */
   contextWindow?: number;
-  /** Provenance of contextWindow: stated natively by the rollout's token_count line. */
-  contextWindowSource?: "token_count";
+  /**
+   * Provenance of contextWindow, both stated natively by the rollout:
+   * `token_count` (the usage line itself) or `task_started` (the turn's start
+   * event, a fallback when the usage line omits it). session_meta's
+   * `context_window` is NOT a size (it carries a `window_id`), so it is never used.
+   */
+  contextWindowSource?: "token_count" | "task_started";
   /** Parent thread of a spawned child session (session_meta parent_thread_id / source.subagent.thread_spawn). */
   parentSessionId?: string;
   /** Spawn depth of a child session (source.subagent.thread_spawn.depth). */
@@ -488,6 +497,8 @@ export async function parseCodexRolloutSession(path: string): Promise<CodexRollo
   let ownPath = "/root";
   let currentTurn: string | undefined;
   let current: { model?: string; effort?: string } = {};
+  // Window the current own turn's task_started stated (fallback for token_count lines without one).
+  let taskWindow: number | undefined;
   let index = -1;
 
   const metaOf = (): Partial<CodexRecordMeta> => ({
@@ -561,6 +572,10 @@ export async function parseCodexRolloutSession(path: string): Promise<CodexRollo
 
     if (type === "event_msg" && !replayed) {
       for (const id of childIdsOf(payload, ownPath)) if (id !== session.sessionId) children.add(id);
+      if (p.type === "task_started") {
+        const w = p.model_context_window;
+        taskWindow = typeof w === "number" && Number.isFinite(w) && w > 0 ? w : undefined;
+      }
     }
 
     // ---- usage snapshots (both formats feed one cumulative tracker per thread)
@@ -596,7 +611,11 @@ export async function parseCodexRolloutSession(path: string): Promise<CodexRollo
 
     const callMeta: Partial<CodexRecordMeta> = {
       ...(call ? { lastCall: callTokensOf(call) } : {}),
-      ...(window !== undefined ? { contextWindow: window, contextWindowSource: "token_count" as const } : {}),
+      ...(window !== undefined
+        ? { contextWindow: window, contextWindowSource: "token_count" as const }
+        : taskWindow !== undefined
+          ? { contextWindow: taskWindow, contextWindowSource: "task_started" as const }
+          : {}),
     };
     const counts = format === countedFormat;
     const prev = counts ? lastByThread.get(threadKey) : undefined;
@@ -613,9 +632,13 @@ export async function parseCodexRolloutSession(path: string): Promise<CodexRollo
       const meta = last?.extra?.codex as CodexRecordMeta | undefined;
       if (meta) {
         if (meta.lastCall === undefined && callMeta.lastCall) meta.lastCall = callMeta.lastCall;
-        if (meta.contextWindow === undefined && callMeta.contextWindow !== undefined) {
+        // A window stated on the usage line beats the task_started fallback.
+        if (
+          callMeta.contextWindow !== undefined &&
+          (meta.contextWindow === undefined || (meta.contextWindowSource === "task_started" && callMeta.contextWindowSource === "token_count"))
+        ) {
           meta.contextWindow = callMeta.contextWindow;
-          meta.contextWindowSource = "token_count";
+          meta.contextWindowSource = callMeta.contextWindowSource!;
         }
         if (meta.turnId === undefined && turnId !== undefined) meta.turnId = turnId;
       }

@@ -17,7 +17,7 @@ import { runTotalsProvenance } from './provenance.ts';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
 import { readKiroSessionStore, sliceKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
-import type { AdapterExit, AdapterProfileCheck, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec } from './types.js';
+import type { AdapterExit, AdapterProfileCheck, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec, UsageEvent } from './types.js';
 import { HarnessError } from './types.js';
 import { assertInsideWorkspace } from './workspace.js';
 import { ClaudeCodeAdapter } from '../adapters/claude.js';
@@ -952,6 +952,39 @@ export function createDriver(options: DriverOptions): Driver {
             usage.model = native.model;
             if (usage.tokens.available) usage.tokens = { ...usage.tokens, ...native.tokens };
             warnings.push(...native.warnings);
+            // #141: the stream's turn.completed usage is cumulative, never
+            // occupancy. The rollout's latest per-call reading is, so it is fed
+            // to the meter as native latest-call usage BEFORE the final
+            // snapshot below seals usage.context / totals.contextTokens. It is
+            // NOT appended to `events`/the transcript: tokens, cost and the
+            // hash chain stay exactly what the stream reported.
+            const latest = native.latestCall;
+            if (latest !== undefined && contextMeter) {
+              const call = latest.lastCall;
+              const observedModel = latest.model ?? native.model.observed?.at(-1) ?? parsed.model ?? 'unknown';
+              const at = latest.timestamp ?? Date.now();
+              const nativeUsage: UsageEvent = {
+                type: 'usage',
+                timestamp: at,
+                usage: {
+                  agent: 'codex',
+                  model: observedModel,
+                  timestamp: at,
+                  inputTokens: call.input,
+                  cacheReadTokens: call.cacheRead,
+                  cacheWriteTokens: call.cacheWrite,
+                  outputTokens: call.output,
+                  extra: {
+                    source: 'codex-rollout',
+                    lastTokenUsage: { inputTokens: call.input, cacheReadTokens: call.cacheRead, cacheWriteTokens: call.cacheWrite },
+                    ...(latest.contextWindow !== undefined ? { modelContextWindow: latest.contextWindow } : {}),
+                    ...(latest.contextWindowSource !== undefined ? { contextWindowSource: latest.contextWindowSource } : {}),
+                  },
+                },
+              };
+              const overflow = contextMeter.observe(nativeUsage);
+              if (overflow !== undefined) warnings.push(overflow);
+            }
           } catch (err) {
             warnings.push(`codex: native rollout read failed (${err instanceof Error ? err.message : String(err)})`);
           }

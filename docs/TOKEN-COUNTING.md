@@ -82,6 +82,10 @@ context-compaction call is in the legacy total only, so the modern total lags af
 reader counts ONE format per file (legacy when present, else modern), deltas consecutive
 snapshots (Trap 2), skips repeated snapshots, and lets the other format only enrich the latest
 record (`extra.codex.lastCall`, `extra.codex.contextWindow`, `contextWindowSource:'token_count'`).
+When the token_count line states no window, the own turn's `event_msg`/`task_started`
+`model_context_window` fills it (`contextWindowSource:'task_started'`); a window stated on the
+usage line wins. `session_meta.context_window` is an identifier object (`window_id`), not a
+size, and is never read as a window.
 `turn_context` gives the observed `model` and `effort` per turn (`extra.codex.modelSource:
 'turn_context'`). A spawned or forked child first replays its parent's history (session_meta,
 turn_context, and for a fork the cumulative snapshots): the first `session_meta` is the session,
@@ -410,6 +414,21 @@ uncached slice) and `modelContextWindow: number`. The meter then reports
 'reported'`. Each latest-call reading **replaces** the previous one, so a
 smaller call after compaction lowers the reading; the meter never takes a max
 over the run. A reported window persists for the rest of the run.
+
+**Codex runs (`ach run --agent codex`).** The `codex exec --json` stream only
+reports turn totals, so on its own a codex run is `turn-total`. After the run
+the driver reads the thread's rollout (above) and feeds the newest parent
+record of THIS run's turns that has `extra.codex.lastCall` to the meter as
+native latest-call usage (`inputTokens = lastCall.input`, uncached; cache read
+and write alongside; `modelContextWindow = extra.codex.contextWindow` when
+stated), before the final snapshot is sealed. So the run summary, registry
+record, report, `ach stats --json` context rows and `totals.contextTokens` show
+a `last-call` reading with a reported window when the rollout has one; a
+rollout without per-call usage leaves the run `turn-total` (n/a, cumulative).
+Child sessions never contribute (their context is their own), and the reading
+is not written to the transcript, so tokens, cost and the hash chain are the
+stream's. The web feed's per-frame gauge runs over the transcript only, so its
+codex frames stay turn-total; the run-detail verdict shows the last-call reading.
 
 - **Unknown model and no reported window → `available: false`** (dash/report
   render `n/a`); the meter never guesses a window. Codex's stream names no model, so a codex run

@@ -19,6 +19,8 @@ import { basename, join } from "node:path";
 import {
   parseCodexRolloutSession,
   walkFiles,
+  type CodexCallTokens,
+  type CodexRecordMeta,
   type CodexRolloutSession,
   type CodexTokenTotals,
 } from "../monitors/transcripts.ts";
@@ -80,6 +82,45 @@ export interface CodexNativeResult {
   /** Fields merged into usage.tokens (coverage/completeness, #142). */
   tokens: Pick<UsageAvailability["tokens"], "coverage" | "complete" | "childSessionIds" | "missingChildSessionIds" | "incompleteReasons" | "childInclusive">;
   warnings: string[];
+  /**
+   * The run's LATEST native per-call reading (#141): the newest parent-session
+   * record of this run's turns that carries `extra.codex.lastCall`, with the
+   * window the rollout stated for it. Child sessions never contribute (their
+   * context is their own). Absent when the rollout has no per-call usage, so
+   * the run stays on its turn-total (cumulative) reading.
+   */
+  latestCall?: {
+    lastCall: CodexCallTokens;
+    model?: string;
+    timestamp?: number;
+    contextWindow?: number;
+    contextWindowSource?: CodexRecordMeta["contextWindowSource"];
+  };
+}
+
+/**
+ * Newest record among `records` (in file order) whose codex meta carries a
+ * per-call reading, restricted to `turnIds` when given.
+ */
+export function latestCodexCall(
+  records: CodexRolloutSession["records"],
+  turnIds?: ReadonlySet<string>,
+): CodexNativeResult["latestCall"] {
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i]!;
+    const meta = r.extra?.codex as CodexRecordMeta | undefined;
+    if (meta?.lastCall === undefined) continue;
+    if (turnIds !== undefined && (meta.turnId === undefined || !turnIds.has(meta.turnId))) continue;
+    const ts = typeof r.timestamp === "string" ? Date.parse(r.timestamp) : NaN;
+    return {
+      lastCall: meta.lastCall,
+      ...(typeof r.model === "string" && r.model !== "" ? { model: r.model } : {}),
+      ...(Number.isFinite(ts) ? { timestamp: ts } : {}),
+      ...(meta.contextWindow !== undefined ? { contextWindow: meta.contextWindow } : {}),
+      ...(meta.contextWindowSource !== undefined ? { contextWindowSource: meta.contextWindowSource } : {}),
+    };
+  }
+  return undefined;
 }
 
 function totalsOf(records: Iterable<{ input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number }>): CodexTokenTotals {
@@ -231,5 +272,6 @@ export async function readCodexNativeUsage(input: CodexNativeInput): Promise<Cod
         }
       : {}),
   };
-  return { model, tokens, warnings };
+  const latestCall = latestCodexCall(session.records, runTurnIds);
+  return { model, tokens, warnings, ...(latestCall !== undefined ? { latestCall } : {}) };
 }
