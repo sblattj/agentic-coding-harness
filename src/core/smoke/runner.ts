@@ -33,6 +33,7 @@
 //     tokens = sum over RunResult.tokens (CanonicalTokenRecord[]) of
 //     input + output + cacheRead + cacheWrite.
 
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -44,6 +45,32 @@ export interface RunnerStepRecord extends StepRecord {
   auth?: AuthOutcome;
   /** The step deliberately backgrounded processes; they are reaped at teardown. */
   backgroundLeft?: boolean;
+  /** Loopback http(s) URLs the step opened (never auth requests). */
+  localUrls?: string[];
+  /** The step started a long-running local server, left running until teardown. */
+  service?: { listening: string[] };
+}
+
+/** True for http(s) URLs whose host is loopback (127.0.0.1, localhost, [::1], 0.0.0.0). */
+export function isLoopbackUrl(u: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(u);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  const h = url.hostname.toLowerCase();
+  return h === 'localhost' || h === '[::1]' || h === '::1' || h === '0.0.0.0' || /^127\.\d+\.\d+\.\d+$/.test(h);
+}
+
+/** Listening TCP sockets ("host:port") held by a process group (lsof; [] when none or unavailable). */
+export function listeningSockets(pgid: number): string[] {
+  const r = spawnSync('/usr/sbin/lsof', ['-nP', '-a', '-iTCP', '-sTCP:LISTEN', '-g', String(pgid), '-Fn'], { encoding: 'utf8', timeout: 5000 });
+  if (r.status !== 0 && !r.stdout) return [];
+  const out = new Set<string>();
+  for (const l of (r.stdout ?? '').split('\n')) if (l.startsWith('n')) out.add(l.slice(1));
+  return [...out];
 }
 
 export type DetectAuth = (text: string) => Omit<AuthRequest, 'stepIndex' | 'account'> | null;
@@ -51,6 +78,8 @@ export type DetectAuth = (text: string) => Omit<AuthRequest, 'stepIndex' | 'acco
 export interface RunStepOptions {
   /** Default 300000; the step's `timeout=` attr (seconds) overrides. */
   timeoutMs?: number;
+  /** A shell step still running after this long that holds a listening TCP socket counts as a started service (default 8000). */
+  serviceGraceMs?: number;
   /** Fed to stdin instead of /dev/null. */
   input?: string;
   detectAuth?: DetectAuth;
@@ -69,6 +98,8 @@ export const DEFAULT_STEP_TIMEOUT_MS = 300_000;
 const TAIL_BYTES = 4096;
 const SCAN_CAP = 256 * 1024;
 const OPEN_POLL_MS = 150;
+export const DEFAULT_SERVICE_GRACE_MS = 8000;
+const SERVICE_POLL_MS = 1000;
 
 /** Binary each agent name needs on PATH (default: the agent name itself). */
 const AGENT_BINARIES: Record<string, string> = {
@@ -444,6 +475,10 @@ export async function runStep(sb: Sandbox, step: SmokeStep, opts: RunStepOptions
         continue;
       }
       for (const a of argv) {
+        if (isLoopbackUrl(a)) {
+          (rec.localUrls ??= []).push(a);
+          continue;
+        }
         const hit = opts.detectAuth?.(a) ?? (/^https?:\/\//i.test(a) ? { kind: 'browser' as const, url: a } : null);
         if (hit) {
           startAuth(hit);
@@ -459,7 +494,30 @@ export async function runStep(sb: Sandbox, step: SmokeStep, opts: RunStepOptions
     void killGroupHard(pgid);
   }, timeoutMs);
 
-  const exitCode = await new Promise<number | null>((resolve) => {
+  // Service detection (shell steps only): after the grace period, a still-running
+  // step whose process group listens on a TCP socket is a started server.
+  let serviceSockets: string[] | null = null;
+  let svcTimer: NodeJS.Timeout | null = null;
+  let svcPoll: NodeJS.Timeout | null = null;
+  const servicePromise =
+    step.kind === 'prompt' || pgid === undefined
+      ? new Promise<never>(() => {})
+      : new Promise<'service'>((resolve) => {
+          const check = () => {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            const l = listeningSockets(pgid);
+            if (l.length > 0) {
+              serviceSockets = l;
+              resolve('service');
+            }
+          };
+          svcTimer = setTimeout(() => {
+            check();
+            if (serviceSockets === null) svcPoll = setInterval(check, SERVICE_POLL_MS);
+          }, opts.serviceGraceMs ?? DEFAULT_SERVICE_GRACE_MS);
+        });
+
+  const waitExit = new Promise<number | null>((resolve) => {
     let settled = false;
     child.on('error', (e) => {
       output += `\n${e.message}\n`;
@@ -491,13 +549,21 @@ export async function runStep(sb: Sandbox, step: SmokeStep, opts: RunStepOptions
       }, 300);
     });
   });
+  const raced = await Promise.race([waitExit, servicePromise]);
+  const exitCode: number | null = raced === 'service' ? null : raced;
+  const isService = raced === 'service';
+  if (svcTimer) clearTimeout(svcTimer);
+  if (svcPoll) clearInterval(svcPoll);
   clearTimeout(timer);
   if (poller) {
     pollOpen();
     clearInterval(poller);
   }
 
-  if (background) rec.backgroundLeft = true;
+  if (isService) {
+    rec.service = { listening: serviceSockets ?? [] };
+    rec.backgroundLeft = true;
+  } else if (background) rec.backgroundLeft = true;
   else await killGroupHard(pgid);
 
   if (authPromise !== null) await authPromise;
@@ -506,7 +572,9 @@ export async function runStep(sb: Sandbox, step: SmokeStep, opts: RunStepOptions
   const scan = scanOutput(output, exitCode, step);
   rec.prompts = scan.prompts;
   rec.denials = scan.denials;
-  if (timedOut) {
+  if (isService) {
+    rec.friction.push(...scan.friction.filter((f) => f.kind !== 'failed'));
+  } else if (timedOut) {
     rec.friction.push({ kind: 'timeout', detail: `The step did not finish within ${Math.round(timeoutMs / 1000)} s.` });
     // Keep prompt/denial evidence: a hang on input explains the timeout.
     for (const f of scan.friction) if (f.kind !== 'failed') rec.friction.push(f);
@@ -520,10 +588,11 @@ export async function runStep(sb: Sandbox, step: SmokeStep, opts: RunStepOptions
     if (f) rec.friction.push(f);
   }
   if (step.kind === 'prompt') rec.tokens = tokensFromRunJson(stdout);
-  rec.status = !timedOut && !authKilled && exitCode === 0 ? 'pass' : 'fail';
+  rec.status = isService || (!timedOut && !authKilled && exitCode === 0) ? 'pass' : 'fail';
   const tail = Buffer.from(output, 'utf8');
   rec.outputTail = tail.length > TAIL_BYTES ? tail.subarray(tail.length - TAIL_BYTES).toString('utf8') : output;
-  if (background) rec.outputTail += `${rec.outputTail.endsWith('\n') || rec.outputTail === '' ? '' : '\n'}[smoke] step left background processes; reaped at teardown`;
+  if (isService) rec.outputTail += `${rec.outputTail.endsWith('\n') || rec.outputTail === '' ? '' : '\n'}[smoke] left running as a service (listening on ${(serviceSockets ?? []).join(', ')}) until teardown`;
+  else if (background) rec.outputTail += `${rec.outputTail.endsWith('\n') || rec.outputTail === '' ? '' : '\n'}[smoke] step left background processes; reaped at teardown`;
   rec.durationMs = Date.now() - started;
   return rec;
 }
