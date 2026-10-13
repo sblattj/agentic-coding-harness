@@ -288,6 +288,13 @@ only; opencode's stream carries no request timing. See [ARCHITECTURE.md](docs/AR
 **Terminal** — `ach dash` is a live TUI over the run registry (redraws 2×/s, ANSI status
 glyphs, totals footer); `--json` dumps RunRecords for tools.
 
+**Per-model cost chips** — a run that used two or more models (for example Claude mixing an opus
+main loop with haiku sub-agent calls) records `totals.byModel` (cost and tokens per model, highest
+cost first). The web run header shows one chip per model (`claude-opus-5 $0.40 · 18.2k`) and `ach dash`
+prints a `models <runid> opus $0.4000 + haiku $0.0200` line under the table. An unpriced model shows
+`n/a` plus the usual unknown-model warning, never an invented cost; single-model runs, and runs recorded
+before this field existed, keep the plain aggregate.
+
 ## Spend by git branch
 
 `ach run` records the git branch (and short commit) of the run's working directory on

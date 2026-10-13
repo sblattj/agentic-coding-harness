@@ -18,6 +18,24 @@ export interface ModelPrice {
   cache_creation_1h?: number;
 }
 
+/** One model's share of a priced record or run (issue #67). costUsd null = unpriced. */
+export interface ModelCost {
+  model: string;
+  costUsd: number | null;
+  /** input + output + cacheRead + cacheWrite tokens attributed to this model. */
+  tokens: number;
+}
+
+/** Accumulated per-model costs ordered by cost desc; unpriced (null) models last, ties by name. */
+export function sortModelCosts(m: Map<string, { costUsd: number | null; tokens: number }>): ModelCost[] {
+  return [...m.entries()]
+    .map(([model, v]) => ({ model, costUsd: v.costUsd, tokens: v.tokens }))
+    .sort((a, b) => {
+      if ((a.costUsd === null) !== (b.costUsd === null)) return a.costUsd === null ? 1 : -1;
+      return (b.costUsd ?? 0) - (a.costUsd ?? 0) || a.model.localeCompare(b.model);
+    });
+}
+
 /** Options for {@link Pricer.price}. */
 export interface PriceOptions {
   /**
@@ -37,6 +55,15 @@ export interface Pricer {
    * optional, so a custom Pricer that ignores it still type-checks.
    */
   price(record: CanonicalTokenRecord, opts?: PriceOptions): number;
+  /**
+   * Per-model cost split of one record (issue #67): one entry per
+   * extra.raw.models slice, or a single entry for the record's own model.
+   * `costUsd` is null when that model is unpriced (the unknown-model warning
+   * is recorded exactly as {@link price} does) — never a fabricated number.
+   * Empty for vendor-metered or model-less records. Optional, so a custom
+   * Pricer that lacks it still type-checks.
+   */
+  priceByModel?(record: CanonicalTokenRecord, opts?: PriceOptions): ModelCost[];
   /** Strip provider prefixes and date/-latest suffixes: "anthropic/claude-sonnet-4-20250514" -> "claude-sonnet-4". */
   resolveAlias(model: string): string;
   /** Warnings accumulated so far (and drained): unpriced models, malformed map entries, family-fallback estimates. */
@@ -314,7 +341,7 @@ export function createPricer(costMapPath?: string): Pricer {
     return undefined;
   };
 
-  return {
+  const pricer: Pricer = {
     price(rec: CanonicalTokenRecord, opts?: PriceOptions): number {
     const computedOnly = opts?.computedOnly === true;
     // Vendor-metered record (copilot AIU): the stated cost or nothing. A
@@ -401,6 +428,44 @@ export function createPricer(costMapPath?: string): Pricer {
       1_000_000
     );
   },
+    priceByModel(rec: CanonicalTokenRecord, opts?: PriceOptions): ModelCost[] {
+      if (isVendorMetered(rec)) return [];
+      const slices = modelSlices(rec);
+      if (slices) {
+        // Price each slice through the same single-model path price() uses
+        // for a slice-less record, so the split sums to price().
+        const sliceWrites = slices.reduce((a, s) => a + s.cacheWrite, 0);
+        const share =
+          typeof rec.cacheWrite1hTokens === 'number' && sliceWrites > 0
+            ? Math.min(1, Math.max(0, rec.cacheWrite1hTokens / sliceWrites))
+            : 0;
+        return slices.map((s) => {
+          const tokens = s.input + s.output + s.cacheRead + s.cacheWrite;
+          if (s.costUsd !== undefined && opts?.computedOnly !== true) return { model: s.model, costUsd: s.costUsd, tokens };
+          const p = lookup(s.model);
+          if (!p) {
+            noteUnknown(s.model, ' in per-model breakdown', rec.sessionId);
+            return { model: s.model, costUsd: null, tokens };
+          }
+          const cost =
+            (s.input * p.input +
+              s.cacheRead * p.cache_read +
+              cacheWriteCost(s.cacheWrite, s.cacheWrite1h ?? s.cacheWrite * share, p) +
+              s.output * p.output) /
+            1_000_000;
+          return { model: s.model, costUsd: cost, tokens };
+        });
+      }
+      if (!rec.model || rec.model === 'unknown') return [];
+      const cost = pricer.price(rec, opts);
+      return [
+        {
+          model: rec.model,
+          costUsd: Number.isNaN(cost) ? null : cost,
+          tokens: (rec.inputTokens ?? 0) + (rec.outputTokens ?? 0) + (rec.cacheReadTokens ?? 0) + (rec.cacheWriteTokens ?? 0),
+        },
+      ];
+    },
     resolveAlias,
     drainWarnings(): string[] {
       const out = warnings.splice(0, warnings.length);
@@ -413,4 +478,5 @@ export function createPricer(costMapPath?: string): Pricer {
       return [...new Set(out)];
     },
   };
+  return pricer;
 }
