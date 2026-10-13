@@ -435,6 +435,30 @@ silent. `--json` emits `{rows, summary, total}`; each row carries `recorded`, `r
 `delta` objects keyed by the same field names as `ach stats --json`. Each row also carries
 `chain`, the run's `ach verify-run` verdict (below), taken before any `--fix`.
 
+### Reclaiming disk: `ach gc`
+
+`ach gc` deletes old artifacts from the state dir (`AGENTIC_CODING_HARNESS_STATE_DIR`, default
+`~/.agentic-coding-harness`), with a separate TTL per class: raw transcripts
+(`<stateDir>/raw/**/*.jsonl`, default 30 days) and run records (`<stateDir>/runs/*.json`, kept
+forever by default). `--dry-run` lists every file it would delete with its size and the total
+bytes, and touches nothing. `--before 30d` (or a date) sets one cutoff for both classes;
+`--keep-summaries` keeps every run record (tokens, cost, exit status) and prunes transcripts only.
+`--transcripts-ttl` / `--runs-ttl` (or `AGENTIC_CODING_HARNESS_GC_TRANSCRIPTS_TTL` /
+`AGENTIC_CODING_HARNESS_GC_RUNS_TTL`; `never` disables a class) override `--before` per class.
+
+```bash
+ach gc --dry-run --before 30d --keep-summaries   # preview: path, class, bytes, total
+ach gc --before 30d --keep-summaries             # prune transcripts, keep run summaries
+```
+
+It never deletes anything outside `raw/` and `runs/` (the warehouse, queues, quota and offsets
+files are untouched), never follows or deletes a symlink (it is reported as refused), never touches
+a run whose record says `running` while its pid is alive, and skips files written in the last
+minute. A transcript tied to a run ages from the run's end; other raw files age by mtime. Each real
+pass appends a line to `<stateDir>/gc-log.jsonl`. A pruned transcript drops out of `ach stats`
+history and leaves its run `unverifiable` in `ach audit`, unless `ach archive` snapshotted it first
+(`ach stats --with-warehouse` and `ach audit` then read the archived copy).
+
 ### Passing extra CLI args to the agent: `--extra-args` / `--extra-arg`
 
 Both flags work on `ach run` and `ach preflight`, for every launchable agent, and are

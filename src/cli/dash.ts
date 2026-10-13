@@ -162,7 +162,7 @@ const HEADER =
   `${padL("CREDITS", COL.credits)} ${padL("CTX", COL.ctx)} LAST EVENT`;
 
 // Default view: live runs plus finished runs from the last hour; --all
-// widens to every record on disk (dash prunes display, never files).
+// widens to every record on disk (dash prunes display, never files; `ach gc` prunes files, #70).
 function isVisible(rec: RunRecord, now: number, showAll: boolean): boolean {
   if (showAll) return true;
   if (isLive(rec, now)) return true;
