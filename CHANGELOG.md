@@ -2,6 +2,18 @@
 
 Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes and commit history.
 
+## [0.23.0] - 2026-10-12
+
+### Added
+
+- Multi-model runs show per-model cost chips. A run that used two or more models (for example an opus main loop with haiku sub-agent calls) records `totals.byModel`. The web run header shows one chip per model (`model $cost · tokens`), and `ach dash` prints a `models` line under the table. An unpriced model shows `n/a` with the usual unknown-model warning, never an invented cost. Single-model runs and runs recorded before this release keep the plain aggregate. (#67)
+- `ach gc` reclaims disk in the state dir. Transcripts under `raw/` expire after 30 days by default, and run records under `runs/` are kept forever unless you say otherwise. Flags: `--dry-run` (every path with its size, plus the total), `--before <date|duration>`, `--keep-summaries` (prune transcripts only), per-class `--transcripts-ttl` / `--runs-ttl` or `AGENTIC_CODING_HARNESS_GC_TRANSCRIPTS_TTL` / `AGENTIC_CODING_HARNESS_GC_RUNS_TTL`, and `--json`. It refuses symlinks and anything outside `raw/` and `runs/`, never touches a run whose process is alive or a file written in the last minute, and appends each real pass to `gc-log.jsonl`. (#70)
+- `GET /api/stats` returns global totals across all runs: run and active counts, tokens by type, USD (priced runs only, with unpriced runs counted separately), success rate (outage `unavailable` runs excluded), per-agent and per-model breakdowns, status counts, and avg / p50 / p95 per-run duration, tokens and cost. The `ach web` dashboard shows them in a stats bar at the top. (#94)
+
+### Changed
+
+- The release workflow publishes to npm with trusted publishing (GitHub OIDC) instead of an `NPM_TOKEN` secret, upgrading the job to npm 11 first.
+
 ## [0.22.0] - 2026-10-12
 
 ### Added
