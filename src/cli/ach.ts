@@ -141,6 +141,7 @@ import { cmdStatusline } from "./statusline.ts";
 import { cmdQuota } from "./quota.ts";
 import { cmdQueue, QUEUE_USAGE } from "./queue.ts";
 import { cmdArchive, statsMachineRecords, statsScanOptions, warehouseStateRecords } from "./archive.ts";
+import { cmdGc } from "./gc.ts";
 import {
   cmdAgents,
   descriptorTapRows,
@@ -319,6 +320,10 @@ usage:
                 (snapshot transcripts + RunRecords into <stateDir>/warehouse,
                  sha256-deduped, never deletes; see docs/ARCHIVE.md;
                  --dir is an alias of --state-dir here)
+  ach gc [--dry-run] [--before <date|duration>] [--keep-summaries]
+         [--transcripts-ttl <dur|never>] [--runs-ttl <dur|never>] [--state-dir <stateDir>] [--json]
+                (retention: delete old <stateDir>/raw transcripts (default 30d)
+                 and run records (default never); skips live runs and symlinks)
   --exit-codes ladder   (run / stats / status / watch) automation exit codes: 0 ok,
                         10 near-limit, 11 limit hit, 20 unavailable, 30 no data,
                         1 errors — see docs/EXIT-CODES.md; default stays 0/1
@@ -1894,7 +1899,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke",
+  "trial", "queue", "replay", "smoke", "gc",
 ]);
 
 /**
@@ -1964,6 +1969,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdStatusline(rest);
     case "archive":
       return cmdArchive(rest);
+    case "gc":
+      return cmdGc(rest);
     case "emit":
       return cmdEmit(rest);
     case "regrade":
