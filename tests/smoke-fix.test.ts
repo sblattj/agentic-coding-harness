@@ -333,3 +333,28 @@ test("missing agent CLI on a prompt step: the backticked binary wins over the pr
   assert.equal(edits.length, 1);
   assert.match(edits[0]!.text, /npm i -g @anthropic-ai\/claude-code/);
 });
+
+test("planInstructionFixes: spawn-ENOENT agent friction plans the claude install; host-level-skipped friction plans nothing", () => {
+  const s1 = step(1, 3, 'ach run --agent claude "hi"');
+  const fr: Friction = { kind: "missing-prereq", detail: "`claude` (the agent CLI this step runs) is not installed; the message never installs it.", evidence: "[17:25:20] error   claude failed to spawn: spawn claude ENOENT" };
+  const r = planInstructionFixes({ steps: [s1], records: [rec(s1, { friction: [fr] })], which: onPath(["node"]) });
+  assert.deepEqual(r.edits.map((e) => e.text.split("\n")[3]), ["npm i -g @anthropic-ai/claude-code"]);
+
+  const b = step(1, 3, "brew install sblattj/agentic-coding-harness/ach");
+  const a = step(2, 5, "ach --version");
+  const host: Friction = { kind: "missing-prereq", detail: "`ach` is not installed here because step 1 (`brew install sblattj/agentic-coding-harness/ach`) is host-level and was not run in the sandbox.", evidence: "zsh:1: command not found: ach" };
+  const r2 = planInstructionFixes({ steps: [b, a], records: [rec(a, { friction: [host] })], which: onPath(["brew"]) });
+  assert.deepEqual(r2.edits, []);
+  assert.ok(r2.notes.every((n) => !/needs agent fix/.test(n)), r2.notes.join("\n"));
+});
+
+test("skippedInstaller: brew install by last path segment; npm i -g and later steps never match", async () => {
+  const { skippedInstaller } = await import("../src/core/smoke/fix.ts");
+  const b = step(1, 3, "brew install sblattj/agentic-coding-harness/ach");
+  const n = step(2, 4, "npm i -g agentic-coding-harness");
+  const skipped = new Set([1, 2]);
+  assert.equal(skippedInstaller("ach", [b, n], skipped, 3)?.index, 1);
+  assert.equal(skippedInstaller("ach", [b, n], skipped, 1), undefined);
+  assert.equal(skippedInstaller("ach", [n], skipped, 3), undefined);
+  assert.equal(skippedInstaller("ach", [b], new Set(), 3), undefined);
+});

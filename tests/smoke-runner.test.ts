@@ -105,6 +105,38 @@ describe("smoke runner: friction classification", () => {
     assert.deepEqual(classifyFriction("all good\nUsage: shown in help", 0, s), []);
     assert.deepEqual(classifyFriction("Overwrite? [Y/n]", 0, s).map((f) => f.kind), ["interactive-prompt"]);
   });
+  it("spawn ENOENT of the agent CLI -> missing-prereq naming it, evidence not npm notice", () => {
+    const out = [
+      "[17:25:20] error   claude failed to spawn: spawn claude ENOENT",
+      "[warn] unavailable: agent CLI could not be started (claude failed to spawn: spawn claude ENOENT)",
+      "exit       unavailable",
+      "npm notice",
+      "npm notice New major version of npm available! 11.12.1 -> 12.2.0",
+    ].join("\n");
+    const f = classifyFriction(out, 1, s);
+    assert.deepEqual(f.map((x) => x.kind), ["missing-prereq"]);
+    assert.equal(f[0]!.detail, "`claude` (the agent CLI this step runs) is not installed; the message never installs it.");
+    assert.match(f[0]!.evidence!, /spawn claude ENOENT/);
+    assert.doesNotMatch(f[0]!.evidence!, /npm notice/);
+  });
+  it("spawn ENOENT, codex form", () => {
+    const f = classifyFriction("[17:25:50] error   failed to spawn codex: spawn codex ENOENT\nnpm notice", 1, s);
+    assert.equal(f[0]?.kind, "missing-prereq");
+    assert.match(f[0]!.detail, /^`codex` \(the agent CLI this step runs\)/);
+  });
+  it("spawn ENOENT of a non-agent program names it plainly", () => {
+    const f = classifyFriction("Error: spawn jq ENOENT", 1, s);
+    assert.equal(f[0]?.detail, "`jq` is not installed; the message never installs it.");
+  });
+  it("control: ENOENT on a file path stays unstated-assumption", () => {
+    const f = classifyFriction("Error: ENOENT: no such file, open '/x/config.json'", 1, s);
+    assert.deepEqual(f.map((x) => x.kind), ["unstated-assumption"]);
+  });
+  it("evidence never picks npm notice/warn: the generic failed row uses the last useful line", () => {
+    const f = classifyFriction("boom happened\nnpm warn deprecated x\nnpm notice\nnpm notice New major", 1, s);
+    assert.equal(f[0]?.kind, "failed");
+    assert.equal(f[0]?.evidence, "boom happened");
+  });
   it("names the missing binary and collects denials", () => {
     const r = scanOutput("zsh:3: command not found: gh\nopen: Operation not permitted", 127, s);
     assert.match(r.friction[0]!.detail, /`gh`/);

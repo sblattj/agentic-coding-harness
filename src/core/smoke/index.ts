@@ -42,7 +42,7 @@ import { pathToFileURL } from "node:url";
 
 import { HarnessError } from "../types.ts";
 import { createBrowserAuthHandler, defaultLoginScript, detectAuthPrompt, deviceCodeFallback } from "./browser-auth.ts";
-import { agentFix, detectToolLie, fixRecordFor, planInstructionFixes, type RunFn } from "./fix.ts";
+import { agentFix, detectToolLie, fixRecordFor, planInstructionFixes, skippedInstaller, type RunFn } from "./fix.ts";
 import { parseMessage } from "./parse.ts";
 import { applyEdits, finalStatuses, SMOKE_ROLE_ATTR } from "./report.ts";
 import { DEFAULT_STEP_TIMEOUT_MS, runStep, type RunnerStepRecord } from "./runner.ts";
@@ -269,6 +269,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
       }
     };
 
+    const skippedHostLevel = new Set<number>();
     const run = async (step: SmokeStep, attempt: number): Promise<RunnerStepRecord> => {
       const start = Date.now();
       const rec = await runStep(box, step, {
@@ -280,6 +281,13 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
         ...(opts.account !== undefined ? { account: opts.account } : {}),
         ...(achCli !== undefined ? { achCli } : {}),
       });
+      // A missing bin that an earlier skipped host-level step would have installed: say so, the message is fine.
+      for (const f of rec.friction) {
+        if (f.kind !== "missing-prereq") continue;
+        const bin = /`([\w@.+-]+)`/.exec(f.detail)?.[1];
+        const by = bin ? skippedInstaller(bin, steps, skippedHostLevel, step.index) : undefined;
+        if (bin && by) f.detail = `\`${bin}\` is not installed here because step ${by.index} (\`${clip(by.text.split("\n")[0]!, 80)}\`) is host-level and was not run in the sandbox.`;
+      }
       windows.push({ rec, start, end: Date.now() });
       records.push(rec);
       invalidate();
@@ -406,6 +414,7 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
           attempt: 1,
         };
         records.push(rec);
+        skippedHostLevel.add(step.index);
         continue;
       }
       const rec = await run(step, 1);

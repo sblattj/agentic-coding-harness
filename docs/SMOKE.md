@@ -208,6 +208,9 @@ therefore see the fixed environment, the same one a reader of the revised messag
 - **Deterministic rules** (`src/core/smoke/fix.ts`):
   - `missing-prereq` inserts the known install before the fence that first needs the tool.
     Dependency chains are inserted in order, for example node, then `npm i -g ...`.
+    `spawn <bin> ENOENT` (for example an agent CLI such as `claude`) counts as `missing-prereq`; an ENOENT
+    on a file path stays `unstated-assumption`. When an earlier `brew install .../<bin>` step was skipped
+    as host-level, the detail says so ("... is host-level and was not run in the sandbox") and no install is inserted.
   - `auth-policy-blocked` swaps in the browser-flow command.
   - A confirm prompt gets the tool's non-interactive flag (`npx --yes`, `npm init -y`,
     `apt -y`, `NONINTERACTIVE=1`).
