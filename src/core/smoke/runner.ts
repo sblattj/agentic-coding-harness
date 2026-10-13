@@ -143,6 +143,8 @@ const RE_HOST_BROWSER_DENIED = /\/usr\/bin\/(?:open|osascript)\b.*Operation not 
 const RE_DENIED = /Permission denied|EACCES|Operation not permitted|not allowed|denied/i;
 const RE_PROMPT = /\(y\/N\)|\[Y\/n\]|Password:|Press (?:Enter|any key)|\? .+[:?]\s*$|not a tty|stdin is not a terminal|Inappropriate ioctl/i;
 const RE_KEYCHAIN = /keychain cannot be found|SecKeychain|errSec/i;
+/** A CLI that ran but has no login: a fresh reader has to sign in first (`claude`: "Not logged in · Please run /login"). */
+const RE_NOT_SIGNED_IN = /\bnot logged in\b|please run \/login|\bnot authenticated\b|\b(?:log|sign)[ -]?in (?:is )?required\b/i;
 const RE_ASSUMPTION = /ENOENT\b.*\.(?:json|ya?ml|env)\b|missing (?:env|environment variable)|is not set/i;
 
 /** Classify a step's output: friction rows plus the prompt and denial lines. */
@@ -196,6 +198,9 @@ export function scanOutput(output: string, exitCode: number | null, step: SmokeS
         add({ kind: 'denied', detail: 'A program in the step tried to open the host browser by absolute path (/usr/bin/open or /usr/bin/osascript); the smoke sandbox blocked it. Use `open` from PATH or print the URL instead.', evidence: trimEvidence(line) });
       }
       add({ kind: 'denied', detail: 'The step was denied (permissions or policy).', evidence: trimEvidence(line) });
+    }
+    if (RE_NOT_SIGNED_IN.test(line)) {
+      add({ kind: 'auth-needs-human', detail: 'The CLI is installed but not signed in; the reader has to sign in before this step, and the message should say so.', evidence: trimEvidence(line) });
     }
     if (RE_ASSUMPTION.test(line)) {
       add({ kind: 'unstated-assumption', detail: 'The step needed a file or variable the message never set up.', evidence: trimEvidence(line) });

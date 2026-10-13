@@ -75,10 +75,14 @@ for checksum verification and release automation.
 ## Quickstart
 
 You need Node.js 22+ and at least one agent CLI that is installed and signed in: `ach` runs
-the agent, it does not install it. The examples use Claude Code
-(`npm install -g @anthropic-ai/claude-code`, then run `claude` once to sign in); `ach doctor`
-shows which agents it can find. Run the commands inside the repository you want the agent to
-change.
+the agent, it does not install it. The examples use Claude Code:
+
+```sh
+npm install -g @anthropic-ai/claude-code
+```
+
+Then run `claude` once and sign in. `ach doctor` shows which agents `ach` can find. Run the
+commands below inside the repository you want the agent to change.
 
 Each `ach run` gives Claude Code a fresh config dir, which cannot see the session from
 `claude`'s own sign-in. `--claude-default-config` uses your normal Claude config and login;
@@ -100,9 +104,11 @@ http://localhost:8399 in your browser (`--no-open` skips that):
 ach web                                        # live dashboard on :8399; leave it running
 ```
 
-Then, from any other terminal (this one needs the Codex CLI, `npm install -g @openai/codex`):
+Then, from any other terminal, run an agent. This one uses the Codex CLI (sign in by running
+`codex` once after installing it):
 
 ```sh
+npm install -g @openai/codex
 ach run --agent codex "fix the failing test"   # shows up in the dashboard grid; LIVE opens a terminal pane
 ```
 

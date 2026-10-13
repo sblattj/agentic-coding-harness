@@ -93,7 +93,10 @@ export const SANDBOX_CONFIG_VARS: Readonly<Record<string, string>> = Object.free
 });
 
 /** Directories created up front (tools expect XDG dirs to exist). */
-const PRECREATE = ['.config', '.local/share', '.local/state', '.local/bin', '.cache', '.npm-global/bin'];
+// .codex: CODEX_HOME points there, and codex refuses to start when CODEX_HOME is set to a
+// missing dir ("Error finding codex home"); unset, it creates ~/.codex itself, so a real
+// reader never sees that error.
+const PRECREATE = ['.config', '.local/share', '.local/state', '.local/bin', '.cache', '.npm-global/bin', '.codex'];
 
 export interface SandboxOptions {
   /** Parent dir for the sandbox root (default os.tmpdir()). */

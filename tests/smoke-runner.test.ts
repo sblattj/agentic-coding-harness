@@ -137,6 +137,23 @@ describe("smoke runner: friction classification", () => {
     assert.equal(f[0]?.kind, "failed");
     assert.equal(f[0]?.evidence, "boom happened");
   });
+  it("an installed but signed-out CLI is auth-needs-human, not a bare failure", () => {
+    const out = [
+      "[17:29:49] error   claude: not logged in. Run `claude /login`, or set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY.",
+      "[17:29:49] text    Not logged in · Please run /login",
+      "ttft       avg 15ms · p50 15ms · p95 15ms (1 call)",
+    ].join("\n");
+    const f = classifyFriction(out, 1, s);
+    assert.deepEqual(f.map((x) => x.kind), ["auth-needs-human"]);
+    assert.match(f[0]!.evidence!, /not logged in/);
+    // Control: the codex startup warning's "(missing auth, service outage, ...)" list is not a sign-in claim.
+    const c = classifyFriction("[warn] unavailable: agent CLI exited with an error before its first event (missing auth, service outage, or a startup failure)", 1, s);
+    assert.equal(c[0]?.kind, "failed");
+  });
+  it("the sandbox HOME has ~/.codex, so CODEX_HOME points at a real dir", { skip: !macOS && "macOS sandbox" }, () => {
+    assert.equal(sb.env.CODEX_HOME, `${sb.home}/.codex`);
+    assert.ok(fs.statSync(sb.env.CODEX_HOME!).isDirectory());
+  });
   it("names the missing binary and collects denials", () => {
     const r = scanOutput("zsh:3: command not found: gh\nopen: Operation not permitted", 127, s);
     assert.match(r.friction[0]!.detail, /`gh`/);
