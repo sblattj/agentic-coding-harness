@@ -43,11 +43,14 @@ browser PTY sessions require a package installation with that addon available.
 
 ## Publishing to npm
 
-The `npm` job needs a repository Actions secret named `NPM_TOKEN`: an npm
-automation token or a granular access token with publish rights on
-`agentic-coding-harness`. Add it under Settings, Secrets and variables, Actions.
-If it is missing the job fails with an `::error::` naming the secret rather than
-skipping silently. The job builds explicitly and runs `npm publish --ignore-scripts`
+The `npm` job publishes with npm trusted publishing (OIDC): no token or Actions
+secret is involved. The job has `id-token: write`, upgrades to npm 11 (trusted
+publishing needs npm 11.5.1+), and npm exchanges the job's GitHub OIDC token for a
+short-lived publish credential. The package's npm settings (Settings, Trusted
+Publisher) list GitHub Actions with repository `sblattj/agentic-coding-harness`,
+workflow `release-binaries.yml`, no environment, and "Allow npm publish". If
+that is missing or the workflow file is renamed, the publish fails with an
+`::error::` saying so. Provenance is attached automatically. The job builds explicitly and runs `npm publish --ignore-scripts`
 because `ci.yml` already gates tests on `main`; `prepack` still runs the full suite
 for a local `npm publish`.
 
