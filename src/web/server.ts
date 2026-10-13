@@ -19,6 +19,7 @@ import { WebSocketServer, type RawData, type WebSocket as WsSocket } from "ws";
 import type { AgentEvent } from "../core/types.ts";
 import { readRunRecord, type RunRecord } from "../core/registry.ts";
 import { RunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
+import { computeGlobalStats } from "./stats.ts";
 import { COMPARE_GROUP_ALIASES, COMPARE_GROUP_KEYS, computeCompareRows, isCompareGroupKey, resolveCompareGroupBy } from "./compare.ts";
 import type { RunSource } from "./run-source.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
@@ -518,6 +519,12 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           }
           const groupBy = resolveCompareGroupBy(keys);
           return sendJson(res, 200, { groupBy, rows: computeCompareRows(hub.snapshotRuns(), groupBy) });
+        }
+
+        // Global stats (#94): pure rollup over the in-memory hub snapshot.
+        // Same access rule as /api/runs and /api/compare (unauthenticated JSON).
+        if (get && pathname === "/api/stats") {
+          return sendJson(res, 200, computeGlobalStats(hub.snapshotRuns()));
         }
 
         // Liveness probe for orchestrators. Auth policy matches /api/runs

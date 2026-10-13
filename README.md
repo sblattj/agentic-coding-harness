@@ -809,6 +809,13 @@ const { result } = await runToDirectory({
   `avgCostUsd`, `avgDurationMs`, `successRate` per group).
 - **`/queues`** (+ `GET /api/queues`) — queued / running / done per slice for every `ach queue run`
   queue that is running or ended in the last 24 h ([docs/QUEUE.md](docs/QUEUE.md)). Token-gated when `--token` is set.
+- **`GET /api/stats`** — global totals across every recorded run, also shown as the stats bar at the
+  top of the main dashboard: `totalRuns`, `activeRuns`, `tokens` (input / output / cacheRead /
+  cacheWrite / total), `costUsd` (priced runs only; `unpricedRuns` counted separately, never as $0),
+  `successRate` (outage `unavailable` runs excluded), `byAgent` and `byModel` (runs, success rate,
+  tokens, cost), `byStatus` / `byExitStatus` counts, and `perRun` avg / p50 / p95 of duration,
+  tokens and cost. A run's model is the observed model (`+`-joined if several), else the requested
+  one, else `unknown`. Computed on request from the in-memory run snapshot.
 - **`/health`** — liveness plus the configured run source and whether it is healthy
   (`source`, `sourceHealthy`).
 
