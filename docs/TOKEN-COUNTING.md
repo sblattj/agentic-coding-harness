@@ -373,30 +373,44 @@ step/message event → the RunSpec `model`.
 
 | Field | Meaning |
 |---|---|
-| `estimated: true` | Computed by the meter (usage ÷ bundled table), not reported by the provider. |
+| `estimated: true` | Computed by the meter (usage ÷ bundled table), not reported by the provider. `false` when the window was reported. |
 | `windowSource: 'assumed'` | Window from the bundled table. |
+| `windowSource: 'reported'` | Window the agent reported for this run (`usage.extra.modelContextWindow`, e.g. codex rollout `model_context_window`); wins over the table and the `[1m]` tag (#141). |
 | `windowSource: 'derived'` | kiro v3: window derived from the `context_usage` breakdown (#137). |
-| `basis: 'last-call'` | Latest single model call: claude assistant-message usage, opencode step-finish. A real occupancy reading. |
-| `basis: 'turn-total'` | A usage record summed over a turn's model calls: codex `turn.completed`, gemini `result.stats`, a claude `result` with no per-message usage. An **upper bound** (exact only for a one-call turn); rendered `≤` / `<=`. |
-| `toolOutputTokens` / `toolOutputShare` | Estimated (chars ÷ 4) size of every tool result seen in the stream, and its share of `tokens` (capped at 1). **Omitted, not 0**, when the run had no tool events. |
+| `basis: 'last-call'` | Latest single model call: claude assistant-message usage, opencode step-finish, or native latest-call usage on `usage.extra.lastTokenUsage` (e.g. codex rollout `last_token_usage`). A real occupancy reading, with `percentage`. |
+| `basis: 'turn-total'` | Only aggregate usage was seen: a record summed over a turn's model calls (codex `turn.completed`, gemini `result.stats`, a claude `result` with no per-message usage). **Cumulative tokens, not occupancy** (#141): repeated input across calls is not what currently fits in the window. `tokens`/`cumulativeTokens` carry the count, `percentage` is **absent** (never a >100% figure, never clamped), and every surface renders occupancy `n/a` beside a labelled cumulative count (dash `n/a (cum 3.0k)`, report `ctx n/a · cumulative 3,000 tok`, CLI `ctx n/a (cumulative 3,000 tok, not occupancy)`, web `Σ3.0k cum` with no bar). Pre-#141 records that stored a turn-total percentage render the same way. |
+| `cumulativeTokens` | input + cache tokens of the latest aggregate (turn-total) record; present only on a turn-total reading (equals `tokens`). Not occupancy. |
+| `toolOutputTokens` / `toolOutputShare` | Estimated (chars ÷ 4) size of every tool result seen in the stream, and its share of `tokens` (capped at 1; last-call only). **Omitted, not 0**, when the run had no tool events. |
 
-- **Unknown model → `available: false`** (dash/report render `n/a`); the
-  meter never guesses a window. Codex's stream names no model, so a codex run
+**Native latest-call usage (#141).** An agent that reports its own per-call
+usage and window rides them on a `usage`/`message`/`model_call_end` event's
+`usage.extra`: `lastTokenUsage: { inputTokens, cacheReadTokens?,
+cacheWriteTokens? }` (canonical, non-overlapping fields: `inputTokens` is the
+uncached slice) and `modelContextWindow: number`. The meter then reports
+`basis: 'last-call'` even for a turn-total agent, and `windowSource:
+'reported'`. Each latest-call reading **replaces** the previous one, so a
+smaller call after compaction lowers the reading; the meter never takes a max
+over the run. A reported window persists for the rest of the run.
+
+- **Unknown model and no reported window → `available: false`** (dash/report
+  render `n/a`); the meter never guesses a window. Codex's stream names no model, so a codex run
   without `--model` is `n/a`; the same holds for gemini (its `init` model is
   not bridged today).
 - **Overflow warning:** a `budget.alert` event at 85% with metric `context`,
   persisted in `RunRecord.alerts` for dash/web. It uses the shared cooldown
   state in `alerts.json` (see [Budget alerts](BUDGET-ALERTS.md)). It fires only
-  on a known `last-call` basis; an upper bound is not evidence of pressure.
+  on a known `last-call` basis; cumulative usage is not evidence of pressure.
 - **`ach stats --json`** gains an additive `runs` array, one row per registry
   run (`<stateDir>/runs`), filtered by `--agent` / `--days`:
 
   ```ts
   {
     runId, agent, startedAt, status: string | null, model: string | null,
-    contextPercentage: number | null,   // null = unknowable, never 0
-    contextTokens: number | null, windowTokens: number | null,
-    windowSource: 'session-store' | 'derived' | 'assumed' | null,
+    contextPercentage: number | null,   // occupancy; null = unknowable or turn-total, never 0
+    contextTokens: number | null,       // occupancy; null for turn-total
+    cumulativeTokens: number | null,    // #141: aggregate usage, not occupancy
+    windowTokens: number | null,
+    windowSource: 'session-store' | 'derived' | 'assumed' | 'reported' | null,
     basis: 'last-call' | 'turn-total' | null,
     estimated: boolean,
     toolOutputShare?: number            // omitted when no tool events
@@ -413,7 +427,9 @@ step/message event → the RunSpec `model`.
   reading against the previous distinct one (on every frame of the reading;
   the feed draws `+Δ` once per `seq`, on the first drawn row), the
   `input`/`cacheRead`/`cacheWrite` breakdown on fresh frames, and
-  `window`/`pct`/`warnAt` when the window is known. No meter (kiro, custom
+  `window`/`pct`/`warnAt` when the window is known and the basis is
+  `last-call` (a turn-total frame never carries them; the feed shows
+  `Σ<tokens> cum` with no bar). No meter (kiro, custom
   agents), no usage yet, or the #59 `ach.seal` record → no field. The feed
   only renders it. Compaction is not marked: no adapter bridges a compaction
   event (claude's `system` lines other than `init` are dropped in

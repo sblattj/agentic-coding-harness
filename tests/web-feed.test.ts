@@ -413,7 +413,7 @@ describe('HarnessFeed context gauge', () => {
     assert.ok(!/hf-lv/.test(g.className), g.className);
   });
 
-  it('a turn-total reading is marked as an upper bound and draws no +Δ', () => {
+  it('a turn-total reading is labelled cumulative: no bar, no percent, no +Δ (#141)', () => {
     const { container, feed } = mount();
     const a = createFrameAnnotator({ agent: 'codex', requestedModel: 'gpt-5-codex' })!;
     const ev = {
@@ -422,7 +422,11 @@ describe('HarnessFeed context gauge', () => {
     };
     feed.append([{ ...ev, ctx: a.annotate(ev as unknown as AgentEvent) }]);
     const g = withClass(container, 'hf-ctx')[0]!;
-    assert.match(texts(g, 'hf-ctx-t')[0]!, /^≤30\.0k /);
+    assert.equal(texts(g, 'hf-ctx-t')[0], 'Σ30.0k cum');
+    assert.equal(withClass(g, 'hf-ctx-g').length, 0, 'no occupancy bar');
+    assert.ok(!/hf-lv/.test(g.className), g.className);
+    assert.match(g.attributes.title!, /occupancy n\/a/);
+    assert.match(g.attributes.title!, /cumulative 30\.0k tok/);
     assert.equal(withClass(g, 'hf-ctx-d').length, 0);
   });
 });

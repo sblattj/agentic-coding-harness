@@ -2,6 +2,13 @@
 
 Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes and commit history.
 
+## [Unreleased]
+
+### Fixed
+
+- Context meter: aggregate usage (codex `turn.completed`, gemini `result.stats`, a claude result with no per-message usage) is no longer shown as context occupancy. A synthetic codex turn that summed 3,000 tokens against a 1,000-token window reported `300%`. Such a `turn-total` reading now has no `percentage`; it carries the count as `cumulativeTokens` and every surface shows occupancy as n/a beside a labelled cumulative count: the dash `n/a (cum 3.0k)`, the HTML report `ctx n/a · cumulative 3,000 tok`, the run summary `ctx n/a (cumulative 3,000 tok, not occupancy)`, the `ach web` feed `Σ3.0k cum` with no gauge bar, and `ach stats --json` with `contextPercentage`/`contextTokens` null and a new `cumulativeTokens` field. Records written before this release that stored a turn-total percentage render the same way. Nothing is clamped to 100, and the overflow warning still fires only on a latest-call reading. `totals.contextTokens` is now set only for an occupancy reading (#141).
+- Context meter: native latest-call usage and a reported context window are now used when an agent provides them. A usage record's `extra.lastTokenUsage` (`{ inputTokens, cacheReadTokens?, cacheWriteTokens? }`) is read as a `last-call` occupancy reading, and `extra.modelContextWindow` sets the window with the new `windowSource: 'reported'` (`estimated: false`). Each latest-call reading replaces the previous one, so a smaller call after compaction lowers the reading (#141).
+
 ## [0.20.3] - 2026-10-12
 
 ### Fixed

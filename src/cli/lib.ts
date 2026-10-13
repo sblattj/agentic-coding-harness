@@ -217,9 +217,9 @@ export function formatSummary(r: RunSummaryInput): string {
     `cost       ${usdUnavailable ? "n/a" : fmtUsd(r.costUsd)}`,
   ];
   const ctx = r.usage?.context;
-  if (ctx?.available === true && ctx.tokens !== undefined) {
+  if (ctx !== undefined && (ctx.available === true || isAggregateContext(ctx)) && formatContextCell(ctx) !== "n/a") {
     lines.push(
-      `context    ${formatContextCell(ctx)}${ctx.windowSource === "assumed" ? " (assumed window)" : ""}` +
+      `context    ${formatContextCell(ctx)}${ctx.windowSource === "assumed" && !isAggregateContext(ctx) ? " (assumed window)" : ""}` +
         // #137: the first reading is the session's start size.
         (ctx.startTokens !== undefined && ctx.startPercentage !== undefined
           ? ` start ~= ${fmtInt(ctx.startTokens)} tok (${ctx.startPercentage.toFixed(1)}%)`
@@ -237,10 +237,26 @@ export function formatSummary(r: RunSummaryInput): string {
  * token counts so the two are never read as the same measurement.
  */
 export function formatContextCell(ctx: NonNullable<UsageAvailability["context"]>): string {
+  // #141: a turn-total basis is cumulative usage, not occupancy: occupancy is
+  // n/a and the count is labelled cumulative (any stored percentage ignored).
+  if (isAggregateContext(ctx)) {
+    const cum = aggregateContextTokens(ctx);
+    return cum === undefined ? "n/a" : `ctx n/a (cumulative ${fmtInt(cum)} tok, not occupancy)`;
+  }
   if (ctx.available !== true || ctx.tokens === undefined) return "n/a";
   const pct = ctx.percentage === undefined ? "" : ` (${ctx.percentage.toFixed(1)}%)`;
-  // #21: a turn-total basis is an upper bound on occupancy.
-  return `ctx ${ctx.basis === "turn-total" ? "<=" : "~="} ${fmtInt(ctx.tokens)} tok${pct}`;
+  return `ctx ~= ${fmtInt(ctx.tokens)} tok${pct}`;
+}
+
+/** #141: true when the context reading is aggregate (turn-total) usage, never occupancy. */
+export function isAggregateContext(ctx: NonNullable<UsageAvailability["context"]>): boolean {
+  return ctx.basis === "turn-total";
+}
+
+/** Cumulative tokens of an aggregate (turn-total) context reading, or undefined. */
+export function aggregateContextTokens(ctx: NonNullable<UsageAvailability["context"]>): number | undefined {
+  if (!isAggregateContext(ctx)) return undefined;
+  return ctx.cumulativeTokens ?? ctx.tokens;
 }
 
 function fmtLatMs(ms: number): string {

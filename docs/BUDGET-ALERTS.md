@@ -107,8 +107,8 @@ fraction, so the family can be wired in once an allowance input exists.
 Context pressure uses the same persisted crossing engine: a `near-limit` alert
 with metric `context`, threshold `0.85`, value in percentage points and limit
 `100`. It is enabled automatically for supported context meters. Only known
-last-call occupancy can trigger it; unknown windows and turn-total upper bounds
-do not. Context alerts appear in the same dash/web banners and event stream,
+last-call occupancy can trigger it; unknown windows and turn-total cumulative
+usage do not. Context alerts appear in the same dash/web banners and event stream,
 and honor the same cooldown and reset behavior.
 
 Concurrent runs serialize the state read, cooldown check, and atomic write with

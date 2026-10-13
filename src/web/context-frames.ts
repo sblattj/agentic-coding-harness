@@ -18,14 +18,20 @@
 //    renderer can show it once, on the first of those rows it actually draws.
 //  - No meter for the agent (kiro, custom) or no usage yet → no field at all.
 //    An unknown window keeps `tokens` but omits `window`/`pct`.
+//  - A turn-total reading (codex turn.completed, gemini result.stats) is
+//    cumulative usage, not occupancy (#141): it keeps `tokens` but never
+//    carries `window`/`pct`/`warnAt`.
 import type { AgentEvent, CanonicalTokenRecord } from "../core/types.ts";
 import { CONTEXT_WARN_FRACTION, createContextMeter } from "../core/context-meter.ts";
 import { SEAL_EVENT_TYPE } from "../core/hash-chain.ts";
 
 export interface ContextFrame {
-  /** Occupancy: input + cache read + cache write of the reading's usage record. */
+  /**
+   * input + cache read + cache write of the reading's usage record: occupancy
+   * on 'last-call'; CUMULATIVE usage (not occupancy) on 'turn-total'.
+   */
   tokens: number;
-  /** 'turn-total' is an UPPER BOUND (a usage summed over a turn's calls). */
+  /** 'turn-total' is cumulative usage summed over a turn's calls (#141): never carries window/pct. */
   basis: "last-call" | "turn-total";
   /** True when this event fed the reading; false when it is carried forward. */
   fresh: boolean;
@@ -37,7 +43,7 @@ export interface ContextFrame {
    * never drawn, so its tool card is the first row that can show the growth.
    */
   delta: number;
-  /** Context window (max input tokens); absent when the model's window is unknown. */
+  /** Context window (max input tokens); absent when the model's window is unknown or the basis is turn-total. */
   window?: number;
   /** tokens / window × 100; absent with `window`. */
   pct?: number;
@@ -100,7 +106,9 @@ export function createFrameAnnotator(opts: FrameAnnotatorOptions): FrameAnnotato
         frame.cacheRead = reading.record.cacheReadTokens ?? 0;
         frame.cacheWrite = reading.record.cacheWriteTokens ?? 0;
       }
-      if (snap?.available === true && snap.windowTokens !== undefined) {
+      // #141: a turn-total reading is cumulative usage, not occupancy: no
+      // window/pct/warnAt, so no gauge bar.
+      if (reading.basis === "last-call" && snap?.available === true && snap.windowTokens !== undefined) {
         frame.window = snap.windowTokens;
         frame.pct = (reading.tokens / snap.windowTokens) * 100;
         frame.warnAt = CONTEXT_WARN_FRACTION;

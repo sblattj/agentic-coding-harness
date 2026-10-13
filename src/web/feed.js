@@ -267,8 +267,13 @@
     return c != null && typeof c === "object" && isFiniteNum(c.tokens) ? c : null;
   }
 
+  /** #141: a turn-total frame is cumulative usage, never occupancy. */
+  function ctxAggregate(c) {
+    return c.basis === "turn-total";
+  }
+
   function ctxHasWindow(c) {
-    return isFiniteNum(c.window) && c.window > 0 && isFiniteNum(c.pct);
+    return !ctxAggregate(c) && isFiniteNum(c.window) && c.window > 0 && isFiniteNum(c.pct);
   }
 
   function ctxLevel(pct) {
@@ -276,14 +281,16 @@
   }
 
   function ctxTitle(c) {
-    var ub = c.basis === "turn-total" ? "≤ " : "";
+    var agg = ctxAggregate(c);
     var out = [];
-    if (ctxHasWindow(c)) {
-      out.push("context " + ub + fmtTok(c.tokens) + " / " + fmtTok(c.window) + " (" + c.pct.toFixed(1) + "%)");
+    if (agg) {
+      out.push("context occupancy n/a");
+      out.push("cumulative " + fmtTok(c.tokens) + " tok: usage summed over a turn's model calls, not occupancy");
+    } else if (ctxHasWindow(c)) {
+      out.push("context " + fmtTok(c.tokens) + " / " + fmtTok(c.window) + " (" + c.pct.toFixed(1) + "%)");
     } else {
-      out.push("context " + ub + fmtTok(c.tokens) + " (window unknown)");
+      out.push("context " + fmtTok(c.tokens) + " (window unknown)");
     }
-    if (ub) out.push("upper bound: usage summed over a turn's model calls");
     if (c.fresh === true && isFiniteNum(c.input)) {
       out.push("input " + fmtTok(c.input) + " · cache-read " + fmtTok(c.cacheRead) + " · cache-write " + fmtTok(c.cacheWrite));
     } else if (c.fresh !== true) {
@@ -303,11 +310,16 @@
   /** `[+Δ] [bar|tick] 212.9k 21%`; tokens only when the window is unknown. */
   function ctxGauge(c, showDelta) {
     var win = ctxHasWindow(c);
-    var cls = "hf-ctx" + (win ? " hf-lv" + ctxLevel(c.pct) : "") + (c.fresh === true ? "" : " stale");
+    var cls = "hf-ctx" + (win ? " hf-lv" + ctxLevel(c.pct) : "") + (ctxAggregate(c) ? " hf-ctx-cum" : "") +
+      (c.fresh === true ? "" : " stale");
     var box = el("span", cls);
     box.setAttribute("title", ctxTitle(c));
     if (showDelta) box.appendChild(el("span", "hf-ctx-d", "+" + fmtTok(c.delta)));
-    var ub = c.basis === "turn-total" ? "≤" : "";
+    if (ctxAggregate(c)) {
+      // #141: no bar and no percentage: cumulative usage is labelled as such.
+      box.appendChild(el("span", "hf-ctx-t", "Σ" + fmtTok(c.tokens) + " cum"));
+      return box;
+    }
     if (win) {
       var g = el("span", "hf-ctx-g");
       var fill = el("i");
@@ -319,9 +331,9 @@
         g.appendChild(tick);
       }
       box.appendChild(g);
-      box.appendChild(el("span", "hf-ctx-t", ub + fmtTok(c.tokens) + " " + Math.round(c.pct) + "%"));
+      box.appendChild(el("span", "hf-ctx-t", fmtTok(c.tokens) + " " + Math.round(c.pct) + "%"));
     } else {
-      box.appendChild(el("span", "hf-ctx-t", ub + fmtTok(c.tokens)));
+      box.appendChild(el("span", "hf-ctx-t", fmtTok(c.tokens)));
     }
     return box;
   }

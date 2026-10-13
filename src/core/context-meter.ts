@@ -9,13 +9,22 @@
 // Honesty tiers, all labelled on the result:
 //  - `estimated: true` + `windowSource: 'assumed'` — the window comes from a
 //    bundled table, not from the provider for this run.
+//  - `windowSource: 'reported'` — the provider stated the window for this run
+//    (codex rollout `model_context_window`, via `usage.extra.modelContextWindow`).
 //  - `basis: 'last-call'` — latest single model call (claude assistant
-//    messages, opencode step-finish): a real occupancy reading.
+//    messages, opencode step-finish, or native latest-call usage carried on
+//    `usage.extra.lastTokenUsage`): a real occupancy reading, with a percentage.
 //  - `basis: 'turn-total'` — a usage record summed over a turn's model calls
 //    (codex turn.completed, gemini result.stats, a claude result without
-//    per-message usage): an UPPER BOUND. The overflow warning never fires off
-//    an upper bound, and renderers mark it `≤`.
-//  - unknown model → `available: false` (renders n/a), never a guessed window.
+//    per-message usage): CUMULATIVE tokens, NOT occupancy (issue #141). Repeated
+//    input across calls is not what currently fits in the window, so the
+//    snapshot carries `tokens`/`cumulativeTokens` but NO `percentage`, and
+//    renderers label it "cumulative" with occupancy n/a. The overflow warning
+//    never fires off it.
+//  - Compaction: every latest-call reading REPLACES the previous one (a smaller
+//    later call after compaction lowers the reading); never a max over the run.
+//  - unknown model and no reported window → `available: false` (renders n/a),
+//    never a guessed window.
 //
 // The default table is embedded; explicit external tables are read from disk.
 import { readFileSync } from 'node:fs';
@@ -106,6 +115,28 @@ function charLength(v: unknown): number {
   }
 }
 
+/**
+ * A canonical record for native latest-call usage, or undefined when `raw` is
+ * not a usable `LatestCallUsage`. Keeps the carrier's model and timestamp.
+ */
+function nativeLatestCall(raw: unknown, carrier: CanonicalTokenRecord): CanonicalTokenRecord | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const inputTokens = num(r.inputTokens);
+  if (inputTokens === undefined) return undefined;
+  return {
+    agent: carrier.agent,
+    model: carrier.model,
+    timestamp: carrier.timestamp,
+    inputTokens,
+    cacheReadTokens: num(r.cacheReadTokens) ?? 0,
+    cacheWriteTokens: num(r.cacheWriteTokens) ?? 0,
+    outputTokens: num(r.outputTokens) ?? 0,
+    extra: { nativeLatestCall: true },
+  };
+}
+
 export interface ContextMeter {
   /** Feed one driver event. Returns the one-time overflow warning when this event crosses the threshold. */
   observe(event: AgentEvent): string | undefined;
@@ -127,6 +158,20 @@ export interface ContextReading {
   basis: 'last-call' | 'turn-total';
 }
 
+/**
+ * Native latest-call usage (issue #141): the prompt of the most recent single
+ * model call, as the agent itself reported it (codex rollout
+ * `last_token_usage`). Fields are CANONICAL (non-overlapping): `inputTokens`
+ * is the uncached slice, so for OpenAI-style accounting pass
+ * `input_tokens - cached_input_tokens` here and the cached part as
+ * `cacheReadTokens`.
+ */
+export interface LatestCallUsage {
+  inputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
 export interface ContextMeterOptions {
   agent: string;
   /** Model requested on the RunSpec (fallback when no event names one). */
@@ -143,6 +188,7 @@ export function createContextMeter(opts: ContextMeterOptions): ContextMeter | nu
 
   let lastCall: CanonicalTokenRecord | undefined; // per-call source (last-call basis)
   let lastTurn: CanonicalTokenRecord | undefined; // aggregate source (turn-total basis)
+  let reportedWindow: number | undefined; // provider-reported window for this run (#141)
   let seenModel: string | undefined; // model named by a step/session/message event
   let toolChars = 0;
   let toolEvents = 0;
@@ -156,26 +202,42 @@ export function createContextMeter(opts: ContextMeterOptions): ContextMeter | nu
     const record = lastCall ?? lastTurn;
     if (basis === undefined || record === undefined) return undefined;
     const model = usableModel(record.model) ?? seenModel ?? usableModel(opts.requestedModel);
-    const windowTokens = lookupContextWindow(model, table);
-    if (windowTokens === undefined) {
-      return { available: false, source: 'derived', ...(model !== undefined ? { model } : {}), basis, estimated: true };
-    }
+    // A window the provider reported for this run beats any table lookup.
+    const reported = reportedWindow !== undefined;
+    const windowTokens = reportedWindow ?? lookupContextWindow(model, table);
     const tokens = occupancy(record);
+    // Cumulative (aggregate) tokens ride only an aggregate-only reading.
+    const cumulative = basis === 'turn-total' ? { cumulativeTokens: tokens } : {};
+    if (windowTokens === undefined) {
+      // Unknown window: no occupancy percentage. An aggregate-only run still
+      // states its cumulative tokens (labelled, never occupancy).
+      return {
+        available: false,
+        source: 'derived',
+        ...(model !== undefined ? { model } : {}),
+        basis,
+        ...cumulative,
+        estimated: true,
+      };
+    }
     const snap: ContextSnapshot = {
       available: true,
       source: 'derived',
-      percentage: (tokens / windowTokens) * 100,
       windowTokens,
-      windowSource: 'assumed',
+      windowSource: reported ? 'reported' : 'assumed',
       tokens,
+      ...cumulative,
       ...(model !== undefined ? { model } : {}),
       basis,
-      estimated: true,
+      estimated: !reported,
     };
+    // #141: only a latest-call reading is occupancy; an aggregate gets no
+    // percentage at all (never a >100% "occupancy", never a clamp to 100).
+    if (basis === 'last-call') snap.percentage = (tokens / windowTokens) * 100;
     if (toolEvents > 0) {
       const toolTokens = Math.ceil(toolChars / CHARS_PER_TOKEN_ESTIMATE);
       snap.toolOutputTokens = toolTokens;
-      if (tokens > 0) snap.toolOutputShare = Math.min(1, toolTokens / tokens);
+      if (basis === 'last-call' && tokens > 0) snap.toolOutputShare = Math.min(1, toolTokens / tokens);
     }
     return snap;
   };
@@ -201,14 +263,16 @@ export function createContextMeter(opts: ContextMeterOptions): ContextMeter | nu
       if (usage === undefined || typeof usage !== 'object') return undefined;
       if ((usage.extra as Record<string, unknown> | undefined)?.tokensAvailable === false) return undefined;
       if (usage.model === CLAUDE_SYNTHETIC_MODEL) return undefined;
-      if (event.type === 'message' || event.type === 'model_call_end') {
-        lastCall = usage;
-      } else if (event.type === 'usage') {
-        if (perCallUsage) lastCall = usage;
-        else lastTurn = usage;
-      } else {
-        return undefined;
-      }
+      if (event.type !== 'message' && event.type !== 'model_call_end' && event.type !== 'usage') return undefined;
+      const extra = usage.extra as Record<string, unknown> | undefined;
+      const window = extra?.modelContextWindow;
+      if (typeof window === 'number' && Number.isFinite(window) && window > 0) reportedWindow = window;
+      const native = nativeLatestCall(extra?.lastTokenUsage, usage);
+      if (event.type === 'usage' && !perCallUsage) lastTurn = usage;
+      // Native latest-call usage wins: it is the agent's own per-call reading,
+      // and it REPLACES the previous reading (compaction lowers it).
+      if (native !== undefined) lastCall = native;
+      else if (event.type !== 'usage' || perCallUsage) lastCall = usage;
       if (warned) return undefined;
       const snap = snapshot();
       if (snap?.available !== true || snap.basis !== 'last-call' || snap.percentage === undefined) return undefined;
@@ -217,7 +281,8 @@ export function createContextMeter(opts: ContextMeterOptions): ContextMeter | nu
       return (
         `context: ${opts.agent} run crossed ${Math.round(CONTEXT_WARN_FRACTION * 100)}% of the context window ` +
         `(~${snap.tokens} of ${snap.windowTokens} tok, ${snap.percentage.toFixed(1)}%` +
-        `${snap.model !== undefined ? `, ${snap.model}` : ''}; estimated, assumed window)`
+        `${snap.model !== undefined ? `, ${snap.model}` : ''}; ` +
+        `${snap.windowSource === 'reported' ? 'reported window' : 'estimated, assumed window'})`
       );
     },
     snapshot,
