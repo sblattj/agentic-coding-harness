@@ -97,6 +97,17 @@ body {
 }
 #metastrip .kv { white-space: nowrap; }
 #metastrip .k { color: var(--dim); margin-right: 5px; }
+#statsbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  padding: 8px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+#statsbar .kv { white-space: nowrap; }
+#statsbar .k { color: var(--dim); margin-right: 5px; }
+#statsbar .big { color: var(--green); font-weight: bold; }
 #feedwrap { flex: 1; position: relative; min-height: 0; }
 #feed {
   position: absolute;
@@ -142,6 +153,7 @@ body {
 </aside>
 
 <main id="main">
+  <div id="statsbar" title="global stats across all runs (/api/stats)">loading stats...</div>
   <div id="metastrip"></div>
   <div id="feedwrap">
     <div id="feed"></div>
@@ -320,6 +332,42 @@ function renderAggregate() {
   });
   /* A sum with any computed part is itself computed. */
   $("agg").textContent = runs.length + " runs \u00b7 " + live + " live \u00b7 " + fmtCost(priced ? cost : null) + (computed ? PROV_MARK.computed : "") + (unpriced ? " + " + unpriced + " unpriced" : "");
+}
+
+/* ===== global stats (GET /api/stats, #94) ===== */
+function fmtPct(n) { return n == null ? "n/a" : (n * 100).toFixed(0) + "%"; }
+function renderStats(st) {
+  var box = $("statsbar");
+  box.textContent = "";
+  function kv(k, v, big) {
+    var s = el("span", "kv");
+    s.appendChild(el("span", "k", k));
+    s.appendChild(el("span", big ? "v big" : "v", v));
+    box.appendChild(s);
+  }
+  function top(group) {
+    return Object.keys(group).sort(function (a, b) { return group[b].runs - group[a].runs; }).slice(0, 4).map(function (k) {
+      return k + " " + group[k].runs + " (" + fmtPct(group[k].successRate) + ")";
+    }).join(", ") || "-";
+  }
+  kv("runs", String(st.totalRuns), true);
+  kv("active", String(st.activeRuns));
+  kv("spend", fmtCost(st.totalRuns - st.unpricedRuns > 0 ? st.costUsd : null) + (st.unpricedRuns ? " + " + st.unpricedRuns + " unpriced" : ""), true);
+  kv("tokens", fmtTok(st.tokens.total) + " (in " + fmtTok(st.tokens.input) + " out " + fmtTok(st.tokens.output) + " cache r " + fmtTok(st.tokens.cacheRead) + " w " + fmtTok(st.tokens.cacheWrite) + ")");
+  kv("success", fmtPct(st.successRate));
+  kv("status", Object.keys(st.byStatus).map(function (k) { return k + " " + st.byStatus[k]; }).join(", ") || "-");
+  kv("agents", top(st.byAgent));
+  kv("models", top(st.byModel));
+  if (st.perRun.durationMs) kv("duration avg/p50/p95", fmtDur(st.perRun.durationMs.avg) + " / " + fmtDur(st.perRun.durationMs.p50) + " / " + fmtDur(st.perRun.durationMs.p95));
+  if (st.perRun.costUsd) kv("cost avg/p50/p95", fmtCost(st.perRun.costUsd.avg) + " / " + fmtCost(st.perRun.costUsd.p50) + " / " + fmtCost(st.perRun.costUsd.p95));
+}
+function loadStats() {
+  fetch("/api/stats").then(function (res) {
+    if (!res.ok) throw new Error("http " + res.status);
+    return res.json();
+  }).then(renderStats).catch(function () {
+    $("statsbar").textContent = "stats unavailable (/api/stats)";
+  });
 }
 
 /* ===== metadata strip ===== */
@@ -512,6 +560,8 @@ function init() {
     list.appendChild(el("div", "list-empty", "failed to load runs (/api/runs)"));
   });
   connectRunsSocket();
+  loadStats();
+  setInterval(loadStats, 5000);
   setInterval(tick, 1000);
 }
 init();
