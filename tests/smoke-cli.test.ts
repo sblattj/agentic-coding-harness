@@ -139,6 +139,15 @@ describe("ach smoke end to end", { skip: !hasZsh && "the smoke sandbox is macOS-
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("a missing bin that a skipped host-level step would install says so and plans no install", async () => {
+    const msg = path.join(root, "hostlevel.md");
+    fs.writeFileSync(msg, ["```sh", "brew install sblattj/agentic-coding-harness/ach", "ach --version", "```", ""].join("\n"));
+    const { done } = startCli([msg, "--out", path.join(root, "out-hl"), "--timeout", "60", "--json"], { cwd: root });
+    const r = await done;
+    assert.match(r.stdout, /is not installed here because step 1 \(`brew install sblattj\/agentic-coding-harness\/ach`\) is host-level and was not run in the sandbox\./, r.stdout + r.stderr);
+    assert.doesNotMatch(r.stdout, /First install|npm i -g/);
+  });
+
   it("runs every step, records the friction, fixes, reaps, and leaves the host keychain alone", async () => {
     const pidFile = path.join(root, "bg.pid");
     const msg = path.join(root, "howto.md");

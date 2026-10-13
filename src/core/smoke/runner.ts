@@ -101,6 +101,10 @@ const RE_MISSING = [
   /not found:\s*(\S+)/i,
   /^zsh:\d*:?\s*no such file or directory:\s*(\S+)/i,
 ];
+/** `spawn claude ENOENT`: a program (not a file path) could not be started. */
+const RE_SPAWN_ENOENT = /spawn\s+([\w@.+-]+)\s+ENOENT/i;
+/** npm's own chatter: never useful as friction evidence. */
+const RE_NPM_NOISE = /^\s*npm\s+(?:notice|warn)\b/i;
 const RE_WRONG_FLAG = /unknown option|unrecognized (?:option|argument)|invalid option|Usage:/i;
 /** darwin: shell steps cannot exec the host browser launchers by absolute path (#139). */
 const EXEC_GUARD_PROFILE = '(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript"))';
@@ -124,7 +128,9 @@ export function scanOutput(output: string, exitCode: number | null, step: SmokeS
     seen.add(f.kind);
     friction.push(f);
   };
+  const agentBins = new Set(Object.values(AGENT_BINARIES));
   for (const line of lines) {
+    if (RE_NPM_NOISE.test(line)) continue;
     if (RE_PROMPT.test(line)) {
       prompts.push(line.trim());
       add({ kind: 'interactive-prompt', detail: 'The step waited for input the message does not mention.', evidence: trimEvidence(line) });
@@ -134,7 +140,13 @@ export function scanOutput(output: string, exitCode: number | null, step: SmokeS
     }
     if (!failed) continue;
     let missing: string | undefined;
-    for (const re of RE_MISSING) {
+    const spawned = RE_SPAWN_ENOENT.exec(line);
+    if (spawned) {
+      const bin = spawned[1]!;
+      const what = agentBins.has(bin) ? `\`${bin}\` (the agent CLI this step runs)` : `\`${bin}\``;
+      add({ kind: 'missing-prereq', detail: `${what} is not installed; the message never installs it.`, evidence: trimEvidence(line) });
+    }
+    for (const re of spawned ? [] : RE_MISSING) {
       const m = re.exec(line);
       if (m) {
         missing = m[1]!.replace(/[:'"`]+$/, '');
@@ -159,7 +171,8 @@ export function scanOutput(output: string, exitCode: number | null, step: SmokeS
     }
   }
   if (failed && friction.length === 0) {
-    const last = lines[lines.length - 1];
+    const useful = lines.filter((l) => !RE_NPM_NOISE.test(l));
+    const last = useful[useful.length - 1];
     add({
       kind: 'failed',
       detail: `The step exited ${exitCode === null ? 'without an exit code' : exitCode}.`,

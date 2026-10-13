@@ -262,6 +262,25 @@ function nonInteractive(text: string): string | null {
 
 // ---------------------------------------------------------------- planner
 
+/** Marker in a missing-prereq detail: an earlier host-level step would have installed the bin. */
+export const HOST_LEVEL_SKIPPED_RE = /host-level and was not run in the sandbox/;
+
+/**
+ * An earlier step smoke skipped as host-level that installs `bin`: `brew install [tap/]X` with
+ * X (last path segment) equal to `bin`. `npm i -g pkg` has an unknown bin, so it never matches.
+ */
+export function skippedInstaller(bin: string, steps: SmokeStep[], skippedIdx: ReadonlySet<number>, before: number): SmokeStep | undefined {
+  return steps.find((s) => {
+    if (s.index >= before || !skippedIdx.has(s.index)) return false;
+    return s.text.split(/[;&|\n]+/).some((cmd) => {
+      const toks = cmd.trim().split(/\s+/);
+      const i = toks.findIndex((t, k) => t === "brew" && /^(?:install|reinstall)$/.test(toks[k + 1] ?? ""));
+      if (i < 0) return false;
+      return toks.slice(i + 2).some((t) => !t.startsWith("-") && t.replace(/^.*\//, "").replace(/@[\d.]+$/, "") === bin);
+    });
+  });
+}
+
 export function planInstructionFixes(input: {
   steps: SmokeStep[];
   records: StepRecord[];
@@ -333,6 +352,10 @@ export function planInstructionFixes(input: {
     for (const f of r.friction) {
       switch (f.kind) {
         case "missing-prereq": {
+          if (HOST_LEVEL_SKIPPED_RE.test(f.detail)) {
+            notes.push(`step ${step.index}: ${f.detail}; the message is fine, nothing to fix`);
+            break;
+          }
           const bin = missingBin(r, f, which);
           if (!bin) {
             notes.push(`step ${step.index}: missing-prereq (${f.detail}) names no missing binary; needs agent fix`);
