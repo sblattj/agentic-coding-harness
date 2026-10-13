@@ -74,21 +74,36 @@ for checksum verification and release automation.
 
 ## Quickstart
 
-```sh
-# no install needed:
-npx -y --package=agentic-coding-harness ach run --agent claude "add a --dry-run flag to scripts/lint.sh"
+You need Node.js 22+ and at least one agent CLI that is installed and signed in: `ach` runs
+the agent, it does not install it. The examples use Claude Code
+(`npm install -g @anthropic-ai/claude-code`, then run `claude` once to sign in); `ach doctor`
+shows which agents it can find. Run the commands inside the repository you want the agent to
+change.
 
-# or install globally:
+Each `ach run` gives Claude Code a fresh config dir, which cannot see the session from
+`claude`'s own sign-in. `--claude-default-config` uses your normal Claude config and login;
+alternatively set `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`.
+
+```sh
+# without installing ach:
+npx -y --package=agentic-coding-harness ach run --agent claude --claude-default-config "add a --dry-run flag to scripts/lint.sh"
+
+# or install it globally:
 npm install -g agentic-coding-harness
-ach run --agent claude "add a --dry-run flag to scripts/lint.sh"
+ach run --agent claude --claude-default-config "add a --dry-run flag to scripts/lint.sh"
 ```
 
-Dashboard in three lines:
+Dashboard: `ach web` keeps running, so start it in its own terminal. It opens
+http://localhost:8399 in your browser (`--no-open` skips that):
 
 ```sh
-ach web                                        # live dashboard on :8399
-ach run --agent codex "fix the failing test"   # launch runs from any terminal
-# open http://localhost:8399 — the grid shows every run; LIVE opens a terminal pane
+ach web                                        # live dashboard on :8399; leave it running
+```
+
+Then, from any other terminal (this one needs the Codex CLI, `npm install -g @openai/codex`):
+
+```sh
+ach run --agent codex "fix the failing test"   # shows up in the dashboard grid; LIVE opens a terminal pane
 ```
 
 ## Demo: one task, six agents, one cost table
