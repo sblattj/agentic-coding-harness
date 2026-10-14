@@ -137,7 +137,7 @@ STATUS AGENT    RUNID    SESSION  ELAPSED       IN      OUT     CACHE     COST  
 +      claude   7c1f0a2e 7c1f0a2e     31s     4.8k     933    39.3k  $0.0612          step
 ●      kiro     91b3ce11 91b3ce11     12s       0       0        0  $0.0000   0.05cr tool    Bash
 
-2 runs  in 4.8k  out 933  cost $0.0612  credits 0.05cr  q quit
+2 runs  in 4.8k  out 933  cost $0.0612  credits 0.05cr  ? help  q quit
 
 $ ach report trials/20260911-141210          # single-file HTML comparison
 $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel / ATIF
@@ -286,7 +286,9 @@ only; opencode's stream carries no request timing. See [ARCHITECTURE.md](docs/AR
 ![Observability view showing the traces waterfall, token and cost metric cards with charts, and the event log stream for a single coding agent run](docs/assets/web-trio.png)
 
 **Terminal** — `ach dash` is a live TUI over the run registry (redraws 2×/s, ANSI status
-glyphs, totals footer); `--json` dumps RunRecords for tools.
+glyphs, totals footer); `--json` dumps RunRecords for tools. Press `?` for key help (keys, status
+glyph legend, flags). The first launch shows it once (seen-flag `<stateDir>/dash-help-seen`);
+`--help-keys` forces it, `--no-help` suppresses the auto-show for scripts. `NO_COLOR` or a non-TTY gives plain text.
 
 **Per-model cost chips** — a run that used two or more models (for example Claude mixing an opus
 main loop with haiku sub-agent calls) records `totals.byModel` (cost and tokens per model, highest
@@ -383,7 +385,7 @@ ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 ach report <trials-dir> [--out path]           # single-file HTML comparison
-ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section); q quits
+ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help]; ? help, q quits
 ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-file run queue, <= N live
             # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
 ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]

@@ -2,6 +2,8 @@
 // Default view: ANSI full-screen table redrawn ~2/s over <stateDir>/runs.
 // --json dumps RunRecords (+ live flag and effectiveStatus) for tools and
 // tests; no TTY falls back to that same dump with a hint on stderr.
+import fs from "node:fs";
+import path from "node:path";
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
@@ -228,7 +230,7 @@ function footer(visible: RunRecord[]): string {
     `cost ${fmtCost(cost)}${costComputed ? PROVENANCE_MARKER.computed : ""}`,
   ];
   if (!credits.isEmpty) parts.push(credits.format((n) => fmtCredits(n)));
-  parts.push("q quit");
+  parts.push("? help", "q quit");
   return parts.join("  ");
 }
 
@@ -402,9 +404,90 @@ export function frame(
   return lines.join("\n");
 }
 
+// ---------------------------------------------------------------- key help (#97)
+
+/**
+ * THE key table: the single source for both the `onKey` handler and the `?`
+ * overlay. To add a key to dash, add ONE line here (bytes, label, one-line
+ * description, action) and handle the new action in `onKey`; the overlay lists
+ * it automatically. Flag-driven behaviors that are not keys go in FLAG_HELP.
+ */
+export type KeyAction = "quit" | "help";
+export const KEY_TABLE: ReadonlyArray<{ bytes: readonly number[]; label: string; desc: string; action: KeyAction }> = [
+  { bytes: [0x3f], label: "?", desc: "show this key help", action: "help" },
+  { bytes: [0x71, 0x03], label: "q / Ctrl-C", desc: "quit", action: "quit" },
+];
+
+/** CLI behaviors that are not keys, so the TUI teaches its own flags. */
+export const FLAG_HELP: ReadonlyArray<{ flag: string; desc: string }> = [
+  { flag: "--all", desc: "show runs older than the last hour" },
+  { flag: "--json", desc: "dump RunRecords as JSON instead of the TUI" },
+  { flag: "--dir <path>", desc: "read a different state directory (alias --state-dir)" },
+  { flag: "--help-keys", desc: "show this help on launch, even if already seen" },
+  { flag: "--no-help", desc: "never auto-show this help (scripts, CI)" },
+];
+
+/** Status glyph legend (plain ASCII base; the TUI colors the same marks). */
+const GLYPH_LEGEND: ReadonlyArray<{ status: Status; desc: string; color: number }> = [
+  { status: "running", desc: "running", color: 32 },
+  { status: "success", desc: "success", color: 0 },
+  { status: "error", desc: "error", color: 31 },
+  { status: "aborted", desc: "aborted / interrupted", color: 33 },
+  { status: "unavailable", desc: "outage, no task verdict", color: 0 },
+];
+
+/** Action for one input byte, or undefined when the key is unbound. */
+export function keyAction(b: number): KeyAction | undefined {
+  return KEY_TABLE.find((k) => k.bytes.includes(b))?.action;
+}
+
+/** Pure overlay content. ansi=false yields plain text with no escape codes. */
+export function keyHelpLines(ansi: boolean, width: number): string[] {
+  const bold = (t: string): string => (ansi ? `\x1b[1m${t}\x1b[0m` : t);
+  const fit = (t: string): string => (t.length > width ? t.slice(0, Math.max(0, width - 1)) + "~" : t);
+  const out: string[] = [bold(fit("ach dash - key help")), "", bold("Keys")];
+  const kw = Math.max(...KEY_TABLE.map((k) => k.label.length));
+  for (const k of KEY_TABLE) out.push(fit(`  ${k.label.padEnd(kw)}  ${k.desc}`));
+  out.push("", bold("Status glyphs"));
+  for (const g of GLYPH_LEGEND) {
+    const mark = GLYPHS[g.status];
+    const shown = ansi && g.color !== 0 ? `\x1b[${g.color}m${mark}\x1b[0m` : mark;
+    out.push(`  ${shown}  ${fit(g.desc).slice(0, Math.max(0, width - 5))}`);
+  }
+  out.push(fit("  (second mark: p/f/e = --verify pass/fail/error)"));
+  out.push("", bold("Flags"));
+  const fw = Math.max(...FLAG_HELP.map((f) => f.flag.length));
+  for (const f of FLAG_HELP) out.push(fit(`  ${f.flag.padEnd(fw)}  ${f.desc}`));
+  out.push("", fit("press any key to close"));
+  return out;
+}
+
+const HELP_SEEN_FILE = "dash-help-seen";
+
+export function helpSeenPath(dir: string): string {
+  return path.join(dir, HELP_SEEN_FILE);
+}
+
+/** First-run rule: auto-show unless --no-help, or already seen; --help-keys always shows. */
+export function shouldShowHelp(dir: string, opts: { helpKeys?: boolean; noHelp?: boolean }): boolean {
+  if (opts.helpKeys) return true;
+  if (opts.noHelp) return false;
+  return !fs.existsSync(helpSeenPath(dir));
+}
+
+/** Remember dismissal (single seen-flag file). Best-effort: never breaks the TUI. */
+export function markHelpSeen(dir: string): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(helpSeenPath(dir), new Date().toISOString() + "\n");
+  } catch {
+    /* read-only state dir: the hint just shows again next launch */
+  }
+}
+
 // ---------------------------------------------------------------- modes
 
-async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined, stateOnly: boolean): Promise<number> {
+async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined, stateOnly: boolean, showHelpAtStart: boolean): Promise<number> {
   const ansi = !process.env.NO_COLOR;
   const tracker = new PaceTracker();
   const frameOpts: FrameOptions = { tracker, ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
@@ -415,11 +498,29 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
   let closed = false;
   const stdin = process.stdin;
 
+  let helpOpen = showHelpAtStart;
+  const drawHelp = (): void => {
+    const lines = keyHelpLines(ansi, width());
+    process.stdout.write((ansi ? "\x1b[H\x1b[2J" : "") + lines.join("\n") + "\n");
+  };
   const onKey = (buf: Buffer): void => {
     for (const b of buf) {
-      if (b === 0x71 /* q */ || b === 0x03 /* Ctrl-C */) {
+      const action = keyAction(b);
+      if (action === "quit" && (b === 0x03 || !helpOpen)) {
         cleanup();
         void flushAndExit(0);
+        return;
+      }
+      if (helpOpen) {
+        // Any key (q included) dismisses the overlay and is remembered.
+        helpOpen = false;
+        markHelpSeen(dir);
+        void draw();
+        return;
+      }
+      if (action === "help") {
+        helpOpen = true;
+        drawHelp();
         return;
       }
     }
@@ -483,6 +584,10 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
       recs = [];
     }
     drawing = false;
+    if (helpOpen) {
+      drawHelp();
+      return;
+    }
     process.stdout.write(
       "\x1b[H\x1b[2J" + frame(recs, dir, showAll, width(), ansi, { ...frameOpts, quota: quota ?? [], skippedRunRecords, queues: collectQueueViews(dir) }) + "\n",
     );
@@ -510,6 +615,8 @@ export async function cmdDash(rest: string[]): Promise<number> {
       json: { type: "boolean", default: false },
       all: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      "help-keys": { type: "boolean", default: false },
+      "no-help": { type: "boolean", default: false },
       queues: { type: "boolean", default: false },
       dir: { type: "string" },
       "state-dir": { type: "string" },
@@ -533,6 +640,11 @@ export async function cmdDash(rest: string[]): Promise<number> {
     throw new HarnessError("dash --state-dir expects a state directory path", "USAGE");
   }
   const dir = resolveDirFlag(args.values, "state-dir") ?? stateDir();
+  if (args.values["help-keys"] && !args.values.json && !process.stdout.isTTY) {
+    // Non-TTY: the overlay as plain text (never escape codes), then exit.
+    process.stdout.write(keyHelpLines(false, 100).join("\n") + "\n");
+    return 0;
+  }
   if (args.values.json || !process.stdout.isTTY) {
     if (!args.values.json) {
       process.stderr.write("dash: stdout is not a TTY — dumping JSON (pass --json to silence this hint)\n");
@@ -554,5 +666,6 @@ export async function cmdDash(rest: string[]): Promise<number> {
     process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
     return 0;
   }
-  return liveLoop(dir, args.values.all, budgetUsd, args.values["state-only"]);
+  const showHelp = shouldShowHelp(dir, { helpKeys: args.values["help-keys"], noHelp: args.values["no-help"] });
+  return liveLoop(dir, args.values.all, budgetUsd, args.values["state-only"], showHelp);
 }

@@ -2,6 +2,12 @@
 
 Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes and commit history.
 
+## [Unreleased]
+
+### Added
+
+- `ach dash` has a `?` key-help overlay: every active key with a one-line description, the status glyph legend, and the flag-driven behaviors (`--all`, `--json`, `--dir`). Any key closes it and the table redraws. The first launch in a fresh state dir shows it once; dismissal is remembered in `<stateDir>/dash-help-seen` (delete the file to see it again). `--help-keys` forces the overlay, `--no-help` never auto-shows it; with `NO_COLOR` or a non-TTY stdout it is plain text. The footer now reads `? help  q quit`. Keys live in one table (`KEY_TABLE` in `src/cli/dash.ts`), so a new key is one line. (#97)
+
 ## [0.23.0] - 2026-10-12
 
 ### Added
