@@ -61,6 +61,17 @@ skipped):
 gh workflow run release-binaries.yml -f tag=vX.Y.Z
 ```
 
+## Publishing to PyPI
+
+The `pypi` job publishes the Python wrapper (`python/`, which ships the committed
+`_vendor/ach.mjs` bundle) with PyPI trusted publishing. It checks the tag matches
+`python/pyproject.toml`, builds the wheel and sdist, installs the wheel into a
+throwaway venv and checks `ach --version`, then uploads with
+`pypa/gh-action-pypi-publish` (`skip-existing`, so a re-run is green). The PyPI
+project's Publishing settings list GitHub publisher `sblattj/agentic-coding-harness`,
+workflow `release-binaries.yml`, environment `pypi`. The same
+`gh workflow run release-binaries.yml -f tag=vX.Y.Z` retries it.
+
 A version older than npm's current `latest` is published under the `backfill` dist-tag, so a backfill never moves `latest` backwards. A backfill run's `homebrew` job fails its version check (the formula always tracks the default branch's version); that is expected and harmless.
 
 ## Homebrew tap

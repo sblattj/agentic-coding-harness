@@ -127,6 +127,45 @@ jobs:
             echo "::error::npm publish of $NAME@$VERSION failed. Publishing uses npm trusted publishing: the package's npm settings must list GitHub Actions, repository sblattj/agentic-coding-harness, workflow release-binaries.yml, no environment. Fix that, then re-run: gh workflow run release-binaries.yml -f tag=$RELEASE_TAG"
             exit 1
           fi
+  pypi:
+    needs: build
+    runs-on: ubuntu-24.04
+    # PyPI trusted publishing: the agentic-coding-harness project on PyPI lists
+    # GitHub publisher sblattj/agentic-coding-harness, workflow
+    # release-binaries.yml, environment pypi. No PyPI token is stored anywhere.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/agentic-coding-harness
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Build the wheel and sdist, then smoke the wheel
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("python/pyproject.toml","rb"))["project"]["version"])')"
+          test "$RELEASE_TAG" = "v$VERSION"
+          python3 -m pip install --quiet build
+          python3 -m build python --outdir python/dist
+          python3 -m venv "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/bin/pip" install --quiet python/dist/*.whl
+          test "$("$RUNNER_TEMP/smoke/bin/ach" --version | tr -d '[:space:]' | sed 's/^v//')" = "$VERSION"
+      # skip-existing keeps a dispatch re-run of an already-published tag green.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist
+          skip-existing: true
   homebrew:
     needs: [publish, npm]
     runs-on: ubuntu-24.04
