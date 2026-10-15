@@ -289,6 +289,10 @@ only; opencode's stream carries no request timing. See [ARCHITECTURE.md](docs/AR
 glyphs, totals footer); `--json` dumps RunRecords for tools. Press `?` for key help (keys, status
 glyph legend, flags). The first launch shows it once (seen-flag `<stateDir>/dash-help-seen`);
 `--help-keys` forces it, `--no-help` suppresses the auto-show for scripts. `NO_COLOR` or a non-TTY gives plain text.
+`--set-terminal-title[=FORMAT]` keeps the run state in the terminal tab title, refreshed with the table
+(default `{active} running · {done}/{total}`; tokens `{active}`, `{done}`, `{total}`, `{pct}`, `{spend}` = today's
+USD; an unknown token stays as written). Quitting leaves a final summary title. Off by default, and never written
+to a non-TTY or `--json` output.
 
 **Per-model cost chips** — a run that used two or more models (for example Claude mixing an opus
 main loop with haiku sub-agent calls) records `totals.byModel` (cost and tokens per model, highest
@@ -385,7 +389,7 @@ ach emit --input events.json --format atif|otel|langfuse [--out path]
             [--agent A] [--model M] [--session-id SID]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 ach report <trials-dir> [--out path]           # single-file HTML comparison
-ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help]; ? help, q quits
+ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help] [--set-terminal-title[=FMT]]; ? help, q quits
 ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-file run queue, <= N live
             # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
 ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]

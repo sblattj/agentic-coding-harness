@@ -425,6 +425,7 @@ export const FLAG_HELP: ReadonlyArray<{ flag: string; desc: string }> = [
   { flag: "--dir <path>", desc: "read a different state directory (alias --state-dir)" },
   { flag: "--help-keys", desc: "show this help on launch, even if already seen" },
   { flag: "--no-help", desc: "never auto-show this help (scripts, CI)" },
+  { flag: "--set-terminal-title[=FMT]", desc: "keep run counts in the tab title" },
 ];
 
 /** Status glyph legend (plain ASCII base; the TUI colors the same marks). */
@@ -485,9 +486,74 @@ export function markHelpSeen(dir: string): void {
   }
 }
 
+// ---------------------------------------------------------------- terminal title (#92)
+
+export const DEFAULT_TITLE_FORMAT = "{active} running · {done}/{total}";
+
+export interface TitleStats {
+  active: number;
+  done: number;
+  total: number;
+  /** Summed USD of runs started today (local day); unpriced runs add nothing. */
+  spendUsd: number;
+}
+
+/**
+ * Counts behind the title, over the same rows the table shows: `total` is the
+ * visible local runs, `active` the live ones, `done` the rest. Transcript rows
+ * have no run status, so they never count.
+ */
+export function titleStats(recs: RunRecord[], showAll: boolean, now: number = Date.now()): TitleStats {
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
+  let active = 0;
+  let total = 0;
+  let spendUsd = 0;
+  for (const r of recs) {
+    if (r.metadata?.source === "transcript") continue;
+    if (r.startedAt >= dayStart.getTime() && r.totals !== undefined && !usdUnavailable(r)) spendUsd += r.totals.costUsd;
+    if (!isVisible(r, now, showAll)) continue;
+    total++;
+    if (isLive(r, now)) active++;
+  }
+  return { active, done: total - active, total, spendUsd };
+}
+
+/** Renders FORMAT; an unknown `{token}` stays as written. */
+export function renderTitle(format: string, s: TitleStats): string {
+  const values: Record<string, string> = {
+    active: String(s.active),
+    done: String(s.done),
+    total: String(s.total),
+    pct: String(s.total === 0 ? 0 : Math.round((s.done / s.total) * 100)),
+    spend: `$${s.spendUsd.toFixed(2)}`,
+  };
+  return format.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m);
+}
+
+/** OSC 0 title sequence. Control bytes in the text are dropped so a format can never end the sequence early. */
+export function titleSequence(text: string): string {
+  return `\x1b]0;${text.replace(/[\x00-\x1f\x7f]/g, "")}\x07`;
+}
+
+/**
+ * Pulls `--set-terminal-title[=FORMAT]` out of argv before parseArgs: a string
+ * option would swallow the next argument when the flag is given bare.
+ */
+export function takeTitleFlag(argv: string[]): { rest: string[]; format: string | undefined } {
+  let format: string | undefined;
+  const rest: string[] = [];
+  for (const a of argv) {
+    if (a === "--set-terminal-title") format = DEFAULT_TITLE_FORMAT;
+    else if (a.startsWith("--set-terminal-title=")) format = a.slice("--set-terminal-title=".length) || DEFAULT_TITLE_FORMAT;
+    else rest.push(a);
+  }
+  return { rest, format };
+}
+
 // ---------------------------------------------------------------- modes
 
-async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined, stateOnly: boolean, showHelpAtStart: boolean): Promise<number> {
+async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined, stateOnly: boolean, showHelpAtStart: boolean, titleFormat: string | undefined): Promise<number> {
   const ansi = !process.env.NO_COLOR;
   const tracker = new PaceTracker();
   const frameOpts: FrameOptions = { tracker, ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
@@ -544,6 +610,16 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
     if (ansi) process.stdout.write("\x1b[?25h\x1b[?1049l");
+    // Final title from a fresh scan, so the tab never keeps a mid-run count.
+    if (titleFormat !== undefined) {
+      let recs: RunRecord[] = [];
+      try {
+        recs = scanRunRecords(dir).records;
+      } catch {
+        /* state dir unreadable: the summary shows zeros */
+      }
+      process.stdout.write(titleSequence(renderTitle(titleFormat, titleStats(recs, showAll))));
+    }
   }
 
   let quota: QuotaRow[] | undefined;
@@ -584,6 +660,7 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
       recs = [];
     }
     drawing = false;
+    if (titleFormat !== undefined) process.stdout.write(titleSequence(renderTitle(titleFormat, titleStats(recs, showAll))));
     if (helpOpen) {
       drawHelp();
       return;
@@ -608,7 +685,8 @@ async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undef
 
 // ---------------------------------------------------------------- command
 
-export async function cmdDash(rest: string[]): Promise<number> {
+export async function cmdDash(argv: string[]): Promise<number> {
+  const { rest, format: titleFormat } = takeTitleFlag(argv);
   const args = parseArgs({
     args: rest,
     options: {
@@ -667,5 +745,5 @@ export async function cmdDash(rest: string[]): Promise<number> {
     return 0;
   }
   const showHelp = shouldShowHelp(dir, { helpKeys: args.values["help-keys"], noHelp: args.values["no-help"] });
-  return liveLoop(dir, args.values.all, budgetUsd, args.values["state-only"], showHelp);
+  return liveLoop(dir, args.values.all, budgetUsd, args.values["state-only"], showHelp, titleFormat);
 }

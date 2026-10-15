@@ -390,7 +390,9 @@ usage:
                (live run dashboard; --json dumps RunRecords and exits; live
                 runs get a pace row: $/h + tok/min over 15m/1h, budget ETA;
                 QUOTA column shows vendor-reported headroom per agent;
-                --dir is an alias of --state-dir here)
+                --dir is an alias of --state-dir here;
+                --set-terminal-title[=FMT] keeps {active} {done} {total}
+                {pct} {spend} in the tab title, TTY only)
 ${QUEUE_USAGE}
   ach quota [--json] [--agent A]
                 (vendor-reported subscription headroom per agent: window, used,
