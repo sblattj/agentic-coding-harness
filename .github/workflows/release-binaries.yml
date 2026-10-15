@@ -172,9 +172,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # main is behind the sdlc-review ruleset, and only a deploy key may
+      # bypass it, so the formula commit is pushed over SSH with that key.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
+          ssh-key: ${{ secrets.HOMEBREW_DEPLOY_KEY }}
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
