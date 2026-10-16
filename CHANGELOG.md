@@ -4,6 +4,8 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-15
+
 ### Added
 
 - `ach dash --set-terminal-title[=FORMAT]` writes the run state to the terminal tab title on every redraw, so a busy dash is visible from the tab bar. The default format is `{active} running · {done}/{total}`; tokens are `{active}`, `{done}`, `{total}`, `{pct}` (done over total) and `{spend}` (USD of runs started today). An unknown token renders as written. Quitting writes a final summary title from a fresh scan. Off by default, so output without the flag is unchanged; a non-TTY stdout and `--json` never get the sequence. `watch` streams deltas to stderr and has no run counts, so it does not take the flag. (#92)
