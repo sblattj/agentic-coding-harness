@@ -202,7 +202,7 @@ usage:
                          [--claude-no-background-tasks]  (set CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
                            so claude -p waits for spawned sub-agents instead of exiting; or env
                            AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS=1)
-              null: negative-control smoke test — no CLI binary, no auth, no network,
+              null: negative-control smoke test: no CLI binary, no auth, no network,
                     deterministic zero-cost usage (ach run --agent null "<prompt>");
                     env AGENTIC_CODING_HARNESS_NULL_EXIT=error|timeout|budget_exceeded
                     forces that exitStatus; AGENTIC_CODING_HARNESS_NULL_TURNS=N sets
@@ -256,7 +256,7 @@ usage:
                   the preflight handshake. Sends NO prompt; exit 1 if any check failed)
   ach regrade <run-id> --verify '<cmd>' [--verify-timeout-ms MS] [--json]
                 (re-run a checker against a saved run's cwd; appends to the record's
-                 regrades[] — no agent launched, run-time verify never rewritten)
+                 regrades[]; no agent launched, run-time verify never rewritten)
   ach trial --matrix <plan.json> [--dry-run] [--retry-failed] [--ledger PATH] [--json] [--hermetic]
                 [--claude-no-background-tasks]
                 (resumable agents x tasks x models x trials grid; every cell is one

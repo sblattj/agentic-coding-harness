@@ -250,7 +250,7 @@ infrastructure failure is an *error*:
 | Status | When | On re-run | `--retry-failed` |
 |---|---|---|---|
 | `passed` | `exitStatus` is `success` and the checker passed (or the task has no checker) | skipped | skipped |
-| `verify-failed` | `exitStatus` is `success` and the checker failed, **or** the harness stopped the agent at a plan budget cap (`budget_exceeded`, `turn_limit`) | skipped | **skipped — never retried** |
+| `verify-failed` | `exitStatus` is `success` and the checker failed, **or** the harness stopped the agent at a plan budget cap (`budget_exceeded`, `turn_limit`) | skipped | **skipped, never retried** |
 | `error` | setup failed; the agent exited `error`, `timeout`, `aborted` or `cancelled`; the checker could not finish (verify `error`, e.g. it timed out); or the launch threw | reported, not re-run | re-run |
 | `skipped-unavailable` | the agent CLI is missing or could not start (`exitStatus: "unavailable"`, see `src/core/availability.ts`) | run again | run again |
 | `skipped-provider-limit` | a run that would be `error` died on a provider usage or rate limit (`hit your session limit`, `usage limit reached`, `rate limit`, HTTP 429, `overloaded`; see `src/core/provider-limit.ts`) | run again | run again |
