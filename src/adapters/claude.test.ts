@@ -15,6 +15,8 @@ import {
   type HarnessChildProcess,
   type SpawnFn,
 } from './claude.ts';
+import { classifyUnavailable } from '../core/availability.ts';
+import { providerLimitReason } from '../core/provider-limit.ts';
 
 const FIXTURE = readFileSync(
   new URL('./fixtures/claude-ndjson-sample.ndjson', import.meta.url),
@@ -768,6 +770,15 @@ describe('ClaudeCodeAdapter not-logged-in stream', () => {
     }
   });
 
+  it('the tagged event, in the shape claude emits it, settles the run unavailable with the hint', async () => {
+    const { events, stateDir } = await run();
+    try {
+      assert.equal(classifyUnavailable({ adapterExit: 'error', events }), claudeAuthHint(true));
+    } finally {
+      cleanup(stateDir);
+    }
+  });
+
   it('uses the login hint when the default config is in use', async () => {
     const prev = process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG;
     process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = '1';
@@ -844,6 +855,11 @@ describe('ClaudeCodeAdapter provider-limit stream', () => {
 
   it('the result line alone is enough', async () => {
     assert.equal((await run([LIMIT_RESULT])).length, 1);
+  });
+
+  it('the tagged event, in the shape claude emits it, is what providerLimitReason detects', async () => {
+    const errs = await run([LIMIT_RESULT]);
+    assert.match(providerLimitReason(errs) ?? '', /provider limit: You've hit your session limit/);
   });
 
   it('an ordinary error result, or limit wording in a normal assistant turn, is not a provider limit', async () => {

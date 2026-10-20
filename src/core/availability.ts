@@ -22,7 +22,7 @@
 //      the model produced anything.
 //
 //   3. auth failure — an adapter-originated `error` event tagged
-//      `data.kind === 'auth_failed'` (claude's "Not logged in" stream). The
+//      `kind === 'auth_failed'` on payload or data (claude's "Not logged in" stream). The
 //      adapter saw the CLI itself refuse for lack of credentials, so the run
 //      is `unavailable` even though an assistant turn preceded it; the event's
 //      message (the fix) becomes the reason.
@@ -32,6 +32,7 @@
 // a run produced no task verdict either, so "no data" is the honest bucket.
 
 import { existsSync } from 'node:fs';
+import { errorEventBody } from './provider-limit.ts';
 import type { AdapterExit, AgentEvent } from './types.ts';
 
 /** Event types that prove the agent actually started working on the task. */
@@ -63,9 +64,7 @@ export function isSpawnFailureEvent(e: AgentEvent): boolean {
 
 /** True for an adapter-originated "not logged in" error event (rule 3). */
 export function isAuthFailureEvent(e: AgentEvent): boolean {
-  if (e.type !== 'error') return false;
-  const data = e.data as { kind?: unknown } | null | undefined;
-  return typeof data === 'object' && data !== null && data.kind === 'auth_failed';
+  return e.type === 'error' && errorEventBody(e)?.kind === 'auth_failed';
 }
 
 export interface AvailabilityInput {
@@ -88,7 +87,10 @@ export function classifyUnavailable(input: AvailabilityInput): string | null {
     return `agent CLI could not be started (${eventText(spawnFailure)})`;
   }
   const authFailure = input.events.find(isAuthFailureEvent);
-  if (authFailure !== undefined) return eventText(authFailure) || 'agent CLI is not logged in';
+  if (authFailure !== undefined) {
+    const bodyMessage = errorEventBody(authFailure)?.message;
+    return eventText(authFailure) || (typeof bodyMessage === 'string' && bodyMessage) || 'agent CLI is not logged in';
+  }
   const active = input.events.some((e) => ACTIVITY_TYPES.has(e.type));
   if (!active) {
     return 'agent CLI exited with an error before its first event (missing auth, service outage, or a startup failure)';

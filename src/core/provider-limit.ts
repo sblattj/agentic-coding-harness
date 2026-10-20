@@ -20,13 +20,23 @@ export function isProviderLimitText(text: string | undefined | null): boolean {
   return typeof text === 'string' && text !== '' && PROVIDER_LIMIT_RE.test(text);
 }
 
-/** Error-lane text of one event: error message + data.stderrTail, or a stderr progress line. */
+/**
+ * The structured body of an error event. Adapters that emit core events
+ * directly (claude) put it on `payload`; houseEventToCore-bridged lanes put
+ * it on `data`. Both are read, like countsAsTurn in src/core/driver.ts.
+ */
+export function errorEventBody(e: AgentEvent): Record<string, unknown> | null {
+  const raw = (e as { payload?: unknown }).payload ?? e.data;
+  return typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : null;
+}
+
+/** Error-lane text of one event: error message + body stderrTail/message, or a stderr progress line. */
 function errorLaneTexts(e: AgentEvent): string[] {
   if (e.type === 'error') {
-    const data = e.data as { stderrTail?: unknown; message?: unknown } | null | undefined;
+    const data = errorEventBody(e);
     const out: string[] = [];
     if (typeof e.message === 'string') out.push(e.message);
-    if (typeof data === 'object' && data !== null) {
+    if (data !== null) {
       if (typeof data.stderrTail === 'string') out.push(data.stderrTail);
       if (typeof data.message === 'string') out.push(data.message);
     }
@@ -36,11 +46,9 @@ function errorLaneTexts(e: AgentEvent): string[] {
   return [];
 }
 
-/** True for an adapter-originated error event tagged `data.kind === 'provider_limit'`. */
+/** True for an adapter-originated error event tagged `kind === 'provider_limit'` (payload or data). */
 export function isProviderLimitEvent(e: AgentEvent): boolean {
-  if (e.type !== 'error') return false;
-  const data = e.data as { kind?: unknown } | null | undefined;
-  return typeof data === 'object' && data !== null && data.kind === 'provider_limit';
+  return e.type === 'error' && errorEventBody(e)?.kind === 'provider_limit';
 }
 
 /**
