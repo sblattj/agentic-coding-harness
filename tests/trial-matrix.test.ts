@@ -214,6 +214,23 @@ describe("ledger", () => {
     assert.deepEqual(readLedger(file).rows.map((r) => r.status), ["passed", "verify-failed", "error"]);
   });
 
+  it("plan claude.disableBackgroundTasks puts the env flag on claude cells only", () => {
+    const cells = expandMatrix(
+      parseMatrixPlan({
+        experiment: "bg",
+        agents: ["claude", "null"],
+        tasks: [{ id: "t", prompt: "p" }],
+        claude: { disableBackgroundTasks: true },
+      }),
+      root,
+    );
+    assert.deepEqual(cells.find((c) => c.agent === "claude")!.env, { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" });
+    assert.equal(cells.find((c) => c.agent === "null")!.env, undefined);
+    const plain = expandMatrix(parseMatrixPlan({ experiment: "bg", agents: ["claude"], tasks: [{ id: "t", prompt: "p" }] }), root);
+    assert.equal(plain[0]!.env, undefined, "default unchanged");
+    assert.throws(() => parseMatrixPlan({ experiment: "bg", agents: ["claude"], tasks: [{ id: "t", prompt: "p" }], claude: { nope: 1 } }));
+  });
+
   it("classifyCell and the exit rule", () => {
     assert.equal(classifyCell({ exitStatus: "success" }), "passed");
     assert.equal(classifyCell({ exitStatus: "success", verify: "pass" }), "passed");

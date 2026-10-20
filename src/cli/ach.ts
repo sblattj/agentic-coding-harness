@@ -199,6 +199,9 @@ usage:
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
                            AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
+                         [--claude-no-background-tasks]  (set CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+                           so claude -p waits for spawned sub-agents instead of exiting; or env
+                           AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS=1)
               null: negative-control smoke test — no CLI binary, no auth, no network,
                     deterministic zero-cost usage (ach run --agent null "<prompt>");
                     env AGENTIC_CODING_HARNESS_NULL_EXIT=error|timeout|budget_exceeded
@@ -255,6 +258,7 @@ usage:
                 (re-run a checker against a saved run's cwd; appends to the record's
                  regrades[] — no agent launched, run-time verify never rewritten)
   ach trial --matrix <plan.json> [--dry-run] [--retry-failed] [--ledger PATH] [--json] [--hermetic]
+                [--claude-no-background-tasks]
                 (resumable agents x tasks x models x trials grid; every cell is one
                  run labelled experiment/variant/cellId=agent:task:model:trialN;
                  <plan>.ledger.jsonl records finalized cells, so re-running the same
@@ -263,6 +267,7 @@ usage:
                  interruption; see docs/TRIALS.md)
   ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N]
                 [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json] [--hermetic]
+                [--claude-no-background-tasks]
                 [--permission-mode <mode>] [--allowed-tools <list>]... [--disallowed-tools <list>]...
                 [--mcp-config <path|json>]
                 (bundled self-verifying tasks as a matrix; default agents = every
@@ -610,6 +615,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       "kiro-startup-ms": { type: "string" },
       "kiro-require-model-ack": { type: "boolean", default: false },
       "claude-default-config": { type: "boolean", default: false },
+      "claude-no-background-tasks": { type: "boolean", default: false },
       "kiro-mcp-server": { type: "string", multiple: true },
       // Kiro IDE typed config (src/core/types.ts KiroIdeConfig, #110). Ignored
       // for other agents, like the --kiro-* flags above.
@@ -663,6 +669,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   // The adapter registry takes no options (driver.ts defaultAdapters), so the
   // flag travels as the env var the Claude adapter already honours.
   if (args.values["claude-default-config"]) process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
+  if (args.values["claude-no-background-tasks"]) process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS = "1";
 
   const callStarts = new Map<string, number>();
   const onEvent = (e: AgentEvent) => {

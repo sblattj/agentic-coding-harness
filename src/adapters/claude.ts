@@ -688,6 +688,13 @@ export interface ClaudeAdapterOptions {
    * runs share one config. Issue #3.
    */
   useDefaultClaudeConfig?: boolean;
+  /**
+   * Set CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 on the child: headless
+   * `claude -p` otherwise exits while spawned sub-agents still run, so this
+   * makes it wait for them. Also enabled by the env var
+   * AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS=1. Default off.
+   */
+  disableBackgroundTasks?: boolean;
 }
 
 /**
@@ -709,6 +716,11 @@ export function canonicalJson(value: unknown): string {
 /** True when the run should use the default (authenticated) Claude config. */
 export function useDefaultClaudeConfig(opts: ClaudeAdapterOptions, env: NodeJS.ProcessEnv = process.env): boolean {
   return opts.useDefaultClaudeConfig === true || env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG === '1';
+}
+
+/** True when the child should run with background tasks disabled (waits for sub-agents). */
+export function disableClaudeBackgroundTasks(opts: ClaudeAdapterOptions, env: NodeJS.ProcessEnv = process.env): boolean {
+  return opts.disableBackgroundTasks === true || env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS === '1';
 }
 
 /**
@@ -866,6 +878,8 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       this.configDir = configDir;
       childEnv.CLAUDE_CONFIG_DIR = configDir;
     }
+    // Off by default: an inherited value is left as is.
+    if (disableClaudeBackgroundTasks(this.opts)) childEnv.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1';
 
     const args: string[] = [
       '-p',

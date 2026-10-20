@@ -355,6 +355,7 @@ Unknown keys are rejected.
 | `variant` | string, default `{agent}:{model}` | template; placeholders `{agent}` `{model}` `{task}` |
 | `budget` | `{usd?, maxTurns?, wallMs?, idleMs?}` | per-run caps, as the `ach run` flags |
 | `sandbox` | `{permissionMode?, allowedTools?, disallowedTools?, mcpConfig?}` | default sandbox policy for every cell; agent entries and tasks may override it (see "Sandbox policy in a plan") |
+| `claude` | `{disableBackgroundTasks?}` | claude cells only: `disableBackgroundTasks: true` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` so `claude -p` waits for spawned sub-agents instead of exiting while they run (same as `--claude-no-background-tasks`) |
 | `cwd` | string? | default agent cwd for shared-workspace tasks, relative to the plan's directory (default: that directory) |
 | `setupTimeoutMs` / `verifyTimeoutMs` | int? | plan-level defaults (300000 / 120000) |
 

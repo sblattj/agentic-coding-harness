@@ -176,6 +176,45 @@ describe('ClaudeCodeAdapter.spawn', () => {
     }
   });
 
+  it('disableBackgroundTasks: off by default, option or env var sets CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1', async () => {
+    const prev = process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS;
+    const prevChild = process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
+    try {
+      delete process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS;
+      delete process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
+      const off = makeAdapter();
+      off.adapter.spawn({ prompt: 'x' });
+      off.captured.child.end(0);
+      assert.equal(off.captured.options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, undefined, 'default unchanged');
+      cleanup(off.stateDir);
+
+      const opt = makeAdapter({ disableBackgroundTasks: true });
+      opt.adapter.spawn({ prompt: 'x' });
+      opt.captured.child.end(0);
+      assert.equal(opt.captured.options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+      cleanup(opt.stateDir);
+
+      process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS = '1';
+      const viaEnv = makeAdapter();
+      viaEnv.adapter.spawn({ prompt: 'x' });
+      viaEnv.captured.child.end(0);
+      assert.equal(viaEnv.captured.options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+      cleanup(viaEnv.stateDir);
+
+      process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS = '0';
+      const zero = makeAdapter();
+      zero.adapter.spawn({ prompt: 'x' });
+      zero.captured.child.end(0);
+      assert.equal(zero.captured.options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, undefined, 'only "1" enables it');
+      cleanup(zero.stateDir);
+    } finally {
+      if (prev === undefined) delete process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS;
+      else process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS = prev;
+      if (prevChild === undefined) delete process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
+      else process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = prevChild;
+    }
+  });
+
   it('honors explicit maxTurns and env merge', async () => {
     const { adapter, captured, stateDir } = makeAdapter();
     adapter.spawn({ prompt: 'x', maxTurns: 3, env: { FOO: 'bar' } });

@@ -156,6 +156,7 @@ Env defaults (per-run tool args beat these; these beat the built-ins):
 | `AGENTIC_CODING_HARNESS_STATE_DIR` | state dir (default `~/.agentic-coding-harness`) |
 | `AGENTIC_CODING_HARNESS_NOTIFY` | opt-in run notifications: comma list of `finish`,`fail`,`budget` (or `all`); unset = none. `AGENTIC_CODING_HARNESS_NOTIFY_SOUND=1` adds the alert sound. See README. |
 | `AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG` | `1` = claude runs use the default `CLAUDE_CONFIG_DIR` instead of a per-run one. Required on a Mac whose Claude Code login is keychain-bound OAuth (no `~/.claude/.credentials.json`): a custom config dir cannot see that token and every run ends `Not logged in`. Trade-off: transcripts land under `~/.claude/projects`, and concurrent claude runs share one config. |
+| `AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS` | `1` = claude runs get `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so headless `claude -p` waits for spawned sub-agents instead of exiting while they still run. Same as `--claude-no-background-tasks`. |
 | `AGENTIC_CODING_HARNESS_HTTP_TOKEN` | bearer token for `serve --http` |
 | `AGENTIC_CODING_HARNESS_GATEWAY` | `1` enables the gateway profile |
 | `AGENTIC_CODING_HARNESS_ROOT` | gateway cwd root (mirrors `--root`) |

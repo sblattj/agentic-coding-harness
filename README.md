@@ -357,6 +357,7 @@ ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor
             kiro-ide only: [--kiro-ide-cdp host:port] [--kiro-ide-port N] [--kiro-ide-bin PATH]
                            [--kiro-ide-user-data-dir DIR] [--kiro-ide-no-new-session]
             claude only: [--claude-default-config]   # default CLAUDE_CONFIG_DIR (keychain OAuth)
+                         [--claude-no-background-tasks]  # claude -p waits for spawned sub-agents
 ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]
             # resumable agents x tasks x models x trials grid; re-run the same command
             # after an interruption and finalized cells are skipped (docs/TRIALS.md)
@@ -683,6 +684,12 @@ pass `--claude-default-config` (or set `AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CO
 default config instead. Transcripts then land under `~/.claude/projects` and concurrent claude runs
 share one config, so pair it with sequential runs when isolation matters. A run that hits this now ends
 `unavailable` with the fix printed (`[warn] unavailable: claude: not logged in for this run ...`).
+
+Headless `claude -p` exits as soon as its own turn ends, even while sub-agents it spawned in the
+background are still running, so their work is cut off. `--claude-no-background-tasks` (on `ach run`
+and `ach trial`; env `AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS=1`; plan
+`"claude": {"disableBackgroundTasks": true}`) sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` on the
+child so it waits for them. Off by default.
 
 ## Smoke the instructions before you send them: `ach smoke`
 

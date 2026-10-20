@@ -147,6 +147,14 @@ export const MatrixPlanSchema = z
     verifyTimeoutMs: PositiveInt.optional(),
     /** Plan-level sandbox policy (#13): permissionMode / allowedTools / disallowedTools / mcpConfig, as the `ach run` flags. */
     sandbox: SandboxInputSchema.optional(),
+    /** Claude-only adapter options; ignored for other agents. */
+    claude: z
+      .object({
+        /** CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1: claude -p waits for spawned sub-agents instead of exiting. */
+        disableBackgroundTasks: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -188,6 +196,8 @@ export interface MatrixCell {
   variant: string;
   /** Resolved sandbox policy (plan < agent entry < task, field-wise); undefined when none is set. */
   sandbox?: SandboxPolicy;
+  /** Extra child env for this cell (e.g. plan `claude.disableBackgroundTasks`); not part of the cell identity. */
+  env?: Record<string, string>;
 }
 
 /** Parse + validate a plan object; USAGE HarnessError listing every issue. */
@@ -352,6 +362,9 @@ export function expandMatrix(plan: MatrixPlan, baseDir: string): MatrixCell[] {
             experiment: plan.experiment,
             variant: renderVariant(plan.variant, agent, model, task.id),
             ...(sandbox !== undefined ? { sandbox } : {}),
+            ...(agent === "claude" && plan.claude?.disableBackgroundTasks === true
+              ? { env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" } }
+              : {}),
           });
         }
       }
@@ -753,6 +766,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
     variant: cell.variant,
     ...(cell.model !== undefined ? { model: cell.model } : {}),
     ...(cell.sandbox !== undefined ? { sandbox: cell.sandbox } : {}),
+    ...(cell.env !== undefined ? { env: { ...cell.env } } : {}),
     ...(opts.budget !== undefined ? { budget: { ...opts.budget } } : {}),
   };
   let outcome: TrialOutcome;
@@ -985,6 +999,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       ledger: { type: "string" },
       json: { type: "boolean", default: false },
       hermetic: { type: "boolean", default: false },
+      "claude-no-background-tasks": { type: "boolean", default: false },
       // #13: the `ach run` SandboxPolicy flags; --suite only (a plan carries `sandbox` itself).
       "permission-mode": { type: "string" },
       "allowed-tools": { type: "string", multiple: true },
@@ -995,6 +1010,8 @@ export async function cmdTrial(rest: string[]): Promise<number> {
   });
   const planFile = args.values.matrix;
   const suite = args.values.suite;
+  // Same channel as `ach run`: the env var the Claude adapter honours (cells run in-process).
+  if (args.values["claude-no-background-tasks"]) process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS = "1";
   if (planFile !== undefined && suite !== undefined) {
     throw new HarnessError("trial: --matrix and --suite are mutually exclusive", "USAGE");
   }
