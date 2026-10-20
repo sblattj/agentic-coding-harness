@@ -263,8 +263,9 @@ usage:
                  run labelled experiment/variant/cellId=agent:task:model:trialN;
                  <plan>.ledger.jsonl records finalized cells, so re-running the same
                  command skips cells with a verdict (passed / verify-failed); error
-                 cells re-run only with --retry-failed; exit 1 only on errors or
-                 interruption; see docs/TRIALS.md)
+                 cells re-run only with --retry-failed; unavailable-CLI and
+                 provider-limit (usage/rate limit, 429) cells have no verdict and
+                 run again; exit 1 only on errors or interruption; see docs/TRIALS.md)
   ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N]
                 [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json] [--hermetic]
                 [--claude-no-background-tasks]

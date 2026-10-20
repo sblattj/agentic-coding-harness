@@ -231,6 +231,29 @@ describe("ledger", () => {
     assert.throws(() => parseMatrixPlan({ experiment: "bg", agents: ["claude"], tasks: [{ id: "t", prompt: "p" }], claude: { nope: 1 } }));
   });
 
+  it("classifyCell: a provider limit turns an agent-side error into skipped-provider-limit, nothing else", () => {
+    assert.equal(classifyCell({ exitStatus: "error", providerLimit: true }), "skipped-provider-limit");
+    assert.equal(classifyCell({ exitStatus: "timeout", providerLimit: true }), "skipped-provider-limit");
+    assert.equal(classifyCell({ thrown: new Error("HTTP 429 Too Many Requests") }), "skipped-provider-limit");
+    assert.equal(classifyCell({ thrown: new Error("launch exploded"), providerLimit: true }), "skipped-provider-limit");
+    // Unchanged: no limit, success, verdicts, budget stops, setup failures, unavailable.
+    assert.equal(classifyCell({ exitStatus: "error", providerLimit: false }), "error");
+    assert.equal(classifyCell({ thrown: new Error("launch exploded") }), "error");
+    assert.equal(classifyCell({ exitStatus: "success", providerLimit: true }), "passed");
+    assert.equal(classifyCell({ exitStatus: "success", verify: "fail", providerLimit: true }), "verify-failed");
+    assert.equal(classifyCell({ exitStatus: "turn_limit", providerLimit: true }), "verify-failed");
+    assert.equal(classifyCell({ setupFailed: true, providerLimit: true }), "error");
+    assert.equal(classifyCell({ exitStatus: "unavailable", providerLimit: true }), "skipped-unavailable");
+    assert.equal(normalizeLedgerStatus({ status: "skipped-provider-limit", runId: "r", exitStatus: "error" }), "skipped-provider-limit");
+  });
+
+  it("planStatus: skipped-provider-limit runs again, with and without --retry-failed", () => {
+    const cells = expandMatrix(parseMatrixPlan(plan3x3()), root);
+    const rows = [row(cells[0]!.cellId, "skipped-provider-limit"), row(cells[1]!.cellId, "error")];
+    assert.deepEqual(planStatus(cells, rows).slice(0, 2).map((e) => e.action), ["run", "error"]);
+    assert.deepEqual(planStatus(cells, rows, { retryFailed: true }).slice(0, 2).map((e) => e.action), ["run", "run"]);
+  });
+
   it("classifyCell and the exit rule", () => {
     assert.equal(classifyCell({ exitStatus: "success" }), "passed");
     assert.equal(classifyCell({ exitStatus: "success", verify: "pass" }), "passed");
@@ -453,6 +476,51 @@ describe("runMatrix (null adapter, in-process)", () => {
     assert.deepEqual([again.ran, again.passed], [1, 1]);
   });
 
+  it("a run that died on a provider limit is skipped-provider-limit: no verdict, not a failure, runs again", async () => {
+    const { dir, state } = scratch("provider-limit");
+    const ledgerPath = path.join(dir, "plan.ledger.jsonl");
+    const cells = expandMatrix(
+      parseMatrixPlan({ experiment: "e", agents: ["null"], tasks: [{ id: "a", prompt: "p" }, { id: "b", prompt: "p" }] }),
+      dir,
+    );
+    const real = await createMatrixDriver(["null"], state);
+    let calls = 0;
+    const driver: Pick<Driver, "run"> = {
+      run: async (agent, spec) => {
+        const r = await real.run(agent, spec);
+        const now = Date.now();
+        // Cell a: the CLI printed a limit to stderr and exited non-zero. Cell b: an ordinary crash.
+        const limited = calls++ === 0;
+        return {
+          ...r,
+          exitStatus: "error",
+          events: [
+            ...r.events,
+            // Agent message text mentioning a rate limit is never read.
+            ...(limited ? [] : [{ type: "message" as const, source: "agent" as const, content: "I added a rate limit to the API", timestamp: now }]),
+            {
+              type: "error" as const,
+              message: limited ? "claude exited 1 without emitting a result" : "claude exited 1 after emitting result",
+              data: { stderrTail: limited ? "API Error: 429 rate_limit_error: You have hit your session limit" : "TypeError: x is undefined" },
+              timestamp: now,
+            },
+          ],
+        };
+      },
+    };
+    const s = await runMatrix({ cells, ledgerPath, driver, stateDir: state });
+    assert.deepEqual([s.providerLimited, s.error, s.skipped, s.passed, s.verifyFailed], [1, 1, 0, 0, 0]);
+    const rows = readLedger(ledgerPath).rows;
+    assert.deepEqual(rows.map((r) => r.status), ["skipped-provider-limit", "error"]);
+    assert.match(rows[0]!.error ?? "", /^provider limit: .*session limit/);
+    assert.equal(rows[1]!.error, undefined);
+    // Without --retry-failed only the limited cell runs again; with it, both.
+    assert.deepEqual(planStatus(cells, rows).map((e) => e.action), ["run", "error"]);
+    assert.deepEqual(planStatus(cells, rows, { retryFailed: true }).map((e) => e.action), ["run", "run"]);
+    const again = await runMatrix({ cells, ledgerPath, driver: real, stateDir: state, retryFailed: true });
+    assert.deepEqual([again.ran, again.passed, again.providerLimited], [2, 2, 0]);
+  });
+
   it("driver throw and setup failure fail the cell with runId null and an error", async () => {
     const { dir, state } = scratch("errors");
     const ledgerPath = path.join(dir, "plan.ledger.jsonl");
@@ -593,6 +661,7 @@ describe("ach trial --matrix (CLI)", () => {
       verifyFailed: 0,
       error: 0,
       skipped: 0,
+      providerLimited: 0,
       pending: 0,
       ran: 0,
       resumed: 9,

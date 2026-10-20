@@ -15,7 +15,8 @@
 // re-invocation the LAST row per cellId decides (see `classifyCell` and
 // `planStatus`): `passed` and `verify-failed` are verdicts → skipped;
 // `error` (infrastructure) → reported and NOT re-run unless `--retry-failed`;
-// `skipped-unavailable` (agent CLI missing, no verdict) → run again.
+// `skipped-unavailable` (agent CLI missing, no verdict) → run again;
+// `skipped-provider-limit` (usage/rate limit hit, no verdict) → run again.
 //
 // The task model is shared with the bundled task suite (#51): a task is
 // either inline ({id, prompt, setup?, verify?}) or a task directory
@@ -39,6 +40,7 @@ import { isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transc
 import { loadCatalog, reportCatalogIssues, resolveRunAgent } from "./custom-agents.ts";
 import { HermeticSyncError, hermeticSyncErrorInfo, type HermeticSyncErrorInfo } from "../core/hermetic.ts";
 import { runOnce, type TrialOutcome } from "./trials.ts";
+import { isProviderLimitText, providerLimitReason } from "../core/provider-limit.ts";
 
 // ------------------------------------------------------------------ schema
 
@@ -412,8 +414,19 @@ export function matrixSandboxWarnings(cells: readonly MatrixCell[]): string[] {
  *   (exitStatus `unavailable`, src/core/availability.ts, or a thrown
  *   UNAVAILABLE). No verdict about the task; never counted as a failure;
  *   run again on the next invocation.
+ * - `skipped-provider-limit`: a run that would be `error` died on a provider
+ *   usage/rate limit (src/core/provider-limit.ts). Same treatment as
+ *   `skipped-unavailable`: no verdict, never a failure, run again.
  */
-export type CellStatus = "passed" | "verify-failed" | "error" | "skipped-unavailable";
+export type CellStatus = "passed" | "verify-failed" | "error" | "skipped-unavailable" | "skipped-provider-limit";
+
+/** Every CellStatus, for the ledger schema. */
+const CELL_STATUSES = ["passed", "verify-failed", "error", "skipped-unavailable", "skipped-provider-limit"] as const;
+
+/** Statuses that carry no verdict and are run again on the next invocation. */
+function noVerdict(status: CellStatus): boolean {
+  return status === "skipped-unavailable" || status === "skipped-provider-limit";
+}
 
 /** Ledger statuses written before the outcome split (#56 v1). Read-only. */
 export type LegacyCellStatus = "completed" | "failed";
@@ -421,16 +434,22 @@ export type LegacyCellStatus = "completed" | "failed";
 /**
  * Classify a settled attempt. `setupFailed` / `thrown` short-circuit;
  * otherwise the agent exitStatus and the checker verdict decide.
+ * `providerLimit` (the run's error lane showed a usage/rate limit) turns an
+ * agent-side `error` into `skipped-provider-limit`; it never touches a
+ * success, a budget stop, a checker verdict or a setup failure.
  */
 export function classifyCell(input: {
   setupFailed?: boolean;
   thrown?: unknown;
   exitStatus?: string;
   verify?: VerifyStatus;
+  providerLimit?: boolean;
 }): CellStatus {
   if (input.setupFailed) return "error";
   if (input.thrown !== undefined) {
-    return input.thrown instanceof HarnessError && input.thrown.code === "UNAVAILABLE" ? "skipped-unavailable" : "error";
+    if (input.thrown instanceof HarnessError && input.thrown.code === "UNAVAILABLE") return "skipped-unavailable";
+    const limited = input.providerLimit === true || isProviderLimitText(input.thrown instanceof Error ? input.thrown.message : String(input.thrown));
+    return limited ? "skipped-provider-limit" : "error";
   }
   switch (input.exitStatus) {
     case "unavailable":
@@ -443,7 +462,7 @@ export function classifyCell(input: {
       return input.verify === "fail" ? "verify-failed" : "error";
     default:
       // error, timeout, aborted, cancelled, or no status at all.
-      return "error";
+      return input.providerLimit === true ? "skipped-provider-limit" : "error";
   }
 }
 
@@ -459,6 +478,7 @@ export function normalizeLedgerStatus(row: { status: string; exitStatus?: string
     case "verify-failed":
     case "error":
     case "skipped-unavailable":
+    case "skipped-provider-limit":
       return row.status;
     case "completed":
       return "passed";
@@ -502,7 +522,7 @@ const LedgerRowSchema = z
   .object({
     v: z.literal(1),
     cellId: z.string().min(1),
-    status: z.enum(["passed", "verify-failed", "error", "skipped-unavailable", "completed", "failed"]),
+    status: z.enum([...CELL_STATUSES, "completed", "failed"]),
     runId: z.string().nullable(),
     exitStatus: z.string().optional(),
     verify: z.enum(["pass", "fail", "error"]).optional(),
@@ -565,7 +585,8 @@ export function appendLedgerRow(file: string, row: LedgerRow): void {
 }
 
 /**
- * run = no finalized attempt yet, a `skipped-unavailable` one (no verdict),
+ * run = no finalized attempt yet, a `skipped-unavailable` or
+ * `skipped-provider-limit` one (no verdict),
  * or an `error` one under retryFailed; skip = a verdict is recorded
  * (`passed` / `verify-failed`); error = an `error` attempt, not retried.
  */
@@ -587,7 +608,7 @@ export function planStatus(cells: readonly MatrixCell[], rows: readonly LedgerRo
     if (row === undefined) return { cell, action: "run" as const };
     const status = normalizeLedgerStatus(row);
     if (status === "passed" || status === "verify-failed") return { cell, action: "skip" as const, last: row };
-    if (status === "skipped-unavailable") return { cell, action: "run" as const, last: row };
+    if (noVerdict(status)) return { cell, action: "run" as const, last: row };
     return { cell, action: opts.retryFailed ? ("run" as const) : ("error" as const), last: row };
   });
 }
@@ -617,6 +638,8 @@ export interface MatrixSummary {
   error: number;
   /** skipped-unavailable: agent CLI missing; never a failure. */
   skipped: number;
+  /** skipped-provider-limit: a usage/rate limit ended the run; never a failure, run again. */
+  providerLimited: number;
   /** Cells not attempted because the run was interrupted. */
   pending: number;
   /** Cells attempted by this invocation. */
@@ -823,16 +846,23 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
   }
   const result = outcome.result!;
   opts.onOutcome?.(cell, outcome);
+  const limitReason = providerLimitReason(result.events);
+  const status = classifyCell({
+    exitStatus: result.exitStatus,
+    ...(outcome.verify !== undefined ? { verify: outcome.verify.status } : {}),
+    providerLimit: limitReason !== null,
+  });
   return {
     ...base,
-    status: classifyCell({
-      exitStatus: result.exitStatus,
-      ...(outcome.verify !== undefined ? { verify: outcome.verify.status } : {}),
-    }),
+    status,
     runId: result.runId,
     exitStatus: result.exitStatus,
     ...(outcome.verify !== undefined ? { verify: outcome.verify.status } : {}),
-    ...(outcome.annotateFailed ? { error: "registry: could not record labels/verify on the run" } : {}),
+    ...(outcome.annotateFailed
+      ? { error: "registry: could not record labels/verify on the run" }
+      : status === "skipped-provider-limit"
+        ? { error: `provider limit: ${limitReason}` }
+        : {}),
     endedAt: Date.now(),
   };
 }
@@ -852,6 +882,7 @@ export async function runMatrix(opts: RunMatrixOptions): Promise<MatrixSummary> 
     verifyFailed: 0,
     error: 0,
     skipped: 0,
+    providerLimited: 0,
     pending: 0,
     ran: 0,
     resumed: 0,
@@ -862,6 +893,7 @@ export async function runMatrix(opts: RunMatrixOptions): Promise<MatrixSummary> 
     if (status === "passed") summary.passed++;
     else if (status === "verify-failed") summary.verifyFailed++;
     else if (status === "error") summary.error++;
+    else if (status === "skipped-provider-limit") summary.providerLimited++;
     else summary.skipped++;
   };
   const report = (r: CellReport, cell: MatrixCell): void => {
@@ -949,6 +981,7 @@ const OUTCOME_LABEL: Record<CellReport["outcome"], string> = {
   "verify-failed": "verify-failed",
   error: "ERROR",
   "skipped-unavailable": "skipped (agent unavailable)",
+  "skipped-provider-limit": "skipped (provider limit)",
   pending: "pending (interrupted)",
 };
 
@@ -969,6 +1002,7 @@ function cellLine(r: CellReport, i: number, total: number): string {
 export function formatMatrixSummary(s: MatrixSummary): string {
   return (
     `summary    ${s.total} cells · passed=${s.passed} verify-failed=${s.verifyFailed} error=${s.error} skipped=${s.skipped}` +
+    (s.providerLimited > 0 ? ` provider-limit=${s.providerLimited}` : "") +
     (s.pending > 0 ? ` pending=${s.pending}` : "") +
     ` · ran=${s.ran} resumed=${s.resumed}` +
     (s.interrupted ? " (interrupted)" : "")

@@ -246,7 +246,9 @@ Each cell (`agent:task:model:trialN`) becomes one run labelled with the plan's
 The runner appends one row to `examples/trial-matrix.ledger.jsonl` only after that
 cell's run has finalized. A re-run skips cells that already have a verdict (`passed` or
 `verify-failed`) and runs the rest. Infrastructure `error` cells are reported and re-run
-only with `--retry-failed`; a verify failure is never retried. The plan schema, task
+only with `--retry-failed`; a verify failure is never retried. A cell that died on a provider
+usage or rate limit (429, `overloaded`, `hit your session limit`) is `skipped-provider-limit`: no
+verdict, not a failure, and run again next time, like an unavailable CLI. The plan schema, task
 directories (`task.md`, `setup.sh`, `verify.sh`), and ledger format are in
 [docs/TRIALS.md](docs/TRIALS.md#ach-trial---matrix-resumable-trial-grids).
 

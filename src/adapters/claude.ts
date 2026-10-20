@@ -27,6 +27,7 @@ import type {
   RunSpec as CoreRunSpec,
   SandboxPolicy,
 } from '../core/types.js';
+import { isProviderLimitText } from '../core/provider-limit.ts';
 import {
   launchDriverHandle,
   mcpConfigToken,
@@ -135,8 +136,11 @@ export type AgentEvent =
         signal: string | null;
         message?: string;
         stderrTail?: string;
-        /** `auth_failed`: the CLI reported it is not logged in (settles `unavailable`). */
-        kind?: 'auth_failed';
+        /**
+         * `auth_failed`: the CLI reported it is not logged in (settles `unavailable`).
+         * `provider_limit`: a usage/rate limit or overload ended the run (src/core/provider-limit.ts).
+         */
+        kind?: 'auth_failed' | 'provider_limit';
       };
     };
 
@@ -763,6 +767,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
   private aborted = false;
   private sawResult = false;
   private sawAuthFailure = false;
+  private sawProviderLimit = false;
   /** canonicalJson() of every result line seen (issue #14 dedupe). */
   private readonly seenResultKeys = new Set<string>();
   private parseErrors = 0;
@@ -1025,6 +1030,13 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       }
       const { message } = parsed.data;
       if (parsed.data.error === 'authentication_failed') this.noteAuthFailure();
+      else if (parsed.data.error !== undefined) {
+        // A synthetic error turn: the tag (e.g. `rate_limit`) or its text names the limit.
+        const text = textFromContent(message.content);
+        if (isProviderLimitText(parsed.data.error) || isProviderLimitText(text)) {
+          this.noteProviderLimit(text || parsed.data.error);
+        }
+      }
       const lineMeta: ClaudeLineMeta = {
         at,
         lane: parsed.data.parent_tool_use_id ?? 'main',
@@ -1068,6 +1080,9 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       }
       this.sawResult = true;
       if (parsed.data.is_error === true && /Not logged in/i.test(parsed.data.result ?? '')) this.noteAuthFailure();
+      else if (parsed.data.is_error === true && isProviderLimitText(parsed.data.result)) {
+        this.noteProviderLimit(parsed.data.result!);
+      }
       if (parsed.data.session_id) this.sessionId = parsed.data.session_id;
       // Issue #14: a result line is the CLI's cumulative-final record for its
       // session, and CLI 2.1.277 was observed re-emitting it byte-identically.
@@ -1099,6 +1114,21 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
         signal: null,
         message: claudeAuthHint(this.configDir !== null),
         kind: 'auth_failed',
+      },
+    });
+  }
+
+  /** Push ONE provider-limit error event per run (the assistant and result lines both signal it). */
+  private noteProviderLimit(text: string): void {
+    if (this.sawProviderLimit) return;
+    this.sawProviderLimit = true;
+    this.push({
+      type: 'error',
+      payload: {
+        exitCode: null,
+        signal: null,
+        message: `claude hit a provider limit: ${text.slice(0, 300)}`,
+        kind: 'provider_limit',
       },
     });
   }

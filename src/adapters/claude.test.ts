@@ -812,3 +812,47 @@ describe('ClaudeCodeAdapter not-logged-in stream', () => {
     }
   });
 });
+
+describe('ClaudeCodeAdapter provider-limit stream', () => {
+  const LIMIT_ASSISTANT = JSON.stringify({
+    type: 'assistant',
+    error: 'rate_limit',
+    message: { model: '<synthetic>', content: [{ type: 'text', text: "You've hit your session limit · resets 5pm" }] },
+  });
+  const LIMIT_RESULT = JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: true,
+    result: "You've hit your session limit · resets 5pm",
+  });
+
+  async function run(lines: string[]) {
+    const { adapter, captured, stateDir } = makeAdapter();
+    adapter.spawn({ prompt: 'hi' });
+    captured.child.feed(lines.join('\n') + '\n');
+    captured.child.end(1);
+    const events = (await collect(adapter.attach())) as any[];
+    cleanup(stateDir);
+    return events.filter((e) => e.type === 'error' && e.payload.kind === 'provider_limit');
+  }
+
+  it('emits exactly one provider_limit error event when the assistant and result lines both signal it', async () => {
+    const errs = await run([LIMIT_ASSISTANT, LIMIT_RESULT]);
+    assert.equal(errs.length, 1);
+    assert.match(errs[0].payload.message, /provider limit: You've hit your session limit/);
+  });
+
+  it('the result line alone is enough', async () => {
+    assert.equal((await run([LIMIT_RESULT])).length, 1);
+  });
+
+  it('an ordinary error result, or limit wording in a normal assistant turn, is not a provider limit', async () => {
+    const ordinary = JSON.stringify({ type: 'result', is_error: true, result: 'Error: tool crashed' });
+    const chatty = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-x', content: [{ type: 'text', text: 'I added a rate limit to the API.' }] },
+    });
+    assert.equal((await run([ordinary])).length, 0);
+    assert.equal((await run([chatty])).length, 0);
+  });
+});

@@ -243,7 +243,7 @@ If the runner is killed mid-cell, that cell has no row and stays pending.
 
 #### Cell outcomes
 
-Each finalized attempt gets one of four statuses (`classifyCell` in
+Each finalized attempt gets one of five statuses (`classifyCell` in
 `src/cli/trial-matrix.ts`). A verify failure is a *result*; only an
 infrastructure failure is an *error*:
 
@@ -253,6 +253,7 @@ infrastructure failure is an *error*:
 | `verify-failed` | `exitStatus` is `success` and the checker failed, **or** the harness stopped the agent at a plan budget cap (`budget_exceeded`, `turn_limit`) | skipped | **skipped — never retried** |
 | `error` | setup failed; the agent exited `error`, `timeout`, `aborted` or `cancelled`; the checker could not finish (verify `error`, e.g. it timed out); or the launch threw | reported, not re-run | re-run |
 | `skipped-unavailable` | the agent CLI is missing or could not start (`exitStatus: "unavailable"`, see `src/core/availability.ts`) | run again | run again |
+| `skipped-provider-limit` | a run that would be `error` died on a provider usage or rate limit (`hit your session limit`, `usage limit reached`, `rate limit`, HTTP 429, `overloaded`; see `src/core/provider-limit.ts`) | run again | run again |
 
 - A `verify-failed` cell is never retried. Retrying it would give an agent that
   failed the task more tries until it passes, which inflates the pass rate.
@@ -260,6 +261,13 @@ infrastructure failure is an *error*:
   It did not crash.
 - `skipped-unavailable` carries no verdict about the task and is never counted
   as a failure. Once the CLI is installed, the next invocation runs the cell.
+- `skipped-provider-limit` is treated the same way: once the limit resets, the
+  next invocation runs the cell. Detection reads only the error lane (error
+  events, their stderr tail, stderr lines, and the Claude adapter's
+  `provider_limit` error event for a limit result line), never agent messages
+  or tool output, so a task about rate limiting cannot trip it. It never
+  overrides a success, a checker verdict, a budget stop or a setup failure. The
+  ledger row's `error` holds the matched line (`provider limit: ...`).
 - A retry appends a new row, so the ledger keeps every attempt. The last row
   for each `cellId` decides.
 - A torn final line from a crash mid-append is ignored with a warning.
@@ -292,14 +300,15 @@ summary    9 cells · passed=5 verify-failed=3 error=1 skipped=0 · ran=6 resume
 ```
 
 The counts cover the whole plan, whether a cell ran now or was resumed from
-the ledger. `skipped` means `skipped-unavailable`. `ran` counts the cells this
+the ledger. `skipped` means `skipped-unavailable`; ` provider-limit=N` is
+appended after it when any cell is `skipped-provider-limit`. `ran` counts the cells this
 invocation attempted, and `resumed` counts the cells taken from the ledger.
 `--json` prints the same counts as `summary: {total, passed, verifyFailed, error,
-skipped, pending, ran, resumed, interrupted}`.
+skipped, providerLimited, pending, ran, resumed, interrupted}`.
 
 **Exit code:** 1 when any cell is `error` after the run, or the run was
-interrupted. Otherwise it is 0, even when cells are `verify-failed` or
-`skipped-unavailable`. Verify failures are data, not harness errors. Read
+interrupted. Otherwise it is 0, even when cells are `verify-failed`,
+`skipped-unavailable` or `skipped-provider-limit`. Verify failures are data, not harness errors. Read
 them from the summary, the ledger or the report.
 
 Cells run one at a time, in agent → task → model → trial order.
