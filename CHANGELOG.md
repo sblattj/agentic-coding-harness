@@ -4,6 +4,17 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-20
+
+### Added
+
+- `--claude-no-background-tasks` (on `ach run` and `ach trial`; env `AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS=1`; plan `"claude": {"disableBackgroundTasks": true}`) sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` on the child, so headless `claude -p` waits for the sub-agents it spawned instead of exiting while they still run. Off by default. (#152)
+- `ach trial --matrix` records a cell that died on a provider usage or rate limit (`hit your session limit`, `usage limit reached`, `rate limit`, HTTP 429, `overloaded`) as `skipped-provider-limit`: no verdict, not a failure, and run again next time, like an unavailable CLI. Detection reads only the error lane, never agent messages or tool output. The summary appends ` provider-limit=N`, and the ledger row's `error` holds the matched line. (#152)
+
+### Fixed
+
+- Claude's tagged error events are now recognized. The adapter puts the event body on `payload`, but the provider-limit and not-logged-in checks read only `data`, so a claude run that hit a usage limit was never `skipped-provider-limit` and a not-logged-in claude run was never classified unavailable. Both checks now read `payload` or `data`. (#152)
+
 ## [0.25.0] - 2026-10-15
 
 ### Added
