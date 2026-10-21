@@ -11,7 +11,8 @@ import type { RunRecord } from '../src/core/registry.ts';
 
 const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
 const isBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
-const now = Date.now();
+// Local noon, so `now - 60_000` and `now - 5h` stay on the same calendar day at any wall-clock time.
+const now = new Date().setHours(12, 0, 0, 0);
 
 function rec(over: Partial<RunRecord>): RunRecord {
   return {
