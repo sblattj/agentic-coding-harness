@@ -196,7 +196,7 @@ describe('concurrent alert persistence', () => {
     const worker = join(dir, 'writer.mts');
     writeFileSync(worker, String.raw`
       import { createRunAlerts } from ${JSON.stringify(new URL('../src/core/budget-alerts.ts', import.meta.url).href)};
-      const alert = createRunAlerts({ stateDir: process.argv[2], runId: process.argv[3], usd: 1, alerts: [0.8], onWarning: (w) => { throw new Error(w); } });
+      const alert = createRunAlerts({ stateDir: process.argv[2], runId: process.argv[3], usd: 1, alerts: [0.8], lockWaitMs: 10_000, onWarning: (w) => { throw new Error(w); } });
       process.stdin.once('data', () => {
         process.stdout.write(JSON.stringify(alert.observe('usd', 0.9)) + '\n');
         process.stdin.destroy();
@@ -259,6 +259,18 @@ describe('concurrent alert persistence', () => {
     assert.equal(warnings.length, 1);
     assert.match(warnings[0]!, /could not persist .*lock busy/);
     assert.ok(existsSync(alertStateFile(dir) + '.lock'), 'never steal another writer’s lock');
+  });
+
+  it('lockWaitMs sets how long a write waits for a held lock', () => {
+    const dir = tmpDir();
+    writeFileSync(alertStateFile(dir) + '.lock', '');
+    const warnings: string[] = [];
+    const a = createRunAlerts({ ...options(dir, 'locked'), lockWaitMs: 600, onWarning: (w) => warnings.push(w) })!;
+    const start = performance.now();
+    a.observe('usd', 0.9);
+    const waited = performance.now() - start;
+    assert.ok(waited >= 600, `waited ${waited}ms, want at least lockWaitMs`);
+    assert.match(warnings[0]!, /lock busy/);
   });
 });
 

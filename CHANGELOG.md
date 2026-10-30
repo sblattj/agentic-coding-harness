@@ -6,6 +6,10 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ### Fixed
 
+- Two CI timing flakes on slow runners: the cross-process alert-lock test now waits up to 10s for the lock (new `lockWaitMs` option on `createRunAlerts`, default still 250ms), and the `computeGlobalStats` speed check times the best of 5 warm runs instead of one cold run.
+
+### Fixed
+
 - `--agent kiro-ide`: a prompt Kiro IDE refuses (for example "You've reached your monthly usage limit") now fails the run with Kiro's own message instead of "prompt not submitted". The adapter reads the workbench "Error sending prompt" notification while submitting and waiting.
 - `--agent kiro-ide`: the prompt echo is matched ignoring markdown (list numbers, bullets, headings, code marks, punctuation), so a prompt with a numbered list counts as submitted and the reply no longer starts with the echoed prompt.
 - `ach doctor --agent kiro-ide`: waits for late execution contexts after `Runtime.enable` before looking for the chat input, so the chat row no longer reports "selectors no longer match" when the input's nested frame loads a few hundred ms late.

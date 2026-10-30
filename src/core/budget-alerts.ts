@@ -85,12 +85,12 @@ export function saveAlertState(file: string, state: AlertState): void {
 
 /** Serialize read/check/write across processes; contention is bounded and nonfatal upstream.
  * Never steal an old lock: its owner may merely be paused. An orphaned lock
- * causes a warning after 250ms rather than an indefinite wait or an unsafe write.
+ * causes a warning after `waitMs` (default 250ms) rather than an indefinite wait or an unsafe write.
  */
-function withAlertLock<T>(file: string, action: () => T): T {
+function withAlertLock<T>(file: string, action: () => T, waitMs = 250): T {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const lock = `${file}.lock`;
-  const deadline = performance.now() + 250;
+  const deadline = performance.now() + waitMs;
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
   let fd: number;
   for (;;) {
@@ -230,6 +230,8 @@ export interface RunAlertsOptions {
   /** Enable the fixed 85% context-pressure threshold (percentage points / 100). */
   context?: boolean;
   cooldownMs?: number;
+  /** How long a write waits for another process's lock before warning (default 250ms). */
+  lockWaitMs?: number;
   /** Load / save problems land here (run warnings); never thrown. */
   onWarning: (w: string) => void;
   now?: () => number;
@@ -286,7 +288,7 @@ export function createRunAlerts(opts: RunAlertsOptions): RunAlerts | null {
           if (accepted.length > 0) saveAlertState(file, latest.state);
           loaded.state.fired = latest.state.fired;
           return accepted;
-        });
+        }, opts.lockWaitMs);
       } catch (err) {
         if (!saveWarned) {
           saveWarned = true;
