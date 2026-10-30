@@ -69,7 +69,9 @@ class SilentThenHangHandle implements AgentHandle {
 
   async *attach(): AsyncIterable<AgentEvent> {
     yield { type: 'step', sessionId: this.sessionId, timestamp: Date.now() };
+    // An abort can land before attach reaches this await (slow CI runner): honor it.
     await new Promise<void>((resolve) => {
+      if (this.aborted) return resolve();
       this.#wake = resolve;
     });
   }

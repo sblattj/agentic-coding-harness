@@ -7,6 +7,7 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 ### Fixed
 
 - Two CI timing flakes on slow runners: the cross-process alert-lock test now waits up to 10s for the lock (new `lockWaitMs` option on `createRunAlerts`, default still 250ms), and the `computeGlobalStats` speed check times the best of 5 warm runs instead of one cold run.
+- The run-to-directory abort test could hang until its 300s timeout when `driver.abort()` landed before the fake handle's `attach()` was waiting; the fake now honors an earlier abort.
 
 ### Fixed
 
