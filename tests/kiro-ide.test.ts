@@ -635,3 +635,80 @@ describe("KiroIdeAdapter through the real Driver", () => {
     assert.equal(rec?.totals?.inputTokens, 0, "placeholder token zeros must not be summed");
   });
 });
+
+// Kiro IDE 1.4.62 (live): the prompt echo is rendered as markdown, and a refused prompt
+// shows up only as an "Error sending prompt" notification in the workbench.
+const MD_PROMPT = `This is a hook test. Run each of these commands exactly as written, one tool call each.
+
+1. git merge feature 2>&1 | tail -2 && echo AFTER-MERGE
+2. grep -rn --include=*.cjs foo .
+3. ls
+
+Then reply with one line per command.`;
+// What innerText gives for that prompt once rendered: list numbers are CSS markers.
+const MD_ECHO = `This is a hook test. Run each of these commands exactly as written, one tool call each.
+
+git merge feature 2>&1 | tail -2 && echo AFTER-MERGE
+grep -rn --include=*.cjs foo .
+ls
+
+Then reply with one line per command.`;
+
+describe("Kiro IDE prompt echo and refusals", () => {
+  it("echoKey ignores list markers, code marks and whitespace", async () => {
+    const { echoKey, echoProbe, lastEchoEnd } = await import("../src/adapters/kiro-ide.ts");
+    assert.equal(echoKey(MD_PROMPT), echoKey(MD_ECHO));
+    assert.equal(echoKey("- `a` **b**\n# c"), "abc");
+    assert.ok(echoProbe(MD_PROMPT).length <= 200);
+    const pane = `Restore\n\n${MD_ECHO}\n\nKiro\n1. BLOCKED\nElapsed time: 2s`;
+    const end = lastEchoEnd(pane, echoKey(MD_PROMPT));
+    assert.equal(pane.slice(end).trim().split("\n")[0], "Kiro");
+    assert.equal(lastEchoEnd("nothing here", "abc"), -1);
+  });
+
+  it("promptErrorFrom pulls Kiro's refusal text", async () => {
+    const { promptErrorFrom } = await import("../src/adapters/kiro-ide.ts");
+    const deep = "Kiro | Error sending prompt: You've reached your monthly usage limit. Please return next month to continue building. (Request ID: 98068fa0) | View Usage";
+    assert.equal(promptErrorFrom(deep), "You've reached your monthly usage limit. Please return next month to continue building.");
+    assert.equal(promptErrorFrom("Kiro Free 0 / 50 | Autocomplete"), null);
+  });
+
+  it("a markdown-rendered prompt echo counts as submitted and the reply parses", async () => {
+    const w = await world();
+    w.state.onEnter = () => {
+      w.state.text = `Checkpoint\nRestore\n\n${MD_ECHO}\n\nKiro\n1. BLOCKED\n2. BLOCKED\n3. RAN\nEst. Credits Used: 0.2\nElapsed time: 3s\n\nAuto\nDefault\nAutopilot`;
+    };
+    const adapter = new KiroIdeAdapter(fast);
+    const h = await adapter.launch(specFor(w.fake, { prompt: MD_PROMPT }));
+    const events = await collect(h);
+    assert.equal(await h.wait(), "success");
+    assert.ok(!events.some((e) => e.type === "error"), JSON.stringify(events.find((e) => e.type === "error")));
+    const msg = events.find((e) => e.type === "message") as any;
+    assert.match(msg.content, /1\. BLOCKED/);
+    assert.ok(!msg.content.includes("git merge"), msg.content);
+  });
+
+  it("a refused prompt fails with Kiro's own message, not 'not submitted'", async () => {
+    const w = await world();
+    w.state.onEnter = () => {
+      // The prompt is echoed, no turn runs, and the workbench shows the refusal.
+      w.state.text = `Checkpoint\nRestore\n\n${MD_ECHO}\n\nKiro`;
+      w.state.deep = "Error sending prompt: You've reached your monthly usage limit. Please return next month to continue building. (Request ID: 98068fa0) | Source: kiroAgent | View Usage";
+    };
+    const adapter = new KiroIdeAdapter({ ...fast, submitTimeoutMs: 3000, turnTimeoutMs: 3000 });
+    const h = await adapter.launch(specFor(w.fake, { prompt: MD_PROMPT }));
+    const events = await collect(h);
+    assert.equal(await h.wait(), "error");
+    const err = events.find((e) => e.type === "error") as any;
+    assert.match(err.message, /Kiro IDE refused the prompt: You've reached your monthly usage limit/);
+  });
+});
+
+describe("lastEchoEnd with list markers before the echo", () => {
+  it("maps the offset exactly when earlier turns contain numbered lists", async () => {
+    const { echoKey, lastEchoEnd } = await import("../src/adapters/kiro-ide.ts");
+    const pane = `1. old\n2. older\n\n${MD_ECHO}\nKiro\n1. BLOCKED`;
+    const end = lastEchoEnd(pane, echoKey(MD_PROMPT));
+    assert.equal(pane.slice(end), "\nKiro\n1. BLOCKED");
+  });
+});

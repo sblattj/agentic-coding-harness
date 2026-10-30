@@ -158,6 +158,29 @@ export class CdpSession {
     await new Promise((r) => setTimeout(r, 50));
   }
 
+  /**
+   * Waits until no new execution context has appeared for `quietMs` (bounded by `maxMs`).
+   * The Kiro chat webview's input lives in a nested frame whose context is created a few
+   * hundred ms after Runtime.enable (live, Kiro IDE 1.4.62), so a one-shot probe right after
+   * enableRuntime() saw only the outer frame.
+   */
+  async settleContexts(opts: { quietMs?: number; maxMs?: number } = {}): Promise<void> {
+    const quietMs = opts.quietMs ?? 300;
+    const maxMs = opts.maxMs ?? 2000;
+    const start = Date.now();
+    let count = this.ctxs.size;
+    let since = Date.now();
+    while (Date.now() - start < maxMs) {
+      await new Promise((r) => setTimeout(r, 50));
+      if (this.ctxs.size !== count) {
+        count = this.ctxs.size;
+        since = Date.now();
+      } else if (Date.now() - since >= quietMs) {
+        return;
+      }
+    }
+  }
+
   contexts(): CdpContext[] {
     return [...this.ctxs.values()];
   }

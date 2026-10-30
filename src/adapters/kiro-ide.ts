@@ -107,8 +107,13 @@ export function parseKiroIdeTurn(fullText: string, prompt: string): KiroIdeTurn 
   let promptFound = false;
   const p = prompt.trim();
   const at = p === "" ? -1 : text.lastIndexOf(p);
+  const echoEnd = at >= 0 || p === "" ? -1 : lastEchoEnd(text, echoKey(p));
   if (at >= 0) {
     start = at + p.length;
+    promptFound = true;
+  } else if (echoEnd >= 0) {
+    // The echo was rendered as markdown (list markers, code spans gone).
+    start = echoEnd;
     promptFound = true;
   } else {
     // Fallback: the echo is the first paragraph after the last "Restore" line.
@@ -221,11 +226,69 @@ const TAB_COUNT_JS = "document.querySelectorAll('.tab-bar-item').length";
 function clickTabIndexJs(i: number): string {
   return `(() => { const t = document.querySelectorAll('.tab-bar-item')[${i}]; if (!t) return 'none'; t.click(); return 'clicked'; })()`;
 }
-const normWs = (s: string): string => s.replace(/\s+/g, " ").trim();
 const INPUT_TEXT_JS = `(() => { const e = document.querySelector(${JSON.stringify(KIRO_IDE_SELECTORS.chatInput)}); return e ? e.innerText : null; })()`;
 
 const countElapsed = (s: string): number => (s.match(/Elapsed time:/g) ?? []).length;
 const countOccurrences = (s: string, needle: string): number => (needle === "" ? 0 : s.split(needle).length - 1);
+
+/**
+ * Markdown-insensitive form for matching the prompt against its echo in the chat pane.
+ * Kiro renders the prompt as markdown: list numbers and bullets become CSS markers that
+ * innerText omits, and backticks/emphasis disappear (live, Kiro IDE 1.4.62: a numbered
+ * prompt never matched, so a submitted prompt was reported as "not submitted").
+ * Strips line-leading list/heading/quote markers, then keeps letters and digits only.
+ */
+export function echoKey(s: string): string {
+  return s
+    .replace(/^[ \t]*(?:\d+[.)]|[-*+]|#{1,6}|>)[ \t]+/gm, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .toLowerCase();
+}
+
+/** The prompt probe: its first 200 echo-key characters. */
+export function echoProbe(prompt: string): string {
+  return echoKey(prompt).slice(0, 200);
+}
+
+/** Raw index just past the last echo of `probe` in `text`, or -1 when absent. */
+export function lastEchoEnd(text: string, probe: string): number {
+  if (probe === "") return -1;
+  // Build the key with a raw index per kept character, skipping the same list markers
+  // echoKey drops, so the key offset maps back to the raw text exactly.
+  const marker = /^[ \t]*(?:\d+[.)]|[-*+]|#{1,6}|>)[ \t]+/;
+  const kept = /[\p{L}\p{N}]/u;
+  let key = "";
+  const idx: number[] = [];
+  for (let i = 0; i < text.length; ) {
+    if (i === 0 || text[i - 1] === "\n") {
+      const m = marker.exec(text.slice(i, i + 16));
+      if (m) {
+        i += m[0].length;
+        continue;
+      }
+    }
+    if (kept.test(text[i]!)) {
+      key += text[i]!.toLowerCase();
+      idx.push(i);
+    }
+    i++;
+  }
+  const at = key.lastIndexOf(probe);
+  if (at < 0) return -1;
+  let end = idx[at + probe.length - 1]! + 1;
+  // Take trailing punctuation on the echo's last line ("command." not "command").
+  while (end < text.length && text[end] !== "\n" && !kept.test(text[end]!)) end++;
+  return end;
+}
+
+/**
+ * A prompt Kiro refused, from a notification or the chat pane text, e.g. "Error sending
+ * prompt: You've reached your monthly usage limit. ..." (live, Kiro IDE 1.4.62). Null when none.
+ */
+export function promptErrorFrom(text: string): string | null {
+  const m = /Error sending prompt:\s*([^|\n]{1,300})/.exec(text);
+  return m ? m[1]!.replace(/\s*\(Request ID:.*$/, "").trim() : null;
+}
 
 export interface SpawnedChild {
   pid?: number;
@@ -662,7 +725,7 @@ export class KiroIdeAdapter implements AgentAdapter {
       // Pane-local, FULL-prompt proof (first 200 normalized chars). A session tab shows a
       // truncated copy of the prompt, so a short probe or whole-body text is satisfied by
       // the tab label while the pane is idle (live bug).
-      const probe = normWs(spec.prompt).slice(0, 200);
+      const probe = echoProbe(spec.prompt);
       // The prompt can end up running in a session tab that is NOT the one the pane shows
       // (a late "New Session" took the pane, live). Scan tabs newest-first, select each,
       // and stop at the first whose pane echoes the full prompt (ours is the newest tab
@@ -674,7 +737,7 @@ export class KiroIdeAdapter implements AgentAdapter {
           if (r !== "clicked") continue;
           await sleep(250);
           const pane = (await chat.evaluate<string>(PANE_TEXT_JS, ctx).catch(() => "")) ?? "";
-          if (countOccurrences(normWs(pane), probe) > 0) {
+          if (countOccurrences(echoKey(pane), probe) > 0) {
             dbg(`recovered prompt tab index=${i} of ${n}`);
             return true;
           }
@@ -682,7 +745,7 @@ export class KiroIdeAdapter implements AgentAdapter {
         return false;
       };
       const preText = (await chat.evaluate<string>(PANE_TEXT_JS, ctx)) ?? "";
-      const echoesBefore = countOccurrences(normWs(preText), probe);
+      const echoesBefore = countOccurrences(echoKey(preText), probe);
       const focused = await chat.evaluate<boolean>(FOCUS_INPUT_JS, ctx);
       if (!focused) throw new RunFailure("could not focus the Kiro IDE chat input");
       await chat.insertText(spec.prompt);
@@ -692,6 +755,17 @@ export class KiroIdeAdapter implements AgentAdapter {
       // more echo of the prompt than before. An empty input alone proves nothing:
       // live, right after a folder switch, the webview swallowed the prompt and
       // left an empty input, and the wait loop below polled an idle chat forever.
+      // Kiro reports a refused prompt (usage limit, auth) as an "Error sending prompt"
+      // notification in the workbench, not in the chat pane; check both, at most once a second.
+      let lastRefusalCheck = 0;
+      const refusal = async (paneText: string): Promise<string | null> => {
+        const inPane = promptErrorFrom(paneText);
+        if (inPane) return inPane;
+        if (!workbench || this.#now() - lastRefusalCheck < 1000) return null;
+        lastRefusalCheck = this.#now();
+        const texts = await workbench.evaluateEach<string>(DEEP_TEXT_JS).catch(() => []);
+        return promptErrorFrom(texts.map((t) => t.value ?? "").join(" | "));
+      };
       const submitStart = this.#now();
       let resent = false;
       let lastRecover = 0;
@@ -700,12 +774,14 @@ export class KiroIdeAdapter implements AgentAdapter {
         checkAbort();
         const input = ((await chat.evaluate<string | null>(INPUT_TEXT_JS, ctx).catch(() => null)) ?? "").trim();
         const body = (await chat.evaluate<string>(PANE_TEXT_JS, ctx).catch(() => "")) ?? "";
-        const echoes = countOccurrences(normWs(body), probe);
+        const echoes = countOccurrences(echoKey(body), probe);
+        const refused = await refusal(body);
+        if (refused) throw new RunFailure(`Kiro IDE refused the prompt: ${refused}`);
         if (input === "" && echoes > echoesBefore) {
           dbg(`submit-pass input=${JSON.stringify(input)} echoes=${echoes} (before ${echoesBefore}) pane=${JSON.stringify(body.slice(0, 200))}`);
           break;
         }
-        if (!resent && normWs(input).startsWith(probe.slice(0, 40)) && this.#now() - submitStart > 2000) {
+        if (!resent && echoKey(input).startsWith(probe.slice(0, 40)) && this.#now() - submitStart > 2000) {
           // Text is in the box but Enter did not take: press it once more.
           resent = true;
           await chat.evaluate<boolean>(FOCUS_INPUT_JS, ctx);
@@ -743,8 +819,9 @@ export class KiroIdeAdapter implements AgentAdapter {
           const txt = (await chat.evaluate<string>(PANE_TEXT_JS, ctx)) ?? "";
           fails = 0;
           polls++;
-          const n = normWs(txt);
-          const idx = n.lastIndexOf(probe);
+          const refused = await refusal(txt);
+          if (refused) throw new RunFailure(`Kiro IDE refused the prompt: ${refused}`);
+          const idx = lastEchoEnd(txt, probe);
           if (debug && polls % 5 === 0) {
             const ids = (await listTargets(endpoint, { timeoutMs: 2000 }).catch(() => [] as CdpTarget[]))
               .filter((t) => t.url.includes(KIRO_IDE_SELECTORS.chatTargetUrl))
@@ -762,11 +839,12 @@ export class KiroIdeAdapter implements AgentAdapter {
                   : "kiro-ide: chat pane lost the prompt echo and no session tab holds it",
               );
             }
-          } else if (countElapsed(n.slice(idx)) > 0) {
+          } else if (countElapsed(txt.slice(idx)) > 0) {
             finalText = txt;
             break;
           }
         } catch (e) {
+          if (e instanceof RunFailure) throw e;
           if (++fails >= 5) throw new RunFailure(`lost the Kiro IDE chat while waiting: ${e instanceof Error ? e.message : String(e)}`);
           ctx = (await findCtx().catch(() => undefined)) ?? ctx;
         }

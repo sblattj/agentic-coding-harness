@@ -30,6 +30,8 @@ export interface FakeTargetSpec {
   /** Hidden targets are absent from /json/list (mutable at run time). */
   hidden?: boolean;
   contexts?: FakeContext[];
+  /** Contexts created this many ms after Runtime.enable (a nested frame loading late). */
+  lateContexts?: { afterMs: number; contexts: FakeContext[] };
   handler?: FakeHandler;
 }
 
@@ -67,6 +69,14 @@ export async function startFakeCdp(spec: FakeCdpSpec): Promise<FakeCdp> {
           ws.send(JSON.stringify({ id: msg.id, result: {} }));
           for (const c of t.contexts ?? []) {
             ws.send(JSON.stringify({ method: "Runtime.executionContextCreated", params: { context: c } }));
+          }
+          const late = t.lateContexts;
+          if (late) {
+            setTimeout(() => {
+              for (const c of late.contexts) {
+                if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ method: "Runtime.executionContextCreated", params: { context: c } }));
+              }
+            }, late.afterMs);
           }
           return;
         }

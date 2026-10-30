@@ -809,6 +809,7 @@ async function kiroIdeEvalTarget<T>(target: CdpTarget, expr: string, timeoutMs: 
   const session = await CdpSession.connect(target, { timeoutMs });
   try {
     await session.enableRuntime();
+    await session.settleContexts();
     return (await session.evaluateEach<T>(expr)).filter((r) => r.error === undefined).map((r) => r.value);
   } finally {
     session.close();

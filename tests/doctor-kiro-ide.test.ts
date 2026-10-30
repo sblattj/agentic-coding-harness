@@ -68,6 +68,21 @@ function run(endpoint: string, extra: { bin?: string } = {}) {
 const row = (rows: Awaited<ReturnType<typeof run>>, name: string) => rows.find((r) => r.name === name);
 
 describe("checkKiroIde", () => {
+  it("waits for a chat input frame whose context is created late", async () => {
+    // Kiro IDE 1.4.62: the input's nested frame context arrives a few hundred ms after Runtime.enable.
+    const lateChat: FakeTargetSpec = {
+      id: "chat",
+      type: "iframe",
+      url: CHAT,
+      contexts: [ctxs[0]!],
+      lateContexts: { afterMs: 150, contexts: [{ id: 3, name: "", origin: "x" }] },
+      handler: (method, _p, contextId) =>
+        method === "Runtime.evaluate" ? { result: { type: "boolean", value: contextId === 3 } } : {},
+    };
+    const f = await fake([page(SIGNED_IN), lateChat]);
+    assert.equal(row(await run(f.endpoint), "chat")?.status, "verified");
+  });
+
   it("all green: binary, cdp, signed-in, chat verified", async () => {
     const f = await fake([page(SIGNED_IN), chat(true)]);
     const rows = await run(f.endpoint);
