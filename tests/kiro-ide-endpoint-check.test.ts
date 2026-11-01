@@ -36,8 +36,8 @@ function spawnRecorder(): { spawn: SpawnFn; calls: string[][] } {
   return { spawn, calls };
 }
 
-async function drive(fake: FakeCdp, kiroIde: Record<string, unknown>, spawn: SpawnFn) {
-  const adapter = new KiroIdeAdapter({ pollMs: 15, readyTimeoutMs: 1500, recoverMs: 100, spawn, platform: "darwin", homeDir: "/home/x" });
+async function drive(fake: FakeCdp, kiroIde: Record<string, unknown>, spawn: SpawnFn, readyTimeoutMs = 1500) {
+  const adapter = new KiroIdeAdapter({ pollMs: 15, readyTimeoutMs, recoverMs: 100, spawn, platform: "darwin", homeDir: "/home/x" });
   const h = await adapter.launch({ prompt: "hi", cwd: "/tmp/ws", kiroIde } as RunSpec);
   const events: AgentEvent[] = [];
   const [, exit] = await Promise.all([(async () => { for await (const e of h.attach()) events.push(e); })(), h.wait()]);
@@ -80,7 +80,63 @@ describe("kiro-ide run refuses a non-Kiro endpoint (#161)", () => {
   });
 });
 
+const CODE_UA = { "User-Agent": "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Code/1.95.0 Chrome/128.0.0.0 Electron/32.2.6 Safari/537.36" };
+
+describe("ready loop never drives an unverified endpoint (#161 review)", () => {
+  const noRuntime = (fake: FakeCdp) => assert.equal(fake.calls.length, 0, "no Runtime/Input/Target command reached the endpoint");
+
+  it("attach: HTTP 500 on the first /json/version, then VS Code: refused with the product message, no CDP", async () => {
+    const fake = await startFakeCdp({ targets: TARGETS, version: CODE_UA, versionFn: (n) => (n === 1 ? { status: 500 } : undefined) });
+    open.push(fake);
+    const { events, exit } = await drive(fake, { cdp: fake.endpoint }, spawnRecorder().spawn);
+    assert.equal(exit, "error");
+    assert.match((events.find((e) => e.type === "error") as any).message, /not Kiro IDE/);
+    noRuntime(fake);
+  });
+
+  it("attach: /json/version slower than the first probe, then VS Code: refused, no CDP", async () => {
+    const fake = await startFakeCdp({ targets: TARGETS, version: CODE_UA, versionFn: (n) => (n === 1 ? { delayMs: 1800, body: CODE_UA } : undefined) });
+    open.push(fake);
+    const { events, exit } = await drive(fake, { cdp: fake.endpoint }, spawnRecorder().spawn, 5000);
+    assert.equal(exit, "error");
+    assert.match((events.find((e) => e.type === "error") as any).message, /not Kiro IDE/);
+    noRuntime(fake);
+  });
+
+  it("attach: /json/version always 404-ish with a workbench target: never driven", async () => {
+    const fake = await startFakeCdp({ targets: TARGETS, version: CODE_UA, versionFn: () => ({ status: 404 }) });
+    open.push(fake);
+    const { exit } = await drive(fake, { cdp: fake.endpoint }, spawnRecorder().spawn);
+    assert.equal(exit, "error");
+    noRuntime(fake);
+  });
+
+  it("launch: a listener whose /json/version stalls is not spawned against", async () => {
+    const fake = await startFakeCdp({ targets: TARGETS, version: VIVALDI, versionFn: () => ({ delayMs: 6000, body: VIVALDI }) });
+    open.push(fake);
+    const { spawn, calls } = spawnRecorder();
+    const port = Number(fake.endpoint.split(":")[1]);
+    const { events, exit } = await drive(fake, { port }, spawn);
+    assert.equal(exit, "error");
+    assert.match((events.find((e) => e.type === "error") as any).message, /cannot be confirmed as Kiro IDE/);
+    assert.equal(calls.length, 0);
+    noRuntime(fake);
+  });
+
+  it("attach: a transient 500 then real Kiro still proceeds (polling kept)", async () => {
+    const fake = await startFakeCdp({ targets: TARGETS, version: REAL_KIRO, versionFn: (n) => (n === 1 ? { status: 500 } : undefined) });
+    open.push(fake);
+    const { events } = await drive(fake, { cdp: fake.endpoint }, spawnRecorder().spawn);
+    assert.ok(!events.some((e) => e.type === "error" && /not Kiro IDE/.test((e as any).message)));
+    assert.ok(fake.calls.length > 0);
+  });
+});
+
 describe("classifyKiroIdeEndpoint", () => {
+  it("no UA and only a non-page target with the workbench url is not Kiro", () => {
+    const v = classifyKiroIdeEndpoint({ Browser: "Chrome/1" }, [{ id: "f", type: "iframe", url: WORKBENCH }]);
+    assert.equal(v.kind, "other");
+  });
   const wb = [{ id: "p", type: "page", url: WORKBENCH }];
   it("real Kiro passes on User-Agent alone", () => assert.equal(classifyKiroIdeEndpoint(REAL_KIRO, undefined).kind, "kiro"));
   it("a UA without Kiro/ fails even with a workbench target", () => {

@@ -757,7 +757,10 @@ and never expose it more widely. `ach doctor` warns on a non-loopback endpoint.
 plain `Chrome/...`, so it is not tested. If Chrome, Vivaldi or another Electron app holds the port, the run
 exits with an error and doctor's `cdp` row fails with `port 9222 is a Vivaldi/7.0..., not Kiro IDE; pass
 --kiro-ide-port`. Fix it by passing the port Kiro really listens on, or a free one such as
-`--kiro-ide-port 9333` when ach launches Kiro. The default port stays 9222.
+`--kiro-ide-port 9333` when ach launches Kiro. The default port stays 9222. An endpoint that does not
+answer `/json/version` (not yet listening, slow, an HTTP error) is never driven: attach mode keeps polling
+until it identifies as Kiro or the ready timeout hits, and launch mode refuses to spawn against a listener
+it cannot identify.
 
 **Limits.**
 - Metering is credits only (`Est. Credits Used` from the chat); tokens are unavailable.

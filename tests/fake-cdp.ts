@@ -38,6 +38,8 @@ export interface FakeTargetSpec {
 export interface FakeCdpSpec {
   targets: FakeTargetSpec[];
   version?: Record<string, unknown>;
+  /** Per-request override for /json/version (n counts from 1): stall, fail, or answer. */
+  versionFn?: (n: number) => { status?: number; delayMs?: number; body?: Record<string, unknown> } | undefined;
 }
 
 export interface FakeCdp {
@@ -50,6 +52,7 @@ export interface FakeCdp {
 
 export async function startFakeCdp(spec: FakeCdpSpec): Promise<FakeCdp> {
   const calls: FakeCall[] = [];
+  let versionHits = 0;
   const sockets = new Map<string, Set<WebSocket>>();
   const wsServers: WebSocketServer[] = [];
   const wsPorts = new Map<string, number>();
@@ -113,6 +116,16 @@ export async function startFakeCdp(spec: FakeCdpSpec): Promise<FakeCdp> {
       );
     }
     if (req.url === "/json/version") {
+      const o = spec.versionFn?.(++versionHits);
+      if (o?.status) {
+        res.statusCode = o.status;
+        return res.end("err");
+      }
+      if (o?.delayMs) {
+        setTimeout(() => json(o.body ?? spec.version ?? {}), o.delayMs);
+        return;
+      }
+      if (o?.body) return json(o.body);
       return json(spec.version ?? { Browser: "Chrome/152.0.7977.130", "User-Agent": "Mozilla/5.0 Kiro/1.2.4", "Protocol-Version": "1.3" });
     }
     res.statusCode = 404;

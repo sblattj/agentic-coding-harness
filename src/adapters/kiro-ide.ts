@@ -513,17 +513,30 @@ export class KiroIdeAdapter implements AgentAdapter {
       // connected to or typed into (an everyday browser often holds 9222). Attach mode with
       // an endpoint that does not answer yet keeps polling in the ready loop below.
       let preexisting = false;
-      let endpointKnown: boolean | undefined;
-      try {
-        const verdict = await checkKiroIdeEndpoint(endpoint, { timeoutMs: 1500 });
-        if (verdict.kind === "other") {
-          throw new RunFailure(`${kiroIdeWrongEndpointMessage(endpoint, verdict.product)} (${KIRO_IDE_WRONG_ENDPOINT_HINT})`);
+      // "kiro" = verified; "refused" = nothing listening yet; "unverified" = something answers
+      // but /json/version timed out or errored, so it cannot be told apart from a browser.
+      const probeEndpoint = async (timeoutMs: number): Promise<"kiro" | "refused" | "unverified"> => {
+        try {
+          const verdict = await checkKiroIdeEndpoint(endpoint, { timeoutMs });
+          if (verdict.kind === "other") {
+            throw new RunFailure(`${kiroIdeWrongEndpointMessage(endpoint, verdict.product)} (${KIRO_IDE_WRONG_ENDPOINT_HINT})`);
+          }
+          return "kiro";
+        } catch (e) {
+          if (e instanceof RunFailure) throw e;
+          const code = (e as any)?.cause?.code;
+          return code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EHOSTUNREACH" ? "refused" : "unverified";
         }
-        endpointKnown = true;
-      } catch (e) {
-        if (e instanceof RunFailure) throw e;
-        endpointKnown = false;
+      };
+      let endpointState = await probeEndpoint(1500);
+      if (!attachMode && endpointState === "unverified") {
+        // Launch mode must not spawn against an unidentified listener: one patient retry, then refuse.
+        endpointState = await probeEndpoint(5000);
+        if (endpointState === "unverified") {
+          throw new RunFailure(`port ${endpoint.split(":").pop()} has a listener that does not identify itself, so it cannot be confirmed as Kiro IDE (${KIRO_IDE_WRONG_ENDPOINT_HINT})`);
+        }
       }
+      const endpointKnown = endpointState === "kiro";
       if (!attachMode) {
         preexisting = endpointKnown === true;
         checkAbort();
@@ -568,6 +581,14 @@ export class KiroIdeAdapter implements AgentAdapter {
             `Kiro IDE not ready after ${this.#readyTimeoutMs}ms on ${endpoint} (${chatTarget ? "chat ready" : "no chat webview target"}; workspace ${cwd ?? "(any)"}). ` +
               (attachMode ? "Is the IDE running with --remote-debugging-port?" : `Profile ${userDataDir}.`),
           );
+        }
+        // Never connect to or evaluate in a target until the endpoint is verified as Kiro (#161).
+        if (endpointState !== "kiro") {
+          endpointState = await probeEndpoint(1500);
+          if (endpointState !== "kiro") {
+            await sleep(Math.min(500, Math.max(50, this.#pollMs)));
+            continue;
+          }
         }
         let targets: CdpTarget[] = [];
         try {
