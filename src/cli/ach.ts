@@ -188,7 +188,7 @@ usage:
                            '[sandbox]' header line and added to --json output)
               [--evidence-dir <dir>]  (after the run, write <dir>/metrics.json (repeat: metrics-<i>.json):
                            agent, model, exit status, wall seconds, turns, cost + provenance, token
-                           totals, sandbox policy, ach version, timestamps. NO prompt, responses, tool
+                           totals, credits, sandbox policy, ach version, timestamps. NO prompt, responses, tool
                            inputs or file contents, so it is safe to commit; see docs/TRIALS.md)
               [--hermetic]  (run in a temp copy of cwd whose ancestor dirs hold no
                            CLAUDE.md/AGENTS.md/GEMINI.md, then sync edits (and deletions)
