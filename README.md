@@ -546,7 +546,7 @@ use the support table above and report a dropped field as a warning.
 
 `ach run --evidence-dir <dir>` writes `<dir>/metrics.json` (`metrics-<i>.json` per child with
 `--repeat`) after the run: agent, model, exit status, wall seconds, turns, cost with
-provenance, token totals, the sandbox policy, `ach` version and timestamps. It holds no
+provenance, token totals, credits, the sandbox policy, `ach` version and timestamps. It holds no
 prompt, response, tool input or file content, so a trial can commit it while keeping the raw
 stream private. See `docs/TRIALS.md`, "Evidence hygiene".
 

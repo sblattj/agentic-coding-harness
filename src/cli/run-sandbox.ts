@@ -147,6 +147,17 @@ export function buildRunMetrics(input: {
   }
   const endedAt = input.endedAtMs ?? Date.now();
   const u = result.usage;
+  // #159: when usage says tokens are available and carries run totals (kiro's
+  // session store fills these while the stream records stay zero), report the
+  // same totals run.json shows rather than the per-record sum.
+  const totals = u !== undefined && u.tokens.available ? u.cost?.tokens : undefined;
+  if (totals !== undefined) {
+    tokens.input = totals.inputTokens;
+    tokens.output = totals.outputTokens;
+    tokens.cacheRead = totals.cacheReadTokens;
+    tokens.cacheWrite = totals.cacheWriteTokens;
+    tokens.reasoning = totals.reasoningTokens ?? 0;
+  }
   const provenance = u === undefined ? "unknown" : u.usd.available ? `usd:${u.usd.source ?? "unknown"}; tokens:${u.tokens.available ? (u.tokens.source ?? "unknown") : "unavailable"}` : `usd:unavailable; tokens:${u.tokens.available ? (u.tokens.source ?? "unknown") : "unavailable"}`;
   return {
     schema: "ach.metrics/1",

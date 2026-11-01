@@ -233,6 +233,66 @@ describe("--evidence-dir metrics sidecar", () => {
       assert.equal(m.cost.provenance, "usd:unavailable; tokens:unavailable");
     });
 
+    test("credits carry complete:false and a non-default source (not a constant)", () => {
+      const usage: UsageAvailability = {
+        tokens: { available: false },
+        credits: { available: true, source: "tap", scope: "run", complete: false, value: 1.5 },
+        usd: { available: false },
+      };
+      const m = readBack("kiro", { ...base, usage });
+      assert.equal(m.credits.value, 1.5);
+      assert.equal(m.credits.source, "tap");
+      assert.equal(m.credits.complete, false);
+    });
+
+    test("kiro session-store tokens: sidecar equals usage.cost.tokens, not the zero stream sum", () => {
+      const usage: UsageAvailability = {
+        tokens: { available: true, source: "session-store" },
+        credits: { available: true, source: "native", scope: "run", complete: true, value: 0.1 },
+        usd: { available: false },
+        cost: {
+          costAvailability: "unavailable",
+          reportedCostUsd: null,
+          tokens: { inputTokens: 120, outputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 2 },
+        },
+      };
+      const zero = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      const m = readBack("kiro", { ...base, tokens: [zero] as never, usage });
+      assert.deepEqual(m.tokens, { input: 120, output: 7, cacheRead: 3, cacheWrite: 2, reasoning: 0 });
+      assert.equal(m.cost.provenance, "usd:unavailable; tokens:session-store");
+      assert.equal(m.credits.value, 0.1);
+    });
+
+    test("claude-shaped result with cost.tokens equal to the record sum is unchanged", () => {
+      const rec = { inputTokens: 5, outputTokens: 3, cacheReadTokens: 1, cacheWriteTokens: 2 };
+      const usage: UsageAvailability = {
+        tokens: { available: true, source: "native" },
+        credits: { available: false },
+        usd: { available: true, source: "vendor", value: 0.5 },
+        cost: { costAvailability: "reported", reportedCostUsd: 0.5, tokens: rec },
+      };
+      const withCost = readBack("claude", { ...base, totalCost: 0.5, tokens: [rec] as never, usage });
+      const { cost: _drop, ...usageNoCost } = usage;
+      const withoutCost = readBack("claude", { ...base, totalCost: 0.5, tokens: [rec] as never, usage: usageNoCost });
+      assert.deepEqual(withCost.tokens, { input: 5, output: 3, cacheRead: 1, cacheWrite: 2, reasoning: 0 });
+      assert.deepEqual(withCost.tokens, withoutCost.tokens);
+    });
+
+    test("reasoning tokens carry through, from usage.cost.tokens and from the record sum", () => {
+      const rec = { inputTokens: 5, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 2 };
+      const usage: UsageAvailability = {
+        tokens: { available: true, source: "native" },
+        credits: { available: false },
+        usd: { available: false },
+        cost: { costAvailability: "unavailable", reportedCostUsd: null, tokens: rec },
+      };
+      const withCost = readBack("claude", { ...base, tokens: [rec] as never, usage });
+      assert.equal(withCost.tokens.reasoning, 2);
+      const { cost: _drop, ...usageNoCost } = usage;
+      const sumOnly = readBack("claude", { ...base, tokens: [rec] as never, usage: usageNoCost });
+      assert.equal(sumOnly.tokens.reasoning, 2);
+    });
+
     test("claude-shaped result: numeric usd and tokens kept, a priced 0 stays 0, credits null", () => {
       const usageClaude: UsageAvailability = {
         tokens: { available: true, source: "native" },
