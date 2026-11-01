@@ -32,12 +32,14 @@ import {
   DEEP_TEXT_JS,
   KIRO_IDE_SELECTORS,
   KIRO_IDE_WRONG_ENDPOINT_HINT,
+  READ_MODEL_JS,
   checkKiroIdeEndpoint,
   kiroIdeWrongEndpointMessage,
   endpointFrom,
   isLoopbackHost,
   listTargets,
   type CdpTarget,
+  type KiroIdePickerState,
 } from "../adapters/kiro-ide-cdp.ts";
 import { createPricer, resolveAlias } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
@@ -894,6 +896,7 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
     const why = wrongEndpoint ? "endpoint is not Kiro IDE" : "CDP unreachable";
     out.push(mk("signed-in", "unproven", `not attempted: ${why}`, Date.now()));
     out.push(mk("chat", "unproven", `not attempted: ${why}`, Date.now()));
+    out.push(mk("model", "unproven", `not attempted: ${why}`, Date.now()));
     return out;
   }
 
@@ -940,14 +943,17 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
   t0 = Date.now();
   if (chatTargets.length === 0) {
     out.push(mk("chat", "failed", `no chat target (url containing '${KIRO_IDE_SELECTORS.chatTargetUrl}') among ${targets.length} targets`, t0, "open a workspace folder in Kiro and wait for the chat panel to load"));
+    out.push(mk("model", "unproven", "not attempted: no chat target", Date.now()));
   } else {
     const probe = `!!document.querySelector(${JSON.stringify(KIRO_IDE_SELECTORS.chatInput)})`;
     let found = false;
+    let foundTarget: CdpTarget | undefined;
     let lastErr: string | undefined;
     for (const t of chatTargets) {
       try {
         if ((await kiroIdeEvalTarget<boolean>(t, probe, timeoutMs)).some((v) => v === true)) {
           found = true;
+          foundTarget = t;
           break;
         }
       } catch (e) {
@@ -957,6 +963,31 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
     if (found) out.push(mk("chat", "verified", `chat input '${KIRO_IDE_SELECTORS.chatInput}' present`, t0));
     else if (lastErr !== undefined) out.push(mk("chat", "unproven", `could not probe the chat target: ${lastErr}`, t0));
     else out.push(mk("chat", "failed", `chat target present but '${KIRO_IDE_SELECTORS.chatInput}' not found: selectors no longer match this Kiro IDE version`, t0, "Kiro's UI changed; update KIRO_IDE_SELECTORS in src/adapters/kiro-ide-cdp.ts"));
+    // model (issue #160): reads the picker's label only. It never opens the popup, since
+    // doctor sends nothing and changes nothing.
+    t0 = Date.now();
+    if (foundTarget === undefined) {
+      out.push(mk("model", "unproven", found ? "not attempted: no chat target" : "not attempted: the chat input was not found", t0));
+    } else {
+      try {
+        const states = await kiroIdeEvalTarget<KiroIdePickerState | null>(foundTarget, READ_MODEL_JS, timeoutMs);
+        const label = states.find((v) => v && typeof v === "object" && v.trigger && typeof v.label === "string" && v.label !== "")?.label;
+        if (label) out.push(mk("model", "verified", `picker shows '${label}'`, t0));
+        else {
+          out.push(
+            mk(
+              "model",
+              "failed",
+              `chat input present but the model picker ('${KIRO_IDE_SELECTORS.modelTrigger}' / '${KIRO_IDE_SELECTORS.modelLabel}') not found: selectors no longer match this Kiro IDE version`,
+              t0,
+              "Kiro's UI changed; update KIRO_IDE_SELECTORS in src/adapters/kiro-ide-cdp.ts",
+            ),
+          );
+        }
+      } catch (e) {
+        out.push(mk("model", "unproven", `could not probe the chat target: ${e instanceof Error ? e.message : String(e)}`, t0));
+      }
+    }
   }
   return out;
 }

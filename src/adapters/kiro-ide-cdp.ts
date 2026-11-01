@@ -21,7 +21,63 @@ export const KIRO_IDE_SELECTORS = {
   chatInput: ".chat-input-content",
   chatTargetUrl: "extensionId=kiro.kiroAgent",
   workbenchUrl: "workbench.html",
+  // Model picker (issue #160). Observed live on Kiro IDE 1.2.4 over CDP; UNVERIFIED on
+  // 1.4.x (the issue was filed on 1.4.62). The trigger carries aria-haspopup=listbox and
+  // aria-expanded; element.click() toggles the popup. The option's innerText is multi-line:
+  // the name, then a credit multiplier, then a description, so only the first line is the name.
+  modelTrigger: "button.model-selector-trigger",
+  modelLabel: "span.model-selector-label",
+  modelPopup: ".chat-input-popup-menu[role=listbox]",
+  modelOption: ".chat-input-popup-option[role=option]",
 } as const;
+
+const sel = (s: string): string => JSON.stringify(s);
+
+/** The picker's current state: `{trigger, expanded, label}` (label null when the span is absent). */
+export const READ_MODEL_JS = `(() => { const t = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelTrigger)}); const l = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelLabel)}); return { trigger: !!t, expanded: !!t && t.getAttribute('aria-expanded') === 'true', label: l ? (l.textContent || '').trim() : null }; })()`;
+/** Opens the popup when it is closed (a click toggles, so an open popup is left alone). 'none' = no trigger. */
+export const OPEN_MODEL_PICKER_JS = `(() => { const t = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelTrigger)}); if (!t) return 'none'; if (t.getAttribute('aria-expanded') !== 'true') t.click(); return 'ok'; })()`;
+/** Closes the popup when it is open. Never selects anything. */
+export const CLOSE_MODEL_PICKER_JS = `(() => { const t = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelTrigger)}); if (!t) return 'none'; if (t.getAttribute('aria-expanded') === 'true') t.click(); return 'ok'; })()`;
+/** The popup's options as `[{name, disabled}]` (name = first non-empty line), or null when no popup is rendered. */
+export const LIST_MODEL_OPTIONS_JS = `(() => { const p = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelPopup)}); if (!p) return null; return [...p.querySelectorAll(${sel(KIRO_IDE_SELECTORS.modelOption)})].map((o) => ({ name: ((o.innerText || o.textContent || '').split('\\n').map((x) => x.trim()).find((x) => x !== '') || ''), disabled: o.getAttribute('aria-disabled') === 'true' })); })()`;
+export function clickModelOptionJs(index: number): string {
+  return `(() => { const p = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelPopup)}); if (!p) return 'none'; const o = [...p.querySelectorAll(${sel(KIRO_IDE_SELECTORS.modelOption)})][${Number(index)}]; if (!o || o.getAttribute('aria-disabled') === 'true') return 'none'; o.click(); return 'clicked'; })()`;
+}
+
+export interface KiroIdeModelOption {
+  name: string;
+  disabled: boolean;
+}
+export interface KiroIdePickerState {
+  trigger: boolean;
+  expanded: boolean;
+  label: string | null;
+}
+
+/** Case-insensitive, letters and digits only: "claude-sonnet-5.5" and "Claude Sonnet 5.5" are the same model. */
+export function normalizeModelName(s: string): string {
+  return s.replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+}
+
+export type KiroIdeModelPick =
+  | { kind: "match"; index: number; name: string }
+  | { kind: "disabled"; name: string }
+  | { kind: "none" };
+
+/** Exact normalized match on the option name, never a substring ("Claude Opus 5" must not pick "Claude Opus 5.5"). */
+export function pickModelOption(options: KiroIdeModelOption[], want: string): KiroIdeModelPick {
+  const key = normalizeModelName(want);
+  if (key === "") return { kind: "none" };
+  let disabled: string | undefined;
+  for (let i = 0; i < options.length; i++) {
+    const o = options[i]!;
+    if (normalizeModelName(o.name) !== key) continue;
+    if (o.disabled) disabled ??= o.name;
+    else return { kind: "match", index: i, name: o.name };
+  }
+  return disabled !== undefined ? { kind: "disabled", name: disabled } : { kind: "none" };
+}
 
 /** Walks shadow roots, skips STYLE/SCRIPT, returns all text nodes joined by " | ". */
 export const DEEP_TEXT_JS =
