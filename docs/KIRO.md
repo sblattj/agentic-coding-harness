@@ -57,12 +57,22 @@ calls, no executed tools). The sample is small: 4 runs on 2.36.0, 2 runs on 2.21
   metering frame (0.00909 and 0.00674). The tap missed nothing there.
 
 What the run record says: the reported credit value comes from the authoritative source (stream,
-then session store, then tap), so `credits.complete` describes that value and stays `true`. When
-the largest and smallest reported sources differ by more than 5% (max/min), `credits.disagreement`
-is `{ ratio, note }`. When the tap total is more than 5% BELOW the reported value,
-`credits.incompleteSources` is `["tap"]` and the existing `credit sources disagree` warning adds
-that the tap missed traffic. A tap above the reported value sets only `disagreement`. Under 5%,
-neither field is set (the absolute-delta warning is unchanged).
+then session store, then tap). `credits.complete` is hard-coded `true` and is NOT a claim that every
+source is whole; with the tap as the only source (for example a failed store read) the value is the
+tap, which can be far too low on V3, so read `source: "tap"` as unverified. When the largest and
+smallest reported sources differ by more than 5% (max/min), `credits.disagreement` is
+`{ ratio, note }` (`ratio` is `null` when the smallest source is exactly 0). When the tap total is
+more than 5% BELOW the reported value (`value / tap > 1.05`, the same ratio as `disagreement`),
+`credits.incompleteSources` is `["tap"]` and the `credit sources disagree` warning says so, without
+asserting a cause (the tap may have missed traffic, or the store may hold turns from before the run,
+as with a raw `--resume` passed through `--extra-arg`). A tap that was attached but saw no metering
+frame at all is marked incomplete too, with its own warning. A tap above the reported value sets only
+`disagreement`. Under 5%, neither field is set (the absolute-delta warning is unchanged).
+
+`RunRecord.totals.credits` is the sealed stream/tap sum and is not rewritten after the seal. When the
+tap is incomplete and that sum differs from `usage.credits.value`, its provenance is `estimated`
+(shown as a trailing marker in `ach dash`), and `ach run` prints the reconciled value. `ach stats`
+still sums raw per-record credits and can under-count on V3; prefer `usage.credits.value`.
 
 ### Verified configuration (`modelAck`)
 

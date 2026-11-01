@@ -978,7 +978,7 @@ export class KiroAdapter implements CoreAgentAdapter {
         handle.abort();
       },
       fallbackSessionId: spec.resume,
-      kiro: () => handle.effective(version.value()),
+      kiro: () => ({ ...handle.effective(version.value()), tapAttached: true }),
     });
   }
 

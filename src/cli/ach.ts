@@ -944,6 +944,12 @@ function runSummaryText(agent: string, result: RunResult, modelFlag: string | un
     exitStatus: result.exitStatus,
     ...(result.usage !== undefined ? { usage: result.usage } : {}),
   });
+  // #158: the reconciled usage value (stream > session store > tap) beats the
+  // raw per-record sum, which is the 56x-low tap total on a kiro V3 run.
+  const reconciledCredits = result.usage?.credits;
+  if (agent === "kiro" && reconciledCredits?.available === true && reconciledCredits.value !== undefined) {
+    totalCredits = reconciledCredits.value;
+  }
   if (totalCredits !== undefined) {
     // Units stay apart (#23): kiro credits vs copilot AIU ("AI credits").
     summary += creditUnitOfAgent(agent) === "copilot"

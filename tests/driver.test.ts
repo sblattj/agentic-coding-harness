@@ -7,7 +7,7 @@ import { createDriver, defaultAdapters } from '../src/core/driver.js';
 import { listRunRecords } from '../src/core/registry.js';
 import { stripChain } from '../src/core/hash-chain.js';
 import { AGENTS } from '../src/core/types.js';
-import type { AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, RunResult, RunSpec } from '../src/core/types.js';
+import type { AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, KiroEffective, RunResult, RunSpec } from '../src/core/types.js';
 
 type ScriptedEvent =
   | { type: 'step' }
@@ -1257,5 +1257,62 @@ describe('kiro v3 engine store (#121)', () => {
     });
     const result = await driver.run('kiro', { prompt: 'ping', kiroEvents: [kiroChunk(), kiroUsage(), kiroTurnEnd()] });
     assert.ok(result.warnings.some((w) => /no kiro session store/.test(w)), JSON.stringify(result.warnings));
+  });
+});
+
+describe('kiro #158 review follow-ups through driver.run', () => {
+  const previousSessionsDir = process.env.KIRO_SESSIONS_DIR;
+  afterEach(() => {
+    if (previousSessionsDir === undefined) delete process.env.KIRO_SESSIONS_DIR;
+    else process.env.KIRO_SESSIONS_DIR = previousSessionsDir;
+  });
+
+  // A kiro handle that, like the tapped headless handle, reports tapAttached.
+  class TappedAdapter extends KiroMockAdapter {
+    override async launch(spec: RunSpec): Promise<AgentHandle> {
+      const handle = await super.launch(spec);
+      handle.kiro = () => ({ tapAttached: true }) as unknown as KiroEffective;
+      return handle;
+    }
+  }
+
+  function setup(adapterCtor: typeof KiroMockAdapter, storeCredits: number) {
+    const uuid = 'dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const dir = mkdtempSync(join(tmpdir(), 'kiro-sessions-'));
+    writeFileSync(join(dir, `${uuid}.json`), kiroStoreJson([{ credits: storeCredits, input: 7, output: 3 }]));
+    process.env.KIRO_SESSIONS_DIR = dir;
+    const regDir = tmpStateDir();
+    const driver = createDriver({
+      adapters: { kiro: new adapterCtor(`kiro-${uuid}`) },
+      stateDir: tmpStateDir(),
+      registry: { stateDir: regDir },
+    });
+    return { driver, regDir };
+  }
+
+  it('flags a tapped run whose tap saw no metering frame', async () => {
+    const { driver } = setup(TappedAdapter, 0.3325);
+    const result = await driver.run('kiro', { prompt: 'ping', kiroEvents: [kiroChunk(), kiroTurnEnd()] });
+    assert.equal(result.usage?.credits.value, 0.3325);
+    assert.deepEqual(result.usage?.credits.incompleteSources, ['tap']);
+    assert.ok(result.warnings.some((w) => /saw no metering frames/.test(w)), JSON.stringify(result.warnings));
+  });
+
+  it('does not flag an untapped run with no tap frames', async () => {
+    const { driver } = setup(KiroMockAdapter, 0.3325);
+    const result = await driver.run('kiro', { prompt: 'ping', kiroEvents: [kiroChunk(), kiroTurnEnd()] });
+    assert.equal(result.usage?.credits.incompleteSources, undefined);
+  });
+
+  it('labels the registry totals.credits an estimate (a known low tap sum) when the tap is incomplete', async () => {
+    const { driver, regDir } = setup(KiroMockAdapter, 0.3325);
+    await driver.run('kiro', {
+      prompt: 'ping',
+      kiroEvents: [kiroChunk(), kiroUsage({ source: 'tap', credits: 0.0059, creditsCumulative: undefined }), kiroTurnEnd()],
+    });
+    const rec = listRunRecords(regDir)[0]!;
+    assert.equal(rec.totals?.credits, 0.0059);
+    assert.deepEqual(rec.usage?.credits.incompleteSources, ['tap']);
+    assert.equal(rec.totals?.provenance?.credits, 'estimated');
   });
 });

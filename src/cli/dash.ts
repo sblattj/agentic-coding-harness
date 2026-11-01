@@ -189,7 +189,7 @@ function tableRow(rec: RunRecord, now: number, ansi: boolean, lastW: number, quo
     padL(tokensUnavailable(rec) ? "n/a" : compact(t.outputTokens), COL.out),
     padL(tokensUnavailable(rec) ? "n/a" : compact(cache), COL.cache),
     padL(usdUnavailable(rec) ? "n/a" : fmtCost(t.costUsd) + markerFor(provenanceOf(rec).costUsd), COL.cost),
-    padL(fmtCredits(t.credits), COL.credits),
+    padL(fmtCredits(t.credits) + (t.credits === undefined ? "" : markerFor(provenanceOf(rec).credits)), COL.credits),
     padL(fmtContext(rec), COL.ctx),
   ];
   // QUOTA: vendor-reported headroom for this row's agent (src/core/quota.ts),

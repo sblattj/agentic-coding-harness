@@ -73,7 +73,17 @@ export function runTotalsProvenance(totals: RunTotalsLike, usage?: UsageAvailabi
     if (totals.costSource !== undefined) out.costUsd = totals.costSource;
     else if (totals.costUsd > 0) out.costUsd = "computed";
   }
-  if (totals.credits !== undefined) out.credits = "reported";
+  if (totals.credits !== undefined) {
+    // #158: totals.credits is the sealed stream/tap sum. When the reconciled
+    // usage says the tap was incomplete and the authoritative value differs,
+    // that sum is a known lower bound, so it is not labelled "reported".
+    const c = usage?.credits;
+    const lowTap =
+      c?.incompleteSources?.includes("tap") === true &&
+      c.value !== undefined &&
+      Math.abs(c.value - totals.credits) > 1e-9;
+    out.credits = lowTap ? "estimated" : "reported";
+  }
   if (totals.contextTokens !== undefined) out.contextTokens = "estimated";
   return out;
 }
