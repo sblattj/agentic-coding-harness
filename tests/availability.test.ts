@@ -63,6 +63,13 @@ describe('classifyUnavailable (pure)', () => {
     assert.match(reason ?? '', /before its first event/);
   });
 
+  it('keeps a caller error (kind invalid_request) as error even before the first event', () => {
+    const events = [{ type: 'error', message: 'bad model', payload: { kind: 'invalid_request' } }] as never;
+    assert.equal(classifyUnavailable({ adapterExit: 'error', events }), null);
+    // control: the same event without the tag is an outage-style crash
+    assert.match(classifyUnavailable({ adapterExit: 'error', events: [{ type: 'error', message: 'bad model' }] as never }) ?? '', /before its first event/);
+  });
+
   it('keeps a genuine task failure (activity, then non-zero exit) as error', () => {
     assert.equal(
       classifyUnavailable({

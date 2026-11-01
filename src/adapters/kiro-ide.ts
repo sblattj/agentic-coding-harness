@@ -372,6 +372,8 @@ class EventQueue {
 }
 
 class RunFailure extends Error {}
+/** The user asked for something the IDE does not offer (a bad --model): a caller error, never an outage (availability.ts). */
+class InvalidRequest extends RunFailure {}
 class Aborted extends Error {}
 
 // ---------------------------------------------------------------- adapter
@@ -774,7 +776,16 @@ export class KiroIdeAdapter implements AgentAdapter {
         const closePicker = async (): Promise<void> => {
           await chat.evaluate<string>(CLOSE_MODEL_PICKER_JS, ctx).catch(() => undefined);
         };
-        const picker = await readPicker();
+        // A rebuilt webview can render the chat input before the model picker (the same lag the
+        // Autopilot switch has above), so give the first read a bounded settle window.
+        let picker = await readPicker();
+        const tFirst = this.#now();
+        while (!(picker?.trigger && picker.label)) {
+          if (this.#now() - tFirst >= this.#modelSettleMs) break;
+          await sleep(modelPoll);
+          checkAbort();
+          picker = await readPicker();
+        }
         const label = picker?.label ?? null;
         if (!picker?.trigger || label === null || label === "") {
           if (wantModel !== undefined) {
@@ -811,10 +822,10 @@ export class KiroIdeAdapter implements AgentAdapter {
             const pick = pickModelOption(options, wantModel);
             const names = options.map((o) => (o.disabled ? `${o.name} (unavailable)` : o.name)).join(", ");
             if (pick.kind === "none") {
-              throw new RunFailure(`model '${wantModel}' is not in the Kiro IDE model picker; available models: ${names}; the prompt was not sent`);
+              throw new InvalidRequest(`model '${wantModel}' is not in the Kiro IDE model picker; available models: ${names}; the prompt was not sent`);
             }
             if (pick.kind === "disabled") {
-              throw new RunFailure(`model '${wantModel}' is listed in the Kiro IDE model picker but not selectable (${pick.name} is disabled); available models: ${names}; the prompt was not sent`);
+              throw new InvalidRequest(`model '${wantModel}' is listed in the Kiro IDE model picker but not selectable (${pick.name} is disabled); available models: ${names}; the prompt was not sent`);
             }
             const clicked = await chat.evaluate<string>(clickModelOptionJs(pick.index), ctx);
             if (clicked !== "clicked") throw new RunFailure(`could not click '${pick.name}' in the Kiro IDE model picker; the prompt was not sent`);
@@ -1004,7 +1015,11 @@ export class KiroIdeAdapter implements AgentAdapter {
       .then<AdapterExit>(() => "success")
       .catch<AdapterExit>((e) => {
         if (e instanceof Aborted || aborted) return "aborted";
-        emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
+        emit({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+          ...(e instanceof InvalidRequest ? { payload: { kind: "invalid_request" } } : {}),
+        });
         return "error";
       })
       .then((exit) => {

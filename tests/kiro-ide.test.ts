@@ -237,7 +237,7 @@ async function collect(h: { attach(): AsyncIterable<AgentEvent> }): Promise<Agen
   return out;
 }
 
-const fast = { pollMs: 15, readyTimeoutMs: 3000, recoverMs: 100 };
+const fast = { pollMs: 15, readyTimeoutMs: 3000, recoverMs: 100, modelSettleMs: 100 };
 
 describe("KiroIdeAdapter (fake CDP)", () => {
   it("happy path: events, credits 0.18, hook marker, tool call; attach mode never spawns", async () => {

@@ -8,7 +8,7 @@ import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { KIRO_IDE_MODEL_LABEL, KiroIdeAdapter } from "../src/adapters/kiro-ide.ts";
-import { normalizeModelName, pickModelOption } from "../src/adapters/kiro-ide-cdp.ts";
+import { READ_MODEL_JS, normalizeModelName, pickModelOption } from "../src/adapters/kiro-ide-cdp.ts";
 import { createDriver } from "../src/core/driver.ts";
 import { listRunRecords } from "../src/core/registry.ts";
 import type { AgentEvent, RunSpec } from "../src/core/types.ts";
@@ -272,5 +272,58 @@ describe("kiro-ide model through the production driver", () => {
     assert.deepEqual(persisted2.warnings, []);
     assert.equal(w2.picker.toggles, 0);
     assert.equal(r2.exitStatus, "success");
+  });
+
+  it("a bad --model is recorded as error, not unavailable, and the list rides in the warning-free result", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-kiro-ide-badmodel-"));
+    const driver = createDriver({ adapters: { "kiro-ide": new KiroIdeAdapter(fast) }, stateDir, registry: { stateDir } });
+    const w = await world({ label: "Auto" });
+    const outputDir = path.join(stateDir, "out-bad");
+    const result = await driver.run("kiro-ide", specFor(w.fake, { model: "gemini-9", outputDir }));
+    assert.equal(result.exitStatus, "error", JSON.stringify(result.warnings));
+    assert.ok(!result.warnings.some((x) => /unavailable/.test(x)), JSON.stringify(result.warnings));
+    const rec = listRunRecords(stateDir).find((r) => r.runId === result.runId);
+    assert.equal(rec?.status, "error");
+    const events = (await fs.readFile(path.join(outputDir, "events.jsonl"), "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert.match(String(events.find((e: any) => e.type === "error")?.message), /available models: Auto, Claude Opus 5\.5/);
+    assert.equal(w.inputCalls(), 0);
+
+    // control: a missing picker with --model is selector drift (an outage-like failure), still unavailable
+    const w2 = await world({ configure: (p) => (p.present = false) });
+    const r2 = await driver.run("kiro-ide", specFor(w2.fake, { model: "Auto", outputDir: path.join(stateDir, "out-drift") }));
+    assert.equal(r2.exitStatus, "unavailable");
+  });
+
+  it("a picker that renders just after the chat input is still read (bounded first-read settle)", async () => {
+    const w = await world({
+      label: "Claude Sonnet 5.5",
+      configure: (p) => {
+        const real = p.evaluate.bind(p);
+        let reads = 0;
+        p.evaluate = (expr: string) => {
+          if (expr === READ_MODEL_JS && reads++ === 0) return { handled: true, value: { trigger: false, expanded: false, label: null } };
+          return real(expr);
+        };
+      },
+    });
+    const r = await runIt(w);
+    assert.equal(r.exit, "success");
+    assert.equal(r.model, "Claude Sonnet 5.5");
+    assert.ok(!r.notes.some((n) => /could not read the chat's model picker/.test(n)), r.notes.join("|"));
+
+    const w2 = await world({
+      label: "Claude Sonnet 5.5",
+      configure: (p) => {
+        const real = p.evaluate.bind(p);
+        let reads = 0;
+        p.evaluate = (expr: string) => {
+          if (expr === READ_MODEL_JS && reads++ === 0) return { handled: true, value: { trigger: false, expanded: false, label: null } };
+          return real(expr);
+        };
+      },
+    });
+    const r2 = await runIt(w2, { model: "Claude Sonnet 5.5" });
+    assert.equal(r2.exit, "success", r2.error);
+    assert.equal(r2.model, "Claude Sonnet 5.5");
   });
 });

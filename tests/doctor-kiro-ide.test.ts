@@ -5,6 +5,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { checkKiroIde } from "../src/cli/doctor.ts";
+import { READ_MODEL_JS } from "../src/adapters/kiro-ide-cdp.ts";
 import { FakeModelPicker, startFakeCdp, type FakeCdp, type FakeTargetSpec } from "./fake-cdp.ts";
 
 // checkKiroIde against a fake CDP endpoint; the binary row uses a script in a tmp dir.
@@ -169,6 +170,32 @@ describe("checkKiroIde", () => {
     assert.match(r.detail, /selectors no longer match this Kiro IDE version/);
     assert.ok(r.hint);
     assert.equal(row(rows, "chat")!.status, "verified");
+  });
+
+  it("model row: unproven (not failed) when evaluating the label throws in every context", async () => {
+    const picker = new FakeModelPicker();
+    const f = await fake([
+      page(SIGNED_IN),
+      {
+        id: "chat",
+        type: "iframe",
+        url: CHAT,
+        contexts: ctxs,
+        handler: (method, p, contextId) => {
+          if (method !== "Runtime.evaluate") return {};
+          if (p.expression === READ_MODEL_JS) {
+            return { exceptionDetails: { text: "Uncaught", exception: { description: "Execution context was destroyed" } } };
+          }
+          void picker;
+          return { result: { type: "boolean", value: contextId === 2 } };
+        },
+      },
+    ]);
+    const rows = await run(f.endpoint);
+    assert.equal(row(rows, "chat")!.status, "verified");
+    const r = row(rows, "model")!;
+    assert.equal(r.status, "unproven");
+    assert.match(r.detail, /Execution context was destroyed/);
   });
 
   it("model row: unproven when the chat input is missing or there is no chat target", async () => {

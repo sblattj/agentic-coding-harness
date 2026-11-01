@@ -313,8 +313,10 @@ any prompt text is typed:
 - Without `--model`, the label is read and recorded as the run's `model`.
 - With `--model <name>`, the label is compared first (already selected: no click). Otherwise the popup is
   opened, the option whose first line equals the name (case-insensitive, non-alphanumerics removed) is
-  clicked, and the label is polled for up to 3 s to confirm. No match, a disabled option (`aria-disabled`),
-  or an unchanged label closes the popup and fails the run with the available models, before any input.
+  clicked, and the label is polled for up to 3 s to confirm. No match or a disabled option (`aria-disabled`)
+  closes the popup and fails the run listing the available models, before any input; the run is recorded as
+  `error` (a bad `--model` is a caller error, not an outage). An unchanged label after the click also fails
+  before any input, but names only the mismatch (no list). The first picker read waits up to 3 s for a late render.
 - Missing trigger or label (selector drift): with `--model` the run fails; without it, the run proceeds and
   records `kiro-ide` with a progress note.
 - The selection is not restored afterwards: it persists in the IDE, and a progress note says so when it

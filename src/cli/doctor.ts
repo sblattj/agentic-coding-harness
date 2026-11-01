@@ -820,6 +820,18 @@ async function kiroIdeEvalTarget<T>(target: CdpTarget, expr: string, timeoutMs: 
   }
 }
 
+/** Like kiroIdeEvalTarget, but keeps the per-context errors so a caller can tell "not found" from "could not look". */
+async function kiroIdeEvalTargetAll<T>(target: CdpTarget, expr: string, timeoutMs: number): Promise<Array<{ value?: T; error?: string }>> {
+  const session = await CdpSession.connect(target, { timeoutMs });
+  try {
+    await session.enableRuntime();
+    await session.settleContexts();
+    return (await session.evaluateEach<T>(expr)).map((r) => ({ value: r.value, error: r.error }));
+  } finally {
+    session.close();
+  }
+}
+
 /**
  * Doctor rows for the `kiro-ide` agent (drives the Kiro IDE desktop app over CDP).
  * Read-only: evaluates text/selector probes only, never sends input.
@@ -970,9 +982,11 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
       out.push(mk("model", "unproven", found ? "not attempted: no chat target" : "not attempted: the chat input was not found", t0));
     } else {
       try {
-        const states = await kiroIdeEvalTarget<KiroIdePickerState | null>(foundTarget, READ_MODEL_JS, timeoutMs);
-        const label = states.find((v) => v && typeof v === "object" && v.trigger && typeof v.label === "string" && v.label !== "")?.label;
+        const results = await kiroIdeEvalTargetAll<KiroIdePickerState | null>(foundTarget, READ_MODEL_JS, timeoutMs);
+        const label = results.map((r) => r.value).find((v) => v && typeof v === "object" && v.trigger && typeof v.label === "string" && v.label !== "")?.label;
+        const evalError = results.find((r) => r.error !== undefined)?.error;
         if (label) out.push(mk("model", "verified", `picker shows '${label}'`, t0));
+        else if (evalError !== undefined) out.push(mk("model", "unproven", `could not read the model picker: ${evalError}`, t0));
         else {
           out.push(
             mk(
