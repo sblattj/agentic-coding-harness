@@ -37,6 +37,43 @@ the system roots plus the tap CA, so OpenSSL clients still verify tunneled hosts
 metering to a new host, add it with `ACH_KIRO_TAP_HOSTS` (comma-separated host regexes, no
 port), for example `ACH_KIRO_TAP_HOSTS='q\.[^:/]*\.amazonaws\.com'`.
 
+### V3 engine: the tap can disagree with the session store (#158)
+
+Measured with the same 4-step prompt on `--kiro-engine v3`, no `--kiro-tools` (so several model
+calls, no executed tools). The sample is small: 4 runs on 2.36.0, 2 runs on 2.21.2.
+
+| kiro-cli | session store | tap | tap frames | tap vs store |
+|---|---|---|---|---|
+| 2.36.0 | 0.33252 | 0.00590 | 1 `meteringEvent` | 56x too low |
+| 2.21.2 (long) | 0.46612 | 0.47521 | 5 | +2% |
+| 2.21.2 (short) | 0.08098 | 0.08772 | 2 | +8% |
+
+- **2.36.0 under-counts.** The tap saw one `meteringEvent` frame while the store holds the whole
+  charge. A `lsof` sample during a 2.36 run showed the V3 engine's node child with direct sockets
+  to an EC2 host on :443, not through the proxy. UNVERIFIED: whether the proxy env reaches that
+  child, and which hostname it uses. `NODE_USE_ENV_PROXY=1` plus a wider `ACH_KIRO_TAP_HOSTS` did
+  not change the frames the tap saw. The tap is not taught new frames; the run is flagged instead.
+- **2.21.2 can over-count.** In both runs the store equals the tap minus exactly the first, small
+  metering frame (0.00909 and 0.00674). The tap missed nothing there.
+
+What the run record says: the reported credit value comes from the authoritative source (stream,
+then session store, then tap). `credits.complete` is hard-coded `true` and is NOT a claim that every
+source is whole; with the tap as the only source (for example a failed store read) the value is the
+tap, which can be far too low on V3, so read `source: "tap"` as unverified. When the largest and
+smallest reported sources differ by more than 5% (max/min), `credits.disagreement` is
+`{ ratio, note }` (`ratio` is `null` when the smallest source is exactly 0). When the tap total is
+more than 5% BELOW the reported value (`value / tap > 1.05`, the same ratio as `disagreement`),
+`credits.incompleteSources` is `["tap"]` and the `credit sources disagree` warning says so, without
+asserting a cause (the tap may have missed traffic, or the store may hold turns from before the run,
+as with a raw `--resume` passed through `--extra-arg`). A tap that was attached but saw no metering
+frame at all is marked incomplete too, with its own warning. A tap above the reported value sets only
+`disagreement`. Under 5%, neither field is set (the absolute-delta warning is unchanged).
+
+`RunRecord.totals.credits` is the sealed stream/tap sum and is not rewritten after the seal. When the
+tap is incomplete and that sum differs from `usage.credits.value`, its provenance is `estimated`
+(shown as a trailing marker in `ach dash`), and `ach run` prints the reconciled value. `ach stats`
+still sums raw per-record credits and can under-count on V3; prefer `usage.credits.value`.
+
 ### Verified configuration (`modelAck`)
 
 `modelAck` is one of:

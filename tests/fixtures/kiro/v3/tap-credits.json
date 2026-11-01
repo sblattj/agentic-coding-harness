@@ -1,0 +1,61 @@
+{
+  "description": "Kiro V3 engine: MITM tap meteringEvent credits vs the session-store total, from recorded runs (ids, paths and accounts removed).",
+  "cases": [
+    {
+      "name": "v236-tap-misses-traffic",
+      "kiroCli": "2.36.0",
+      "engine": "v3",
+      "tapFrames": [
+        {
+          "event": "meteringEvent",
+          "credits": 0.005903003184079603
+        }
+      ],
+      "sessionStoreCredits": 0.3325151169154229
+    },
+    {
+      "name": "v2212-tap-over-counts-long",
+      "kiroCli": "2.21.2",
+      "engine": "v3",
+      "tapFrames": [
+        {
+          "event": "meteringEvent",
+          "credits": 0.009086258772802655
+        },
+        {
+          "event": "meteringEvent",
+          "credits": 0.16750973466003316
+        },
+        {
+          "event": "meteringEvent",
+          "credits": 0.09963664825870647
+        },
+        {
+          "event": "meteringEvent",
+          "credits": 0.09862452686567165
+        },
+        {
+          "event": "meteringEvent",
+          "credits": 0.10035306616915424
+        }
+      ],
+      "sessionStoreCredits": 0.4661239759535655
+    },
+    {
+      "name": "v2212-tap-over-counts-short",
+      "kiroCli": "2.21.2",
+      "engine": "v3",
+      "tapFrames": [
+        {
+          "event": "meteringEvent",
+          "credits": 0.006741632305140962
+        },
+        {
+          "event": "meteringEvent",
+          "credits": 0.08098238606965175
+        }
+      ],
+      "sessionStoreCredits": 0.08098238606965175
+    }
+  ]
+}

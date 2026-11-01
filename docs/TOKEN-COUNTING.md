@@ -169,7 +169,7 @@ to a kiro run emits
 
 | Signal | Source field | Surfaced as |
 |---|---|---|
-| credits (authoritative charge) | stream `metadata.meteringUsage[].value` (cumulative) > session store `metering_usage[].value` > tap `meteringEvent.credits` | `usage.credits.value`, `RunRecord.totals.credits`; every source kept in `usage.credits.sources` |
+| credits (authoritative charge) | stream `metadata.meteringUsage[].value` (cumulative) > session store `metering_usage[].value` > tap `meteringEvent.credits` | `usage.credits.value` (authoritative); `RunRecord.totals.credits` is the sealed stream/tap sum and can be far too low on kiro V3, so it is provenance `estimated` when `usage.credits.incompleteSources` has `tap` (#158); every source kept in `usage.credits.sources` |
 | effective model | session store `rts_model_state.model_info.model_id`, per-turn `model` | backfilled onto token records whose `model` was `"unknown"` (post-hoc: pricing is NOT re-run, USD stays unavailable) |
 | context-window occupancy | `context_usage_percentage` / `final_context_usage_percentage` × `model_info.context_window_tokens` | `usage.context` (`source:'derived'`), rendered `ctx ≈ N tok (p%)`, `RunRecord.totals.contextTokens` |
 

@@ -19,6 +19,13 @@ import type { ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
 export const CREDIT_TOLERANCE = 1e-9;
 
 /**
+ * Issue #158: reported credit sources whose largest/smallest ratio exceeds this
+ * (5%) get a structured `credits.disagreement`; a tap more than 5% below the
+ * reported value is marked in `credits.incompleteSources`.
+ */
+export const CREDIT_DISAGREEMENT_RATIO = 1.05;
+
+/**
  * Context-window fallback when no source states the real window. Deliberately
  * one conservative entry: a guess is always labelled `windowSource:'assumed'`
  * so a reader can discount it. NEVER grow this into a pricing-style table of
@@ -32,6 +39,12 @@ export interface ComputeUsageInput {
   sessionStore?: ParsedKiroSessionStore | null;
   /** Cumulative credits reported by the live stream (kiro `metadata` frames). */
   streamCreditsCumulative?: number | null;
+  /**
+   * True when the MITM tap was attached to this run (kiro adapter hand-off).
+   * A tap that saw NO metering frames then counts as incomplete (#158): on the
+   * V3 engine the zero-frame run is the worst under-count.
+   */
+  tapAttached?: boolean;
   /** Driver's running USD total (0 when nothing could be priced). */
   totalCost: number;
   /** True when the pricer returned a real (non-NaN) price for some record. */
@@ -254,19 +267,58 @@ export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsage
     ];
     let value = 0;
     let source: UsageAvailability['credits']['source'] = 'tap';
+    let winner: keyof typeof sources = 'tap';
     for (const [key, src] of order) {
       const v = sources[key];
       if (v === undefined) continue;
       value = v;
       source = src;
+      winner = key;
       break;
     }
+
+    // Structured disagreement (#158): largest vs smallest reported source.
+    let disagreementField: { ratio: number | null; note: string } | undefined;
+    if (reported.length > 1) {
+      let lo = reported[0] as [keyof typeof sources, number];
+      let hi = lo;
+      for (const entry of reported) {
+        if (entry[1] < lo[1]) lo = entry;
+        if (entry[1] > hi[1]) hi = entry;
+      }
+      if (lo[1] > 0 && hi[1] / lo[1] > CREDIT_DISAGREEMENT_RATIO) {
+        const ratio = hi[1] / lo[1];
+        disagreementField = {
+          ratio,
+          note: `${hi[0]}=${hi[1]} is ${ratio.toFixed(2)}x ${lo[0]}=${lo[1]}`,
+        };
+      } else if (lo[1] === 0 && hi[1] > 0) {
+        // A zero floor has no finite ratio: null, never Infinity (JSON/zod).
+        disagreementField = { ratio: null, note: `${hi[0]}=${hi[1]} versus ${lo[0]}=0` };
+      }
+    }
+    // The tap is the only source known to miss traffic (kiro V3 engine). It is
+    // incomplete only when BELOW the winner by the SAME 5% ratio that defines
+    // `disagreement` (value/tap > 1.05): a tap above it missed nothing. An
+    // attached tap that saw no metering frame at all is incomplete too.
+    const tapSawNothing = winner !== 'tap' && sources.tap === undefined && input.tapAttached === true && value > 0;
+    const tapBelow = winner !== 'tap' && sources.tap !== undefined && value > sources.tap * CREDIT_DISAGREEMENT_RATIO;
+    const tapIncomplete = tapSawNothing || tapBelow;
+
     const disagreement = reported.some(([, v]) => Math.abs(v - value) > CREDIT_TOLERANCE);
     if (disagreement) {
       warnings.push(
         `usage: credit sources disagree (${reported
           .map(([k, v]) => `${k}=${v}`)
-          .join(', ')}); reporting ${value} from ${source}`,
+          .join(', ')}); reporting ${value} from ${source}` +
+          (tapBelow
+            ? `; the tap total is more than 5% below the reported value (it may have missed traffic, or the ${winner} may hold turns from before this run), so the reported value is from the ${winner}`
+            : ''),
+      );
+    }
+    if (tapSawNothing) {
+      warnings.push(
+        `usage: the tap was attached but saw no metering frames; its total is missing, so the reported ${value} is from the ${winner} (tap token/credit records for this run are incomplete)`,
       );
     }
     credits = {
@@ -274,9 +326,17 @@ export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsage
       source: reported.length > 1 ? 'reconciled' : source,
       scope: 'run',
       cumulative: true,
+      // Hard-coded true, kept from before #158: it is NOT a completeness claim
+      // about every source. With a winning stream/store it describes that
+      // authoritative value; the tap's own gaps live in `incompleteSources`.
+      // When the tap is the ONLY source (a V3 store read failed) the value IS
+      // the tap, which can be far too low on kiro V3 (see docs/KIRO.md), so
+      // read `source:'tap'` as unverified despite `complete:true`.
       complete: true,
       value,
       sources,
+      ...(disagreementField ? { disagreement: disagreementField } : {}),
+      ...(tapIncomplete ? { incompleteSources: ['tap' as const] } : {}),
     };
   }
 

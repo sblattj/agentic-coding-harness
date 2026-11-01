@@ -935,6 +935,7 @@ export function createDriver(options: DriverOptions): Driver {
           tokens,
           sessionStore,
           streamCreditsCumulative,
+          ...(kiroEffective?.tapAttached === true ? { tapAttached: true } : {}),
           totalCost: cumulativeCost,
           pricerPriced,
         });

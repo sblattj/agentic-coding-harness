@@ -725,6 +725,8 @@ export interface KiroEffective {
   nativeSessionId?: string;
   modelAck: KiroModelAck;
   configHash: string;
+  /** True when the MITM credit tap was attached to this run (#158). */
+  tapAttached?: boolean;
 }
 
 export const KiroEffectiveSchema = z.object({
@@ -735,6 +737,7 @@ export const KiroEffectiveSchema = z.object({
   nativeSessionId: z.string().optional(),
   modelAck: z.enum(["acknowledged", "rejected", "unsupported", "not-requested", "unverified"]),
   configHash: z.string(),
+  tapAttached: z.boolean().optional(),
 });
 
 /**
@@ -845,10 +848,19 @@ export interface UsageAvailability {
     source?: "native" | "tap" | "reconciled";
     scope?: "run" | "turn" | "call";
     cumulative?: boolean;
+    /**
+     * Hard-coded true (pre-#158). It is not a claim that every source is whole:
+     * a weaker source's gaps are listed in `incompleteSources`. When the tap is
+     * the only source the value IS the tap, which can be far too low on kiro V3.
+     */
     complete?: boolean;
     value?: number;
     /** Every source that reported a credit total, verbatim (audit trail). */
     sources?: Partial<Record<"stream" | "session-store" | "tap", number>>;
+    /** Present when the largest and smallest reported sources differ by more than 5% (ratio = max/min; null when the smallest is 0). */
+    disagreement?: { ratio: number | null; note: string };
+    /** Sources known to have missed charges: "tap" when its total is more than 5% below the reported value, or the tap was attached and saw no metering frame (#158). */
+    incompleteSources?: Array<"stream" | "session-store" | "tap">;
   };
   usd: { available: boolean; source?: "pricer" | "vendor"; value?: number };
   /**
@@ -954,6 +966,8 @@ export const UsageAvailabilitySchema = z.object({
           tap: z.number().optional(),
         })
         .optional(),
+      disagreement: z.object({ ratio: z.number().nullable(), note: z.string() }).optional(),
+      incompleteSources: z.array(z.enum(["stream", "session-store", "tap"])).optional(),
     })
     .default({ available: false }),
   usd: z.object({
