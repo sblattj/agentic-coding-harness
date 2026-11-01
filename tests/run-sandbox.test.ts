@@ -278,6 +278,21 @@ describe("--evidence-dir metrics sidecar", () => {
       assert.deepEqual(withCost.tokens, withoutCost.tokens);
     });
 
+    test("reasoning tokens carry through, from usage.cost.tokens and from the record sum", () => {
+      const rec = { inputTokens: 5, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 2 };
+      const usage: UsageAvailability = {
+        tokens: { available: true, source: "native" },
+        credits: { available: false },
+        usd: { available: false },
+        cost: { costAvailability: "unavailable", reportedCostUsd: null, tokens: rec },
+      };
+      const withCost = readBack("claude", { ...base, tokens: [rec] as never, usage });
+      assert.equal(withCost.tokens.reasoning, 2);
+      const { cost: _drop, ...usageNoCost } = usage;
+      const sumOnly = readBack("claude", { ...base, tokens: [rec] as never, usage: usageNoCost });
+      assert.equal(sumOnly.tokens.reasoning, 2);
+    });
+
     test("claude-shaped result: numeric usd and tokens kept, a priced 0 stays 0, credits null", () => {
       const usageClaude: UsageAvailability = {
         tokens: { available: true, source: "native" },
