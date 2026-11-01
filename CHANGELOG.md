@@ -4,6 +4,10 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Fixed
+
+- `--agent kiro-ide --model <name>` works on Kiro IDE 1.4.62. There the model popup is a dialog with the listbox as a child list, so 0.27.0's selector matched nothing and every `--model` failed with "the model picker listed no models". The selector now matches both 1.2.4 and 1.4.62, verified live on 1.4.62. (#160, #162)
+
 ## [0.27.0] - 2026-11-01
 
 ### Added

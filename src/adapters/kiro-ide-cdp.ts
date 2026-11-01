@@ -21,13 +21,14 @@ export const KIRO_IDE_SELECTORS = {
   chatInput: ".chat-input-content",
   chatTargetUrl: "extensionId=kiro.kiroAgent",
   workbenchUrl: "workbench.html",
-  // Model picker (issue #160). Observed live on Kiro IDE 1.2.4 over CDP; UNVERIFIED on
-  // 1.4.x (the issue was filed on 1.4.62). The trigger carries aria-haspopup=listbox and
+  // Model picker (issue #160). Observed live on Kiro IDE 1.2.4 and 1.4.62 over CDP. The trigger carries aria-haspopup=listbox and
   // aria-expanded; element.click() toggles the popup. The option's innerText is multi-line:
   // the name, then a credit multiplier, then a description, so only the first line is the name.
   modelTrigger: "button.model-selector-trigger",
   modelLabel: "span.model-selector-label",
-  modelPopup: ".chat-input-popup-menu[role=listbox]",
+  // 1.2.4: the popup menu itself is the listbox. 1.4.62: the menu is a role=dialog panel (with a
+  // filter box) and the listbox is a child list, so the 1.2.4 selector matched nothing there.
+  modelPopup: ".chat-input-popup-menu[role=listbox], .kiro-model-selector-list[role=listbox]",
   modelOption: ".chat-input-popup-option[role=option]",
 } as const;
 

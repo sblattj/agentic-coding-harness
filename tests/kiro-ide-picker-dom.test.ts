@@ -1,5 +1,5 @@
 // Issue #160: the picker JS that is injected into the Kiro chat webview actually runs here,
-// against a tiny DOM whose elements carry the LIVE attributes observed on Kiro 1.2.4 (literal
+// against a tiny DOM whose elements carry the LIVE attributes observed on Kiro 1.2.4 and 1.4.62 (literal
 // copies, not imported from the source), so a drifted selector or a broken expression fails.
 import assert from "node:assert/strict";
 import vm from "node:vm";
@@ -24,6 +24,7 @@ interface El {
 }
 
 function matches(el: El, selector: string): boolean {
+  if (selector.includes(",")) return selector.split(",").some((s) => matches(el, s.trim()));
   const m = /^([a-z]*)((?:\.[\w-]+)*)((?:\[[\w-]+(?:=[\w-]+)?\])*)$/.exec(selector);
   if (!m) throw new Error(`mini-DOM does not understand selector ${selector}`);
   if (m[1] && el.tag !== m[1]) return false;
@@ -58,8 +59,12 @@ function all(root: El, sel: string): El[] {
   return out;
 }
 
-/** The live picker structure: trigger + label always; the popup only while expanded. */
-function livePicker(names: Array<{ name: string; disabled?: boolean }>, initial: string) {
+/**
+ * The live picker structure: trigger + label always; the popup only while expanded.
+ * "1.2.4": the popup menu is the listbox. "1.4.62": the menu is a role=dialog panel and the
+ * listbox is a child `.kiro-model-selector-list` (live 2026-11-01).
+ */
+function livePicker(names: Array<{ name: string; disabled?: boolean }>, initial: string, version: "1.2.4" | "1.4.62" = "1.2.4") {
   const root: El = { tag: "body", classes: [], attrs: {}, text: "", children: [] };
   const label: El = { tag: "span", classes: ["model-selector-label"], attrs: {}, text: initial, children: [] };
   const trigger: El = {
@@ -69,10 +74,17 @@ function livePicker(names: Array<{ name: string; disabled?: boolean }>, initial:
     text: "",
     children: [label],
   };
-  const popup: El = { tag: "div", classes: ["chat-input-popup-menu"], attrs: { role: "listbox" }, text: "", children: [] };
+  const popup: El =
+    version === "1.2.4"
+      ? { tag: "div", classes: ["chat-input-popup-menu"], attrs: { role: "listbox" }, text: "", children: [] }
+      : { tag: "div", classes: ["kiro-model-selector-list"], attrs: { role: "listbox" }, text: "", children: [] };
+  const panel: El =
+    version === "1.2.4"
+      ? popup
+      : { tag: "div", classes: ["chat-input-popup-menu", "kiro-model-selector-popup"], attrs: { role: "dialog" }, text: "", children: [popup] };
   const setOpen = (open: boolean) => {
     trigger.attrs["aria-expanded"] = String(open);
-    root.children = open ? [trigger, popup] : [trigger];
+    root.children = open ? [trigger, panel] : [trigger];
   };
   popup.children = names.map((n, i) => ({
     tag: "div",
@@ -98,7 +110,7 @@ describe("kiro-ide picker JS against the live DOM shape", () => {
   it("pins the live selectors", () => {
     assert.equal(KIRO_IDE_SELECTORS.modelTrigger, "button.model-selector-trigger");
     assert.equal(KIRO_IDE_SELECTORS.modelLabel, "span.model-selector-label");
-    assert.equal(KIRO_IDE_SELECTORS.modelPopup, ".chat-input-popup-menu[role=listbox]");
+    assert.equal(KIRO_IDE_SELECTORS.modelPopup, ".chat-input-popup-menu[role=listbox], .kiro-model-selector-list[role=listbox]");
     assert.equal(KIRO_IDE_SELECTORS.modelOption, ".chat-input-popup-option[role=option]");
   });
 
@@ -146,6 +158,15 @@ describe("kiro-ide picker JS against the live DOM shape", () => {
     assert.equal(d.run(clickModelOptionJs(3)), "none", "aria-disabled");
     assert.equal(d.run(clickModelOptionJs(9)), "none", "no such option");
     assert.equal(d.run(READ_MODEL_JS).label, "Auto");
+  });
+
+  it("1.4.62 (popup is a dialog, listbox is a child list): lists and selects", () => {
+    const d = livePicker(NAMES, "Claude Haiku 4.5", "1.4.62");
+    assert.equal(d.run(LIST_MODEL_OPTIONS_JS), null);
+    d.run(OPEN_MODEL_PICKER_JS);
+    assert.deepEqual(d.run(LIST_MODEL_OPTIONS_JS)?.map((o: { name: string }) => o.name), ["Auto", "Claude Opus 5.5", "Claude Sonnet 5.5", "Locked"]);
+    assert.equal(d.run(clickModelOptionJs(2)), "clicked");
+    assert.deepEqual(d.run(READ_MODEL_JS), { trigger: true, expanded: false, label: "Claude Sonnet 5.5" });
   });
 
   it("with no trigger every expression degrades instead of throwing", () => {
