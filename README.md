@@ -722,7 +722,7 @@ so the workspace-trust dialog does not block the run.
 ```sh
 cd <workspace>
 ach run --agent kiro-ide "<prompt>"
-ach doctor --agent kiro-ide    # binary, CDP reachable, signed in, chat input present
+ach doctor --agent kiro-ide    # binary, CDP reachable, signed in, chat input present, model picker readable
 ```
 
 **How it works / gotchas.**
@@ -736,6 +736,15 @@ ach doctor --agent kiro-ide    # binary, CDP reachable, signed in, chat input pr
   one run never inherits the previous run's context.
 - `--budget-usd` cannot fire (credits only); wall, idle and turn limits still apply, and the run carries a
   warning saying so.
+- Model: without `--model` the run records the model the chat's picker shows (a fresh profile defaults to
+  whatever the IDE chose, often `Auto`). With `--model <name>` ach opens the picker, clicks the option whose
+  name matches (case-insensitive, punctuation ignored, exact: `claude-sonnet-5.5` finds `Claude Sonnet 5.5`,
+  `Claude Opus 5` never picks `Claude Opus 5.5`), reads the label back and records it. No match or a disabled
+  option fails the run before any prompt is typed, listing the available models (recorded as an `error`, not
+  `unavailable`). A label that does not change or a missing picker also fails before any prompt, with a message
+  that names the problem but no list. The selection persists in the IDE afterwards; ach does not restore the old one. If the
+  picker cannot be read and no `--model` was given, the run proceeds and records `kiro-ide`, with a progress
+  note. Picker selectors were observed on Kiro IDE 1.2.4 ([docs/KIRO.md](docs/KIRO.md)).
 
 `ach run` has no `--cwd`: the workspace is the directory you run it from (as for `--verify`).
 

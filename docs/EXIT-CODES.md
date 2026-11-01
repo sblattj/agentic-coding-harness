@@ -44,7 +44,8 @@ a dead endpoint still records `error`.
   model produced anything.
   *Caveat:* this rule also catches a CLI that rejects its own arguments before it starts (for
   example an unknown `--model`). That run produced no verdict about the task either, so "no
-  data" is the honest bucket for it.
+  data" is the honest bucket for it. An adapter that validates `--model` itself (kiro-ide) tags that
+  failure `kind: invalid_request`, which keeps it `error`.
 
 Only an adapter `error` is ever reclassified. Driver verdicts (`budget_exceeded`, `turn_limit`,
 `timeout`) and `success` / `aborted` / `cancelled` keep their meaning. A reclassified run also

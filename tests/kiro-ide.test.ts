@@ -237,7 +237,7 @@ async function collect(h: { attach(): AsyncIterable<AgentEvent> }): Promise<Agen
   return out;
 }
 
-const fast = { pollMs: 15, readyTimeoutMs: 3000, recoverMs: 100 };
+const fast = { pollMs: 15, readyTimeoutMs: 3000, recoverMs: 100, modelSettleMs: 100 };
 
 describe("KiroIdeAdapter (fake CDP)", () => {
   it("happy path: events, credits 0.18, hook marker, tool call; attach mode never spawns", async () => {
@@ -283,14 +283,17 @@ describe("KiroIdeAdapter (fake CDP)", () => {
     assert.ok(order.indexOf("new") >= 0 && order.indexOf("new") < order.indexOf("Input.insertText"));
   });
 
-  it("newSession:false does not click New session; model pin is ignored with a progress note", async () => {
+  it("newSession:false does not click New session; --model without a model picker fails before sending (issue #160)", async () => {
+    // This world has no model picker, so a requested model cannot be set: fail, never send on the wrong model.
     const w = await world();
     const adapter = new KiroIdeAdapter(fast);
     const h = await adapter.launch(specFor(w.fake, { model: "claude-x", kiroIde: { cdp: w.fake.endpoint, newSession: false } }));
     const [events, exit] = await Promise.all([collect(h), h.wait()]);
-    assert.equal(exit, "success");
+    assert.equal(exit, "error");
     assert.ok(!w.fake.calls.some((c) => String(c.params?.expression ?? "").includes("New session")));
-    assert.ok(events.some((e: any) => e.type === "progress" && /model 'claude-x' ignored/.test(e.text)));
+    assert.ok(events.some((e: any) => e.type === "error" && /could not select model 'claude-x'/.test(e.message)));
+    assert.ok(!w.state.sent, "no prompt text was typed");
+    assert.ok(!events.some((e: any) => e.type === "progress" && /ignored/.test(e.text)));
   });
 
   it("fails fast when the profile is not signed in", async () => {

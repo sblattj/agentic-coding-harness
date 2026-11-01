@@ -5,7 +5,8 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { checkKiroIde } from "../src/cli/doctor.ts";
-import { startFakeCdp, type FakeCdp, type FakeTargetSpec } from "./fake-cdp.ts";
+import { READ_MODEL_JS } from "../src/adapters/kiro-ide-cdp.ts";
+import { FakeModelPicker, startFakeCdp, type FakeCdp, type FakeTargetSpec } from "./fake-cdp.ts";
 
 // checkKiroIde against a fake CDP endpoint; the binary row uses a script in a tmp dir.
 
@@ -26,15 +27,19 @@ function page(text: string): FakeTargetSpec {
   };
 }
 
-function chat(hasInput: boolean): FakeTargetSpec {
+function chat(hasInput: boolean, picker: FakeModelPicker | null = new FakeModelPicker()): FakeTargetSpec {
   return {
     id: "chat",
     type: "iframe",
     url: CHAT,
     contexts: ctxs,
-    // Only context 2 carries the input, like the real IDE.
-    handler: (method, _p, contextId) =>
-      method === "Runtime.evaluate" ? { result: { type: "boolean", value: hasInput && contextId === 2 } } : {},
+    // Only context 2 carries the input and the picker, like the real IDE.
+    handler: (method, p, contextId) => {
+      if (method !== "Runtime.evaluate") return {};
+      const picked = picker && hasInput && contextId === 2 ? picker.evaluate(p.expression) : { handled: false };
+      if (picked.handled) return { result: { type: "object", value: picked.value } };
+      return { result: { type: "boolean", value: hasInput && contextId === 2 } };
+    },
   };
 }
 
@@ -91,6 +96,7 @@ describe("checkKiroIde", () => {
       ["cdp", "verified"],
       ["signed-in", "verified"],
       ["chat", "verified"],
+      ["model", "verified"],
     ]);
     assert.ok(rows.every((r) => r.agent === "kiro-ide"));
     assert.match(row(rows, "cdp")!.detail, /Kiro\/1\.2\.4/);
@@ -109,6 +115,8 @@ describe("checkKiroIde", () => {
     assert.equal(row(rows, "signed-in")!.status, "unproven");
     assert.match(row(rows, "signed-in")!.detail, /not attempted/);
     assert.equal(row(rows, "chat")!.status, "unproven");
+    assert.equal(row(rows, "model")!.status, "unproven");
+    assert.match(row(rows, "model")!.detail, /not attempted/);
   });
 
   it("signed-out text fails signed-in with a sign-in hint", async () => {
@@ -135,6 +143,70 @@ describe("checkKiroIde", () => {
     assert.equal(r.status, "failed");
     assert.match(r.detail, /selectors no longer match this Kiro IDE version/);
     assert.ok(r.hint);
+  });
+
+  // Issue #160: the model row reads the picker label and never opens the popup.
+  it("model row: verified with the label the picker shows, popup never opened", async () => {
+    const picker = new FakeModelPicker({ label: "Claude Sonnet 5.5" });
+    const f = await fake([page(SIGNED_IN), chat(true, picker)]);
+    const r = row(await run(f.endpoint), "model")!;
+    assert.equal(r.status, "verified");
+    assert.equal(r.detail, "picker shows 'Claude Sonnet 5.5'");
+    assert.equal(r.agent, "kiro-ide");
+    assert.equal(picker.toggles, 0, "doctor must not open the popup");
+    assert.equal(picker.open, false);
+    // control: the label changes with the IDE state
+    picker.label = "Auto";
+    assert.equal(row(await run(f.endpoint), "model")!.detail, "picker shows 'Auto'");
+  });
+
+  it("model row: chat input present but no picker fails with a selectors-no-longer-match message", async () => {
+    const picker = new FakeModelPicker();
+    picker.present = false;
+    const f = await fake([page(SIGNED_IN), chat(true, picker)]);
+    const rows = await run(f.endpoint);
+    const r = row(rows, "model")!;
+    assert.equal(r.status, "failed");
+    assert.match(r.detail, /selectors no longer match this Kiro IDE version/);
+    assert.ok(r.hint);
+    assert.equal(row(rows, "chat")!.status, "verified");
+  });
+
+  it("model row: unproven (not failed) when evaluating the label throws in every context", async () => {
+    const picker = new FakeModelPicker();
+    const f = await fake([
+      page(SIGNED_IN),
+      {
+        id: "chat",
+        type: "iframe",
+        url: CHAT,
+        contexts: ctxs,
+        handler: (method, p, contextId) => {
+          if (method !== "Runtime.evaluate") return {};
+          if (p.expression === READ_MODEL_JS) {
+            return { exceptionDetails: { text: "Uncaught", exception: { description: "Execution context was destroyed" } } };
+          }
+          void picker;
+          return { result: { type: "boolean", value: contextId === 2 } };
+        },
+      },
+    ]);
+    const rows = await run(f.endpoint);
+    assert.equal(row(rows, "chat")!.status, "verified");
+    const r = row(rows, "model")!;
+    assert.equal(r.status, "unproven");
+    assert.match(r.detail, /Execution context was destroyed/);
+  });
+
+  it("model row: unproven when the chat input is missing or there is no chat target", async () => {
+    const noInput = await fake([page(SIGNED_IN), chat(false)]);
+    const a = row(await run(noInput.endpoint), "model")!;
+    assert.equal(a.status, "unproven");
+    assert.match(a.detail, /not attempted/);
+    const noChat = await fake([page(SIGNED_IN)]);
+    const b = row(await run(noChat.endpoint), "model")!;
+    assert.equal(b.status, "unproven");
+    assert.match(b.detail, /not attempted/);
   });
 
   it("missing binary is a failure locally", async () => {

@@ -82,6 +82,8 @@ export interface AvailabilityInput {
  */
 export function classifyUnavailable(input: AvailabilityInput): string | null {
   if (input.adapterExit !== 'error') return null;
+  // A caller error (e.g. a --model the agent does not offer) is not an outage: keep `error`.
+  if (input.events.some((e) => e.type === 'error' && errorEventBody(e)?.kind === 'invalid_request')) return null;
   const spawnFailure = input.events.find(isSpawnFailureEvent);
   if (spawnFailure !== undefined) {
     return `agent CLI could not be started (${eventText(spawnFailure)})`;

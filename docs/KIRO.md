@@ -303,3 +303,31 @@ empty, a page target whose url contains `workbench.html` is accepted. A generic 
 has that workbench url, which is why the target fallback applies only without a User-Agent. A non-Kiro
 endpoint fails doctor's `cdp` row and makes the run exit with an error before any target is created or any
 input is sent, in attach mode and in launch mode (ach does not spawn Kiro against a port a browser holds).
+
+### Model picker (`--model`)
+
+The chat's model picker decides which model a Kiro IDE run uses, and a fresh profile defaults to whatever
+the IDE chose (often `Auto`). The adapter reads and sets it over CDP, after the chat is stable and before
+any prompt text is typed:
+
+- Without `--model`, the label is read and recorded as the run's `model`.
+- With `--model <name>`, the label is compared first (already selected: no click). Otherwise the popup is
+  opened, the option whose first line equals the name (case-insensitive, non-alphanumerics removed) is
+  clicked, and the label is polled for up to 3 s to confirm. No match or a disabled option (`aria-disabled`)
+  closes the popup and fails the run listing the available models, before any input; the run is recorded as
+  `error` (a bad `--model` is a caller error, not an outage). An unchanged label after the click also fails
+  before any input, but names only the mismatch (no list). The first picker read waits up to 3 s for a late render.
+- Missing trigger or label (selector drift): with `--model` the run fails; without it, the run proceeds and
+  records `kiro-ide` with a progress note.
+- The selection is not restored afterwards: it persists in the IDE, and a progress note says so when it
+  changes. Doctor's `model` row only reads the label.
+- Credits are the only metering, so a real model label adds no pricing warning and no USD figure
+  (`extra.tokensAvailable: false` keeps the usage record out of the pricer).
+
+Selectors (`KIRO_IDE_SELECTORS` in `src/adapters/kiro-ide-cdp.ts`), observed on Kiro IDE 1.2.4 and
+UNVERIFIED on 1.4.x (the issue was filed on 1.4.62): trigger `button.model-selector-trigger`
+(`aria-haspopup=listbox`, `aria-expanded`), label `span.model-selector-label`, popup
+`.chat-input-popup-menu[role=listbox]`, options `.chat-input-popup-option[role=option]` (innerText is the
+name, a credit multiplier, then a description; only the first line is the name). They live in the chat
+webview's inner execution context, the one that holds `.chat-input-content`. If Kiro changes them, doctor's
+`model` row fails with "selectors no longer match".

@@ -148,3 +148,92 @@ export async function startFakeCdp(spec: FakeCdpSpec): Promise<FakeCdp> {
     },
   };
 }
+
+// ---------------------------------------------------------------- model picker (issue #160)
+
+import {
+  CLOSE_MODEL_PICKER_JS,
+  LIST_MODEL_OPTIONS_JS,
+  OPEN_MODEL_PICKER_JS,
+  READ_MODEL_JS,
+  clickModelOptionJs,
+} from "../src/adapters/kiro-ide-cdp.ts";
+
+export interface FakePickerOption {
+  name: string;
+  disabled?: boolean;
+}
+
+/** The 1.2.4 option names observed live, plus look-alikes for the exact-match tests. */
+export const FAKE_PICKER_MODELS: FakePickerOption[] = [
+  { name: "Auto" },
+  { name: "Claude Opus 5.5" },
+  { name: "Claude Opus 5" },
+  { name: "Claude Sonnet 5.5" },
+  { name: "GPT 5.6 Sol" },
+];
+
+/**
+ * A model picker with real state, not canned answers: the popup is open or closed, the trigger
+ * click toggles it, the option list exists only while it is open, and clicking an option changes
+ * the label and closes the popup (as observed live on Kiro 1.2.4). It dispatches on the exact
+ * expressions the adapter sends (the builders in kiro-ide-cdp.ts), so a changed expression that
+ * no longer reaches the picker fails loudly instead of being answered.
+ */
+export class FakeModelPicker {
+  open = false;
+  label: string;
+  options: FakePickerOption[];
+  /** Whether the trigger/label exist at all (a selector-drift simulation turns them off). */
+  present = true;
+  /** When set, clicking an option does not change the label (a read-back mismatch). */
+  ignoreClicks = false;
+  /** When set, the popup shows no options (a slow/empty render). */
+  emptyPopup = false;
+  /** Every option name clicked, in order. */
+  clicked: string[] = [];
+  /** Trigger toggles (open + close). */
+  toggles = 0;
+  constructor(opts: { label?: string; options?: FakePickerOption[] } = {}) {
+    this.options = opts.options ?? FAKE_PICKER_MODELS;
+    this.label = opts.label ?? "Auto";
+  }
+
+  /** Returns `{handled:false}` for an expression that is not a picker one. */
+  evaluate(expression: string): { handled: boolean; value?: unknown } {
+    const done = (value: unknown) => ({ handled: true, value });
+    if (expression === READ_MODEL_JS) {
+      return done(this.present ? { trigger: true, expanded: this.open, label: this.label } : { trigger: false, expanded: false, label: null });
+    }
+    if (expression === OPEN_MODEL_PICKER_JS) {
+      if (!this.present) return done("none");
+      if (!this.open) {
+        this.open = true;
+        this.toggles++;
+      }
+      return done("ok");
+    }
+    if (expression === CLOSE_MODEL_PICKER_JS) {
+      if (!this.present) return done("none");
+      if (this.open) {
+        this.open = false;
+        this.toggles++;
+      }
+      return done("ok");
+    }
+    if (expression === LIST_MODEL_OPTIONS_JS) {
+      if (!this.open || this.emptyPopup) return done(null);
+      return done(this.options.map((o) => ({ name: o.name, disabled: o.disabled === true })));
+    }
+    for (let i = 0; i < this.options.length; i++) {
+      if (expression !== clickModelOptionJs(i)) continue;
+      const o = this.options[i]!;
+      if (!this.open || o.disabled) return done("none");
+      this.clicked.push(o.name);
+      if (!this.ignoreClicks) this.label = o.name;
+      this.open = false;
+      return done("clicked");
+    }
+    return { handled: false };
+  }
+}

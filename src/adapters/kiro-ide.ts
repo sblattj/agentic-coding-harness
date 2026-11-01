@@ -26,6 +26,15 @@ import {
   DEEP_TEXT_JS,
   KIRO_IDE_SELECTORS,
   clickByTextJs,
+  CLOSE_MODEL_PICKER_JS,
+  LIST_MODEL_OPTIONS_JS,
+  OPEN_MODEL_PICKER_JS,
+  READ_MODEL_JS,
+  clickModelOptionJs,
+  normalizeModelName,
+  pickModelOption,
+  type KiroIdeModelOption,
+  type KiroIdePickerState,
   KIRO_IDE_WRONG_ENDPOINT_HINT,
   checkKiroIdeEndpoint,
   endpointFrom,
@@ -44,6 +53,7 @@ export const KIRO_IDE_CAPABILITIES: AdapterCapabilities = {
   tmuxFallback: false,
 };
 
+/** Fallback model name, used only when the chat's model picker cannot be read (issue #160). */
 export const KIRO_IDE_MODEL_LABEL = "kiro-ide";
 const DEFAULT_PORT = 9222;
 
@@ -323,6 +333,8 @@ export interface KiroIdeAdapterOptions {
    * otherwise poll forever.
    */
   turnTimeoutMs?: number;
+  /** Bound on the model picker settling after a click (label read-back, popup options), default 3000 ms. */
+  modelSettleMs?: number;
 }
 
 export function defaultKiroBin(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = process.env): string {
@@ -360,6 +372,8 @@ class EventQueue {
 }
 
 class RunFailure extends Error {}
+/** The user asked for something the IDE does not offer (a bad --model): a caller error, never an outage (availability.ts). */
+class InvalidRequest extends RunFailure {}
 class Aborted extends Error {}
 
 // ---------------------------------------------------------------- adapter
@@ -378,6 +392,7 @@ export class KiroIdeAdapter implements AgentAdapter {
   readonly #submitTimeoutMs: number;
   readonly #turnTimeoutMs: number;
   readonly #lockDir: string;
+  readonly #modelSettleMs: number;
 
   constructor(options: KiroIdeAdapterOptions = {}) {
     this.#spawn = options.spawn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts) as unknown as SpawnedChild);
@@ -390,6 +405,7 @@ export class KiroIdeAdapter implements AgentAdapter {
     this.#submitTimeoutMs = options.submitTimeoutMs ?? 15_000;
     this.#turnTimeoutMs = options.turnTimeoutMs ?? 15 * 60_000;
     this.#lockDir = options.lockDir ?? os.tmpdir();
+    this.#modelSettleMs = options.modelSettleMs ?? 3000;
   }
 
   async launch(spec: RunSpec): Promise<AgentHandle> {
@@ -504,9 +520,6 @@ export class KiroIdeAdapter implements AgentAdapter {
     const run = async (): Promise<void> => {
       emit({ type: "session_start", agent: "kiro-ide" });
       acquireLock();
-      if (spec.model) {
-        progress(`kiro-ide: model '${spec.model}' ignored (the IDE chat's model cannot be pinned over CDP)`);
-      }
 
       // ---- 1/2. endpoint + launch
       // Issue #161: whatever answers on the port must be Kiro IDE before anything is spawned,
@@ -748,6 +761,97 @@ export class KiroIdeAdapter implements AgentAdapter {
         }
       }
 
+      // ---- 5b. model (issue #160): read the picker, or select --model and read it back.
+      // After the chat is stable and before any prompt text is typed.
+      checkAbort();
+      const wantModel = typeof spec.model === "string" && spec.model.trim() !== "" ? spec.model.trim() : undefined;
+      let ranModel = KIRO_IDE_MODEL_LABEL;
+      {
+        const modelPoll = Math.max(20, Math.min(150, this.#pollMs));
+        const readPicker = async (): Promise<KiroIdePickerState | null> => {
+          ctx = (await findCtx().catch(() => undefined)) ?? ctx;
+          const v = await chat.evaluate<KiroIdePickerState | null>(READ_MODEL_JS, ctx).catch(() => null);
+          return v && typeof v === "object" ? v : null;
+        };
+        const closePicker = async (): Promise<void> => {
+          await chat.evaluate<string>(CLOSE_MODEL_PICKER_JS, ctx).catch(() => undefined);
+        };
+        // A rebuilt webview can render the chat input before the model picker (the same lag the
+        // Autopilot switch has above), so give the first read a bounded settle window.
+        let picker = await readPicker();
+        const tFirst = this.#now();
+        while (!(picker?.trigger && picker.label)) {
+          if (this.#now() - tFirst >= this.#modelSettleMs) break;
+          await sleep(modelPoll);
+          checkAbort();
+          picker = await readPicker();
+        }
+        const label = picker?.label ?? null;
+        if (!picker?.trigger || label === null || label === "") {
+          if (wantModel !== undefined) {
+            throw new RunFailure(
+              `could not select model '${wantModel}': the Kiro IDE chat's model picker was not found (the selectors may no longer match this Kiro IDE version); the prompt was not sent`,
+            );
+          }
+          progress(`kiro-ide: could not read the chat's model picker; recording the model as '${KIRO_IDE_MODEL_LABEL}'`);
+        } else if (wantModel === undefined) {
+          ranModel = label;
+          dbg(`model picker shows ${JSON.stringify(label)}`);
+        } else if (normalizeModelName(label) === normalizeModelName(wantModel)) {
+          ranModel = label;
+          dbg(`model already selected: ${JSON.stringify(label)}`);
+        } else {
+          try {
+            const opened = await chat.evaluate<string>(OPEN_MODEL_PICKER_JS, ctx);
+            if (opened !== "ok") throw new RunFailure(`could not open the Kiro IDE model picker to select '${wantModel}'; the prompt was not sent`);
+            let options: KiroIdeModelOption[] = [];
+            const t0 = this.#now();
+            for (;;) {
+              checkAbort();
+              const listed = await chat.evaluate<KiroIdeModelOption[] | null>(LIST_MODEL_OPTIONS_JS, ctx);
+              if (Array.isArray(listed) && listed.length > 0) {
+                options = listed;
+                break;
+              }
+              if (this.#now() - t0 > this.#modelSettleMs) break;
+              await sleep(modelPoll);
+            }
+            if (options.length === 0) {
+              throw new RunFailure(`the Kiro IDE model picker listed no models, so '${wantModel}' could not be selected; the prompt was not sent`);
+            }
+            const pick = pickModelOption(options, wantModel);
+            const names = options.map((o) => (o.disabled ? `${o.name} (unavailable)` : o.name)).join(", ");
+            if (pick.kind === "none") {
+              throw new InvalidRequest(`model '${wantModel}' is not in the Kiro IDE model picker; available models: ${names}; the prompt was not sent`);
+            }
+            if (pick.kind === "disabled") {
+              throw new InvalidRequest(`model '${wantModel}' is listed in the Kiro IDE model picker but not selectable (${pick.name} is disabled); available models: ${names}; the prompt was not sent`);
+            }
+            const clicked = await chat.evaluate<string>(clickModelOptionJs(pick.index), ctx);
+            if (clicked !== "clicked") throw new RunFailure(`could not click '${pick.name}' in the Kiro IDE model picker; the prompt was not sent`);
+            const t1 = this.#now();
+            let now: string | null = null;
+            for (;;) {
+              checkAbort();
+              now = (await readPicker())?.label ?? null;
+              if (now !== null && normalizeModelName(now) === normalizeModelName(pick.name)) break;
+              if (this.#now() - t1 > this.#modelSettleMs) {
+                throw new RunFailure(
+                  `selected '${pick.name}' in the Kiro IDE model picker but it still shows '${now ?? "(no label)"}'; the prompt was not sent`,
+                );
+              }
+              await sleep(modelPoll);
+            }
+            await closePicker();
+            ranModel = now!;
+            progress(`kiro-ide: selected model '${now}' (was '${label}'); the selection persists in the IDE and is not restored`);
+          } catch (e) {
+            await closePicker();
+            throw e;
+          }
+        }
+      }
+
       // ---- 6. send
       checkAbort();
       // Pane-local, FULL-prompt proof (first 200 normalized chars). A session tab shows a
@@ -890,7 +994,7 @@ export class KiroIdeAdapter implements AgentAdapter {
       emit({
         type: "usage",
         usage: {
-          model: KIRO_IDE_MODEL_LABEL,
+          model: ranModel,
           inputTokens: 0,
           outputTokens: 0,
           cacheReadTokens: 0,
@@ -911,7 +1015,11 @@ export class KiroIdeAdapter implements AgentAdapter {
       .then<AdapterExit>(() => "success")
       .catch<AdapterExit>((e) => {
         if (e instanceof Aborted || aborted) return "aborted";
-        emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
+        emit({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+          ...(e instanceof InvalidRequest ? { payload: { kind: "invalid_request" } } : {}),
+        });
         return "error";
       })
       .then((exit) => {
