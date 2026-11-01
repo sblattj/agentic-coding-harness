@@ -31,7 +31,9 @@ import {
   CdpSession,
   DEEP_TEXT_JS,
   KIRO_IDE_SELECTORS,
-  browserVersion,
+  KIRO_IDE_WRONG_ENDPOINT_HINT,
+  checkKiroIdeEndpoint,
+  kiroIdeWrongEndpointMessage,
   endpointFrom,
   isLoopbackHost,
   listTargets,
@@ -861,13 +863,19 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
   // cdp
   t0 = Date.now();
   let cdpOk = false;
+  let wrongEndpoint = false;
   try {
-    const v = await browserVersion(endpoint, { timeoutMs });
-    const ideVersion = /Kiro\/(\S+)/.exec(String(v?.["User-Agent"] ?? ""))?.[1];
-    cdpOk = true;
-    out.push(mk("cdp", "verified", `${endpoint} reachable${ideVersion ? ` (Kiro/${ideVersion})` : ""}`, t0));
-    // Version fallback: no plist version (non-darwin or unreadable) -> report the running IDE's version on the binary row.
-    if (ideVersion && !version) out[binaryIndex] = { ...out[binaryIndex]!, detail: `${out[binaryIndex]!.detail} (running IDE: Kiro ${ideVersion})` };
+    const verdict = await checkKiroIdeEndpoint(endpoint, { timeoutMs });
+    if (verdict.kind === "other") {
+      wrongEndpoint = true;
+      out.push(mk("cdp", "failed", kiroIdeWrongEndpointMessage(endpoint, verdict.product), t0, KIRO_IDE_WRONG_ENDPOINT_HINT));
+    } else {
+      const ideVersion = verdict.kiroVersion;
+      cdpOk = true;
+      out.push(mk("cdp", "verified", `${endpoint} reachable${ideVersion ? ` (Kiro/${ideVersion})` : ""}`, t0));
+      // Version fallback: no plist version (non-darwin or unreadable) -> report the running IDE's version on the binary row.
+      if (ideVersion && !version) out[binaryIndex] = { ...out[binaryIndex]!, detail: `${out[binaryIndex]!.detail} (running IDE: Kiro ${ideVersion})` };
+    }
   } catch (e) {
     out.push(mk("cdp", "failed", `${endpoint} unreachable: ${e instanceof Error ? e.message : String(e)}`, t0, KIRO_IDE_LAUNCH_HINT));
   }
@@ -883,8 +891,9 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
     );
   }
   if (!cdpOk) {
-    out.push(mk("signed-in", "unproven", "not attempted: CDP unreachable", Date.now()));
-    out.push(mk("chat", "unproven", "not attempted: CDP unreachable", Date.now()));
+    const why = wrongEndpoint ? "endpoint is not Kiro IDE" : "CDP unreachable";
+    out.push(mk("signed-in", "unproven", `not attempted: ${why}`, Date.now()));
+    out.push(mk("chat", "unproven", `not attempted: ${why}`, Date.now()));
     return out;
   }
 

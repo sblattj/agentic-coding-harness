@@ -255,3 +255,14 @@ transport, ~50 s wall. Measured 2026-09-12 against kiro-cli 2.21.2: **0.0556 cre
 A failing assertion prints the transport, the observed figure and the `cliVersion`, so a newer
 kiro-cli that changes the credit plumbing or the ACP model handshake is diagnosable from the
 failure line alone.
+
+## Kiro IDE (`--agent kiro-ide`): endpoint check
+
+The IDE lane drives a CDP endpoint, default `127.0.0.1:9222`. Everyday browsers use that port too, so
+doctor and the run first classify what answers (`classifyKiroIdeEndpoint` in `src/adapters/kiro-ide-cdp.ts`).
+Observed on Kiro 1.2.4, `GET /json/version` gives `Browser: Chrome/152...` and a User-Agent containing
+`Kiro/1.2.4 ... Electron/44.4.3`, so only `Kiro/` in the User-Agent counts. When the User-Agent is absent or
+empty, a page target whose url contains `workbench.html` is accepted. A generic VS Code Electron app also
+has that workbench url, which is why the target fallback applies only without a User-Agent. A non-Kiro
+endpoint fails doctor's `cdp` row and makes the run exit with an error before any target is created or any
+input is sent, in attach mode and in launch mode (ach does not spawn Kiro against a port a browser holds).

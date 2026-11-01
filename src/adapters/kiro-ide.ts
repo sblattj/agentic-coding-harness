@@ -25,9 +25,11 @@ import {
   CdpSession,
   DEEP_TEXT_JS,
   KIRO_IDE_SELECTORS,
-  browserVersion,
   clickByTextJs,
+  KIRO_IDE_WRONG_ENDPOINT_HINT,
+  checkKiroIdeEndpoint,
   endpointFrom,
+  kiroIdeWrongEndpointMessage,
   listTargets,
   type CdpTarget,
 } from "./kiro-ide-cdp.ts";
@@ -447,15 +449,6 @@ export class KiroIdeAdapter implements AgentAdapter {
       return child;
     };
 
-    const answers = async (): Promise<boolean> => {
-      try {
-        await browserVersion(endpoint, { timeoutMs: 1500 });
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
     const deadline = this.#now() + this.#readyTimeoutMs;
     const timeLeft = () => deadline - this.#now();
 
@@ -516,9 +509,23 @@ export class KiroIdeAdapter implements AgentAdapter {
       }
 
       // ---- 1/2. endpoint + launch
+      // Issue #161: whatever answers on the port must be Kiro IDE before anything is spawned,
+      // connected to or typed into (an everyday browser often holds 9222). Attach mode with
+      // an endpoint that does not answer yet keeps polling in the ready loop below.
       let preexisting = false;
+      let endpointKnown: boolean | undefined;
+      try {
+        const verdict = await checkKiroIdeEndpoint(endpoint, { timeoutMs: 1500 });
+        if (verdict.kind === "other") {
+          throw new RunFailure(`${kiroIdeWrongEndpointMessage(endpoint, verdict.product)} (${KIRO_IDE_WRONG_ENDPOINT_HINT})`);
+        }
+        endpointKnown = true;
+      } catch (e) {
+        if (e instanceof RunFailure) throw e;
+        endpointKnown = false;
+      }
       if (!attachMode) {
-        preexisting = await answers();
+        preexisting = endpointKnown === true;
         checkAbort();
         const wsArgs = cwd ? [cwd] : [];
         if (preexisting) {
