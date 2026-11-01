@@ -16,8 +16,9 @@ import {
   sandboxDroppedFields,
   sandboxFromFlags,
   splitToolList,
+  writeMetricsSidecar,
 } from "../src/cli/run-sandbox.ts";
-import { HarnessError } from "../src/core/types.ts";
+import { HarnessError, type RunResult, type UsageAvailability } from "../src/core/types.ts";
 
 const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
 const tmps: string[] = [];
@@ -197,6 +198,65 @@ describe("--evidence-dir metrics sidecar", () => {
     assert.equal(m.wallSeconds, 1.5);
     assert.equal(m.cost.usd, 0.5);
     assert.ok(JSON.stringify({ leak }).includes(leak)); // the probe itself can see the string
+  });
+
+  describe("usage availability in the sidecar (issue 159)", () => {
+    const base: RunResult = {
+      runId: "r159",
+      sessionId: "s159",
+      events: [],
+      tokens: [],
+      totalCost: 0,
+      durationMs: 2000,
+      exitStatus: "success",
+      warnings: [],
+    };
+    // Written through writeMetricsSidecar and parsed back: what a reader sees.
+    function readBack(agent: string, result: RunResult): Record<string, any> {
+      const dir = tmp();
+      const p = writeMetricsSidecar(dir, buildRunMetrics({ agent, result }));
+      return JSON.parse(readFileSync(p, "utf8"));
+    }
+
+    test("kiro-shaped result (credits only): credits carried, usd and tokens null", () => {
+      const usageKiro: UsageAvailability = {
+        tokens: { available: false },
+        credits: { available: true, source: "native", scope: "run", complete: true, value: 0.08098 },
+        usd: { available: false },
+      };
+      const m = readBack("kiro", { ...base, usage: usageKiro });
+      assert.equal(m.credits.value, usageKiro.credits.value);
+      assert.equal(m.credits.source, "native");
+      assert.equal(m.credits.complete, true);
+      assert.equal(m.cost.usd, null);
+      assert.equal(m.tokens, null);
+      assert.equal(m.cost.provenance, "usd:unavailable; tokens:unavailable");
+    });
+
+    test("claude-shaped result: numeric usd and tokens kept, a priced 0 stays 0, credits null", () => {
+      const usageClaude: UsageAvailability = {
+        tokens: { available: true, source: "native" },
+        credits: { available: false },
+        usd: { available: true, source: "vendor", value: 0 },
+      };
+      const m = readBack("claude", {
+        ...base,
+        totalCost: 0,
+        tokens: [{ inputTokens: 5, outputTokens: 3, cacheReadTokens: 1, cacheWriteTokens: 2 }] as never,
+        usage: usageClaude,
+      });
+      assert.equal(m.cost.usd, 0);
+      assert.deepEqual(m.tokens, { input: 5, output: 3, cacheRead: 1, cacheWrite: 2, reasoning: 0 });
+      assert.equal(m.credits, null);
+    });
+
+    test("no-usage result: numeric output unchanged, credits null", () => {
+      const m = readBack("other", { ...base, totalCost: 0.25 });
+      assert.equal(m.cost.usd, 0.25);
+      assert.equal(m.cost.provenance, "unknown");
+      assert.deepEqual(m.tokens, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
+      assert.equal(m.credits, null);
+    });
   });
 
   test("--repeat writes one metrics-<i>.json per child", () => {
