@@ -160,4 +160,60 @@ describe("checkKiroIde", () => {
     assert.match(exp.hint!, /tunnel/);
     assert.equal(row(rows, "binary")!.status, "unproven");
   });
+
+  // Issue #161: a normal browser (or another Electron app) on the Kiro port.
+  const REAL_KIRO_VERSION = {
+    Browser: "Chrome/152.0.7977.130",
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Kiro/1.2.4 Chrome/152.0.7977.130 Electron/44.4.3 Safari/537.36",
+  };
+  const VIVALDI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Vivaldi/7.0.3495.18";
+  const CHROME_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  const CODE_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Code/1.95.0 Chrome/128.0.6613.186 Electron/32.2.6 Safari/537.36";
+
+  async function wrong(version: Record<string, unknown>, targets: FakeTargetSpec[] = []) {
+    const f = await startFakeCdp({ targets, version });
+    open.push(f);
+    return { f, rows: await run(f.endpoint) };
+  }
+
+  it("real Kiro 1.2.4 strings (Browser says Chrome) pass: control", async () => {
+    const f = await startFakeCdp({ targets: [page(SIGNED_IN), chat(true)], version: REAL_KIRO_VERSION });
+    open.push(f);
+    const rows = await run(f.endpoint);
+    assert.equal(row(rows, "cdp")!.status, "verified");
+    assert.match(row(rows, "cdp")!.detail, /Kiro\/1\.2\.4/);
+    assert.equal(row(rows, "chat")!.status, "verified");
+  });
+
+  for (const [name, ua, product] of [
+    ["Vivaldi", VIVALDI_UA, /a Vivaldi\/7\.0\.3495\.18/],
+    ["plain Chrome", CHROME_UA, /a Chrome\/130\.0\.0\.0/],
+    ["generic VS Code Electron app with a workbench target", CODE_UA, /a Electron app \(Electron\/32\.2\.6\)/],
+  ] as const) {
+    it(`${name} on the port fails the cdp row and skips signed-in/chat`, async () => {
+      const { f, rows } = await wrong({ Browser: "Chrome/130.0.0.0", "User-Agent": ua }, [page(SIGNED_IN), chat(true)]);
+      const cdp = row(rows, "cdp")!;
+      assert.equal(cdp.status, "failed");
+      assert.match(cdp.detail, new RegExp(`^port ${f.endpoint.split(":")[1]} is ${product.source}, not Kiro IDE; pass --kiro-ide-port$`));
+      assert.match(cdp.hint!, /--kiro-ide-port <N>/);
+      assert.equal(row(rows, "signed-in")!.status, "unproven");
+      assert.match(row(rows, "signed-in")!.detail, /not attempted: endpoint is not Kiro IDE/);
+      assert.equal(row(rows, "chat")!.status, "unproven");
+      assert.ok(!rows.some((r) => r.status === "verified" && (r.name === "signed-in" || r.name === "chat")));
+      assert.equal(f.calls.length, 0, "no CDP command reached the endpoint");
+    });
+  }
+
+  it("missing User-Agent falls back to a workbench page target and passes", async () => {
+    const { rows } = await wrong({ Browser: "Chrome/152.0.7977.130" }, [page(SIGNED_IN), chat(true)]);
+    assert.equal(row(rows, "cdp")!.status, "verified");
+    assert.equal(row(rows, "chat")!.status, "verified");
+  });
+
+  it("missing User-Agent and no workbench target fails, naming the Browser field", async () => {
+    const { rows } = await wrong({ Browser: "Chrome/152.0.7977.130" });
+    assert.equal(row(rows, "cdp")!.status, "failed");
+    assert.match(row(rows, "cdp")!.detail, /is a Chrome\/152\.0\.7977\.130, not Kiro IDE; pass --kiro-ide-port/);
+  });
 });

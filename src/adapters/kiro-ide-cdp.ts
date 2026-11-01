@@ -62,6 +62,72 @@ export async function browserVersion(endpoint: string, opts: { timeoutMs?: numbe
   return getJson(`http://${endpoint}/json/version`, opts.timeoutMs ?? 5000);
 }
 
+export type KiroIdeEndpointVerdict =
+  | { kind: "kiro"; kiroVersion?: string; version: any }
+  | { kind: "other"; product: string; version: any };
+
+function hasText(v: unknown): v is string {
+  return typeof v === "string" && v.trim() !== "";
+}
+
+/** Names the product behind a CDP endpoint from User-Agent, falling back to the Browser field. */
+export function describeCdpProduct(version: any): string {
+  const ua = hasText(version?.["User-Agent"]) ? (version["User-Agent"] as string) : "";
+  const tok = (re: RegExp) => re.exec(ua)?.[0];
+  const named =
+    tok(/Vivaldi\/[\w.]+/) ??
+    tok(/Edg\/[\w.]+/)?.replace(/^Edg/, "Edge") ??
+    tok(/OPR\/[\w.]+/)?.replace(/^OPR/, "Opera") ??
+    tok(/Brave\/[\w.]+/) ??
+    tok(/Firefox\/[\w.]+/) ??
+    (ua.includes("Electron/") ? `Electron app (${tok(/Electron\/[\w.]+/)})` : undefined) ??
+    tok(/HeadlessChrome\/[\w.]+/) ??
+    tok(/Chrome\/[\w.]+/);
+  if (named) return named;
+  return hasText(version?.Browser) ? (version.Browser as string).trim() : "unknown browser";
+}
+
+/**
+ * Pure classifier (issue #161). Kiro IDE is an Electron app whose /json/version
+ * `Browser` field reads plain "Chrome/..." (observed on Kiro 1.2.4), so Browser is never
+ * tested. The signal is User-Agent containing "Kiro/". Only when User-Agent is absent or
+ * empty does a page target whose url contains the workbench path count (a generic VS Code
+ * Electron app has that workbench url too, so it must not be used when a UA is present).
+ */
+export function classifyKiroIdeEndpoint(version: any, targets: CdpTarget[] | undefined): KiroIdeEndpointVerdict {
+  const ua = version?.["User-Agent"];
+  if (hasText(ua)) {
+    if (ua.includes("Kiro/")) return { kind: "kiro", kiroVersion: /Kiro\/(\S+)/.exec(ua)?.[1], version };
+    return { kind: "other", product: describeCdpProduct(version), version };
+  }
+  if ((targets ?? []).some((t) => t.type === "page" && t.url.includes(KIRO_IDE_SELECTORS.workbenchUrl))) {
+    return { kind: "kiro", version };
+  }
+  return { kind: "other", product: describeCdpProduct(version), version };
+}
+
+function portOf(endpoint: string): string {
+  return /:(\d+)$/.exec(endpoint)?.[1] ?? endpoint;
+}
+
+export function kiroIdeWrongEndpointMessage(endpoint: string, product: string): string {
+  return `port ${portOf(endpoint)} is a ${product}, not Kiro IDE; pass --kiro-ide-port`;
+}
+
+export const KIRO_IDE_WRONG_ENDPOINT_HINT =
+  "another app owns this debugging port. Pass --kiro-ide-port <N> (or --kiro-ide-cdp host:port) for the port Kiro listens on; to let ach launch Kiro, free the port or choose an unused one such as --kiro-ide-port 9333";
+
+/**
+ * Shared by doctor and the run: fetch /json/version (throws when unreachable), list targets
+ * only when the User-Agent cannot decide, and classify. Read-only; sends no CDP command.
+ */
+export async function checkKiroIdeEndpoint(endpoint: string, opts: { timeoutMs?: number } = {}): Promise<KiroIdeEndpointVerdict> {
+  const version = await browserVersion(endpoint, opts);
+  let targets: CdpTarget[] | undefined;
+  if (!hasText(version?.["User-Agent"])) targets = await listTargets(endpoint, opts).catch(() => []);
+  return classifyKiroIdeEndpoint(version, targets);
+}
+
 export class CdpSession {
   private nextId = 0;
   private readonly pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
