@@ -282,3 +282,106 @@ describe('computeUsageAvailability — schema', () => {
     }
   });
 });
+
+// Issue #158: kiro V3 tap vs session-store credits, from recorded frames.
+interface TapCreditCase {
+  name: string;
+  kiroCli: string;
+  tapFrames: Array<{ event: string; credits: number }>;
+  sessionStoreCredits: number;
+}
+
+function tapCreditCases(): TapCreditCase[] {
+  const raw = JSON.parse(readFileSync(join(FIXTURES, 'v3', 'tap-credits.json'), 'utf8')) as { cases: TapCreditCase[] };
+  return raw.cases;
+}
+
+function tapCase(name: string): TapCreditCase {
+  const found = tapCreditCases().find((c) => c.name === name);
+  assert.ok(found, `fixture case ${name}`);
+  return found;
+}
+
+/** Run the real entry point on a recorded case: tap frames as the monitor
+ *  emits them (extra.source 'tap'), the store through the real parser. */
+function computeTapCase(c: TapCreditCase) {
+  const tokens = c.tapFrames.map(
+    (f, i) =>
+      ({
+        agent: 'kiro',
+        model: 'auto',
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        timestamp: i + 1,
+        extra: { event: f.event, credits: f.credits, source: 'tap', tokensAvailable: false },
+      }) as CanonicalTokenRecord,
+  );
+  const sessionStore = parseKiroSessionStore({
+    session_state: {
+      conversation_metadata: { user_turn_metadatas: [{ metering_usage: [{ value: c.sessionStoreCredits }] }] },
+    },
+  });
+  assert.ok(sessionStore);
+  return computeUsageAvailability({ ...base, tokens, sessionStore });
+}
+
+describe('computeUsageAvailability: V3 tap disagreement (#158)', () => {
+  it('kiro 2.36 recorded run: tap far below the store is flagged incomplete with a warning', () => {
+    const c = tapCase('v236-tap-misses-traffic');
+    const { usage, warnings } = computeTapCase(c);
+    const credits = usage.credits;
+    assert.equal(credits.value, c.sessionStoreCredits);
+    assert.equal(credits.source, 'reconciled');
+    assert.equal(credits.complete, true, 'complete describes the reported (store) value');
+    assert.deepEqual(credits.incompleteSources, ['tap']);
+    assert.ok(credits.disagreement, 'disagreement set');
+    assert.ok(credits.disagreement.ratio > 50 && credits.disagreement.ratio < 60, `ratio ${credits.disagreement.ratio}`);
+    assert.match(credits.disagreement.note, /session-store=.*tap=/);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] ?? '', /credit sources disagree/);
+    assert.match(warnings[0] ?? '', /tap missed traffic/);
+    assert.match(warnings[0] ?? '', /from the session-store/);
+    assert.equal(UsageAvailabilitySchema.safeParse(usage).success, true);
+    const roundTrip = UsageAvailabilitySchema.parse(JSON.parse(JSON.stringify(usage)));
+    assert.deepEqual(roundTrip.credits.incompleteSources, ['tap']);
+    assert.equal(roundTrip.credits.disagreement?.ratio, credits.disagreement.ratio);
+  });
+
+  for (const name of ['v2212-tap-over-counts-long', 'v2212-tap-over-counts-short']) {
+    it(`kiro 2.21.2 recorded run ${name}: tap above the store is a disagreement, not incomplete`, () => {
+      const c = tapCase(name);
+      const { usage, warnings } = computeTapCase(c);
+      const credits = usage.credits;
+      assert.equal(credits.value, c.sessionStoreCredits);
+      assert.equal(credits.incompleteSources, undefined, 'the tap missed nothing');
+      assert.equal(credits.complete, true);
+      if (name.endsWith('short')) {
+        // 8% over: beyond the 5% line, so structured disagreement is present.
+        assert.ok(credits.disagreement && credits.disagreement.ratio > 1.05);
+      } else {
+        // ~2% over: inside 5%, no structured disagreement.
+        assert.equal(credits.disagreement, undefined);
+      }
+      // The pre-existing absolute-delta warning is unchanged and never claims a missed tap.
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0] ?? '', /credit sources disagree/);
+      assert.doesNotMatch(warnings[0] ?? '', /missed traffic/);
+    });
+  }
+
+  it('leaves both fields absent for a single source and for exactly agreeing sources', () => {
+    const only = computeUsageAvailability({ ...base, tokens: [kiroRecord()] });
+    assert.equal(only.usage.credits.disagreement, undefined);
+    assert.equal(only.usage.credits.incompleteSources, undefined);
+    const agree = computeUsageAvailability({
+      ...base,
+      tokens: [kiroRecord()],
+      streamCreditsCumulative: 0.5,
+    });
+    assert.equal(agree.usage.credits.disagreement, undefined);
+    assert.equal(agree.usage.credits.incompleteSources, undefined);
+    assert.deepEqual(agree.warnings, []);
+  });
+});

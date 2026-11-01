@@ -845,10 +845,19 @@ export interface UsageAvailability {
     source?: "native" | "tap" | "reconciled";
     scope?: "run" | "turn" | "call";
     cumulative?: boolean;
+    /**
+     * Whether the REPORTED `value` is complete. It comes from the authoritative
+     * source, so it stays true even when a weaker source is listed in
+     * `incompleteSources`.
+     */
     complete?: boolean;
     value?: number;
     /** Every source that reported a credit total, verbatim (audit trail). */
     sources?: Partial<Record<"stream" | "session-store" | "tap", number>>;
+    /** Present when the largest and smallest reported sources differ by more than 5% (ratio = max/min). */
+    disagreement?: { ratio: number; note: string };
+    /** Sources known to have missed charges: "tap" when its total is more than 5% below the reported value (#158). */
+    incompleteSources?: Array<"stream" | "session-store" | "tap">;
   };
   usd: { available: boolean; source?: "pricer" | "vendor"; value?: number };
   /**
@@ -954,6 +963,8 @@ export const UsageAvailabilitySchema = z.object({
           tap: z.number().optional(),
         })
         .optional(),
+      disagreement: z.object({ ratio: z.number(), note: z.string() }).optional(),
+      incompleteSources: z.array(z.enum(["stream", "session-store", "tap"])).optional(),
     })
     .default({ available: false }),
   usd: z.object({

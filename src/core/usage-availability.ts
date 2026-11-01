@@ -19,6 +19,13 @@ import type { ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
 export const CREDIT_TOLERANCE = 1e-9;
 
 /**
+ * Issue #158: reported credit sources whose largest/smallest ratio exceeds this
+ * (5%) get a structured `credits.disagreement`; a tap more than 5% below the
+ * reported value is marked in `credits.incompleteSources`.
+ */
+export const CREDIT_DISAGREEMENT_RATIO = 1.05;
+
+/**
  * Context-window fallback when no source states the real window. Deliberately
  * one conservative entry: a guess is always labelled `windowSource:'assumed'`
  * so a reader can discount it. NEVER grow this into a pricing-style table of
@@ -254,19 +261,49 @@ export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsage
     ];
     let value = 0;
     let source: UsageAvailability['credits']['source'] = 'tap';
+    let winner: keyof typeof sources = 'tap';
     for (const [key, src] of order) {
       const v = sources[key];
       if (v === undefined) continue;
       value = v;
       source = src;
+      winner = key;
       break;
     }
+
+    // Structured disagreement (#158): largest vs smallest reported source.
+    let disagreementField: { ratio: number; note: string } | undefined;
+    if (reported.length > 1) {
+      let lo = reported[0] as [keyof typeof sources, number];
+      let hi = lo;
+      for (const entry of reported) {
+        if (entry[1] < lo[1]) lo = entry;
+        if (entry[1] > hi[1]) hi = entry;
+      }
+      // A zero floor has no finite ratio; the absolute-delta warning below
+      // still covers it.
+      if (lo[1] > 0 && hi[1] / lo[1] > CREDIT_DISAGREEMENT_RATIO) {
+        const ratio = hi[1] / lo[1];
+        disagreementField = {
+          ratio,
+          note: `${hi[0]}=${hi[1]} is ${ratio.toFixed(2)}x ${lo[0]}=${lo[1]}`,
+        };
+      }
+    }
+    // The tap is the only source known to miss traffic (kiro V3 engine). It is
+    // incomplete only when BELOW the winner: a tap above it missed nothing.
+    const tapIncomplete =
+      winner !== 'tap' && sources.tap !== undefined && sources.tap < value * (1 - (CREDIT_DISAGREEMENT_RATIO - 1));
+
     const disagreement = reported.some(([, v]) => Math.abs(v - value) > CREDIT_TOLERANCE);
     if (disagreement) {
       warnings.push(
         `usage: credit sources disagree (${reported
           .map(([k, v]) => `${k}=${v}`)
-          .join(', ')}); reporting ${value} from ${source}`,
+          .join(', ')}); reporting ${value} from ${source}` +
+          (tapIncomplete
+            ? `; the tap missed traffic (its total is more than 5% below the reported value), so the reported value is from the ${winner}`
+            : ''),
       );
     }
     credits = {
@@ -274,9 +311,14 @@ export function computeUsageAvailability(input: ComputeUsageInput): ComputeUsage
       source: reported.length > 1 ? 'reconciled' : source,
       scope: 'run',
       cumulative: true,
+      // `complete` describes the REPORTED value (from the authoritative
+      // source), so it stays true even when the tap is marked incomplete in
+      // `incompleteSources`.
       complete: true,
       value,
       sources,
+      ...(disagreementField ? { disagreement: disagreementField } : {}),
+      ...(tapIncomplete ? { incompleteSources: ['tap' as const] } : {}),
     };
   }
 

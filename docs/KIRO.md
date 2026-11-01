@@ -37,6 +37,33 @@ the system roots plus the tap CA, so OpenSSL clients still verify tunneled hosts
 metering to a new host, add it with `ACH_KIRO_TAP_HOSTS` (comma-separated host regexes, no
 port), for example `ACH_KIRO_TAP_HOSTS='q\.[^:/]*\.amazonaws\.com'`.
 
+### V3 engine: the tap can disagree with the session store (#158)
+
+Measured with the same 4-step prompt on `--kiro-engine v3`, no `--kiro-tools` (so several model
+calls, no executed tools). The sample is small: 4 runs on 2.36.0, 2 runs on 2.21.2.
+
+| kiro-cli | session store | tap | tap frames | tap vs store |
+|---|---|---|---|---|
+| 2.36.0 | 0.33252 | 0.00590 | 1 `meteringEvent` | 56x too low |
+| 2.21.2 (long) | 0.46612 | 0.47521 | 5 | +2% |
+| 2.21.2 (short) | 0.08098 | 0.08772 | 2 | +8% |
+
+- **2.36.0 under-counts.** The tap saw one `meteringEvent` frame while the store holds the whole
+  charge. A `lsof` sample during a 2.36 run showed the V3 engine's node child with direct sockets
+  to an EC2 host on :443, not through the proxy. UNVERIFIED: whether the proxy env reaches that
+  child, and which hostname it uses. `NODE_USE_ENV_PROXY=1` plus a wider `ACH_KIRO_TAP_HOSTS` did
+  not change the frames the tap saw. The tap is not taught new frames; the run is flagged instead.
+- **2.21.2 can over-count.** In both runs the store equals the tap minus exactly the first, small
+  metering frame (0.00909 and 0.00674). The tap missed nothing there.
+
+What the run record says: the reported credit value comes from the authoritative source (stream,
+then session store, then tap), so `credits.complete` describes that value and stays `true`. When
+the largest and smallest reported sources differ by more than 5% (max/min), `credits.disagreement`
+is `{ ratio, note }`. When the tap total is more than 5% BELOW the reported value,
+`credits.incompleteSources` is `["tap"]` and the existing `credit sources disagree` warning adds
+that the tap missed traffic. A tap above the reported value sets only `disagreement`. Under 5%,
+neither field is set (the absolute-delta warning is unchanged).
+
 ### Verified configuration (`modelAck`)
 
 `modelAck` is one of:
