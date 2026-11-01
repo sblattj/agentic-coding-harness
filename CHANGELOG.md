@@ -4,6 +4,8 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-01
+
 ### Added
 
 - kiro-ide: the adapter now reads the chat's model picker and records that model instead of the placeholder `kiro-ide`. `--model <name>` selects the matching option (case-insensitive, punctuation ignored, exact, never a substring) and reads the label back. It fails before any prompt is typed on no match or a disabled option (both list the available models, as `InvalidRequest`), and on an unchanged label or a missing picker (these name the problem). `ach doctor --agent kiro-ide` gains a read-only `model` row. Selectors were observed on Kiro IDE 1.2.4 and are unverified on 1.4.x. (#160)
