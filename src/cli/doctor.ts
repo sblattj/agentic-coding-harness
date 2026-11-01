@@ -925,6 +925,7 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
 
   // signed-in
   t0 = Date.now();
+  let signedOut = false;
   if (listErr !== undefined) {
     out.push(mk("signed-in", "unproven", `could not list targets: ${listErr}`, t0));
   } else if (!page) {
@@ -937,6 +938,7 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
     try {
       const text = (await kiroIdeEvalTarget<string>(page, DEEP_TEXT_JS, timeoutMs)).filter((v): v is string => typeof v === "string").join(" | ");
       if (text.includes("By signing in")) {
+        signedOut = true;
         out.push(mk("signed-in", "failed", "Kiro shows the sign-in screen", t0, "sign in once for this profile: open Kiro with the same --user-data-dir and complete sign-in"));
       } else if (/Kiro (Free|Pro|Power)/.test(text) || chatTargets.length > 0) {
         out.push(mk("signed-in", "verified", /Kiro (Free|Pro|Power)[^|]*/.exec(text)?.[0]?.trim() ?? "chat target present", t0));
@@ -974,11 +976,15 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
     }
     if (found) out.push(mk("chat", "verified", `chat input '${KIRO_IDE_SELECTORS.chatInput}' present`, t0));
     else if (lastErr !== undefined) out.push(mk("chat", "unproven", `could not probe the chat target: ${lastErr}`, t0));
+    // The sign-in screen can replace the chat UI, so a missing input there is not selector drift.
+    else if (signedOut) out.push(mk("chat", "unproven", "not attempted: Kiro is signed out", t0));
     else out.push(mk("chat", "failed", `chat target present but '${KIRO_IDE_SELECTORS.chatInput}' not found: selectors no longer match this Kiro IDE version`, t0, "Kiro's UI changed; update KIRO_IDE_SELECTORS in src/adapters/kiro-ide-cdp.ts"));
     // model (issue #160): reads the picker's label only. It never opens the popup, since
     // doctor sends nothing and changes nothing.
     t0 = Date.now();
-    if (foundTarget === undefined) {
+    if (signedOut) {
+      out.push(mk("model", "unproven", "not attempted: Kiro is signed out", t0));
+    } else if (foundTarget === undefined) {
       out.push(mk("model", "unproven", found ? "not attempted: no chat target" : "not attempted: the chat input was not found", t0));
     } else {
       try {

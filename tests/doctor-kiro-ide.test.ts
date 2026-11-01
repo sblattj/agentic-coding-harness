@@ -127,6 +127,25 @@ describe("checkKiroIde", () => {
     assert.match(r.hint!, /sign in once for this profile/);
   });
 
+  // Found live on Kiro 1.2.4: the sign-in screen keeps a chat input but has no model picker.
+  it("signed-out: model row is not reported as selector drift, even with no picker", async () => {
+    const f = await fake([page("Sign in | By signing in, you agree to the"), chat(true, null)]);
+    const rows = await run(f.endpoint);
+    assert.equal(row(rows, "chat")!.status, "verified");
+    assert.equal(row(rows, "model")!.status, "unproven");
+    assert.equal(row(rows, "model")!.detail, "not attempted: Kiro is signed out");
+    assert.equal(rows.filter((r) => r.status === "failed").map((r) => r.name).join(), "signed-in");
+  });
+
+  it("signed-out: a missing chat input is not reported as selector drift", async () => {
+    const f = await fake([page("Sign in | By signing in, you agree to the"), chat(false)]);
+    const rows = await run(f.endpoint);
+    assert.equal(row(rows, "chat")!.status, "unproven");
+    assert.equal(row(rows, "chat")!.detail, "not attempted: Kiro is signed out");
+    assert.equal(row(rows, "model")!.status, "unproven");
+    assert.equal(rows.filter((r) => r.status === "failed").map((r) => r.name).join(), "signed-in");
+  });
+
   it("onboarding screen adds a warning row but is not a failure", async () => {
     const f = await fake([page(`${SIGNED_IN} | Import configuration | Next | Skip All`), chat(true)]);
     const rows = await run(f.endpoint);

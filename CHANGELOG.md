@@ -4,13 +4,18 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Added
+
+- kiro-ide: the adapter now reads the chat's model picker and records that model instead of the placeholder `kiro-ide`. `--model <name>` selects the matching option (case-insensitive, punctuation ignored, exact, never a substring) and reads the label back. It fails before any prompt is typed on no match or a disabled option (both list the available models, as `InvalidRequest`), and on an unchanged label or a missing picker (these name the problem). `ach doctor --agent kiro-ide` gains a read-only `model` row. Selectors were observed on Kiro IDE 1.2.4 and are unverified on 1.4.x. (#160)
+
 ### Fixed
 
+- Kiro: `usage.credits` now carries `disagreement { ratio, note }` when reported credit sources differ by more than 5% (`ratio` is null when a source is 0), and `incompleteSources: ["tap"]` when the MITM tap total is more than 5% below the reported value, or when the tap attached but saw no metering frames (kiro-cli 2.36 V3 tap under-counted about 56x). The warning says the tap may have missed traffic or the store may hold turns from before the run. `credits.complete` still describes the reported value. `totals.credits` stays sealed but its provenance becomes `estimated`, `ach dash` marks it, and the `ach run` summary prints `usage.credits.value` for kiro. Documented by version in docs/KIRO.md. (#158)
+- `metrics.json` (`ach.metrics/1`) now carries Kiro credits as an additive `credits: { value, source, complete } | null` field matching `run.json`, and writes `null` instead of `0` for `cost.usd` and `tokens` when the run's usage says they are unavailable. `--evidence-dir` metrics.json tokens now equal the run's usage totals when usage reports them (Kiro session-store counts no longer show as zero), and the help text and README list `credits` among the sidecar fields. (#159)
+- `kiro-ide`: `ach doctor` and `ach run` now check that the CDP endpoint is Kiro IDE (User-Agent contains `Kiro/`; a workbench page target is the fallback only when the User-Agent is absent). A browser or other Electron app on the port fails the `cdp` row with "port N is a <Browser>, not Kiro IDE; pass --kiro-ide-port", and the run errors before spawning, connecting or sending any input, in attach and launch mode. Default port unchanged. (#161)
+- `ach doctor --agent kiro-ide`: on Kiro's sign-in screen, the `chat` and `model` rows say "not attempted: Kiro is signed out" instead of reporting selector drift when the chat input or model picker is missing.
 - Two CI timing flakes on slow runners: the cross-process alert-lock test now waits up to 10s for the lock (new `lockWaitMs` option on `createRunAlerts`, default still 250ms), and the `computeGlobalStats` speed check times the best of 5 warm runs instead of one cold run.
 - The run-to-directory abort test could hang until its 300s timeout when `driver.abort()` landed before the fake handle's `attach()` was waiting; the fake now honors an earlier abort.
-
-### Fixed
-
 - `--agent kiro-ide`: a prompt Kiro IDE refuses (for example "You've reached your monthly usage limit") now fails the run with Kiro's own message instead of "prompt not submitted". The adapter reads the workbench "Error sending prompt" notification while submitting and waiting.
 - `--agent kiro-ide`: the prompt echo is matched ignoring markdown (list numbers, bullets, headings, code marks, punctuation), so a prompt with a numbered list counts as submitted and the reply no longer starts with the echoed prompt.
 - `ach doctor --agent kiro-ide`: waits for late execution contexts after `Runtime.enable` before looking for the chat input, so the chat row no longer reports "selectors no longer match" when the input's nested frame loads a few hundred ms late.
