@@ -466,9 +466,23 @@ metrics. `ach run --evidence-dir <dir>` writes a metrics-only sidecar `metrics.j
  "exitStatus":"success","wallSeconds":412.3,"turns":57,
  "cost":{"usd":6.1,"provenance":"usd:pricer; tokens:native"},
  "tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0},
+ "credits":null,
  "sandbox":{"permissionMode":"bypassPermissions"},"verify":null,
  "startedAt":"...","endedAt":"..."}
 ```
+
+A Kiro run is metered in credits, not dollars or tokens, so its sidecar looks like this:
+
+```json
+{"schema":"ach.metrics/1","agent":"kiro","exitStatus":"success",
+ "cost":{"usd":null,"provenance":"usd:unavailable; tokens:unavailable"},
+ "tokens":null,
+ "credits":{"value":0.08098,"source":"native","complete":true}, "...":"..."}
+```
+
+`null` means unavailable, not zero: `cost.usd` and `tokens` are `null` when the run's usage says
+that figure is unavailable, and `credits` is `null` when the run reports no credits. A real
+priced `0` stays `0`. `credits.value` equals `usage.credits.value` in `run.json`.
 
 It contains no prompt text, responses, tool inputs, file contents or warnings, and inline
 `--mcp-config` JSON is reduced to a byte count. A test asserts the prompt string does not

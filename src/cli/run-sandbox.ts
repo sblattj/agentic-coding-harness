@@ -109,8 +109,12 @@ export interface RunMetrics {
   exitStatus: string;
   wallSeconds: number;
   turns: number;
-  cost: { usd: number; provenance: string };
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number };
+  /** usd is null when the run's usage says usd is unavailable (unknown, not free). */
+  cost: { usd: number | null; provenance: string };
+  /** null when the run's usage says tokens are unavailable (unknown, not zero). */
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number } | null;
+  /** Metering credits (kiro); null when the run reports none. Same value as run.json usage.credits. */
+  credits: { value: number; source: string; complete: boolean } | null;
   sandbox: Record<string, unknown> | null;
   verify: string | null;
   startedAt: string;
@@ -153,8 +157,12 @@ export function buildRunMetrics(input: {
     exitStatus: result.exitStatus,
     wallSeconds: Math.round(result.durationMs) / 1000,
     turns: result.events.filter((e) => e.type === "step" && countsAsTurn(input.agent, e)).length,
-    cost: { usd: result.totalCost, provenance },
-    tokens,
+    cost: { usd: u !== undefined && !u.usd.available ? null : result.totalCost, provenance },
+    tokens: u !== undefined && !u.tokens.available ? null : tokens,
+    credits:
+      u !== undefined && u.credits.available && u.credits.value !== undefined
+        ? { value: u.credits.value, source: u.credits.source ?? "unknown", complete: u.credits.complete ?? false }
+        : null,
     sandbox: input.sandbox ? describeSandbox(input.sandbox) : null,
     verify: input.verifyStatus ?? null,
     startedAt: new Date(endedAt - result.durationMs).toISOString(),
