@@ -30,6 +30,10 @@ export const KIRO_IDE_SELECTORS = {
   // filter box) and the listbox is a child list, so the 1.2.4 selector matched nothing there.
   modelPopup: ".chat-input-popup-menu[role=listbox], .kiro-model-selector-list[role=listbox]",
   modelOption: ".chat-input-popup-option[role=option]",
+  // History view (observed live on Kiro IDE 1.2.4): with every session tab closed the chat webview has no
+  // chat input; its body text starts "Session History ..." and the "New session" button is still present.
+  historyText: "Session History",
+  newSessionLabel: "New session",
 } as const;
 
 const sel = (s: string): string => JSON.stringify(s);
@@ -42,6 +46,11 @@ export const OPEN_MODEL_PICKER_JS = `(() => { const t = document.querySelector($
 export const CLOSE_MODEL_PICKER_JS = `(() => { const t = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelTrigger)}); if (!t) return 'none'; if (t.getAttribute('aria-expanded') === 'true') t.click(); return 'ok'; })()`;
 /** The popup's options as `[{name, disabled}]` (name = first non-empty line), or null when no popup is rendered. */
 export const LIST_MODEL_OPTIONS_JS = `(() => { const p = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelPopup)}); if (!p) return null; return [...p.querySelectorAll(${sel(KIRO_IDE_SELECTORS.modelOption)})].map((o) => ({ name: ((o.innerText || o.textContent || '').split('\\n').map((x) => x.trim()).find((x) => x !== '') || ''), disabled: o.getAttribute('aria-disabled') === 'true' })); })()`;
+/**
+ * True only for the history view: NO chat input AND "Session History" text AND the New session button,
+ * all in one expression so a rebuilding webview cannot satisfy it piecemeal.
+ */
+export const HISTORY_VIEW_JS = `(() => !document.querySelector(${sel(KIRO_IDE_SELECTORS.chatInput)}) && (document.body.innerText || '').includes(${sel(KIRO_IDE_SELECTORS.historyText)}) && [...document.querySelectorAll('button')].some((x) => (x.getAttribute('aria-label') || x.title || '') === ${sel(KIRO_IDE_SELECTORS.newSessionLabel)}))()`;
 export function clickModelOptionJs(index: number): string {
   return `(() => { const p = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelPopup)}); if (!p) return 'none'; const o = [...p.querySelectorAll(${sel(KIRO_IDE_SELECTORS.modelOption)})][${Number(index)}]; if (!o || o.getAttribute('aria-disabled') === 'true') return 'none'; o.click(); return 'clicked'; })()`;
 }

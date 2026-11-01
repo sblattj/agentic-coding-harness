@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { checkKiroIde } from "../src/cli/doctor.ts";
-import { READ_MODEL_JS } from "../src/adapters/kiro-ide-cdp.ts";
+import { HISTORY_VIEW_JS, READ_MODEL_JS } from "../src/adapters/kiro-ide-cdp.ts";
 import { FakeModelPicker, startFakeCdp, type FakeCdp, type FakeTargetSpec } from "./fake-cdp.ts";
 
 // checkKiroIde against a fake CDP endpoint; the binary row uses a script in a tmp dir.
@@ -39,6 +39,33 @@ function chat(hasInput: boolean, picker: FakeModelPicker | null = new FakeModelP
       const picked = picker && hasInput && contextId === 2 ? picker.evaluate(p.expression) : { handled: false };
       if (picked.handled) return { result: { type: "object", value: picked.value } };
       return { result: { type: "boolean", value: hasInput && contextId === 2 } };
+    },
+  };
+}
+
+/**
+ * A chat target with a scripted body text: `historyView` makes it the Session History view (no input);
+ * otherwise it has the input, and `picker` (null = absent) serves the model picker.
+ */
+function chatWith(body: string, opts: { historyView?: boolean; picker?: FakeModelPicker | null; hasInput?: boolean } = {}): FakeTargetSpec & { evals: string[] } {
+  const evals: string[] = [];
+  const hasInput = opts.hasInput ?? !opts.historyView;
+  const picker = opts.picker === undefined ? new FakeModelPicker() : opts.picker;
+  return {
+    id: "chat",
+    type: "iframe",
+    url: CHAT,
+    contexts: ctxs,
+    evals,
+    handler: (method, p, contextId) => {
+      if (method !== "Runtime.evaluate") return {};
+      evals.push(p.expression);
+      if (contextId !== 2) return { result: { type: "boolean", value: false } };
+      if (p.expression === HISTORY_VIEW_JS) return { result: { type: "boolean", value: !!opts.historyView } };
+      if (p.expression === "document.body.innerText") return { result: { type: "string", value: body } };
+      const picked = picker && hasInput ? picker.evaluate(p.expression) : { handled: false };
+      if (picked.handled) return { result: { type: "object", value: picked.value } };
+      return { result: { type: "boolean", value: hasInput } };
     },
   };
 }
@@ -226,6 +253,49 @@ describe("checkKiroIde", () => {
     const b = row(await run(noChat.endpoint), "model")!;
     assert.equal(b.status, "unproven");
     assert.match(b.detail, /not attempted/);
+  });
+
+  it("history view (no open session): chat and model are unproven, nothing is clicked, no drift message", async () => {
+    const c = chatWith("Session History Answer Simple Trivia Questions", { historyView: true });
+    const f = await fake([page(SIGNED_IN), c]);
+    const rows = await run(f.endpoint);
+    const chatRow = row(rows, "chat")!;
+    assert.equal(chatRow.status, "unproven");
+    assert.match(chatRow.detail, /Session History is showing with no open session/);
+    assert.match(chatRow.detail, /ach run/);
+    assert.doesNotMatch(chatRow.detail, /selectors no longer match/);
+    assert.equal(chatRow.hint, undefined);
+    const model = row(rows, "model")!;
+    assert.equal(model.status, "unproven");
+    assert.match(model.detail, /Session History is showing/);
+    assert.ok(!rows.some((r) => r.status === "failed"));
+    assert.ok(!c.evals.some((e) => e.includes(".click()") && !e.startsWith("(() => !document.querySelector")), "doctor evaluates probes only");
+    assert.ok(!f.calls.some((x) => x.method.startsWith("Input.")));
+  });
+
+  it("control: no input and no history view stays failed selector drift", async () => {
+    const f = await fake([page(SIGNED_IN), chatWith("Something else entirely", { hasInput: false })]);
+    const r = row(await run(f.endpoint), "chat")!;
+    assert.equal(r.status, "failed");
+    assert.match(r.detail, /selectors no longer match this Kiro IDE version/);
+    assert.ok(r.hint);
+  });
+
+  it("model row: no picker on an empty chat (\"Let's build\") is unproven, with a re-run hint", async () => {
+    const f = await fake([page(SIGNED_IN), chatWith("New Session\nLoading\nStarting cloud session\nLet's build", { picker: null, hasInput: true })]);
+    const rows = await run(f.endpoint);
+    const r = row(rows, "model")!;
+    assert.equal(r.status, "unproven");
+    assert.match(r.detail, /not shown on this empty chat yet/);
+    assert.match(r.detail, /re-run doctor/);
+    assert.equal(row(rows, "chat")!.status, "verified");
+  });
+
+  it("control: no picker on a chat with content stays failed", async () => {
+    const f = await fake([page(SIGNED_IN), chatWith("You: hi\nKiro: hello\nElapsed time: 3s", { picker: null, hasInput: true })]);
+    const r = row(await run(f.endpoint), "model")!;
+    assert.equal(r.status, "failed");
+    assert.match(r.detail, /selectors no longer match this Kiro IDE version/);
   });
 
   it("missing binary is a failure locally", async () => {

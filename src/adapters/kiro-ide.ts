@@ -27,6 +27,7 @@ import {
   KIRO_IDE_SELECTORS,
   clickByTextJs,
   CLOSE_MODEL_PICKER_JS,
+  HISTORY_VIEW_JS,
   LIST_MODEL_OPTIONS_JS,
   OPEN_MODEL_PICKER_JS,
   READ_MODEL_JS,
@@ -333,6 +334,12 @@ export interface KiroIdeAdapterOptions {
    * otherwise poll forever.
    */
   turnTimeoutMs?: number;
+  /**
+   * How long one pending "Your approval is required to continue: <cmd>" prompt may stay unanswered
+   * before the run fails, default 120 000 ms. ach never clicks Allow/Deny; a human approving in the
+   * IDE clears the prompt and the timer restarts.
+   */
+  approvalTimeoutMs?: number;
   /** Bound on the model picker settling after a click (label read-back, popup options), default 3000 ms. */
   modelSettleMs?: number;
 }
@@ -391,6 +398,7 @@ export class KiroIdeAdapter implements AgentAdapter {
   readonly #recoverMs: number;
   readonly #submitTimeoutMs: number;
   readonly #turnTimeoutMs: number;
+  readonly #approvalTimeoutMs: number;
   readonly #lockDir: string;
   readonly #modelSettleMs: number;
 
@@ -404,6 +412,7 @@ export class KiroIdeAdapter implements AgentAdapter {
     this.#recoverMs = options.recoverMs ?? 5000;
     this.#submitTimeoutMs = options.submitTimeoutMs ?? 15_000;
     this.#turnTimeoutMs = options.turnTimeoutMs ?? 15 * 60_000;
+    this.#approvalTimeoutMs = options.approvalTimeoutMs ?? 120_000;
     this.#lockDir = options.lockDir ?? os.tmpdir();
     this.#modelSettleMs = options.modelSettleMs ?? 3000;
   }
@@ -669,6 +678,10 @@ export class KiroIdeAdapter implements AgentAdapter {
       let ctx: number | undefined;
       let prevSig = "";
       let stable = 0;
+      // History view (every session tab closed): needs two consecutive polls before acting, and
+      // New session is clicked at most once per run.
+      let historyPolls = 0;
+      let historyClicked = false;
       const settleStart = this.#now();
       for (;;) {
         checkAbort();
@@ -700,12 +713,30 @@ export class KiroIdeAdapter implements AgentAdapter {
           }
           stable = 0;
           prevSig = "";
+          historyPolls = 0;
         }
         try {
           ctx = await findCtxOn(cur.session);
           if (ctx === undefined) {
             stable = 0;
+            const inHistory = (await cur.session.evaluateEach<boolean>(HISTORY_VIEW_JS)).some((r) => r.value === true);
+            historyPolls = inHistory ? historyPolls + 1 : 0;
+            if (historyPolls >= 2) {
+              if (cfg.newSession === false) {
+                throw new RunFailure(
+                  "the Kiro IDE chat has no open session (Session History is showing) and new sessions are disabled; open a session in the chat, or allow ach to open a new one",
+                );
+              }
+              if (!historyClicked) {
+                historyClicked = true;
+                historyPolls = 0;
+                const clicks = await cur.session.evaluateEach<string>(NEW_SESSION_JS);
+                dbg(`history-view new-session=${clicks.map((c) => c.value).join(",")}`);
+                progress("kiro-ide: the chat shows Session History with no open session; opened a new session");
+              }
+            }
           } else {
+            historyPolls = 0;
             const pane = (await cur.session.evaluate<string>(PANE_TEXT_JS, ctx)) ?? "";
             const sig = JSON.stringify([cur.id, cur.session.contexts().map((c) => c.id).sort((x, y) => x - y), pane]);
             stable = sig === prevSig ? stable + 1 : 1;
@@ -714,7 +745,8 @@ export class KiroIdeAdapter implements AgentAdapter {
             // right after a folder switch); give the switch up to 10 s to appear.
             if ((await cur.session.evaluate<string>(AUTOPILOT_STATE_JS, ctx)) === "unknown" && this.#now() - settleStart < 10_000) stable = 0;
           }
-        } catch {
+        } catch (e) {
+          if (e instanceof RunFailure) throw e;
           stable = 0;
         }
         if (stable >= 2) break;
@@ -940,6 +972,9 @@ export class KiroIdeAdapter implements AgentAdapter {
       let finalText = "";
       let polls = 0;
       let lastTabClick = 0;
+      // A pending tool-approval prompt (ach never clicks it): the command and when it was first seen.
+      let approvalCmd: string | undefined;
+      let approvalSince = 0;
       const turnStart = this.#now();
       for (;;) {
         await sleep(this.#pollMs);
@@ -974,7 +1009,25 @@ export class KiroIdeAdapter implements AgentAdapter {
           } else if (countElapsed(txt.slice(idx)) > 0) {
             finalText = txt;
             break;
+          } else {
+            // Only text AFTER the prompt echo counts, so a prompt that quotes the phrase cannot trip it.
+            const pending = /Your approval is required to continue: (.+)\nAllow\b/.exec(txt.slice(idx))?.[1]?.trim();
+            if (pending === undefined) {
+              approvalCmd = undefined;
+            } else if (pending !== approvalCmd) {
+              approvalCmd = pending;
+              approvalSince = this.#now();
+              progress(
+                `kiro-ide: Kiro is waiting for approval to run \`${pending}\`; the run fails in ${Math.round(this.#approvalTimeoutMs / 1000)}s unless it is approved in the IDE`,
+              );
+            } else if (this.#now() - approvalSince >= this.#approvalTimeoutMs) {
+              // Not an outage: the agent is up and asking. InvalidRequest keeps the exit `error`.
+              throw new InvalidRequest(
+                `Kiro IDE is waiting for approval to run \`${pending}\` (not approved within ${this.#approvalTimeoutMs}ms); approve it in the IDE, or trust the command in Kiro so it does not ask`,
+              );
+            }
           }
+          if (idx < 0) approvalCmd = undefined;
         } catch (e) {
           if (e instanceof RunFailure) throw e;
           if (++fails >= 5) throw new RunFailure(`lost the Kiro IDE chat while waiting: ${e instanceof Error ? e.message : String(e)}`);

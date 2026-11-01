@@ -6,6 +6,9 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ### Fixed
 
+- `--agent kiro-ide` no longer waits 60 s and fails when every chat session tab is closed (the chat then shows Session History instead of an input). After two consecutive polls of that view, `ach run` opens a new session once and carries on; with `newSession: false` it fails at once, saying the chat has no open session.
+- `--agent kiro-ide` no longer hangs silently when Kiro asks for approval to run a command it does not trust, even with Autopilot on. `ach run` prints which command is waiting and fails after `approvalTimeoutMs` (default 120 s) naming it, so you can approve or trust it in Kiro. It never clicks Allow or Deny; approving in the IDE keeps the run going.
+- `ach doctor --agent kiro-ide` no longer reports "selectors no longer match" when the chat is just showing Session History with no open session (the chat and model rows are now unproven, and doctor still clicks nothing). An empty chat whose model picker has not appeared yet is also unproven, not failed; a chat with content and no picker still fails.
 - `--agent kiro-ide --model <name>` works on Kiro IDE 1.4.62. There the model popup is a dialog with the listbox as a child list, so 0.27.0's selector matched nothing and every `--model` failed with "the model picker listed no models". The selector now matches both 1.2.4 and 1.4.62, verified live on 1.4.62. (#160, #162)
 
 ## [0.27.0] - 2026-11-01

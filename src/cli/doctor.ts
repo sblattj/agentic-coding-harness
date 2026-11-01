@@ -33,6 +33,7 @@ import {
   KIRO_IDE_SELECTORS,
   KIRO_IDE_WRONG_ENDPOINT_HINT,
   READ_MODEL_JS,
+  HISTORY_VIEW_JS,
   checkKiroIdeEndpoint,
   kiroIdeWrongEndpointMessage,
   endpointFrom,
@@ -832,6 +833,28 @@ async function kiroIdeEvalTargetAll<T>(target: CdpTarget, expr: string, timeoutM
   }
 }
 
+/** True when any chat target shows the history view (no input, "Session History", New session button). Never clicks. */
+async function chatShowsHistoryView(targets: CdpTarget[], timeoutMs: number): Promise<boolean> {
+  for (const t of targets) {
+    try {
+      if ((await kiroIdeEvalTarget<boolean>(t, HISTORY_VIEW_JS, timeoutMs)).some((v) => v === true)) return true;
+    } catch {
+      /* unreadable target: not the history view */
+    }
+  }
+  return false;
+}
+
+/** True when the chat pane is an empty chat ("Let's build"). Unreadable counts as not empty. */
+async function paneIsEmptyChat(target: CdpTarget, timeoutMs: number): Promise<boolean> {
+  try {
+    const texts = await kiroIdeEvalTarget<string>(target, "document.body.innerText", timeoutMs);
+    return texts.some((v) => typeof v === "string" && v.includes("Let's build"));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Doctor rows for the `kiro-ide` agent (drives the Kiro IDE desktop app over CDP).
  * Read-only: evaluates text/selector probes only, never sends input.
@@ -961,6 +984,7 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
   } else {
     const probe = `!!document.querySelector(${JSON.stringify(KIRO_IDE_SELECTORS.chatInput)})`;
     let found = false;
+    let historyView = false;
     let foundTarget: CdpTarget | undefined;
     let lastErr: string | undefined;
     for (const t of chatTargets) {
@@ -978,14 +1002,29 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
     else if (lastErr !== undefined) out.push(mk("chat", "unproven", `could not probe the chat target: ${lastErr}`, t0));
     // The sign-in screen can replace the chat UI, so a missing input there is not selector drift.
     else if (signedOut) out.push(mk("chat", "unproven", "not attempted: Kiro is signed out", t0));
-    else out.push(mk("chat", "failed", `chat target present but '${KIRO_IDE_SELECTORS.chatInput}' not found: selectors no longer match this Kiro IDE version`, t0, "Kiro's UI changed; update KIRO_IDE_SELECTORS in src/adapters/kiro-ide-cdp.ts"));
+    else if (await chatShowsHistoryView(chatTargets, timeoutMs)) {
+      // Every session tab is closed: the history view has no input by design. Read-only: doctor clicks nothing.
+      historyView = true;
+      out.push(mk("chat", "unproven", `Session History is showing with no open session, so the chat input is absent; \`ach run\` opens a new session`, t0));
+    } else out.push(mk("chat", "failed", `chat target present but '${KIRO_IDE_SELECTORS.chatInput}' not found: selectors no longer match this Kiro IDE version`, t0, "Kiro's UI changed; update KIRO_IDE_SELECTORS in src/adapters/kiro-ide-cdp.ts"));
     // model (issue #160): reads the picker's label only. It never opens the popup, since
     // doctor sends nothing and changes nothing.
     t0 = Date.now();
     if (signedOut) {
       out.push(mk("model", "unproven", "not attempted: Kiro is signed out", t0));
     } else if (foundTarget === undefined) {
-      out.push(mk("model", "unproven", found ? "not attempted: no chat target" : "not attempted: the chat input was not found", t0));
+      out.push(
+        mk(
+          "model",
+          "unproven",
+          historyView
+            ? "not attempted: Session History is showing with no open session (no chat input or model picker); `ach run` opens one"
+            : found
+              ? "not attempted: no chat target"
+              : "not attempted: the chat input was not found",
+          t0,
+        ),
+      );
     } else {
       try {
         const results = await kiroIdeEvalTargetAll<KiroIdePickerState | null>(foundTarget, READ_MODEL_JS, timeoutMs);
@@ -993,7 +1032,10 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
         const evalError = results.find((r) => r.error !== undefined)?.error;
         if (label) out.push(mk("model", "verified", `picker shows '${label}'`, t0));
         else if (evalError !== undefined) out.push(mk("model", "unproven", `could not read the model picker: ${evalError}`, t0));
-        else {
+        else if (await paneIsEmptyChat(foundTarget, timeoutMs)) {
+          // Seen live once right after sign-in: an empty chat with no picker for 30+ s; cause unknown, did not recur.
+          out.push(mk("model", "unproven", "the model picker is not shown on this empty chat yet; re-run doctor, or re-check after a prompt if it persists", t0));
+        } else {
           out.push(
             mk(
               "model",

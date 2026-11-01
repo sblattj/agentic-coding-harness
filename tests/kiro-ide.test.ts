@@ -102,6 +102,10 @@ interface World {
     /** Replaces the default Enter behaviour. */
     onEnter?: () => void;
     onTabClick?: (index: number) => void;
+    /** The chat webview shows the Session History view: no input, a New session button. */
+    history?: boolean;
+    /** Shows the history view for exactly one poll, then the normal chat. */
+    flash?: boolean;
   };
 }
 
@@ -183,10 +187,19 @@ async function world(
         if (method !== "Runtime.evaluate") return {};
         const e: string = params.expression;
         const val = (v: unknown) => ({ result: { type: typeof v, value: v } });
-        if (e.startsWith("!!document.querySelector")) return val(contextId === 3);
+        if (e.includes("Session History")) {
+          if (contextId !== 3) return val(false);
+          if (state.flash) {
+            state.flash = false;
+            return val(true);
+          }
+          return val(!!state.history);
+        }
+        if (e.startsWith("!!document.querySelector")) return val(contextId === 3 && !state.history && !state.flash);
         if (contextId !== 3) return val(null);
         if (e.includes("autopilot-toggle")) return val(state.autopilot);
         if (e.includes("New session")) {
+          state.history = false;
           state.text = IDLE_TEXT;
           return val("clicked");
         }
@@ -421,6 +434,121 @@ describe("KiroIdeAdapter (fake CDP)", () => {
     const [, exit] = await Promise.all([collect(h), h.wait()]);
     assert.equal(exit, "success");
     assert.ok(!w.fake.calls.some((c) => String(c.params?.expression ?? "").includes("New session")));
+  });
+
+  describe("history view (every session tab closed)", () => {
+    const HISTORY_TEXT = "Session History Answer Simple Trivia Questions 11/1/2026, 8:52:13 AM";
+    const newSessionClicks = (w: World) =>
+      w.fake.calls.filter((c) => {
+        const e = String(c.params?.expression ?? "");
+        return c.contextId === 3 && e.includes("b.click()") && e.includes("New session") && !e.includes("Session History");
+      }).length;
+
+    it("two consecutive polls: clicks New session once, then sends the prompt", async () => {
+      const w = await world();
+      w.state.history = true;
+      w.state.text = HISTORY_TEXT;
+      const h = await new KiroIdeAdapter(fast).launch(specFor(w.fake));
+      const [events, exit] = await Promise.all([collect(h), h.wait()]);
+      assert.equal(exit, "success", JSON.stringify(events.filter((e) => e.type === "error")));
+      assert.equal(newSessionClicks(w), 1, "exactly one New session click (the later new-session step sees a fresh pane)");
+      assert.equal(w.fake.calls.find((c) => c.method === "Input.insertText")?.params.text, PROMPT);
+      assert.ok(events.some((e: any) => e.type === "progress" && /Session History/.test(e.text)));
+    });
+
+    it("a one-poll flash of the view does not click", async () => {
+      const w = await world();
+      w.state.flash = true;
+      const h = await new KiroIdeAdapter(fast).launch(specFor(w.fake));
+      const [events, exit] = await Promise.all([collect(h), h.wait()]);
+      assert.equal(exit, "success", JSON.stringify(events.filter((e) => e.type === "error")));
+      assert.equal(newSessionClicks(w), 0);
+      assert.ok(!events.some((e: any) => e.type === "progress" && /Session History/.test(e.text)));
+    });
+
+    it("newSession:false fails fast with a clear message and sends nothing", async () => {
+      const w = await world();
+      w.state.history = true;
+      w.state.text = HISTORY_TEXT;
+      const t0 = Date.now();
+      const h = await new KiroIdeAdapter({ ...fast, readyTimeoutMs: 20_000 }).launch(
+        specFor(w.fake, { kiroIde: { cdp: w.fake.endpoint, newSession: false } }),
+      );
+      const [events, exit] = await Promise.all([collect(h), h.wait()]);
+      assert.equal(exit, "error");
+      assert.ok(Date.now() - t0 < 5000, "failed fast, not at the ready timeout");
+      const msg = (events.find((e) => e.type === "error") as any).message as string;
+      assert.match(msg, /no open session \(Session History is showing\)/);
+      assert.match(msg, /open a session/);
+      assert.equal(newSessionClicks(w), 0);
+      assert.ok(!w.state.sent);
+    });
+  });
+
+  describe("pending tool approval", () => {
+    const approval = (cmd: string) => `${IDLE_TEXT}\n\n${PROMPT}\nYour approval is required to continue: ${cmd}\nAllow\nAlways allow\nDeny\nAlways deny\nCancel`;
+    const noClicks = (w: World) => assert.ok(!w.fake.calls.some((c) => String(c.params?.expression ?? "").includes("Allow") || String(c.params?.expression ?? "").includes("Deny")));
+
+    it("an approval left pending past approvalTimeoutMs fails naming the command; ach never clicks", async () => {
+      const w = await world();
+      w.state.onEnter = () => {
+        w.state.text = approval("uname -s");
+      };
+      const h = await new KiroIdeAdapter({ ...fast, approvalTimeoutMs: 300 }).launch(specFor(w.fake));
+      const [events, exit] = await Promise.all([collect(h), h.wait()]);
+      assert.equal(exit, "error");
+      const msg = (events.find((e) => e.type === "error") as any).message as string;
+      assert.match(msg, /waiting for approval to run `uname -s`/);
+      assert.match(msg, /approve it in the IDE, or trust the command in Kiro/);
+      assert.equal((events.find((e) => e.type === "error") as any).payload?.kind, "invalid_request", "not reclassified as an outage");
+      const notes = events.filter((e: any) => e.type === "progress" && /approval/.test(e.text));
+      assert.equal(notes.length, 1, "one progress line per command");
+      assert.match((notes[0] as any).text, /`uname -s`.*fails in 0s|`uname -s`.*fails in \d+s/);
+      noClicks(w);
+    });
+
+    it("an approval that clears (human approved in the IDE) keeps the run alive", async () => {
+      const w = await world();
+      w.state.onEnter = () => {
+        w.state.text = approval("uname -s");
+        setTimeout(() => (w.state.text = FIXTURE_WS_B), 150);
+      };
+      const h = await new KiroIdeAdapter({ ...fast, approvalTimeoutMs: 600 }).launch(specFor(w.fake));
+      const [events, exit] = await Promise.all([collect(h), h.wait()]);
+      assert.equal(exit, "success", JSON.stringify(events.filter((e) => e.type === "error")));
+      assert.ok(events.some((e: any) => e.type === "progress" && /uname -s/.test(e.text)));
+      noClicks(w);
+    });
+
+    it("a prompt that quotes the phrase does not trip it", async () => {
+      const w = await world();
+      const quoting = "Explain this message: Your approval is required to continue: rm x\nAllow";
+      w.state.onEnter = () => {
+        w.state.text = `${IDLE_TEXT}\n\n${quoting}`;
+      };
+      const h = await new KiroIdeAdapter({ ...fast, approvalTimeoutMs: 100, turnTimeoutMs: 700 }).launch(specFor(w.fake, { prompt: quoting }));
+      const [events, exit] = await Promise.all([collect(h), h.wait()]);
+      assert.equal(exit, "error");
+      const msg = (events.find((e) => e.type === "error") as any).message as string;
+      assert.match(msg, /did not finish/, msg);
+      assert.ok(!events.some((e: any) => e.type === "progress" && /approval/.test(e.text)));
+    });
+
+    it("a changed command restarts the timer", async () => {
+      const w = await world();
+      let enterAt = 0;
+      w.state.onEnter = () => {
+        enterAt = Date.now();
+      };
+      w.state.paneFn = () => (enterAt === 0 ? w.state.text : approval(Date.now() - enterAt < 300 ? "echo a" : "echo b"));
+      const h = await new KiroIdeAdapter({ ...fast, approvalTimeoutMs: 450 }).launch(specFor(w.fake));
+      const [events, exit] = await Promise.all([collect(h), h.wait()]);
+      assert.equal(exit, "error");
+      const msg = (events.find((e) => e.type === "error") as any).message as string;
+      assert.match(msg, /`echo b`/);
+      assert.ok(Date.now() - enterAt >= 700, `timer restarted at the change (failed ${Date.now() - enterAt}ms after submit)`);
+      assert.equal(events.filter((e: any) => e.type === "progress" && /approval/.test(e.text)).length, 2);
+    });
   });
 
   it("submit stalls because the prompt ran in another tab: scans tabs and recovers", async () => {
