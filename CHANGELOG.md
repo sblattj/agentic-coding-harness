@@ -4,6 +4,8 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.27.2] - 2026-11-01
+
 ### Changed
 
 - `ach web` stats header defaults to the last 24h, with a 24h / 7d / all selector and the window shown beside the numbers. `GET /api/stats?window=24h|7d|all` backs it; with no param the API still rolls up all runs, and any other value returns 400. The window filters on `updatedAt`, then `endedAt`, then `startedAt` (#170).
