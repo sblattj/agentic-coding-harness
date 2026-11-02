@@ -56,12 +56,16 @@ Downstream consumers should read `unavailable` as **no data**, not as a failure:
 - `ach stats` adds a `runs` rollup (text lines `runs <agent> runs=… success=… unavailable=…
   successRate=…`, and a `runOutcomes` key in `--json`; the `runs` key there is the per-run
   context-window array from #21) whenever the run registry has records. The
-  success rate leaves `unavailable` runs out of the denominator. `--include-unavailable` puts
-  them back in. A rate whose denominator is empty prints `n/a`, never `0%`.
+  success rate is successes over runs that reached a verdict (`success`, `error`, `aborted`),
+  the same rule as the `ach web` header. `interrupted` and still-running runs have no verdict:
+  they count in `runs`, leave the rate out, and show as `noVerdict=N` when N is above 0.
+  `unavailable` runs are left out too; `--include-unavailable` adds back only those. A rate whose
+  denominator is empty prints `n/a`, never `0%`.
 - `ach report` shows an **availability** table: runs, unavailable runs, and the success rate
   excluding unavailable runs, per adapter.
-- `/api/compare` (`ach web`) leaves `unavailable` out of `successRate` and adds an `unavailable`
-  count to a row only when that count is greater than 0. An all-unavailable group has
+- `/api/compare` (`ach web`) uses the same rule for `successRate`: `unavailable`, interrupted,
+  still-running and status-less runs are out of the denominator. It adds an `unavailable` and a
+  `noVerdict` count to a row only when that count is greater than 0. A group with no verdicts has
   `successRate: null`.
 
 ## Process exit codes

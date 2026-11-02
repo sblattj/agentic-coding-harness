@@ -399,3 +399,18 @@ export function effectiveStatus(rec: RunRecord, now: number = Date.now()): NonNu
   if (rec.status !== "running") return rec.status;
   return isLive(rec, now) ? "running" : "interrupted";
 }
+
+export type RunVerdict = "success" | "failure" | "unavailable" | "none";
+
+/** The one success-rate rule, shared by the `ach web` header, `ach stats` and
+ *  `/api/compare`: rate = successes / runs that reached a verdict. `success`
+ *  and `failure` (error, aborted) are verdicts; `unavailable` (outage) and
+ *  `none` (interrupted, still running, status-less) are not, though every one
+ *  still counts in `runs`. */
+export function runVerdict(rec: RunRecord, now: number = Date.now()): RunVerdict {
+  if (rec.exitStatus === "unavailable" || rec.status === "unavailable") return "unavailable";
+  const status = effectiveStatus(rec, now);
+  if (status === "success") return "success";
+  if (status === "error" || status === "aborted") return "failure";
+  return "none";
+}

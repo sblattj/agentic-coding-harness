@@ -10,7 +10,7 @@ import { startWebServer } from '../src/web/server.ts';
 // ---------------------------------------------------------------------------
 // /api/compare (src/web/compare.ts + the server route): pure rollup math with
 // exact-number assertions against spec §6.1 fixtures (Reference shape, this
-// tree's field mapping: totals.*, endedAt, status ?? exitStatus), then the
+// tree's field mapping: totals.*, endedAt, status; a status-less row has no verdict), then the
 // HTTP route in-process via startWebServer (node:http — tsx-safe).
 // ---------------------------------------------------------------------------
 
@@ -65,7 +65,7 @@ describe('computeCompareRows (pure math)', () => {
     assert.equal(row.successRate, 1);
   });
 
-  it('mixed statuses: status beats exitStatus, missing status falls back to exitStatus', () => {
+  it('mixed statuses: status beats exitStatus, a status-less row has no verdict', () => {
     const group = (i: number, over: Partial<RunRecord>): RunRecord =>
       base({ runId: `mix-${i}`, experiment: 'exp-b', variant: 'v1', ...over });
     const records = [
@@ -79,7 +79,8 @@ describe('computeCompareRows (pure math)', () => {
         variant: 'v1',
         source: 'external',
         endedAt: T0 + 1000,
-        exitStatus: 'success', // no status → fallback succeeds
+        status: undefined, // status-less: no verdict, even with exitStatus success
+        exitStatus: 'success',
       }),
       base({ runId: 'solo-1', experiment: 'exp-a', variant: 'v0', endedAt: T0 + 500 }),
     ];
@@ -93,7 +94,8 @@ describe('computeCompareRows (pure math)', () => {
       rows.map((r) => r.runs),
       [1, 4],
     );
-    assert.equal(rows[1]!.successRate, 0.75); // 3 of 4
+    assert.equal(rows[1]!.successRate, 2 / 3); // 2 of 3
+    assert.equal(rows[1]!.noVerdict, 1);
     assert.equal(rows[1]!.agent, 'claude'); // first record's agent
     assert.equal(rows[0]!.avgDurationMs, 500);
   });

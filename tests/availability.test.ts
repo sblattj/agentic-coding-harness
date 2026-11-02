@@ -13,8 +13,9 @@ import { createDriver } from '../src/core/driver.ts';
 import { listRunRecords, RunRecordSchema, type RunRecord } from '../src/core/registry.ts';
 import { exitStatusToRunStatus } from '../src/core/run-artifacts.ts';
 import { HarnessError, RunResultSchema, type AdapterExit, type AgentAdapter, type AgentEvent, type AgentHandle } from '../src/core/types.ts';
-import { summarizeRunOutcomes } from '../src/cli/run-outcomes.ts';
+import { formatOutcomeLine, summarizeRunOutcomes } from '../src/cli/run-outcomes.ts';
 import { computeCompareRows } from '../src/web/compare.ts';
+import { computeGlobalStats } from '../src/web/stats.ts';
 import { renderReport } from '../src/report/html.ts';
 import { toLoadedRun } from '../src/report/model.ts';
 
@@ -253,6 +254,93 @@ describe('success-rate rollups exclude unavailable by default', () => {
   it('computeCompareRows: no unavailable key when none were unavailable', () => {
     const rows = computeCompareRows([rec('claude', 'success', 'success')], ['agent']);
     assert.equal('unavailable' in rows[0]!, false);
+  });
+});
+
+describe('success rate: runs without a verdict leave the denominator', () => {
+  const NOW = 1_000_000;
+  // pid 1, updatedAt 2: the heartbeat is long stale at NOW, so isLive is false.
+  const stale = (agent: string) => rec(agent, 'running', 'running');
+  const live = (agent: string): RunRecord => ({ ...rec(agent, 'running', 'running'), pid: process.pid, updatedAt: NOW });
+
+  it('summarizeRunOutcomes: interrupted and stale running count in runs and noVerdict, not the denominator', () => {
+    const records = [
+      rec('codex', 'success', 'success'),
+      rec('codex', 'error', 'error'),
+      rec('codex', 'interrupted', 'interrupted'),
+      stale('codex'),
+      rec('codex', 'unavailable', 'unavailable'),
+    ];
+    const def = summarizeRunOutcomes(records, { now: NOW });
+    assert.equal(def.total.runs, 5);
+    assert.equal(def.total.noVerdict, 2);
+    assert.equal(def.total.unavailable, 1);
+    assert.equal(def.total.successRate, 1 / 2);
+    const incl = summarizeRunOutcomes(records, { now: NOW, includeUnavailable: true });
+    assert.equal(incl.total.noVerdict, 2);
+    assert.equal(incl.total.successRate, 1 / 3); // unavailable comes back, interrupted/running do not
+  });
+
+  it('summarizeRunOutcomes: an all-interrupted agent has a null rate', () => {
+    const out = summarizeRunOutcomes([rec('kiro', 'interrupted', 'interrupted'), stale('kiro')], { now: NOW });
+    assert.equal(out.byAgent.kiro?.successRate, null);
+    assert.equal(out.byAgent.kiro?.runs, 2);
+    assert.equal(out.byAgent.kiro?.noVerdict, 2);
+  });
+
+  it('summarizeRunOutcomes: a live running row is also outside the denominator', () => {
+    const out = summarizeRunOutcomes([rec('codex', 'success', 'success'), live('codex')], { now: NOW });
+    assert.equal(out.total.runs, 2);
+    assert.equal(out.total.noVerdict, 1);
+    assert.equal(out.total.successRate, 1);
+  });
+
+  it('computeCompareRows: noVerdict counted, out of the denominator, absent when 0', () => {
+    const rows = computeCompareRows(
+      [rec('codex', 'success', 'success'), rec('codex', 'error', 'error'), rec('codex', 'interrupted', 'interrupted'), stale('codex'), live('codex')],
+      ['agent'],
+      NOW,
+    );
+    assert.equal(rows[0]!.runs, 5);
+    assert.equal(rows[0]!.noVerdict, 3);
+    assert.equal(rows[0]!.successRate, 1 / 2);
+    const clean = computeCompareRows([rec('codex', 'success', 'success'), rec('codex', 'error', 'error')], ['agent'], NOW);
+    assert.equal('noVerdict' in clean[0]!, false);
+    const none = computeCompareRows([rec('codex', 'interrupted', 'interrupted')], ['agent'], NOW);
+    assert.equal(none[0]!.successRate, null);
+  });
+
+  it('formatOutcomeLine: noVerdict= only when greater than 0', () => {
+    const withNone = summarizeRunOutcomes([rec('codex', 'success', 'success'), rec('codex', 'interrupted', 'interrupted')], { now: NOW });
+    assert.match(formatOutcomeLine('total', withNone.total), / successRate=100\.0% noVerdict=1$/);
+    const without = summarizeRunOutcomes([rec('codex', 'success', 'success')], { now: NOW });
+    assert.doesNotMatch(formatOutcomeLine('total', without.total), /noVerdict/);
+  });
+
+  it('web stats, ach stats and compare agree on one fixture: success rate 3/5 = 0.6', () => {
+    const records = [
+      rec('codex', 'success', 'success'),
+      rec('claude', 'success', 'success'),
+      rec('gemini', 'success', 'success'),
+      rec('codex', 'error', 'error'),
+      rec('claude', 'aborted', 'aborted'),
+      rec('codex', 'interrupted', 'interrupted'),
+      stale('claude'),
+      rec('gemini', undefined, 'success'), // status-less: no verdict
+      rec('codex', 'unavailable', 'unavailable'),
+    ];
+    const web = computeGlobalStats(records, NOW).successRate;
+    const cli = summarizeRunOutcomes(records, { now: NOW });
+    const cmp = computeCompareRows(records, ['variant'], NOW);
+    assert.equal(web, 0.6, 'web stats rate');
+    assert.equal(cli.total.successRate, 0.6, 'ach stats total rate');
+    assert.equal(cmp.length, 1);
+    assert.equal(cmp[0]!.successRate, 0.6, 'compare rate');
+    assert.equal(cli.total.runs, 9);
+    assert.equal(cli.total.noVerdict, 3);
+    assert.equal(cmp[0]!.runs, 9);
+    assert.equal(cmp[0]!.noVerdict, 3);
+    assert.equal(cmp[0]!.unavailable, 1);
   });
 });
 

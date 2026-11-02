@@ -294,7 +294,10 @@ usage:
                  --tz: IANA zone, utc or local (default local) for day/week/month
                  boundaries and bare dates; --by week = ISO weeks (2026-W39),
                  month = 2026-09, comma lists allowed; run success rate
-                 excludes 'unavailable' runs unless --include-unavailable)
+                 = successes / runs with a verdict (success, error, aborted); interrupted
+                 and still-running runs have no verdict and are left out (shown as
+                 noVerdict=N); 'unavailable' runs are also left out unless
+                 --include-unavailable, which adds back only those)
             [--by model|project|branch]... [--merge-models] [--model-alias FROM=TO]...
             [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
                 (--by takes time granularities and dimensions together, e.g.

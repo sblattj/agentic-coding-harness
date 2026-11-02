@@ -10,7 +10,7 @@
 // denominators. So do `interrupted` (passive transcript rows and dead runs have
 // no verdict) and `running` (no verdict yet): the rate is
 // success / (success + error + aborted) on effective status.
-import { effectiveStatus, type RunRecord } from "../core/registry.ts";
+import { effectiveStatus, runVerdict, type RunRecord } from "../core/registry.ts";
 
 export type StatsWindow = "24h" | "7d" | "all";
 export const STATS_WINDOWS: readonly StatsWindow[] = ["24h", "7d", "all"];
@@ -161,8 +161,9 @@ export function computeGlobalStats(
     const cost = priced ? rec.totals!.costUsd : 0;
     if (priced) costs.push(cost);
 
-    const isVerdict = status === "success" || status === "error" || status === "aborted";
-    const success = status === "success";
+    const verdict = runVerdict(rec, now);
+    const isVerdict = verdict === "success" || verdict === "failure";
+    const success = verdict === "success";
 
     for (const a of [all, slot(agents, rec.agent), slot(models, runModel(rec))]) {
       a.runs++;

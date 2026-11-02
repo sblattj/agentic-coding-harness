@@ -3,7 +3,7 @@
 // runs, avg total tokens, avg cost, avg duration, success rate. Pure
 // functions only: no server, no fs, no rounding. Field mapping follows THIS
 // tree's RunRecord (totals/endedAt/status), not the spec's older names.
-import type { RunRecord } from "../core/registry.ts";
+import { runVerdict, type RunRecord } from "../core/registry.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
 import { branchLabel, NO_BRANCH } from "../cli/stats-dims.ts";
 
@@ -29,11 +29,15 @@ export interface CompareRow {
   /** Runs lacking a trustworthy USD value. */
   unpricedRuns?: number;
   avgDurationMs: number;
-  /** successes / runs with a verdict (unavailable runs excluded, #60);
-   *  null when every run in the group was unavailable. */
+  /** successes / runs with a verdict (success, error, aborted); the same rule
+   *  as the `ach web` header and `ach stats`. Unavailable (#60), interrupted,
+   *  running and status-less runs are out of the denominator; null when no
+   *  run in the group has a verdict. */
   successRate: number | null;
   /** Runs whose exitStatus was `unavailable`; present only when > 0. */
   unavailable?: number;
+  /** Runs with no verdict (interrupted, still running, status-less); present only when > 0. */
+  noVerdict?: number;
   /** Share of VERIFIED runs whose checker passed (#29). Present only when at
    *  least one record in the group carries a `verify` verdict (else n/a). */
   passRate?: number;
@@ -69,7 +73,7 @@ function groupValue(rec: RunRecord, key: CompareGroupKey): string | undefined {
 /** Aggregate records into one CompareRow per distinct group-key tuple.
  *  Undefined group values OMIT the column (JSON drops it); rows sort by
  *  group-key values ascending with undefined last, then runs descending. */
-export function computeCompareRows(records: RunRecord[], groupBy: string[]): CompareRow[] {
+export function computeCompareRows(records: RunRecord[], groupBy: string[], now: number = Date.now()): CompareRow[] {
   const keys = resolveCompareGroupBy(groupBy);
   const groups = new Map<string, { values: (string | undefined)[]; records: RunRecord[] }>();
   for (const rec of records) {
@@ -94,6 +98,10 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
     // CLI/service outages (#60) carry no task verdict: counted, but kept
     // out of the success-rate denominator.
     let unavailable = 0;
+    // Interrupted, still-running and status-less runs have no verdict either:
+    // counted in `runs`, never in the denominator.
+    let noVerdict = 0;
+    let verdicts = 0;
     // Outcome axis (#29/#30): only records with a run-time verify verdict are
     // scored; a verifier error counts as not-passed. Later regrades are a
     // separate history and never rewrite the run-time verdict.
@@ -106,10 +114,14 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
       else costUsd += value;
       const end = rec.endedAt ?? rec.updatedAt ?? rec.startedAt;
       durationMs += Math.max(0, end - rec.startedAt);
-      if (rec.exitStatus === "unavailable" || rec.status === "unavailable") unavailable++;
-      else if ((rec.status ?? rec.exitStatus) === "success") successes++;
+      const v = runVerdict(rec, now);
+      if (v === "unavailable") unavailable++;
+      else if (v === "none") noVerdict++;
+      else {
+        verdicts++;
+        if (v === "success") successes++;
+      }
     }
-    const verdicts = runs - unavailable;
     const row: CompareRow = {
       agent: group.records[0]!.agent, // display convenience: first record's agent
       runs,
@@ -117,10 +129,11 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[]): Com
       avgCostUsd: unpricedRuns ? null : costUsd / runs,
       ...(unpricedRuns ? { unpricedRuns } : {}),
       avgDurationMs: durationMs / runs,
-      // An all-unavailable group has no verdicts: null (rendered n/a), never
-      // a fabricated 0%.
+      // A group with no verdicts (all unavailable, interrupted or running):
+      // null (rendered n/a), never a fabricated 0%.
       successRate: verdicts > 0 ? successes / verdicts : null,
       ...(unavailable > 0 ? { unavailable } : {}),
+      ...(noVerdict > 0 ? { noVerdict } : {}),
     };
     const stats = repeatStats(outcomes);
     if (stats !== undefined) {

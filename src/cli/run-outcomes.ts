@@ -1,10 +1,13 @@
 // Run-outcome rollup for `ach stats` (#60): per-agent run counts and a
-// success rate over the run registry (<stateDir>/runs/*.json). Runs whose
-// exitStatus is `unavailable` (CLI/service outage) carry no verdict about the
-// task, so they are left OUT of the success-rate denominator by default;
-// `--include-unavailable` puts them back. A rate with an empty denominator is
-// null (rendered n/a), never 0 and never 100%.
-import type { RunRecord } from "../core/registry.ts";
+// success rate over the run registry (<stateDir>/runs/*.json). The rate uses
+// the shared rule (runVerdict in core/registry.ts, same as `ach web` and
+// /api/compare): successes / runs that reached a verdict (success, error,
+// aborted). Interrupted and still-running runs have no verdict: they stay in
+// `runs` and show as `noVerdict`, but never enter the denominator. Runs whose
+// exitStatus is `unavailable` (CLI/service outage) are also left OUT by
+// default; `--include-unavailable` adds back only those. A rate with an empty
+// denominator is null (rendered n/a), never 0 and never 100%.
+import { runVerdict, type RunRecord } from "../core/registry.ts";
 import { fmtInt } from "./lib.ts";
 
 export interface OutcomeBucket {
@@ -12,6 +15,8 @@ export interface OutcomeBucket {
   runs: number;
   success: number;
   unavailable: number;
+  /** Runs with no verdict (interrupted, still running, status-less); never in the denominator. */
+  noVerdict: number;
   /** success / denominator; null when the denominator is 0. */
   successRate: number | null;
 }
@@ -23,36 +28,36 @@ export interface RunOutcomes {
   includeUnavailable: boolean;
 }
 
-/** A record is unavailable when its final exitStatus (or status) says so. */
-export function isUnavailableRecord(rec: Pick<RunRecord, "status" | "exitStatus">): boolean {
-  return rec.exitStatus === "unavailable" || rec.status === "unavailable";
-}
-
-function isSuccessRecord(rec: Pick<RunRecord, "status" | "exitStatus">): boolean {
-  return (rec.exitStatus ?? rec.status) === "success";
-}
-
-function bucket(recs: RunRecord[], includeUnavailable: boolean): OutcomeBucket {
+function bucket(recs: RunRecord[], includeUnavailable: boolean, now: number): OutcomeBucket {
   let success = 0;
   let unavailable = 0;
+  let verdicts = 0;
+  let noVerdict = 0;
   for (const r of recs) {
-    if (isUnavailableRecord(r)) unavailable++;
-    else if (isSuccessRecord(r)) success++;
+    const v = runVerdict(r, now);
+    if (v === "unavailable") unavailable++;
+    else if (v === "none") noVerdict++;
+    else {
+      verdicts++;
+      if (v === "success") success++;
+    }
   }
-  const denominator = includeUnavailable ? recs.length : recs.length - unavailable;
+  const denominator = verdicts + (includeUnavailable ? unavailable : 0);
   return {
     runs: recs.length,
     success,
     unavailable,
+    noVerdict,
     successRate: denominator > 0 ? success / denominator : null,
   };
 }
 
 export function summarizeRunOutcomes(
   records: RunRecord[],
-  opts: { includeUnavailable?: boolean } = {},
+  opts: { includeUnavailable?: boolean; now?: number } = {},
 ): RunOutcomes {
   const includeUnavailable = opts.includeUnavailable === true;
+  const now = opts.now ?? Date.now();
   const groups = new Map<string, RunRecord[]>();
   for (const r of records) {
     const list = groups.get(r.agent) ?? [];
@@ -61,9 +66,9 @@ export function summarizeRunOutcomes(
   }
   const byAgent: Record<string, OutcomeBucket> = {};
   for (const [agent, recs] of [...groups.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    byAgent[agent] = bucket(recs, includeUnavailable);
+    byAgent[agent] = bucket(recs, includeUnavailable, now);
   }
-  return { total: bucket(records, includeUnavailable), byAgent, includeUnavailable };
+  return { total: bucket(records, includeUnavailable, now), byAgent, includeUnavailable };
 }
 
 function fmtRate(rate: number | null): string {
@@ -72,5 +77,6 @@ function fmtRate(rate: number | null): string {
 
 /** One text line per bucket: `runs      codex runs=4 success=1 unavailable=2 successRate=50.0%`. */
 export function formatOutcomeLine(label: string, b: OutcomeBucket): string {
-  return `runs ${label.padEnd(9)} runs=${fmtInt(b.runs)} success=${fmtInt(b.success)} unavailable=${fmtInt(b.unavailable)} successRate=${fmtRate(b.successRate)}`;
+  const base = `runs ${label.padEnd(9)} runs=${fmtInt(b.runs)} success=${fmtInt(b.success)} unavailable=${fmtInt(b.unavailable)} successRate=${fmtRate(b.successRate)}`;
+  return b.noVerdict > 0 ? `${base} noVerdict=${fmtInt(b.noVerdict)}` : base;
 }
