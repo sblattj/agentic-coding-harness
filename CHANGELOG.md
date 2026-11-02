@@ -4,6 +4,8 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.27.3] - 2026-11-01
+
 ### Fixed
 
 - `ach stats` and the compare view (`/api/compare`) now use the same success-rate rule as the `ach web` header: successes over runs that reached a verdict (success, error, aborted). Interrupted and still-running runs no longer count as failures; they stay in `runs` and a new `noVerdict` count shows them (`noVerdict=N` in the `ach stats` text line, `noVerdict` on a compare row, both only when above 0). `--include-unavailable` adds back only unavailable runs. A status-less record that carries only `exitStatus` now counts as no verdict in compare.
