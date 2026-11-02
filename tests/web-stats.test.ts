@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { createContext, runInContext } from 'node:vm';
 import { after, before, describe, it } from 'node:test';
 import { writeRunRecord, type RunRecord } from '../src/core/registry.ts';
 import { computeGlobalStats } from '../src/web/stats.ts';
@@ -48,9 +50,44 @@ describe('computeGlobalStats', () => {
     assert.equal(s.unpricedRuns, 1);
   });
 
-  it('success rate excludes unavailable outages and counts running as no success', () => {
-    // verdicts: a b c e (d unavailable); successes: a c
-    assert.equal(s.successRate, 2 / 4);
+  it('success rate excludes unavailable, running and interrupted (no verdict)', () => {
+    // verdicts: a b c (d unavailable, e live running); successes: a c.
+    // Changed from 2/4 deliberately (#170): a live run has no verdict yet.
+    assert.equal(s.successRate, 2 / 3);
+    assert.equal(s.noVerdictRuns, 1); // e only; unavailable d is not counted
+    assert.equal(s.window, 'all');
+  });
+
+  it('#170: many status-less (passive) rows do not drag the rate down; byStatus still shows them', () => {
+    const rows: RunRecord[] = [];
+    for (let i = 0; i < 50; i++) rows.push({ runId: `p${i}`, agent: 'claude', startedAt: T0 } as RunRecord);
+    rows.push(rec({ runId: 's1' }), rec({ runId: 's2' }), rec({ runId: 'e1', status: 'error', exitStatus: 'error' }));
+    const st = computeGlobalStats(rows, NOW);
+    assert.equal(st.successRate, 2 / 3);
+    assert.equal(st.byStatus.interrupted, 50);
+    assert.equal(st.noVerdictRuns, 50);
+    assert.equal(st.totalRuns, 53);
+    assert.equal(st.byAgent.claude!.successRate, 2 / 3);
+    assert.equal(st.byModel.unknown!.successRate, 2 / 3);
+    // aborted stays a verdict
+    assert.equal(computeGlobalStats([rec({ status: 'aborted' }), rec({ runId: 'q' })], NOW).successRate, 1 / 2);
+    // only no-verdict rows: null, not 0
+    assert.equal(computeGlobalStats(rows.slice(0, 5), NOW).successRate, null);
+  });
+
+  it('#170: window filters on updatedAt ?? endedAt ?? startedAt', () => {
+    const day = 86_400_000;
+    const rows = [
+      rec({ runId: 'old', startedAt: NOW - 3 * day, endedAt: NOW - 3 * day + 10 }),
+      rec({ runId: 'new', startedAt: NOW - 1000, endedAt: NOW - 500 }),
+      rec({ runId: 'touched', startedAt: NOW - 9 * day, endedAt: NOW - 9 * day, updatedAt: NOW - 100 }),
+    ];
+    const w24 = computeGlobalStats(rows, NOW, NOW - day, '24h');
+    assert.equal(w24.totalRuns, 2);
+    assert.equal(w24.window, '24h');
+    assert.equal(computeGlobalStats(rows, NOW).totalRuns, 3);
+    assert.equal(computeGlobalStats(rows, NOW, NOW - 7 * day, '7d').totalRuns, 3); // old is 3d, touched updated just now
+    assert.equal(computeGlobalStats(rows, NOW, NOW - 2 * day, '7d').totalRuns, 2);
   });
 
   it('agent counts and per-agent success rate', () => {
@@ -124,11 +161,56 @@ describe('GET /api/stats', () => {
     assert.equal(body.byAgent.claude!.runs, 2);
     assert.equal(body.tokens.input, 315);
     assert.equal(body.byStatus.error, 1);
+    assert.equal(body.window, 'all'); // absent param = all, unchanged for existing consumers
+  });
+
+  it('?window=bogus is a 400 listing the allowed values', async () => {
+    const res = await fetch(url('/api/stats?window=bogus'));
+    assert.equal(res.status, 400);
+    const msg = JSON.stringify(await res.json());
+    for (const w of ['24h', '7d', 'all']) assert.ok(msg.includes(w), msg);
+  });
+
+  it('?window=24h excludes fixture rows older than a day; all includes them', async () => {
+    // fixture rows a-d are from 2023 (T0), e is relative to a synthetic NOW far in the past too.
+    const day = (await (await fetch(url('/api/stats?window=24h'))).json()) as ReturnType<typeof computeGlobalStats>;
+    assert.equal(day.window, '24h');
+    assert.equal(day.totalRuns, 0);
+    const all = (await (await fetch(url('/api/stats?window=all'))).json()) as ReturnType<typeof computeGlobalStats>;
+    assert.equal(all.totalRuns, 5);
+    const wk = (await (await fetch(url('/api/stats?window=7d'))).json()) as ReturnType<typeof computeGlobalStats>;
+    assert.equal(wk.window, '7d');
   });
 
   it('main dashboard page carries the stats bar wired to /api/stats', async () => {
     const html = await (await fetch(url('/'))).text();
     assert.ok(html.includes('id="statsbar"'));
     assert.ok(html.includes('/api/stats'));
+  });
+});
+
+describe('stats bar UI logic (index.html)', () => {
+  const html = readFileSync(new URL('../src/web/index.html', import.meta.url), 'utf8');
+  const block = /\/\* statsui:begin \*\/([\s\S]*?)\/\* statsui:end \*\//.exec(html);
+  const ctx = createContext({ encodeURIComponent });
+  it('carries the block; default window is 24h and the URL carries it', () => {
+    assert.ok(block, 'index.html must carry the statsui block');
+    runInContext(block![1], ctx);
+    assert.equal(ctx.statsWindow, '24h');
+    assert.equal(runInContext('statsUrl(statsWindow)', ctx), '/api/stats?window=24h');
+    assert.equal(runInContext('statsUrl("7d")', ctx), '/api/stats?window=7d');
+  });
+  it('hides the models kv only when byModel is just the unknown bucket (or empty)', () => {
+    const show = (m: unknown): boolean => runInContext(`showModelsKv(${JSON.stringify(m)})`, ctx) as boolean;
+    assert.equal(show({ unknown: { runs: 3 } }), false);
+    assert.equal(show({}), false);
+    assert.equal(show({ opus: { runs: 1 } }), true);
+    assert.equal(show({ unknown: { runs: 1 }, opus: { runs: 1 } }), true);
+  });
+  it('renderStats wiring: selector, window kv, no-verdict kv, selection kept across reload', () => {
+    assert.ok(/kv\("window"/.test(html));
+    assert.ok(/noVerdictRuns > 0\) kv\("no verdict"/.test(html));
+    assert.ok(/fetch\(statsUrl\(statsWindow\)\)/.test(html));
+    assert.ok(/setInterval\(loadStats, 5000\)/.test(html)); // reload reads the module-level statsWindow
   });
 });

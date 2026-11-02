@@ -32,8 +32,8 @@ body {
 
 /* ===== sidebar ===== */
 #sidebar {
-  width: 300px;
-  min-width: 300px;
+  width: 380px;
+  min-width: 380px;
   display: flex;
   flex-direction: column;
   background: var(--bg2);
@@ -67,7 +67,12 @@ body {
 }
 .row:hover { background: var(--bg3); }
 .row.selected { background: var(--bg3); border-left-color: var(--green); }
-.row .name { overflow: hidden; text-overflow: ellipsis; }
+.row .name { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; }
+/* The label is what tells batch runs apart (#168): it keeps its width and the chip gives way first. */
+.row .name .lbl { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.row .name .chip { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dim); font-size: 10px; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+#expfilter { display: none; padding: 4px 10px; border-bottom: 1px solid var(--line); }
+#expfilter select { width: 100%; background: var(--bg3); color: var(--fg); border: 1px solid var(--line); font: inherit; }
 .row .rid { color: var(--dim); }
 .row .dur, .row .cost { color: var(--dim); text-align: right; }
 .row .glyph { text-align: center; }
@@ -109,6 +114,9 @@ body {
 }
 #statsbar .kv { white-space: nowrap; }
 #statsbar .k { color: var(--dim); margin-right: 5px; }
+#statsbar .winsel { display: inline-flex; gap: 2px; }
+#statsbar .winsel button { background: none; border: 1px solid var(--dim); color: var(--dim); font: inherit; padding: 0 5px; cursor: pointer; }
+#statsbar .winsel button.on { color: var(--green); border-color: var(--green); }
 #statsbar .big { color: var(--green); font-weight: bold; }
 #feedwrap { flex: 1; position: relative; min-height: 0; }
 #feed {
@@ -149,13 +157,14 @@ body {
     <a data-nav="observability" href="/trio">observability</a>
     <a data-nav="queues" href="/queues">queues</a>
   </nav>
+  <div id="expfilter"><select id="expselect" aria-label="filter by experiment"></select></div>
   <div id="runlist"></div>
   <footer id="agg"></footer>
   <footer id="provlegend" title="provenance markers (docs/PROVENANCE.md)">* computed by ach (tokens x bundled price)  ≈ estimated (heuristic)  unmarked = reported by the agent CLI  n/a = not reported</footer>
 </aside>
 
 <main id="main">
-  <div id="statsbar" title="global stats across all runs (/api/stats)">loading stats...</div>
+  <div id="statsbar" title="global stats for the selected window (/api/stats)">loading stats...</div>
   <div id="metastrip"></div>
   <div id="feedwrap">
     <div id="feed"></div>
@@ -201,8 +210,72 @@ function findRun(id) {
   for (var i = 0; i < runs.length; i++) if (runs[i].runId === id) return runs[i];
   return null;
 }
+/* runlabel:begin */
+function runBasename(p) {
+  var s = String(p == null ? "" : p).replace(/[\\\/]+$/, "");
+  var i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+function runLabel(r) {
+  r = r || {};
+  if (r.variant) return String(r.variant);
+  var b = r.cwd ? runBasename(r.cwd) : "";
+  return b || r.agent || "unknown";
+}
+function runChip(r) {
+  r = r || {};
+  var a = r.agent || "";
+  return a && runLabel(r) !== a ? a : "";
+}
+function runTooltip(r) {
+  r = r || {};
+  return r.promptPreview ? String(r.promptPreview) : String(r.runId || "");
+}
+function experimentOptions(list) {
+  var counts = {}, order = [];
+  (list || []).forEach(function (r) {
+    if (!r || !r.experiment) return;
+    var e = String(r.experiment);
+    if (!(e in counts)) { counts[e] = 0; order.push(e); }
+    counts[e]++;
+  });
+  order.sort();
+  return order.map(function (e) { return { value: e, count: counts[e] }; });
+}
+/* A selection whose experiment no longer exists resets to "all" (""). */
+function reconcileExperiment(list, current) {
+  if (!current) return "";
+  return experimentOptions(list).some(function (o) { return o.value === current; }) ? current : "";
+}
+function filterByExperiment(list, exp) {
+  if (!exp) return (list || []).slice();
+  return (list || []).filter(function (r) { return r && String(r.experiment || "") === exp; });
+}
+/* runlabel:end */
+var expFilter = "";
+var expSig = null;
+function renderExpFilter() {
+  var box = $("expfilter"), sel = $("expselect");
+  expFilter = reconcileExperiment(runs, expFilter);
+  var opts = experimentOptions(runs);
+  box.style.display = opts.length ? "block" : "none";
+  var sig = opts.map(function (o) { return o.value + "\u0000" + o.count; }).join("\u0001");
+  if (sig !== expSig) {
+    expSig = sig;
+    sel.textContent = "";
+    var all = el("option", "", "all (" + runs.length + ")");
+    all.value = "";
+    sel.appendChild(all);
+    opts.forEach(function (o) {
+      var op = el("option", "", o.value + " (" + o.count + ")");
+      op.value = o.value;
+      sel.appendChild(op);
+    });
+  }
+  sel.value = expFilter;
+}
 function sortedRuns() {
-  return runs.slice().sort(function (a, b) {
+  return filterByExperiment(runs, expFilter).sort(function (a, b) {
     var la = isLive(a) ? 0 : a.status === "running" ? 1 : 2;
     var lb = isLive(b) ? 0 : b.status === "running" ? 1 : 2;
     if (la !== lb) return la - lb;
@@ -292,8 +365,11 @@ function buildRow(r) {
   var row = el("div", "row");
   row._run = r;
   row.appendChild(el("span", "glyph " + (r.status || ""), GLYPH[r.status] || "\u00b7"));
-  var name = el("span", "name", r.agent || "unknown");
-  name.title = r.agent || "";
+  var name = el("span", "name");
+  name.title = runTooltip(r);
+  name.appendChild(el("span", "lbl", runLabel(r)));
+  var chipText = runChip(r);
+  if (chipText) name.appendChild(el("span", "chip", chipText));
   row.appendChild(name);
   var rid = el("span", "rid", String(r.runId || "").slice(0, 8));
   rid.title = r.runId || "";
@@ -316,6 +392,7 @@ function refreshRow(row) {
 function renderRuns() {
   var list = $("runlist");
   list.textContent = "";
+  renderExpFilter();
   if (!runs.length) { list.appendChild(el("div", "list-empty", "no runs")); return; }
   sortedRuns().forEach(function (r) {
     var row = buildRow(r);
@@ -338,6 +415,16 @@ function renderAggregate() {
 
 /* ===== global stats (GET /api/stats, #94) ===== */
 function fmtPct(n) { return n == null ? "n/a" : (n * 100).toFixed(0) + "%"; }
+/* statsui:begin */
+var STATS_WINDOWS = ["24h", "7d", "all"];
+var statsWindow = "24h"; /* module state: survives renderStats rebuilds and the 5s reload */
+function statsUrl(win) { return "/api/stats?window=" + encodeURIComponent(win); }
+/* The models kv adds nothing when every run is the single `unknown` bucket. */
+function showModelsKv(byModel) {
+  var ks = Object.keys(byModel || {});
+  return !(ks.length === 0 || (ks.length === 1 && ks[0] === "unknown"));
+}
+/* statsui:end */
 function renderStats(st) {
   var box = $("statsbar");
   box.textContent = "";
@@ -352,22 +439,35 @@ function renderStats(st) {
       return k + " " + group[k].runs + " (" + fmtPct(group[k].successRate) + ")";
     }).join(", ") || "-";
   }
+  var sel = el("span", "winsel");
+  STATS_WINDOWS.forEach(function (w) {
+    var b = el("button", w === statsWindow ? "on" : "", w);
+    b.type = "button";
+    b.onclick = function () { statsWindow = w; loadStats(); };
+    sel.appendChild(b);
+  });
+  box.appendChild(sel);
+  kv("window", st.window || statsWindow);
   kv("runs", String(st.totalRuns), true);
   kv("active", String(st.activeRuns));
   kv("spend", fmtCost(st.totalRuns - st.unpricedRuns > 0 ? st.costUsd : null) + (st.unpricedRuns ? " + " + st.unpricedRuns + " unpriced" : ""), true);
   kv("tokens", fmtTok(st.tokens.total) + " (in " + fmtTok(st.tokens.input) + " out " + fmtTok(st.tokens.output) + " cache r " + fmtTok(st.tokens.cacheRead) + " w " + fmtTok(st.tokens.cacheWrite) + ")");
   kv("success", fmtPct(st.successRate));
+  if (st.noVerdictRuns > 0) kv("no verdict", String(st.noVerdictRuns));
   kv("status", Object.keys(st.byStatus).map(function (k) { return k + " " + st.byStatus[k]; }).join(", ") || "-");
   kv("agents", top(st.byAgent));
-  kv("models", top(st.byModel));
+  if (showModelsKv(st.byModel)) kv("models", top(st.byModel));
   if (st.perRun.durationMs) kv("duration avg/p50/p95", fmtDur(st.perRun.durationMs.avg) + " / " + fmtDur(st.perRun.durationMs.p50) + " / " + fmtDur(st.perRun.durationMs.p95));
   if (st.perRun.costUsd) kv("cost avg/p50/p95", fmtCost(st.perRun.costUsd.avg) + " / " + fmtCost(st.perRun.costUsd.p50) + " / " + fmtCost(st.perRun.costUsd.p95));
 }
 function loadStats() {
-  fetch("/api/stats").then(function (res) {
+  fetch(statsUrl(statsWindow)).then(function (res) {
     if (!res.ok) throw new Error("http " + res.status);
     return res.json();
-  }).then(renderStats).catch(function () {
+  }).then(function (st) {
+    if (st.window && st.window !== statsWindow) return; /* stale response for a previous selection */
+    renderStats(st);
+  }).catch(function () {
     $("statsbar").textContent = "stats unavailable (/api/stats)";
   });
 }
@@ -388,6 +488,14 @@ function renderMeta() {
   var runKv = kv("run", (r.agent || "?") + " / " + String(r.runId || "").slice(0, 8));
   runKv.title = r.runId || "";
   box.appendChild(runKv);
+  if (r.experiment || r.variant) {
+    box.appendChild(kv("experiment / variant", [r.experiment, r.variant].filter(Boolean).join(" / ")));
+  }
+  if (r.cwd) {
+    var cwdKv = kv("cwd", String(r.cwd));
+    cwdKv.title = String(r.cwd);
+    box.appendChild(cwdKv);
+  }
   /* #142: tokens the verdict calls unavailable (incl. a live run with no usage yet) read n/a, never 0. */
   var tokNa = !!(r.usage && r.usage.tokens && r.usage.tokens.available === false);
   box.appendChild(kv("in", tokNa ? "n/a" : fmtTok(t.inputTokens)));
@@ -432,7 +540,12 @@ function renderMeta() {
   });
   var ctxTxt = fmtCtx(r);
   if (ctxTxt) box.appendChild(kv("ctx", ctxTxt));
-  if (t.credits != null) box.appendChild(kv(r.agent === "copilot" ? "AI credits (copilot)" : "credits", String(t.credits)));
+  var cv = creditsView(r);
+  if (cv) {
+    var creditsKv = kv(r.agent === "copilot" ? "AI credits (copilot)" : "credits", cv.text);
+    if (cv.title) creditsKv.title = cv.title;
+    box.appendChild(creditsKv);
+  }
   /* budget / near-limit threshold crossings (#20): latest one, count on hover */
   if (r.alerts && r.alerts.length) {
     var la = r.alerts[r.alerts.length - 1];
@@ -450,6 +563,27 @@ function renderMeta() {
   box.appendChild(el("span", "status " + (r.status || ""), (GLYPH[r.status] || "\u00b7") + " " + (r.status || "?")));
 }
 
+/* creditsview:begin */
+/* Run credits: prefer the reconciled usage.credits.value over the tap-derived
+   totals.credits, which undercounts on kiro V3 (#169). */
+function creditsView(r) {
+  var u = r && r.usage && r.usage.credits;
+  var t = (r && r.totals) || {};
+  if (u && u.available === true && typeof u.value === "number" && isFinite(u.value)) {
+    var tip = [];
+    var tap = u.sources && u.sources.tap;
+    if (typeof tap === "number" && isFinite(tap)) tip.push("tap: " + tap);
+    var d = u.disagreement;
+    if (d && typeof d.ratio === "number" && isFinite(d.ratio)) tip.push("disagreement ratio: " + Math.round(d.ratio) + "x");
+    if (u.incompleteSources && u.incompleteSources.length) tip.push("incomplete sources: " + u.incompleteSources.join(", "));
+    /* The per-event credit lines in the feed come from the tap: say so when it is incomplete. */
+    var partial = u.incompleteSources && u.incompleteSources.indexOf("tap") >= 0;
+    return { text: u.value.toFixed(3) + (u.source ? " (" + u.source + ")" : "") + (partial ? " · per-event series partial" : ""), title: tip.join(" · ") };
+  }
+  if (t.credits != null) return { text: String(t.credits), title: "" };
+  return null;
+}
+/* creditsview:end */
 /* modelchips:begin */
 /* #67: per-model cost chips from totals.byModel (2+ models only). Unpriced = n/a, never a number. */
 function modelChips(r) {
@@ -567,6 +701,10 @@ function tick() {
 }
 function init() {
   showFeed(false);
+  $("expselect").addEventListener("change", function () {
+    expFilter = $("expselect").value;
+    renderRuns();
+  });
   renderAggregate();
   fetch("/api/runs").then(function (res) {
     if (!res.ok) throw new Error("http " + res.status);

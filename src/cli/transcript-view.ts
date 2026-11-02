@@ -12,7 +12,7 @@ export async function transcriptView(dir: string, runs: RunRecord[], scan: ScanO
   const claimed = new Set(runs.filter((r) => r.sessionId).map((r) => `${r.agent}\0${r.sessionId}`));
   const rows = new Map<string, RunRecord>();
   const pricer = createPricer();
-  const add = (agent: string, session: string | null, origin: string, ts: string | null, input: number, output: number, read: number, write: number, cost: number | undefined, reported: boolean, credits?: number): void => {
+  const add = (agent: string, session: string | null, origin: string, ts: string | null, input: number, output: number, read: number, write: number, cost: number | undefined, reported: boolean, credits?: number, model?: string | null): void => {
     const key = `${agent}\0${session ?? origin}`;
     if (claimed.has(key)) return; // native transcripts mirror harness-owned sessions
     const time = ts ? Date.parse(ts) : NaN;
@@ -25,6 +25,11 @@ export async function transcriptView(dir: string, runs: RunRecord[], scan: ScanO
         totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
         usage: { tokens: { available: true, source: 'tap' }, credits: { available: false }, usd: { available: cost !== undefined } } };
       rows.set(key, r);
+    }
+    if (typeof model === 'string' && model !== '' && model !== 'unknown' && model !== '<synthetic>') {
+      const seen = new Set(r.usage!.model?.observed ?? []);
+      seen.add(model);
+      r.usage!.model = { source: 'native', observed: [...seen].sort() };
     }
     r.startedAt = Math.min(r.startedAt, at);
     r.updatedAt = Math.max(r.updatedAt ?? 0, at);
@@ -40,11 +45,11 @@ export async function transcriptView(dir: string, runs: RunRecord[], scan: ScanO
     // Vendor-metered (copilot AIU): the stated USD or nothing, never token math.
     if (r.extra?.vendorMetered === true) {
       const aiu = typeof r.extra.credits === 'number' ? r.extra.credits : undefined;
-      add(r.agent, r.sessionId, r.sourcePath ?? '', r.timestamp, r.input, r.output, r.cacheRead, r.cacheWrite, r.costUsd, true, aiu);
+      add(r.agent, r.sessionId, r.sourcePath ?? '', r.timestamp, r.input, r.output, r.cacheRead, r.cacheWrite, r.costUsd, true, aiu, r.model);
       continue;
     }
     const price = r.model ? pricer.price({ model: r.model, sessionId: r.sessionId, inputTokens: r.input, outputTokens: r.output, cacheReadTokens: r.cacheRead, cacheWriteTokens: r.cacheWrite, ...(r.cacheWrite1h !== undefined ? { cacheWrite1hTokens: r.cacheWrite1h } : {}) }) : NaN;
-    add(r.agent, r.sessionId, r.sourcePath ?? '', r.timestamp, r.input, r.output, r.cacheRead, r.cacheWrite, Number.isFinite(price) ? price : undefined, false);
+    add(r.agent, r.sessionId, r.sourcePath ?? '', r.timestamp, r.input, r.output, r.cacheRead, r.cacheWrite, Number.isFinite(price) ? price : undefined, false, undefined, r.model);
   }
   const catalog = loadAgentDescriptors({ dirs: descriptorDirs({ cwd: process.cwd(), stateDir: dir }) });
   reportCatalogIssues(catalog);
@@ -53,7 +58,7 @@ export async function transcriptView(dir: string, runs: RunRecord[], scan: ScanO
     const priced = descriptor.descriptor.pricingHints ? withPricingHints(pricer, descriptor.descriptor.pricingHints, descriptor.file) : pricer;
     for (const r of await readDescriptorTap(descriptor)) {
       const value = r.costUsd ?? (r.model ? priced.price({ model: r.model, sessionId: r.sessionId, inputTokens: r.inputTokens, outputTokens: r.outputTokens, cacheReadTokens: r.cacheReadTokens, cacheWriteTokens: r.cacheWriteTokens }) : NaN);
-      add(r.agent, r.sessionId, descriptor.file, r.ts, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheWriteTokens, Number.isFinite(value) ? value : undefined, r.costUsd !== undefined);
+      add(r.agent, r.sessionId, descriptor.file, r.ts, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.cacheWriteTokens, Number.isFinite(value) ? value : undefined, r.costUsd !== undefined, undefined, r.model);
     }
     if (priced !== pricer) warnings.push(...priced.drainWarnings());
   }

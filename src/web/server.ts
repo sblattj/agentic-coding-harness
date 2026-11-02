@@ -19,7 +19,7 @@ import { WebSocketServer, type RawData, type WebSocket as WsSocket } from "ws";
 import type { AgentEvent } from "../core/types.ts";
 import { readRunRecord, type RunRecord } from "../core/registry.ts";
 import { RunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
-import { computeGlobalStats } from "./stats.ts";
+import { computeGlobalStats, STATS_WINDOWS, windowSinceMs, type StatsWindow } from "./stats.ts";
 import { COMPARE_GROUP_ALIASES, COMPARE_GROUP_KEYS, computeCompareRows, isCompareGroupKey, resolveCompareGroupBy } from "./compare.ts";
 import type { RunSource } from "./run-source.ts";
 import { eventToText, eventsToAsciicast } from "./asciicast.ts";
@@ -524,7 +524,16 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         // Global stats (#94): pure rollup over the in-memory hub snapshot.
         // Same access rule as /api/runs and /api/compare (unauthenticated JSON).
         if (get && pathname === "/api/stats") {
-          return sendJson(res, 200, computeGlobalStats(hub.snapshotRuns()));
+          const w = url.searchParams.get("window") ?? "all";
+          if (!(STATS_WINDOWS as readonly string[]).includes(w)) {
+            return jsonError(res, 400, `window must be one of: ${STATS_WINDOWS.join(", ")}`);
+          }
+          const now = Date.now();
+          return sendJson(
+            res,
+            200,
+            computeGlobalStats(hub.snapshotRuns(), now, windowSinceMs(w as StatsWindow, now), w as StatsWindow),
+          );
         }
 
         // Liveness probe for orchestrators. Auth policy matches /api/runs
@@ -556,7 +565,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
             return res.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(body);
           }
           if (action === "observability") {
-            return sendJson(res, 200, deriveRunObservability(events));
+            return sendJson(res, 200, deriveRunObservability(events, rec.usage?.credits));
           }
           return notFound(res);
         }

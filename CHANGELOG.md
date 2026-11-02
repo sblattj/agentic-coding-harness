@@ -4,6 +4,18 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Changed
+
+- `ach web` stats header defaults to the last 24h, with a 24h / 7d / all selector and the window shown beside the numbers. `GET /api/stats?window=24h|7d|all` backs it; with no param the API still rolls up all runs, and any other value returns 400. The window filters on `updatedAt`, then `endedAt`, then `startedAt` (#170).
+- The `ach web` sidebar is 380px wide (was 300px), so run labels stay readable.
+
+### Fixed
+
+- `ach web` success rate counts only runs with a verdict: success / (success + error + aborted). `interrupted` runs, which include passive transcript rows, and live `running` runs no longer sink it; the header shows them as `no verdict N`, a new `noVerdictRuns` field in `/api/stats` (#170).
+- `/api/stats` `byModel` no longer reads `unknown` for nearly every run: new harness runs record the models their usage events name plus the requested model in `usage.model`, and transcript rows keep theirs. Existing records are not backfilled, and the header hides `models` when every run is unknown (#170).
+- `ach web` shows the reconciled `usage.credits.value` with its source for a run's credits instead of the tap total, which undercounts Kiro V3 runs by 1000x or more. The tooltip carries the tap figure and disagreement ratio, the strip marks the per-event series partial when the tap is incomplete, and the observability route returns the reconciled `totalCredits` plus `creditsPartial` (#169).
+- `ach web` runs from one batch can be told apart: sidebar rows lead with `variant` or the basename of `cwd`, with the agent as a chip and the full prompt preview as a tooltip. The meta strip adds `experiment / variant` and `cwd`, and a sidebar filter narrows the list by experiment (#168).
+
 ## [0.27.1] - 2026-11-01
 
 ### Fixed

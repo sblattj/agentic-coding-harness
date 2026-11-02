@@ -82,7 +82,7 @@ it('main run rows and grid tiles render unknown as n/a and known zero as dollars
   for (const unknown of [true, false]) {
     const r = record(0, unknown);
     const main = runInNewContext(source('index', 'runCost') + source('index', 'fmtCost') + source('index', 'buildRow') + '\nbuildRow(r)',
-      { r, el, GLYPH: {}, fmtDur: String, elapsed: () => 0, provMark: () => '' }) as Node;
+      { r, el, GLYPH: {}, fmtDur: String, elapsed: () => 0, provMark: () => '', runLabel: () => 'label', runChip: () => '', runTooltip: () => '' }) as Node;
     assert.match(text(main), unknown ? /n\/a/ : /\$0\.0000/);
     const st = { rec: r, live: false, dom: { dot: el(), name: el(), model: el(), tok: el(), cost: el(), tile: el() } };
     runInNewContext(source('grid', 'runCost') + source('grid', 'updateHeader') + '\nupdateHeader(st)',

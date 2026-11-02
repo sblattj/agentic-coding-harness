@@ -1010,6 +1010,25 @@ export function createDriver(options: DriverOptions): Driver {
             warnings.push(`codex: native rollout read failed (${err instanceof Error ? err.message : String(err)})`);
           }
         }
+        // #170: any run whose agent did not already attach a model block (codex's
+        // rollout block above is native and wins) records what its own usage
+        // events named, plus the requested model. Without this `ach stats`
+        // byModel reads `unknown` for nearly every run.
+        if (usage.model === undefined) {
+          const observed = [
+            ...new Set(
+              tokens
+                .map((t) => t.model)
+                .filter((m): m is string => typeof m === 'string' && m !== '' && m !== 'unknown' && m !== '<synthetic>'),
+            ),
+          ].sort();
+          const requested = parsed.model !== undefined && parsed.model !== '' ? parsed.model : undefined;
+          if (observed.length > 0) {
+            usage.model = { source: 'native', observed, ...(requested !== undefined ? { requested } : {}) };
+          } else if (requested !== undefined) {
+            usage.model = { source: 'requested', requested };
+          }
+        }
         const meteredContext = contextMeter?.snapshot();
         if (meteredContext !== undefined && usage.context?.available !== true) usage.context = meteredContext;
         if (rec) {

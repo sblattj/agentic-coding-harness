@@ -1126,6 +1126,7 @@ function fetchObs() {
         logs: (data && data.logs) || [],
         totalCostUsd: data && data.totalCostUsd,
         totalCredits: data && data.totalCredits,
+        creditsPartial: !!(data && data.creditsPartial),
         cacheHitRatio: data && data.cacheHitRatio,
         byModel: data && data.byModel,
         latency: (data && data.latency) || null,

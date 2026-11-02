@@ -380,6 +380,8 @@ export interface RunObservability {
   totalCostUsd?: number;
   /** Cumulative metering credits, when the source bills credits (kiro). */
   totalCredits?: number;
+  /** True when `totalCredits` is the reconciled run total but the per-point credit series is built from a source known to be incomplete (tap). */
+  creditsPartial?: boolean;
   durationMs: number;
   /** Run prompt-cache hit ratio (#69); null = no prompt tokens. Present only when usage exists. */
   cacheHitRatio?: number | null;
@@ -441,7 +443,18 @@ export function deriveModelCache(events: AgentEvent[]): ModelCacheRow[] {
     .sort((a, b) => a.model.localeCompare(b.model));
 }
 
-export function deriveRunObservability(events: AgentEvent[]): RunObservability {
+export interface ReconciledCredits {
+  available?: boolean;
+  value?: number;
+  incompleteSources?: string[];
+}
+
+/**
+ * `credits` is the run record's `usage.credits`. When available with a finite
+ * value, it replaces the event-derived total (the tap undercounts on kiro V3),
+ * and the series is flagged partial if the tap is a known-incomplete source.
+ */
+export function deriveRunObservability(events: AgentEvent[], credits?: ReconciledCredits | null): RunObservability {
   const spans = deriveSpans(events);
   const metrics = deriveMetrics(events);
   const logs = deriveLogs(events);
@@ -450,6 +463,10 @@ export function deriveRunObservability(events: AgentEvent[]): RunObservability {
   const out: RunObservability = { spans, metrics, logs, durationMs };
   if (last?.costUsd !== undefined) out.totalCostUsd = last.costUsd;
   if (last?.credits !== undefined) out.totalCredits = last.credits;
+  if (credits?.available === true && typeof credits.value === "number" && Number.isFinite(credits.value)) {
+    out.totalCredits = credits.value;
+    if (credits.incompleteSources?.includes("tap")) out.creditsPartial = true;
+  }
   if (last !== undefined) {
     out.cacheHitRatio = cacheHitRatio({
       inputTokens: last.input,

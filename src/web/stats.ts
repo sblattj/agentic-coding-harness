@@ -7,8 +7,20 @@
 // usage.usd unavailable, missing or non-finite cost) is counted in
 // `unpricedRuns` and kept OUT of the USD sums (never a fabricated $0); an
 // `unavailable` outage carries no task verdict and stays out of success-rate
-// denominators.
+// denominators. So do `interrupted` (passive transcript rows and dead runs have
+// no verdict) and `running` (no verdict yet): the rate is
+// success / (success + error + aborted) on effective status.
 import { effectiveStatus, type RunRecord } from "../core/registry.ts";
+
+export type StatsWindow = "24h" | "7d" | "all";
+export const STATS_WINDOWS: readonly StatsWindow[] = ["24h", "7d", "all"];
+const WINDOW_MS: Record<StatsWindow, number | undefined> = { "24h": 86_400_000, "7d": 7 * 86_400_000, all: undefined };
+
+/** Lower bound (epoch ms) for a window, or undefined for `all`. */
+export function windowSinceMs(window: StatsWindow, now: number = Date.now()): number | undefined {
+  const w = WINDOW_MS[window];
+  return w === undefined ? undefined : now - w;
+}
 
 export const UNKNOWN_MODEL = "unknown";
 
@@ -20,7 +32,8 @@ export interface Distribution {
 
 export interface StatsGroup {
   runs: number;
-  /** successes / runs with a verdict (unavailable excluded); null when no verdicts. */
+  /** success / (success + error + aborted) on effective status; interrupted, running and
+   *  unavailable runs are excluded from the denominator; null when no verdicts. */
   successRate: number | null;
   tokens: number;
   /** Sum over priced runs only. */
@@ -35,7 +48,12 @@ export interface GlobalStats {
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
   costUsd: number;
   unpricedRuns: number;
+  /** Same definition as StatsGroup.successRate, over every rolled-up run. */
   successRate: number | null;
+  /** Runs with no verdict: effective status `interrupted` or `running` (not `unavailable`). */
+  noVerdictRuns: number;
+  /** Time window applied to the rollup (by updatedAt ?? endedAt ?? startedAt). */
+  window: StatsWindow;
   byAgent: Record<string, StatsGroup>;
   byModel: Record<string, StatsGroup>;
   byStatus: Record<string, number>;
@@ -76,26 +94,32 @@ function distribution(values: number[]): Distribution | null {
 interface Acc {
   runs: number;
   successes: number;
-  unavailable: number;
+  verdicts: number;
   tokens: number;
   costUsd: number;
   unpricedRuns: number;
 }
 
-const newAcc = (): Acc => ({ runs: 0, successes: 0, unavailable: 0, tokens: 0, costUsd: 0, unpricedRuns: 0 });
+const newAcc = (): Acc => ({ runs: 0, successes: 0, verdicts: 0, tokens: 0, costUsd: 0, unpricedRuns: 0 });
 
 function finish(a: Acc): StatsGroup {
-  const verdicts = a.runs - a.unavailable;
   return {
     runs: a.runs,
-    successRate: verdicts > 0 ? a.successes / verdicts : null,
+    successRate: a.verdicts > 0 ? a.successes / a.verdicts : null,
     tokens: a.tokens,
     costUsd: a.costUsd,
     unpricedRuns: a.unpricedRuns,
   };
 }
 
-export function computeGlobalStats(records: RunRecord[], now: number = Date.now()): GlobalStats {
+export function computeGlobalStats(
+  allRecords: RunRecord[],
+  now: number = Date.now(),
+  sinceMs?: number,
+  window: StatsWindow = "all",
+): GlobalStats {
+  const records =
+    sinceMs === undefined ? allRecords : allRecords.filter((r) => (r.updatedAt ?? r.endedAt ?? r.startedAt) >= sinceMs);
   const all = newAcc();
   const agents = new Map<string, Acc>();
   const models = new Map<string, Acc>();
@@ -106,6 +130,7 @@ export function computeGlobalStats(records: RunRecord[], now: number = Date.now(
   const tokenCounts: number[] = [];
   const costs: number[] = [];
   let active = 0;
+  let noVerdict = 0;
 
   const slot = (m: Map<string, Acc>, key: string): Acc => {
     let a = m.get(key);
@@ -116,6 +141,7 @@ export function computeGlobalStats(records: RunRecord[], now: number = Date.now(
   for (const rec of records) {
     const status = effectiveStatus(rec, now);
     if (status === "running") active++;
+    if (status === "running" || status === "interrupted") noVerdict++;
     byStatus[status] = (byStatus[status] ?? 0) + 1;
     if (rec.exitStatus !== undefined) byExitStatus[rec.exitStatus] = (byExitStatus[rec.exitStatus] ?? 0) + 1;
 
@@ -135,16 +161,16 @@ export function computeGlobalStats(records: RunRecord[], now: number = Date.now(
     const cost = priced ? rec.totals!.costUsd : 0;
     if (priced) costs.push(cost);
 
-    const unavailable = rec.exitStatus === "unavailable" || rec.status === "unavailable";
-    const success = !unavailable && (rec.status ?? rec.exitStatus) === "success";
+    const isVerdict = status === "success" || status === "error" || status === "aborted";
+    const success = status === "success";
 
     for (const a of [all, slot(agents, rec.agent), slot(models, runModel(rec))]) {
       a.runs++;
       a.tokens += runTokens;
       if (priced) a.costUsd += cost;
       else a.unpricedRuns++;
-      if (unavailable) a.unavailable++;
-      else if (success) a.successes++;
+      if (isVerdict) a.verdicts++;
+      if (success) a.successes++;
     }
   }
 
@@ -158,6 +184,8 @@ export function computeGlobalStats(records: RunRecord[], now: number = Date.now(
     costUsd: all.costUsd,
     unpricedRuns: all.unpricedRuns,
     successRate: finish(all).successRate,
+    noVerdictRuns: noVerdict,
+    window,
     byAgent: groups(agents),
     byModel: groups(models),
     byStatus,
