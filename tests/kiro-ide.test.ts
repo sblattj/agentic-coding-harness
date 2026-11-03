@@ -780,6 +780,66 @@ describe("parseKiroIdeTurn", () => {
     assert.equal(t.credits, 0.56);
   });
 
+  it("takes the reply after the last tool block when a thought and narration come first", () => {
+    // Shape captured from Kiro IDE 1.4.86: "Thought complete", a narration line, then the tool block.
+    const P = "Create the file out.txt containing exactly ok. Do nothing else.";
+    const pane = [
+      "", "Restore", "", P, "",
+      "Run Command Hook", "g08-sessionstart", "Run Command Hook", "p02-userpromptsubmit",
+      "Kiro", "Included Steering", "Included Steering", "memory.md", "agents.md",
+      "Thought complete", "out.txt already exists, so I should read it before writing.", "",
+      "out.txt already exists in the workspace root, so I'll read it before overwriting.", "",
+      "Run Command Hook", "g06-pretooluse",
+      "2 tool calls · 4 hooks triggered", "Read File", "out.txt", "Write File", "out.txt", "Details",
+      "Run Command Hook", "g01-posttooluse", "Run Command Hook", "p03-posttooluse",
+      "", "I wrote out.txt with the content ok.", "", "Est. Credits Used: 0.71", "Elapsed time: 12s",
+    ].join("\n");
+    const t = parseKiroIdeTurn(pane, P);
+    assert.equal(t.reply, "I wrote out.txt with the content ok.");
+    assert.equal(t.toolCallCount, 2);
+    assert.deepEqual(t.toolCalls, [
+      { name: "Read File", args: ["out.txt"] },
+      { name: "Write File", args: ["out.txt"] },
+    ]);
+    assert.deepEqual(t.hooks, ["g08-sessionstart", "p02-userpromptsubmit", "g06-pretooluse", "g01-posttooluse", "p03-posttooluse"]);
+  });
+
+  it("reads every tool block when a thought sits between two of them", () => {
+    // Shape captured from Kiro IDE 1.4.86: a skill load block, a thought, then a write block.
+    const P = "Use the lint skill and write its first body line to skill.txt.";
+    const pane = [
+      "", "Restore", "", P, "",
+      "Run Command Hook", "p02-userpromptsubmit",
+      "Kiro", "Included Steering", "Included Steering", "memory.md",
+      "Run Command Hook", "g06-pretooluse",
+      "1 tool call", "Loaded skill: lint", "lint",
+      "Thought complete", "The skill body says to run the lint command; I should only write it.",
+      "1 tool call · 2 hooks triggered", "Write File", "skill.txt", "Details",
+      "Run Command Hook", "g06-pretooluse", "Run Command Hook", "p03-posttooluse",
+      "", "I wrote the first line of the skill body to skill.txt:", "", "Run the linter.", "",
+      "Est. Credits Used: 0.4", "Elapsed time: 9s",
+    ].join("\n");
+    const t = parseKiroIdeTurn(pane, P);
+    assert.equal(t.reply, "I wrote the first line of the skill body to skill.txt:\n\nRun the linter.");
+    assert.equal(t.toolCallCount, 2);
+    assert.deepEqual(t.toolCalls, [
+      { name: "Loaded skill: lint", args: ["lint"] },
+      { name: "Write File", args: ["skill.txt"] },
+    ]);
+    assert.deepEqual(t.hooks, ["p02-userpromptsubmit", "g06-pretooluse", "g06-pretooluse", "p03-posttooluse"]);
+  });
+
+  it("skips a thought before a reply with no tool calls", () => {
+    const P = "What runs before commits?";
+    const pane = [
+      "", "Restore", "", P, "", "Kiro", "Thought complete", "The memory file says bun test.", "",
+      "bun test", "", "Est. Credits Used: 0.3", "Elapsed time: 4s",
+    ].join("\n");
+    const t = parseKiroIdeTurn(pane, P);
+    assert.equal(t.reply, "bun test");
+    assert.deepEqual(t.toolCalls, []);
+  });
+
   it("reports an incomplete turn", () => {
     const t = parseKiroIdeTurn("Restore\n\nhi\n\nKiro\nthinking", "hi");
     assert.equal(t.complete, false);

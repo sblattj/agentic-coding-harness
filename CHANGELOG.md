@@ -4,6 +4,10 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Fixed
+
+- `ach run --agent kiro-ide` records the real reply and every tool call when Kiro thinks or narrates before using a tool. Kiro IDE 1.4.86 can show "Thought complete" with a thought, a line like "I'll read it before overwriting", then the tool block, or a second tool block after a thought. The parser took that first line as the reply and stopped after the first block, so a write turn recorded no tool calls. It now skips thoughts, reads every tool block (the tool call count is their sum) and takes the reply from the text after the last block.
+
 ## [0.27.4] - 2026-11-03
 
 ### Fixed

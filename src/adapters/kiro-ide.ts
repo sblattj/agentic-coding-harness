@@ -147,14 +147,22 @@ export function parseKiroIdeTurn(fullText: string, prompt: string): KiroIdeTurn 
   const toolCalls: KiroIdeToolCall[] = [];
   let toolCallCount = 0;
   let i = 0;
-  const stop = (l: string) => l.trim() === "Kiro" || l.trim() === "Run Command Hook" || TOOL_COUNT_RE.test(l.trim());
-  // Pre-reply preamble: hooks, then the "Kiro" marker, then the tool block.
-  let replyFrom = -1;
+  const THOUGHT = "Thought complete";
+  const marker = (l: string) => {
+    const t = l.trim();
+    return t === "Kiro" || t === "Run Command Hook" || t === "Included Steering" || t === THOUGHT || TOOL_COUNT_RE.test(t);
+  };
+  // Kiro IDE 1.4.86 renders a turn as markers (hooks, "Kiro", the steering list, thoughts,
+  // tool blocks) mixed with text. Text before a tool block is narration ("I'll read it
+  // first"); the reply is the text after the last tool block. Each text run is kept as a
+  // segment, and the reply is the last segment that follows the last tool block.
+  const segments: { from: number; to: number; afterTools: number }[] = [];
+  let blocksSeen = 0;
   while (i < lines.length) {
     const l = lines[i]!.trim();
     if (l === "Run Command Hook") {
       i++;
-      while (i < lines.length && lines[i]!.trim() !== "" && !stop(lines[i]!)) hooks.push(lines[i++]!.trim());
+      while (i < lines.length && lines[i]!.trim() !== "" && !marker(lines[i]!)) hooks.push(lines[i++]!.trim());
       continue;
     }
     if (l === "Kiro") {
@@ -164,16 +172,26 @@ export function parseKiroIdeTurn(fullText: string, prompt: string): KiroIdeTurn 
     if (l === "Included Steering") {
       // Steering files Kiro loaded for this turn: the marker (shown twice) and one file name per line.
       i++;
-      while (i < lines.length && lines[i]!.trim() !== "" && !stop(lines[i]!)) i++;
+      while (i < lines.length && lines[i]!.trim() !== "" && !marker(lines[i]!)) i++;
+      continue;
+    }
+    if (l === THOUGHT) {
+      // The model's thought summary: one paragraph, not part of the reply.
+      i++;
+      while (i < lines.length && lines[i]!.trim() !== "" && !marker(lines[i]!)) i++;
       continue;
     }
     const tc = TOOL_COUNT_RE.exec(l);
     if (tc) {
-      toolCallCount = Number(tc[1]);
+      const n = Number(tc[1]);
+      toolCallCount += n;
+      blocksSeen++;
       i++;
       const block: string[] = [];
       while (i < lines.length && lines[i]!.trim() !== "") {
-        const b = lines[i++]!.trim();
+        const b = lines[i]!.trim();
+        if (b === THOUGHT || b === "Kiro" || b === "Included Steering" || TOOL_COUNT_RE.test(b)) break;
+        i++;
         // Tool-time hooks and the "Details" toggle render inside the tool block.
         if (b === "Run Command Hook") {
           if (i < lines.length && lines[i]!.trim() !== "") hooks.push(lines[i++]!.trim());
@@ -182,35 +200,36 @@ export function parseKiroIdeTurn(fullText: string, prompt: string): KiroIdeTurn 
         if (b === "Details") continue;
         block.push(b);
       }
-      if (toolCallCount <= 1) {
+      if (n <= 1) {
         if (block.length) toolCalls.push({ name: block[0]!, args: block.slice(1) });
       } else {
         let cur: KiroIdeToolCall | null = null;
         for (const b of block) {
-          if (TOOL_NAME_RE.test(b)) {
+          if (TOOL_NAME_RE.test(b) || !cur) {
             cur = { name: b, args: [] };
             toolCalls.push(cur);
-          } else if (cur) cur.args.push(b);
-          else {
-            cur = { name: b, args: [] };
-            toolCalls.push(cur);
-          }
+          } else cur.args.push(b);
         }
       }
-      replyFrom = i;
-      break;
+      continue;
     }
     if (l === "") {
       i++;
       continue;
     }
-    // First real content line outside any marker: the reply begins here.
-    replyFrom = i;
-    break;
+    // A text run: everything up to the next marker line.
+    const from = i;
+    while (i < lines.length && !marker(lines[i]!)) i++;
+    segments.push({ from, to: i, afterTools: blocksSeen });
   }
-  const replyLines = replyFrom >= 0 ? lines.slice(replyFrom) : [];
-  // Hooks that fire after the reply are not tracked separately (UNVERIFIED layout).
-  const reply = replyLines.join("\n").trim();
+  const afterLast = segments.filter((g) => g.afterTools === blocksSeen);
+  // Normally the reply follows the last tool block; if the turn ended on a tool block,
+  // fall back to the last text Kiro showed.
+  const pick = afterLast.length ? afterLast : segments.slice(-1);
+  const reply = pick
+    .map((g) => lines.slice(g.from, g.to).join("\n").trim())
+    .filter((x) => x !== "")
+    .join("\n\n");
 
   return {
     reply,
