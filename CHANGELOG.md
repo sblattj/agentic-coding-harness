@@ -4,6 +4,8 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.27.4] - 2026-11-03
+
 ### Fixed
 
 - `ach run --agent kiro-ide` no longer reports "the prompt was not submitted" for a prompt that ran. In a workspace with prompt-submit or session-start hooks, Kiro IDE 1.4.86 can send the prompt into another session tab, and a re-selected tab took well over 250ms to render its conversation, so the tab scan read the empty view once, missed the echo, and every run failed after 15s. The scan now polls each re-selected tab for up to 2s.
