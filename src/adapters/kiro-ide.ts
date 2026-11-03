@@ -84,7 +84,8 @@ export interface KiroIdeTurn {
 const CREDITS_RE = /Est\. Credits Used:\s*([0-9]+(?:\.[0-9]+)?)/;
 // Format for >= 60 s is UNVERIFIED ("1m 5s" assumed); only "3s" was observed.
 const ELAPSED_RE = /Elapsed time:\s*(?:(\d+)h\s*)?(?:(\d+)m\s*)?(\d+(?:\.\d+)?)s/;
-const TOOL_COUNT_RE = /^(\d+) tool calls?$/;
+// Kiro 1.4.x appends " · N hooks triggered" when tool-time hooks ran.
+const TOOL_COUNT_RE = /^(\d+) tool calls?(?:\s*·.*)?$/;
 // Heuristic: a tool NAME line is Title Case words only ("Read File"); args
 // carry dots/slashes/digits/quotes. Used only to split a multi-tool block.
 const TOOL_NAME_RE = /^[A-Z][a-z]+(?: [A-Z][a-z]+)*$/;
@@ -160,12 +161,27 @@ export function parseKiroIdeTurn(fullText: string, prompt: string): KiroIdeTurn 
       i++;
       continue;
     }
+    if (l === "Included Steering") {
+      // Steering files Kiro loaded for this turn: the marker (shown twice) and one file name per line.
+      i++;
+      while (i < lines.length && lines[i]!.trim() !== "" && !stop(lines[i]!)) i++;
+      continue;
+    }
     const tc = TOOL_COUNT_RE.exec(l);
     if (tc) {
       toolCallCount = Number(tc[1]);
       i++;
       const block: string[] = [];
-      while (i < lines.length && lines[i]!.trim() !== "") block.push(lines[i++]!.trim());
+      while (i < lines.length && lines[i]!.trim() !== "") {
+        const b = lines[i++]!.trim();
+        // Tool-time hooks and the "Details" toggle render inside the tool block.
+        if (b === "Run Command Hook") {
+          if (i < lines.length && lines[i]!.trim() !== "") hooks.push(lines[i++]!.trim());
+          continue;
+        }
+        if (b === "Details") continue;
+        block.push(b);
+      }
       if (toolCallCount <= 1) {
         if (block.length) toolCalls.push({ name: block[0]!, args: block.slice(1) });
       } else {
@@ -1053,6 +1069,7 @@ export class KiroIdeAdapter implements AgentAdapter {
       }
 
       // ---- 8/9. parse + events
+      dbg(`final pane=${JSON.stringify(finalText)}`);
       const turn = parseKiroIdeTurn(finalText, spec.prompt);
       if (!turn.complete) progress("kiro-ide: final chat text lacked credits/elapsed lines");
       emit({ type: "message", source: "assistant", content: turn.reply });

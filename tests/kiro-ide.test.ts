@@ -761,6 +761,25 @@ describe("parseKiroIdeTurn", () => {
     assert.equal(lost.reply, "ok");
   });
 
+  it("skips the Included Steering block and reads hooks inside a 'tool call · hooks triggered' block", () => {
+    // Shape captured from Kiro IDE 1.4.86 in a workspace with session, prompt and tool hooks.
+    const P = "Write out.txt containing ok. Then reply DONE.";
+    const pane = [
+      "", "Loading", "Artifacts", "0", "Starting cloud session", "Checkpoint", "Restore", "", P, "",
+      "Run Command Hook", "g08-sessionstart", "Run Command Hook", "p02-userpromptsubmit",
+      "Kiro", "Included Steering", "Included Steering", "architecture.md", "memory.md", "agents.md",
+      "1 tool call · 2 hooks triggered", "Write File", "out.txt", "Details",
+      "Run Command Hook", "g06-pretooluse", "Run Command Hook", "p03-posttooluse",
+      "", "DONE", "", "Est. Credits Used: 0.56", "Elapsed time: 7s", "1 file changed", "View changes (1)",
+    ].join("\n");
+    const t = parseKiroIdeTurn(pane, P);
+    assert.equal(t.reply, "DONE");
+    assert.equal(t.toolCallCount, 1);
+    assert.deepEqual(t.toolCalls, [{ name: "Write File", args: ["out.txt"] }]);
+    assert.deepEqual(t.hooks, ["g08-sessionstart", "p02-userpromptsubmit", "g06-pretooluse", "p03-posttooluse"]);
+    assert.equal(t.credits, 0.56);
+  });
+
   it("reports an incomplete turn", () => {
     const t = parseKiroIdeTurn("Restore\n\nhi\n\nKiro\nthinking", "hi");
     assert.equal(t.complete, false);
