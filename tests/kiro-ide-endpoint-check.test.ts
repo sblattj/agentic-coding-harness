@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 
-import { KiroIdeAdapter, type SpawnFn } from "../src/adapters/kiro-ide.ts";
+import { isNothingListening, KiroIdeAdapter, type SpawnFn } from "../src/adapters/kiro-ide.ts";
 import { classifyKiroIdeEndpoint } from "../src/adapters/kiro-ide-cdp.ts";
 import type { AgentEvent, RunSpec } from "../src/core/types.ts";
 import { startFakeCdp, type FakeCdp } from "./fake-cdp.ts";
@@ -147,5 +147,16 @@ describe("classifyKiroIdeEndpoint", () => {
     assert.equal(classifyKiroIdeEndpoint({}, wb).kind, "kiro");
     assert.equal(classifyKiroIdeEndpoint({ "User-Agent": "  " }, wb).kind, "kiro");
     assert.equal(classifyKiroIdeEndpoint({ Browser: "Chrome/1" }, []).kind, "other");
+  });
+});
+
+describe("isNothingListening", () => {
+  it("reads Node's cause.code and Bun's code as a free port", () => {
+    assert.equal(isNothingListening(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } })), true);
+    assert.equal(isNothingListening(Object.assign(new TypeError("Unable to connect"), { code: "ConnectionRefused" })), true);
+  });
+  it("treats a timeout or unknown error as unverified", () => {
+    assert.equal(isNothingListening(Object.assign(new Error("timed out"), { name: "TimeoutError" })), false);
+    assert.equal(isNothingListening(new Error("boom")), false);
   });
 });

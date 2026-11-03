@@ -385,6 +385,14 @@ class Aborted extends Error {}
 
 // ---------------------------------------------------------------- adapter
 
+/** True when a fetch error means nothing answers on the port. Node puts the code on
+ * `cause.code` (ECONNREFUSED); Bun, which runs the release binary, puts it on `code`
+ * (ConnectionRefused). Missing the Bun form made a free port read as an unidentified listener. */
+export function isNothingListening(e: unknown): boolean {
+  const codes = [(e as any)?.cause?.code, (e as any)?.code];
+  return codes.some((c) => c === "ECONNREFUSED" || c === "ENOTFOUND" || c === "EHOSTUNREACH" || c === "ConnectionRefused");
+}
+
 export class KiroIdeAdapter implements AgentAdapter {
   readonly name = "kiro-ide";
   readonly capabilities: AdapterCapabilities = KIRO_IDE_CAPABILITIES;
@@ -546,8 +554,7 @@ export class KiroIdeAdapter implements AgentAdapter {
           return "kiro";
         } catch (e) {
           if (e instanceof RunFailure) throw e;
-          const code = (e as any)?.cause?.code;
-          return code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EHOSTUNREACH" ? "refused" : "unverified";
+          return isNothingListening(e) ? "refused" : "unverified";
         }
       };
       let endpointState = await probeEndpoint(1500);
