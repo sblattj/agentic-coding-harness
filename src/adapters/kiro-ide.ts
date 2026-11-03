@@ -235,6 +235,8 @@ const NEW_SESSION_JS =
 // `.session-manager-header` (observed Kiro IDE 1.2.4); fall back to the whole body.
 const PANE_TEXT_JS =
   "(() => { const t = document.body.innerText; const h = document.querySelector('.session-manager-header'); if (!h) return t; const ht = h.innerText; const i = ht ? t.indexOf(ht) : -1; return i < 0 ? t : t.slice(0, i) + t.slice(i + ht.length); })()";
+/** How long a re-selected session tab may take to render its conversation. */
+const TAB_RENDER_WAIT_MS = 2000;
 const TAB_COUNT_JS = "document.querySelectorAll('.tab-bar-item').length";
 function clickTabIndexJs(i: number): string {
   return `(() => { const t = document.querySelectorAll('.tab-bar-item')[${i}]; if (!t) return 'none'; t.click(); return 'clicked'; })()`;
@@ -906,11 +908,19 @@ export class KiroIdeAdapter implements AgentAdapter {
         for (let i = n - 1; i >= 0; i--) {
           const r = await chat.evaluate<string>(clickTabIndexJs(i), ctx).catch(() => "none");
           if (r !== "clicked") continue;
-          await sleep(250);
-          const pane = (await chat.evaluate<string>(PANE_TEXT_JS, ctx).catch(() => "")) ?? "";
-          if (countOccurrences(echoKey(pane), probe) > 0) {
-            dbg(`recovered prompt tab index=${i} of ${n}`);
-            return true;
+          // A re-selected session can take well over 250ms to render its conversation:
+          // live (Kiro IDE 1.4.86, workspace with a SessionStart and a UserPromptSubmit hook)
+          // the pane kept showing the empty "Let's build" view after the click, so a single
+          // read missed the echo and every run failed as "not submitted". Poll briefly.
+          const until = this.#now() + TAB_RENDER_WAIT_MS;
+          for (;;) {
+            await sleep(250);
+            const pane = (await chat.evaluate<string>(PANE_TEXT_JS, ctx).catch(() => "")) ?? "";
+            if (countOccurrences(echoKey(pane), probe) > 0) {
+              dbg(`recovered prompt tab index=${i} of ${n}`);
+              return true;
+            }
+            if (this.#now() >= until) break;
           }
         }
         return false;
@@ -1018,7 +1028,7 @@ export class KiroIdeAdapter implements AgentAdapter {
             break;
           } else {
             // Only text AFTER the prompt echo counts, so a prompt that quotes the phrase cannot trip it.
-            const pending = /Your approval is required to continue: (.+)\nAllow\b/.exec(txt.slice(idx))?.[1]?.trim();
+            const pending = /Your approval is required to continue: (.+)\n(?:[^\n]*\n){0,3}?Allow\b/.exec(txt.slice(idx))?.[1]?.trim();
             if (pending === undefined) {
               approvalCmd = undefined;
             } else if (pending !== approvalCmd) {

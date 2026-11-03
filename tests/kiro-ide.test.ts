@@ -507,6 +507,19 @@ describe("KiroIdeAdapter (fake CDP)", () => {
       noClicks(w);
     });
 
+    it("detects an approval whose card shows the first sub-command between the command and Allow (Kiro IDE 1.4.86)", async () => {
+      const w = await world();
+      w.state.onEnter = () => {
+        w.state.text = `${IDLE_TEXT}\n\n${PROMPT}\nYour approval is required to continue: wc -c out.txt && od -c out.txt\nwc -c out.txt\nAllow\nAlways allow\nDeny\nAlways deny\nCancel`;
+      };
+      const h = await new KiroIdeAdapter({ ...fast, approvalTimeoutMs: 300, turnTimeoutMs: 5000 }).launch(specFor(w.fake));
+      const [events, exit] = await Promise.all([collect(h), h.wait()]);
+      assert.equal(exit, "error");
+      const msg = (events.find((e) => e.type === "error") as any).message as string;
+      assert.match(msg, /waiting for approval to run `wc -c out.txt && od -c out.txt`/, msg);
+      noClicks(w);
+    });
+
     it("an approval that clears (human approved in the IDE) keeps the run alive", async () => {
       const w = await world();
       w.state.onEnter = () => {
@@ -563,6 +576,30 @@ describe("KiroIdeAdapter (fake CDP)", () => {
     const adapter = new KiroIdeAdapter({ ...fast, pollMs: 100 });
     const h = await adapter.launch(specFor(w.fake));
     const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "success", JSON.stringify(events.filter((e) => e.type === "error")));
+    assert.ok(events.some((e: any) => e.type === "progress" && /another session tab/.test(e.text)));
+  });
+
+  it("a re-selected tab that renders its conversation slowly is still recovered (live: hooked workspace, Kiro IDE 1.4.86)", async () => {
+    const w = await world();
+    w.state.onEnter = () => {
+      w.state.text = IDLE_TEXT; // the pane keeps the empty view; the prompt ran in tab 1
+    };
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    w.state.onTabClick = (i) => {
+      clearTimeout(pending);
+      w.state.text = IDLE_TEXT; // selecting any tab shows the empty view first
+      if (i === 1) {
+        pending = setTimeout(() => {
+          w.state.text = `${IDLE_TEXT}\n\n${PROMPT}`;
+          pending = setTimeout(() => (w.state.text = FIXTURE_WS_B), 100);
+        }, 700); // well past the old single 250ms read
+      }
+    };
+    const adapter = new KiroIdeAdapter({ ...fast, pollMs: 100, submitTimeoutMs: 6000 });
+    const h = await adapter.launch(specFor(w.fake));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    clearTimeout(pending);
     assert.equal(exit, "success", JSON.stringify(events.filter((e) => e.type === "error")));
     assert.ok(events.some((e: any) => e.type === "progress" && /another session tab/.test(e.text)));
   });
