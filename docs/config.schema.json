@@ -35,6 +35,13 @@
             "number"
           ]
         },
+        "pr": {
+          "description": "ach run --pr (env AGENTIC_CODING_HARNESS_PR wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
         "budgetUsd": {
           "description": "ach run --budget-usd (env AGENTIC_CODING_HARNESS_BUDGET_USD wins over this)",
           "type": [
@@ -379,6 +386,22 @@
         "hermetic": {
           "description": "ach run --hermetic",
           "type": "boolean"
+        },
+        "isolate": {
+          "description": "ach run --isolate",
+          "type": "boolean"
+        },
+        "allowDirty": {
+          "description": "ach run --allow-dirty",
+          "type": "boolean"
+        },
+        "cleanup": {
+          "description": "ach run --cleanup",
+          "type": "boolean"
+        },
+        "isolateNodeModules": {
+          "description": "ach run --isolate-node-modules",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -596,6 +619,10 @@
             "string",
             "number"
           ]
+        },
+        "offline": {
+          "description": "ach stats --offline",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -641,6 +668,10 @@
         },
         "noOpen": {
           "description": "ach web --no-open",
+          "type": "boolean"
+        },
+        "offline": {
+          "description": "ach web --offline",
           "type": "boolean"
         },
         "stateOnly": {

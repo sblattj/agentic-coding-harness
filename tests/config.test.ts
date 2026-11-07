@@ -157,6 +157,13 @@ describe("acceptance: precedence flag > env > file > default", () => {
     assert.equal(withFlag["run.maxTurns"]!.source, `file:${p.configFile}`);
   });
 
+  it("flags added by later features follow the same order (run.pr vs AGENTIC_CODING_HARNESS_PR)", async () => {
+    const p = await project({ run: { pr: "482", isolate: true } });
+    assert.equal(show(p).values["run.pr"]!.source, `file:${p.configFile}`);
+    assert.equal(show(p).values["run.isolate"]!.source, `file:${p.configFile}`);
+    assert.equal(show(p, [], { AGENTIC_CODING_HARNESS_PR: "7" }).values["run.pr"]!.source, "env:AGENTIC_CODING_HARNESS_PR");
+  });
+
   it("project file overrides the user file per key; the user file still supplies the rest", async () => {
     const userFile = await writeJson(path.join(home, ".config", "agentic-coding-harness", "config.json"), {
       stats: { days: 7, tz: "UTC" },

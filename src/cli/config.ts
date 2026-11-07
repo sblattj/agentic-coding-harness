@@ -51,6 +51,7 @@ export const ENV_MIRRORS: Readonly<Record<string, string>> = {
   "warn-at": "AGENTIC_CODING_HARNESS_WARN_THRESHOLDS",
   "claude-default-config": "AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG",
   "claude-no-background-tasks": "AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS",
+  pr: "AGENTIC_CODING_HARNESS_PR",
   tz: "AGENTIC_CODING_HARNESS_TZ",
   plan: "AGENTIC_CODING_HARNESS_PLAN",
   "plan-window-tokens": "AGENTIC_CODING_HARNESS_PLAN_WINDOW_TOKENS",
