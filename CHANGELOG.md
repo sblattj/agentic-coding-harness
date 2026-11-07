@@ -4,6 +4,19 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-07
+
+### Added
+
+- Layered config file: `.ach/config.json` in the project and a user file, read with flag > env > project file > user file > default precedence. `ach config --show` prints every value with its source, `--set` / `--unset` edit a file (values are typed by key, and a file with a bad key can still be repaired), and `--schema` prints the JSON Schema shipped as `docs/config.schema.json`. Relative paths in a config file resolve against that file's directory. See `docs/CONFIG.md`. Fixes #41.
+- `--isolate` on `ach run` and `ach trial --matrix` / `--suite`: each run or cell works in a throwaway git worktree cut from HEAD, so parallel agents never share a checkout. `--allow-dirty` skips the clean-tree check (the harness's own ledger, work root and `.ach/` never count as dirty), `--cleanup` removes the worktree afterwards (also on SIGINT/SIGTERM), and `--isolate-node-modules` links `node_modules`, `.bin` included. Task `setup` runs inside the worktree. The run record gains `worktree {path, branch, baseSha, cleanup}`. Fixes #75.
+- `ach web` run filters: `GET /api/runs` accepts `agent`, `status`, `since`, `until`, `q`, `qin`, `offset` and `limit`, and returns `{records,total,offset,limit}` only when a param is given (the unfiltered response is unchanged). The dashboard gets a filter bar whose URL is shareable and keeps `?token=`. Fixes #68.
+- Spend by pull request: run records carry `pr` and `prSource`, taken from `--pr <n|auto>`, `AGENTIC_CODING_HARNESS_PR`, a `<n>-slug` branch name or `gh pr view` (looked up once per branch per process, and against the original checkout under `--isolate`). `ach stats --by pr` and the compare view's `by=pr` group by it. Fixes #48.
+- Raw JSON inspector on the trio page: a `{}` button on every event and span opens it as formatted JSON, with long or multi-line string fields also shown unescaped, each with a copy button. Fixes #66.
+- Span tree on the trio page: model calls, tool calls and sub-agents nest into a collapsible tree with durations. Events carry no parent id, so nesting is inferred from timing, with event order breaking ties. Fixes #65.
+- `ach emit --format sft` writes OpenAI chat-format JSONL for supervised fine-tuning: one sample per assistant turn, or one per run with `--full-conversation`, filtered by `--min-score` and `--exit`. Run results now carry the user's `prompt` (the registry still stores only its hash), so samples open with the user turn; reasoning events are left out, and tool calls always have unique ids and JSON-object arguments. See `docs/SFT-EXPORT.md`. Fixes #78.
+- Offline pricing: `--offline` on `ach stats`, `watch`, `dash` and `web` prices from the bundled snapshot (now dated, with its source URL) and refuses any non-loopback fetch, http/https, net, tls or dns call with exit code `OFFLINE_VIOLATION`. `ach stats --json` and `/api/stats` report the same pricing source, and a notice warns when the snapshot is older than 180 days. Fixes #40.
+
 ## [0.27.5] - 2026-11-03
 
 ### Fixed
