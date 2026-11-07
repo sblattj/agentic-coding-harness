@@ -130,13 +130,41 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3f
 .k-tool .kd { background: var(--teal); }
 .k-sys .kd { background: var(--purple); }
 .k-test .kd { background: var(--green); }
+.k-agent .kd { background: var(--amber); }
 .bar { position: relative; height: 11px; background-image: linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 25% 100%; background-position: 0 center; }
 .bar i { position: absolute; top: 1px; height: 9px; border-radius: 2px; min-width: 2px; }
 .k-model .bar i { background: var(--blue); }
 .k-tool .bar i { background: var(--teal); }
 .k-sys .bar i { background: color-mix(in oklab, var(--purple) 75%, transparent); }
 .k-test .bar i { background: var(--green); }
+.k-agent .bar i { background: var(--amber); }
 .bar i.err { background: var(--red); }
+
+/* span tree (#65) and raw JSON buttons (#66) */
+.tview { margin-left: 4px; }
+.sraw {
+  margin-left: auto; flex: none; padding: 0 5px; border: 1px solid var(--line2); border-radius: 4px;
+  font: 10px var(--mono); color: var(--faint); opacity: 0; cursor: pointer;
+}
+.sraw::before { content: "{}"; }
+.span:hover .sraw, .tnode:hover .sraw, .sraw:focus-visible { opacity: 1; }
+.sraw:hover { color: var(--cyan); border-color: var(--cyan); }
+.tnode {
+  display: flex; align-items: center; gap: 6px; height: 23px; padding-right: 6px;
+  cursor: pointer; border-radius: 5px; font: 11.5px var(--mono); color: var(--dim); white-space: nowrap;
+}
+.tnode:hover { background: var(--panel2); }
+.tnode.sel { background: color-mix(in oklab, var(--cyan) 7%, transparent); color: var(--cyan); }
+.tnode .tg { width: 14px; flex: none; text-align: center; color: var(--faint); cursor: pointer; user-select: none; }
+.tnode .ti { width: 14px; flex: none; text-align: center; }
+.tnode.k-model .ti { color: var(--blue); }
+.tnode.k-tool .ti { color: var(--teal); }
+.tnode.k-sys .ti { color: var(--purple); }
+.tnode.k-test .ti { color: var(--green); }
+.tnode.k-agent .ti { color: var(--amber); }
+.tnode .tn { overflow: hidden; text-overflow: ellipsis; }
+.tnode em { font-style: normal; color: var(--faint); font-size: 10.5px; }
+.tnode em.err { color: var(--red); }
 
 /* — metrics — */
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 10px 10px 0; flex: none; }
@@ -353,8 +381,13 @@ footer.min .tbody { display: none; }
 
 <main id="main" hidden>
   <section class="panel" aria-label="traces">
-    <div class="ph"><span>Traces</span><span class="pmeta" id="traceMeta"></span></div>
+    <div class="ph"><span>Traces</span>
+      <span class="tmode tview" role="group" aria-label="trace view">
+        <button type="button" class="mtog on" id="viewWaterfall" aria-pressed="true">waterfall</button><button type="button" class="mtog" id="viewTree" aria-pressed="false">tree</button>
+      </span>
+      <span class="pmeta" id="traceMeta"></span></div>
     <div class="pb" id="traceList"></div>
+    <div class="pb" id="spanTree" role="tree" aria-label="span tree" hidden></div>
   </section>
   <section class="panel" aria-label="metrics">
     <div class="ph"><span>Metrics</span><span class="pmeta" id="chartMeta"></span></div>
@@ -542,6 +575,7 @@ function renderTraces() {
     lbl.appendChild(el("i", "kd"));
     lbl.appendChild(document.createTextNode(s.name + " "));
     lbl.appendChild(el("em", s.isError ? "err" : null, fmtDurMs(s.durationMs)));
+    lbl.appendChild(rawBtn());
     row.appendChild(lbl);
 
     var bar = el("span", "bar");
@@ -763,18 +797,112 @@ function renderLogs() {
   box.scrollTop = box.scrollHeight;
 }
 
+/* ===== raw JSON inspector (#66; shared modal lives in /feed.js) ===== */
+function rawBtn() {
+  var b = el("button", "sraw");
+  b.type = "button";
+  b.setAttribute("aria-label", "inspect raw JSON");
+  b.title = "raw JSON";
+  return b;
+}
+function spanById(id) {
+  var hit = null;
+  (obs && obs.spans ? obs.spans : []).forEach(function (s) { if (s.id === id) hit = s; });
+  return hit;
+}
+function inspectSpan(id) {
+  var s = spanById(id);
+  if (!s || !window.HarnessFeed || !window.HarnessFeed.inspect) return;
+  // Resolve the span's start/end events from the feed's original objects.
+  var all = feed && feed.events ? feed.events() : [];
+  var want = { startIdx: s.kind === "model" ? "model_call_start" : "tool_call",
+               endIdx: s.kind === "model" ? "model_call_end" : "tool_result" };
+  var evs = [];
+  ["startIdx", "endIdx"].forEach(function (k) {
+    var ev = typeof s[k] === "number" ? all[s[k]] : null;
+    if (ev && ev.type === want[k]) evs.push(ev);
+  });
+  window.HarnessFeed.inspect({ span: s, events: evs }, { title: "span " + s.name });
+}
+
+/* ===== span tree (#65) ===== */
+var TREE_OPEN_DEPTH = 2;   // nodes shallower than this start expanded
+var treeOpen = {};         // id -> true|false override of the default
+var traceView = "waterfall";
+var KIND_ICON = { model: "\u25c6", tool: "\u2699", agent: "\u2726", sys: "\u25a0", test: "\u2713" };
+function treeIsOpen(id, depth) {
+  return Object.prototype.hasOwnProperty.call(treeOpen, id) ? treeOpen[id] : depth < TREE_OPEN_DEPTH;
+}
+function renderTree() {
+  var box = $("spanTree");
+  box.textContent = "";
+  var roots = (obs && obs.spanTree) || [];
+  if (!roots.length) { box.appendChild(el("div", "pempty", "no spans")); return; }
+  var frag = document.createDocumentFragment();
+  (function walk(nodes, depth) {
+    nodes.forEach(function (n) {
+      var s = spanById(n.id);
+      if (!s) return;
+      var open = treeIsOpen(n.id, depth);
+      var row = el("div", "tnode k-" + s.kind + (sel && sel.id === s.id ? " sel" : ""));
+      row.setAttribute("role", "treeitem");
+      row.setAttribute("tabindex", "0");
+      row.setAttribute("aria-level", String(depth + 1));
+      if (n.children.length) row.setAttribute("aria-expanded", open ? "true" : "false");
+      row.dataset.id = s.id;
+      row.style.paddingLeft = (depth * 14 + 4) + "px";
+      var tg = el("span", "tg", n.children.length ? (open ? "\u25be" : "\u25b8") : "");
+      if (n.children.length) { tg.dataset.toggle = n.id; tg.title = open ? "collapse" : "expand"; }
+      row.appendChild(tg);
+      row.appendChild(el("span", "ti", KIND_ICON[s.kind] || "\u2022"));
+      row.appendChild(el("span", "tn", s.name));
+      row.appendChild(el("em", s.isError ? "err" : null, fmtDurMs(s.durationMs)));
+      if (n.children.length && !open) row.appendChild(el("em", null, "+" + n.descendants));
+      row.appendChild(rawBtn());
+      row.title = s.kind + " \u00b7 " + s.name + " \u00b7 " + fmtDurMs(s.durationMs);
+      frag.appendChild(row);
+      if (open) walk(n.children, depth + 1);
+    });
+  })(roots, 0);
+  box.appendChild(frag);
+}
+function openAncestors(id) {
+  var cur = spanById(id);
+  while (cur && cur.parentId) {
+    var parent = spanById(cur.parentId);
+    if (parent && !treeIsOpen(parent.id, parent.depth)) treeOpen[parent.id] = true;
+    cur = parent;
+  }
+}
+function setTraceView(v) {
+  traceView = v === "tree" ? "tree" : "waterfall";
+  $("traceList").hidden = traceView === "tree";
+  $("spanTree").hidden = traceView !== "tree";
+  $("viewWaterfall").classList.toggle("on", traceView !== "tree");
+  $("viewWaterfall").setAttribute("aria-pressed", String(traceView !== "tree"));
+  $("viewTree").classList.toggle("on", traceView === "tree");
+  $("viewTree").setAttribute("aria-pressed", String(traceView === "tree"));
+}
+
 /* ===== selection sync ===== */
 function applySel() {
   renderTraces();
+  renderTree();
   renderLogs();
   drawChart();
+  // keep the selected row visible in whichever view is showing
+  var cur = document.querySelector(traceView === "tree" ? "#spanTree .sel" : "#traceList .sel");
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
 }
 function pickSpan(id) {
   var span = null;
   (obs && obs.spans ? obs.spans : []).forEach(function (s) { if (s.id === id) span = s; });
   if (!span) return;
   if (sel && sel.id === id) sel = null; // toggle off
-  else sel = { id: span.id, name: span.name, startMs: span.startMs, endMs: span.startMs + span.durationMs };
+  else {
+    sel = { id: span.id, name: span.name, startMs: span.startMs, endMs: span.startMs + span.durationMs };
+    openAncestors(span.id);
+  }
   applySel();
 }
 function clearSel() {
@@ -1122,6 +1250,7 @@ function fetchObs() {
     .then(function (data) {
       obs = {
         spans: (data && data.spans) || [],
+        spanTree: (data && data.spanTree) || [],
         metrics: (data && data.metrics) || [],
         logs: (data && data.logs) || [],
         totalCostUsd: data && data.totalCostUsd,
@@ -1151,6 +1280,7 @@ function renderAll() {
   $("main").hidden = false;
   renderHeader();
   renderTraces();
+  renderTree();
   renderMetrics();
   renderLogs();
 }
@@ -1176,13 +1306,51 @@ function startPollingIfLive() {
 /* ===== events ===== */
 $("traceList").addEventListener("click", function (e) {
   var t = e.target.closest ? e.target.closest(".span") : null;
-  if (t) pickSpan(t.dataset.id);
+  if (!t) return;
+  if (e.target.closest(".sraw")) { inspectSpan(t.dataset.id); return; }
+  pickSpan(t.dataset.id);
 });
 $("traceList").addEventListener("keydown", function (e) {
   if (e.key !== "Enter" && e.key !== " ") return;
   var t = e.target.closest ? e.target.closest(".span") : null;
-  if (t) { e.preventDefault(); pickSpan(t.dataset.id); }
+  if (!t) return;
+  e.preventDefault();
+  if (e.target.closest(".sraw")) inspectSpan(t.dataset.id);
+  else pickSpan(t.dataset.id);
 });
+$("spanTree").addEventListener("click", function (e) {
+  var t = e.target.closest ? e.target.closest(".tnode") : null;
+  if (!t) return;
+  var id = t.dataset.id;
+  if (e.target.closest(".sraw")) { inspectSpan(id); return; }
+  var tg = e.target.closest(".tg");
+  if (tg && tg.dataset.toggle) {
+    var s = spanById(id);
+    treeOpen[id] = !treeIsOpen(id, s ? s.depth : 0);
+    renderTree();
+    return;
+  }
+  pickSpan(id);
+});
+$("spanTree").addEventListener("keydown", function (e) {
+  var t = e.target.closest ? e.target.closest(".tnode") : null;
+  if (!t) return;
+  var s = spanById(t.dataset.id);
+  if (!s) return;
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    treeOpen[s.id] = e.key === "ArrowRight";
+    renderTree();
+    var again = document.querySelector('#spanTree .tnode[data-id="' + s.id + '"]');
+    if (again) again.focus();
+  } else if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    if (e.target.closest(".sraw")) inspectSpan(s.id);
+    else pickSpan(s.id);
+  }
+});
+$("viewWaterfall").addEventListener("click", function () { setTraceView("waterfall"); });
+$("viewTree").addEventListener("click", function () { setTraceView("tree"); });
 $("logFilter").addEventListener("click", clearSel);
 $("chartbox").addEventListener("mousemove", chartMove);
 $("chartbox").addEventListener("mouseleave", chartLeave);

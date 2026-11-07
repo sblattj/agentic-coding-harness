@@ -1,5 +1,6 @@
 import type { AgentEvent, CanonicalTokenRecord } from "../core/types.ts";
 import { cacheHitRatio } from "../core/cache-ratio.ts";
+import { buildSpanTree, type SpanTreeNode } from "./span-tree.ts";
 import { deriveLatency, toEventMs, type LatencyMetrics } from "../core/latency.ts";
 
 export { toEventMs };
@@ -13,11 +14,13 @@ export { toEventMs };
 interface TimedEvent {
   ev: AgentEvent;
   tMs: number;
+  /** Index of `ev` in the ORIGINAL events array (stable across the time sort). */
+  idx: number;
 }
 
 /** Normalize, carry forward missing timestamps, sort by ms, offset from t0. */
 function normalizeTimeline(events: AgentEvent[]): TimedEvent[] {
-  const rows = events.map((ev) => ({ ev, ms: toEventMs(ev.timestamp) }));
+  const rows = events.map((ev, idx) => ({ ev, idx, ms: toEventMs(ev.timestamp) }));
   let carry: number | null = null;
   for (const row of rows) {
     if (row.ms === null) row.ms = carry;
@@ -33,7 +36,7 @@ function normalizeTimeline(events: AgentEvent[]): TimedEvent[] {
   }
   rows.sort((a, b) => (a.ms as number) - (b.ms as number));
   const t0 = rows.length > 0 ? (rows[0]!.ms as number) : 0;
-  return rows.map((row) => ({ ev: row.ev, tMs: (row.ms as number) - t0 }));
+  return rows.map((row) => ({ ev: row.ev, idx: row.idx, tMs: (row.ms as number) - t0 }));
 }
 
 function num(v: unknown): number {
@@ -50,7 +53,8 @@ function truncate(s: string, max: number): string {
 
 export interface Span {
   id: string;
-  kind: "model" | "tool" | "sys" | "test";
+  /** "agent" = a sub-agent invocation (the Task / Agent tool call). */
+  kind: "model" | "tool" | "sys" | "test" | "agent";
   name: string;
   startMs: number;
   durationMs: number;
@@ -58,6 +62,10 @@ export interface Span {
   parentId: string | null;
   usage?: CanonicalTokenRecord;
   isError?: boolean;
+  /** Index (in the run's event array) of the event that opened this span. */
+  startIdx?: number;
+  /** Index of the event that closed it (absent while still open). */
+  endIdx?: number;
 }
 
 interface OpenSpanRef {
@@ -75,6 +83,8 @@ function matchOpen(open: OpenSpanRef[], callId: string | undefined): number {
 }
 
 const TEST_NAME_RE = /test|vitest|pytest|jest|spec/i;
+/** Tools that spawn a sub-agent (claude `Task`, newer `Agent`). */
+const AGENT_TOOL_RE = /^(task|agent)$/i;
 
 /**
  * Display name of a model-call span. A derived boundary (#108, kiro ACP:
@@ -103,17 +113,28 @@ export function deriveSpans(events: AgentEvent[]): Span[] {
   const openModels: OpenSpanRef[] = [];
   const openTools: OpenSpanRef[] = [];
 
-  for (const { ev, tMs } of rows) {
+  const openAgents: OpenSpanRef[] = [];
+  // Sub-agent events carry no parent link in the persisted stream (the claude
+  // adapter keeps `parent_tool_use_id` off the payloads), so nesting is
+  // inferred from time: while EXACTLY ONE agent span is open, model calls and
+  // tool calls starting inside it belong to it. With two or more open at once
+  // (parallel Task calls) attribution is ambiguous and nothing is re-parented.
+  const soleAgent = (): Span | undefined => (openAgents.length === 1 ? openAgents[0]!.span : undefined);
+
+  for (const { ev, tMs, idx: eventIdx } of rows) {
     switch (ev.type) {
       case "model_call_start": {
+        const agent = soleAgent();
+        const parentSpan = agent ?? root;
         const span: Span = {
           id: newId(),
           kind: "model",
           name: modelSpanName(ev),
           startMs: tMs,
           durationMs: 0,
-          depth: 1,
-          parentId: root.id,
+          depth: parentSpan.depth + 1,
+          parentId: parentSpan.id,
+          startIdx: eventIdx,
         };
         spans.push(span);
         openModels.push({ span, callId: ev.callId });
@@ -124,6 +145,7 @@ export function deriveSpans(events: AgentEvent[]): Span[] {
         if (idx !== -1) {
           const { span } = openModels[idx]!;
           span.durationMs = tMs - span.startMs;
+          span.endIdx = eventIdx;
           if (ev.usage !== undefined) span.usage = ev.usage;
           openModels.splice(idx, 1);
         }
@@ -131,18 +153,28 @@ export function deriveSpans(events: AgentEvent[]): Span[] {
       }
       case "tool_call": {
         const fn = ev.functionName || "tool";
-        const parent = openModels[openModels.length - 1];
+        const agent = soleAgent();
+        // Inside a sole open agent only models that started after it count
+        // (the parent's own model call can still be open when it begins).
+        const parent = [...openModels]
+          .reverse()
+          .find((m) => agent === undefined || m.span.startMs >= agent.startMs);
+        const parentSpan = parent !== undefined ? parent.span : (agent ?? root);
+        const isAgent = AGENT_TOOL_RE.test(fn);
         const span: Span = {
           id: newId(),
-          kind: TEST_NAME_RE.test(fn) ? "test" : "tool",
+          kind: isAgent ? "agent" : TEST_NAME_RE.test(fn) ? "test" : "tool",
           name: fn,
           startMs: tMs,
           durationMs: 0,
-          depth: parent !== undefined ? 2 : 1,
-          parentId: parent !== undefined ? parent.span.id : root.id,
+          depth: parentSpan.depth + 1,
+          parentId: parentSpan.id,
+          startIdx: eventIdx,
         };
         spans.push(span);
-        openTools.push({ span, callId: ev.toolCallId });
+        const ref = { span, callId: ev.toolCallId };
+        openTools.push(ref);
+        if (isAgent) openAgents.push(ref);
         break;
       }
       case "tool_result": {
@@ -150,8 +182,11 @@ export function deriveSpans(events: AgentEvent[]): Span[] {
         if (idx !== -1) {
           const { span } = openTools[idx]!;
           span.durationMs = tMs - span.startMs;
+          span.endIdx = eventIdx;
           span.isError = ev.isError;
-          openTools.splice(idx, 1);
+          const [done] = openTools.splice(idx, 1);
+          const at = openAgents.indexOf(done!);
+          if (at !== -1) openAgents.splice(at, 1);
         }
         break;
       }
@@ -374,6 +409,8 @@ export type { DurationStats, LatencyMetrics, ToolLatencyRow } from "../core/late
 
 export interface RunObservability {
   spans: Span[];
+  /** The same spans regrouped by parent (#65); nodes hold span ids only. */
+  spanTree: SpanTreeNode[];
   metrics: MetricPoint[];
   logs: LogLine[];
   /** Cumulative USD; omitted for credit-metered runs that report no USD. */
@@ -460,7 +497,7 @@ export function deriveRunObservability(events: AgentEvent[], credits?: Reconcile
   const logs = deriveLogs(events);
   const last = metrics.length > 0 ? metrics[metrics.length - 1]! : undefined;
   const durationMs = spans.length > 0 ? spans[0]!.durationMs : 0;
-  const out: RunObservability = { spans, metrics, logs, durationMs };
+  const out: RunObservability = { spans, spanTree: buildSpanTree(spans), metrics, logs, durationMs };
   if (last?.costUsd !== undefined) out.totalCostUsd = last.costUsd;
   if (last?.credits !== undefined) out.totalCredits = last.credits;
   if (credits?.available === true && typeof credits.value === "number" && Number.isFinite(credits.value)) {
