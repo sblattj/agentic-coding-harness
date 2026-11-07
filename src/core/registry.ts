@@ -9,9 +9,11 @@ import { z } from "zod";
 import { findArchivedRaw } from "./warehouse-index.ts";
 import {
   HermeticRunInfoSchema,
+  WorktreeRunInfoSchema,
   KiroEffectiveSchema,
   UsageAvailabilitySchema,
   type HermeticRunInfo,
+  type WorktreeRunInfo,
   type KiroEffective,
   type UsageAvailability,
 } from "./types.ts";
@@ -94,6 +96,8 @@ export interface RunRecord {
   ancestorInstructions?: string[];
   /** Set by `--hermetic`: the run executed in a temp copy, synced back to `cwd`. */
   hermetic?: HermeticRunInfo;
+  /** Set by `--isolate` (#75): the run executed in its own git worktree + branch. */
+  worktree?: WorktreeRunInfo;
 }
 
 /** Shape of src/core/latency.ts LatencyMetrics; null = not measurable from the log. */
@@ -226,6 +230,7 @@ export const RunRecordSchema = z.object({
     .optional(),
   ancestorInstructions: z.array(z.string()).optional(),
   hermetic: HermeticRunInfoSchema.optional(),
+  worktree: WorktreeRunInfoSchema.optional(),
 });
 
 export function registryDir(stateDir: string): string {

@@ -14,6 +14,7 @@ import path from "node:path";
 import type { Driver } from "../core/driver.ts";
 import { patchRunRecord, registryDir, type RepeatMembership, type RunRecord } from "../core/registry.ts";
 import { HermeticSyncError, runHermetic, type HermeticSyncErrorInfo, type RunHermeticOptions } from "../core/hermetic.ts";
+import { finishIsolation, prepareIsolation, type IsolateOptions, type IsolatedWorkspace } from "../core/isolate.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
 import { HarnessError, type RunResult, type RunSpec } from "../core/types.ts";
 import { runVerifier, type VerifyResult } from "../core/verify.ts";
@@ -86,18 +87,31 @@ export interface RunOnceOptions {
    * synced back BEFORE the verifier runs, so the checker sees the edits.
    */
   hermetic?: Omit<RunHermeticOptions, "stateDir">;
+  /**
+   * #75: run in a fresh git worktree + branch of spec.cwd (src/core/isolate.ts).
+   * Nothing syncs back; --verify runs inside the worktree, before --cleanup.
+   */
+  isolate?: Omit<IsolateOptions, "stateDir">;
 }
 
 /** Verify + annotate one settled run. Throws only if driver.run (or the
  *  hermetic preparation / sync-back) throws. */
 export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
   let result: RunResult;
+  let iso: IsolatedWorkspace | undefined;
+  let spec = opts.spec;
+  if (opts.isolate !== undefined) {
+    const runId = typeof spec.runId === "string" && spec.runId !== "" ? spec.runId : randomUUID();
+    iso = prepareIsolation(runId, spec.cwd ?? process.cwd(), { ...opts.isolate, stateDir: opts.stateDir });
+    spec = { ...spec, runId, cwd: iso.agentCwd };
+  }
   try {
     result =
       opts.hermetic !== undefined
-        ? await runHermetic(opts.driver, opts.agent, opts.spec, { ...opts.hermetic, stateDir: opts.stateDir })
-        : await opts.driver.run(opts.agent, opts.spec);
+        ? await runHermetic(opts.driver, opts.agent, spec, { ...opts.hermetic, stateDir: opts.stateDir })
+        : await opts.driver.run(opts.agent, spec);
   } catch (err) {
+    if (iso !== undefined) finishIsolation(iso);
     // #113: sync-back failed but the run itself settled. Keep what it
     // produced: grade --verify against the KEPT temp copy (the original
     // workspace never received the edits), label the record, and hand the
@@ -132,12 +146,15 @@ export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
   if (opts.verify !== undefined) {
     outcome.verify = await runVerifier({
       command: opts.verify.command,
-      cwd: opts.verify.cwd,
-      env: opts.verify.env ?? process.env,
+      cwd: iso !== undefined ? iso.agentCwd : opts.verify.cwd,
+      env: iso !== undefined ? { ...(opts.verify.env ?? process.env), ACH_WORKSPACE: iso.agentCwd } : (opts.verify.env ?? process.env),
       timeoutMs: opts.verify.timeoutMs,
     });
   }
+  const worktree = iso !== undefined ? finishIsolation(iso) : undefined;
+  if (worktree !== undefined) outcome.result = { ...result, worktree };
   const patch: Partial<RunRecord> = {
+    ...(worktree !== undefined ? { worktree } : {}),
     ...(opts.labels?.experiment !== undefined ? { experiment: opts.labels.experiment } : {}),
     ...(opts.labels?.variant !== undefined ? { variant: opts.labels.variant } : {}),
     ...(opts.labels?.cellId !== undefined ? { cellId: opts.labels.cellId } : {}),
