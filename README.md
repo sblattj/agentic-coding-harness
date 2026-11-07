@@ -986,7 +986,7 @@ const { result } = await runToDirectory({
   | `agent` | agent name, or a comma list (`claude,kiro`) |
   | `status` | comma list of `running`, `interrupted`, `success`, `error`, `aborted`, `unavailable` (the effective status: a `running` run with a dead process counts as `interrupted`) |
   | `minCost` / `maxCost` | inclusive USD bounds on `totals.costUsd`; unpriced runs never match a cost bound |
-  | `since` / `until` | inclusive bounds on `startedAt`: ms epoch or an ISO 8601 date |
+  | `since` / `until` | inclusive bounds on `startedAt`: non-negative ms epoch or an ISO 8601 date (`YYYY-MM-DD`, optionally with a time); anything else is a `400` |
   | `q` | case-insensitive substring of the prompt preview or the resolved command line |
   | `qin` | `prompt` (default) or `events` (below) |
   | `limit` / `offset` | page size (1 to 1000) and start index; `offset` defaults to 0 |

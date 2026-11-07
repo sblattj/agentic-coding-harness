@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import type { AgentEvent } from '../src/core/types.ts';
-import { deriveRunObservability, deriveSpans } from '../src/web/derive.ts';
+import { deriveRunObservability, deriveSpans, type Span } from '../src/web/derive.ts';
 import { buildSpanTree, type SpanTreeNode } from '../src/web/span-tree.ts';
 import { startWebServer, type WebServerHandle } from '../src/web/server.ts';
 
@@ -94,6 +94,27 @@ describe('#65 span tree derivation', () => {
     // the second Task starts while exactly one is open, so it nests (documented); the Read does not
     const read = spans.find((s) => s.name === 'Read')!;
     assert.equal(read.parentId, 's0');
+  });
+
+  it('timestamp ties: a tool call inside a Task nests under the Task, not the parent model call', () => {
+    const ev = [
+      { type: 'model_call_start', callId: 'm1', model: 'opus' },
+      { type: 'tool_call', toolCallId: 'task1', functionName: 'Task' },
+      { type: 'tool_call', toolCallId: 'r1', functionName: 'Read' },
+      { type: 'tool_result', toolCallId: 'r1', content: '' },
+      { type: 'tool_result', toolCallId: 'task1', content: '' },
+    ] as AgentEvent[];
+    const spans = deriveSpans(ev);
+    const task = spans.find((s) => s.name === 'Task')!;
+    assert.equal(spans.find((s) => s.name === 'Read')!.parentId, task.id);
+  });
+
+  it('buildSpanTree keeps spans in a parent cycle (members become reachable)', () => {
+    const mk = (id: string, parentId: string): Span => ({ id, kind: 'tool', name: id, startMs: 0, durationMs: 0, depth: 1, parentId });
+    const tree = buildSpanTree([mk('a', 'b'), mk('b', 'a'), mk('c', 'a')]);
+    const count = (ns: SpanTreeNode[]): number => ns.reduce((t, n) => t + 1 + count(n.children), 0);
+    assert.equal(count(tree), 3);
+    assert.ok(tree.length >= 1);
   });
 
   it('spans record the original event indexes that opened and closed them', () => {
@@ -238,6 +259,15 @@ describe('#66 raw JSON inspector (feed.js)', () => {
     raws[1]!.listeners.click![0]!({ stopPropagation() {} });
     const pres = walkNodes(body).filter((n) => n.className === 'hf-insp-pre');
     assert.equal(pres[pres.length - 1]!.textContent, JSON.stringify(EV[2], null, 2));
+  });
+
+  it('keepEvents: false (index) and compact feeds (grid) do not retain events; default keeps them (trio)', () => {
+    for (const [opts, kept] of [[{}, 3], [{ keepEvents: false }, 0], [{ compact: true }, 0], [{ compact: true, keepEvents: true }, 3]] as const) {
+      const { hf, mk } = makeDom();
+      const feed = hf.create!(mk('div'), opts) as { append(e: unknown): void; events(): unknown[] };
+      feed.append(EV);
+      assert.equal(feed.events().length, kept, JSON.stringify(opts));
+    }
   });
 
   it('long string fields get their own scrollable block with a per-field copy, full copy uses the clipboard', async () => {

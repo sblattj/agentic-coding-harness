@@ -664,7 +664,7 @@ function selectRun(id) {
     $("feed").textContent = "feed.js failed to load";
     return;
   }
-  feed = window.HarnessFeed.create($("feed"));
+  feed = window.HarnessFeed.create($("feed"), { keepEvents: false });
   feedConn = window.HarnessFeed.connect(feed, {
     runId: id,
     token: TOKEN,
@@ -722,14 +722,18 @@ function rfNum(raw) {
   var n = Number(raw);
   return isFinite(n) ? n : null;
 }
+function rfDecode(raw) {
+  var t = String(raw).replace(/\+/g, " ");
+  try { return decodeURIComponent(t); } catch (e) { return t; }
+}
 function parseRunFilterQuery(search) {
   var f = { agents: [], statuses: [], minCost: null, maxCost: null, q: "" };
   var m = {};
   String(search || "").replace(/^\?/, "").split("&").forEach(function (kv) {
     if (!kv) return;
     var i = kv.indexOf("=");
-    var k = decodeURIComponent((i < 0 ? kv : kv.slice(0, i)).replace(/\+/g, " "));
-    m[k] = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
+    var k = rfDecode(i < 0 ? kv : kv.slice(0, i));
+    m[k] = i < 0 ? "" : rfDecode(kv.slice(i + 1));
   });
   f.agents = rfList(m.agent);
   f.statuses = rfList(m.status).filter(function (s) { return RF_STATUSES.indexOf(s) >= 0; });
@@ -794,9 +798,17 @@ function renderRunFilter() {
   var active = !!runFilterQuery(runFilter);
   $("rf-count").textContent = active ? shown + " of " + runs.length + " runs match" : "";
 }
+/* Rewrite only the filter keys; token and any other param stay. */
+function rfMergeSearch(search, f) {
+  var p = new URLSearchParams(String(search || ""));
+  RF_PARAMS.forEach(function (k) { p.delete(k); });
+  var fq = new URLSearchParams(runFilterQuery(f));
+  fq.forEach(function (v, k) { p.set(k, v); });
+  var out = p.toString();
+  return out ? "?" + out : "";
+}
 function syncRunFilterUrl() {
-  var qs = runFilterQuery(runFilter);
-  try { history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash); } catch (e) {}
+  try { history.replaceState(null, "", location.pathname + rfMergeSearch(location.search, runFilter) + location.hash); } catch (e) {}
 }
 function onRunFilterChange() {
   syncRunFilterUrl();

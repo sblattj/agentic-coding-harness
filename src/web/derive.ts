@@ -154,11 +154,11 @@ export function deriveSpans(events: AgentEvent[]): Span[] {
       case "tool_call": {
         const fn = ev.functionName || "tool";
         const agent = soleAgent();
-        // Inside a sole open agent only models that started after it count
+        // Inside a sole open agent only models that started after it count (by event order, so timestamp ties cannot mis-nest)
         // (the parent's own model call can still be open when it begins).
         const parent = [...openModels]
           .reverse()
-          .find((m) => agent === undefined || m.span.startMs >= agent.startMs);
+          .find((m) => agent === undefined || (m.span.startIdx ?? -1) > (agent.startIdx ?? -1));
         const parentSpan = parent !== undefined ? parent.span : (agent ?? root);
         const isAgent = AGENT_TOOL_RE.test(fn);
         const span: Span = {

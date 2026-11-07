@@ -492,6 +492,10 @@
       ? Math.floor(options.maxItems)
       : DEFAULT_MAX_ITEMS;
     var compactMode = options.compact === true;
+    // events() backs the trio span inspector only. Pages that never read it
+    // (index, grid) must not retain every event forever: compact feeds (grid)
+    // default to off, and any page can pass keepEvents explicitly.
+    var keepEvents = typeof options.keepEvents === "boolean" ? options.keepEvents : !compactMode;
 
     container.textContent = "";
     container.classList.add("hf-scroll");
@@ -843,7 +847,7 @@
 
     function renderOne(ev) {
       if (ev == null || typeof ev !== "object") return;
-      state.events.push(ev);
+      if (keepEvents) state.events.push(ev);
       state.cur = ev;
       try {
         renderDispatch(ev);
