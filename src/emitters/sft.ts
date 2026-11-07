@@ -212,7 +212,9 @@ export function fullSample(messages: readonly SftMessage[]): SftSample[] {
   messages.forEach((m, i) => {
     if (m.role === "assistant") last = i;
   });
-  // A trailing tool_calls assistant message is only valid with its results.
+  // A sample must end on an assistant message (which may itself carry tool_calls,
+  // a valid fine-tuning target), so tool results after the last assistant turn are
+  // dropped on purpose: no assistant reply follows them to learn from.
   return last < 0 ? [] : [{ messages: messages.slice(0, last + 1) as SftMessage[] }];
 }
 
