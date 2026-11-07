@@ -12,7 +12,8 @@ import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { parseArgs } from "node:util";
+// #41: config-aware drop-in for node:util parseArgs (src/cli/config.ts).
+import { applyConfig, cmdConfig, CONFIG_USAGE, parseArgs, takeConfigFlag } from "./config.ts";
 import { fileURLToPath } from "node:url";
 import { flushAndExit, trackStdioBackpressure } from "./stdio-flush.ts";
 import {
@@ -161,6 +162,9 @@ version: ${VERSION}
 
 usage:
   ach --version | -v        print the harness version
+  ach --config <path> <command> ...  read that JSON config instead of the default search
+                            (./.ach/config.json over ~/.config/agentic-coding-harness/config.json);
+                            precedence flag > env > config file > default, see \`ach config\`
   ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               [--budget-alerts 0.5,0.8,1.0] [--warn-at 0.5,0.8,0.95] [--on-budget abort|warn]
@@ -433,8 +437,10 @@ ${QUEUE_USAGE}
   ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
               (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
                framing tolerated; same tools and gateway flags as \`ach serve\`)
+${CONFIG_USAGE}
 
 env:
+  AGENTIC_CODING_HARNESS_CONFIG      config file path (same as --config; replaces the default search)
   AGENTIC_CODING_HARNESS_STATE_DIR   state root (default ~/.agentic-coding-harness)
   AGENTIC_CODING_HARNESS_HTTP_TOKEN  default for serve --token (CLI flags win over env)
   AGENTIC_CODING_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
@@ -1918,7 +1924,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc",
+  "trial", "queue", "replay", "smoke", "gc", "config",
 ]);
 
 /**
@@ -1949,7 +1955,11 @@ function subcommandHelp(cmd: string): string {
   return lines.length > 0 ? ["usage:", ...lines].join("\n") : USAGE;
 }
 
-async function main(argv: string[]): Promise<number> {
+/** #41: the commands whose option tables define the config file sections. */
+const CONFIG_COMMANDS = { run: cmdRun, stats: cmdStats, web: cmdWeb, serve: cmdServe };
+
+async function main(argvIn: string[]): Promise<number> {
+  const { argv, config } = takeConfigFlag(argvIn);
   const [cmd, ...raw] = argv;
   // #104: the space-separated `--extra-args <value>` form is joined into the
   // unambiguous `--extra-args=<value>` form before parseArgs (and before the
@@ -1961,6 +1971,9 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(subcommandHelp(cmd) + "\n");
     return 0;
   }
+  // #41: one choke point; `config` loads files itself (it may be fixing one).
+  if (cmd === "config") return cmdConfig(rest, config, CONFIG_COMMANDS);
+  if (cmd !== undefined && SUBCOMMANDS.has(cmd)) await applyConfig(cmd, config, CONFIG_COMMANDS);
   switch (cmd) {
     case "run":
       return cmdRun(rest);
