@@ -957,7 +957,7 @@ const { result } = await runToDirectory({
   tokens, cost), `byStatus` / `byExitStatus` counts, and `perRun` avg / p50 / p95 of duration,
   tokens and cost. A run's model is the observed model (`+`-joined if several), else the requested
   one, else `unknown`. Computed on request from the in-memory run snapshot.
-- **`GET /api/runs`** — the run list. Unauthenticated like the rest of the JSON API (the token only
+- **`GET /api/runs`**: the run list. Unauthenticated like the rest of the JSON API (the token only
   gates `/ws` and `/api/queues`). With no query it returns `{"records": [<RunRecord>...]}`, the
   whole in-memory snapshot, unchanged.
 
