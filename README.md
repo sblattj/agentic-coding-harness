@@ -317,6 +317,28 @@ composable with the other keys, e.g. `by=branch,agent`) groups the web rollup by
 `ach report` adds a "spend by git branch" table (branch, runs, cost, tokens) whenever a
 trial's run records carry a branch; runs without one fall in `(no branch)`.
 
+## Spend by pull request
+
+`ach run --pr 482` stamps the PR on the run record as `pr: 482` with `prSource: "flag"`
+(the registry is flat, so these are top-level fields next to `branch`/`commit`; issue #48
+calls them `git.pr` / `git.prSource`). Without the flag the PR comes from, in order:
+
+1. `AGENTIC_CODING_HARNESS_PR` (`prSource: "env"`), so wrapper scripts set it once per shell.
+   The explicit flag always wins over the env var.
+2. The branch captured at run start (`prSource: "branch"`). A `/`-separated segment
+   matches `pr-<n>`, `pull-<n>`, `issue-<n>` or `issues-<n>` (optionally followed by `-slug`),
+   or `<n>-slug` where the slug starts with a letter: `482-fix-auth`, `pr-482`,
+   `feat/482-x` all map to 482. `main`, `develop`, bare numbers, dates (`2026-11-07`),
+   versions (`release-1.2`, `v2-beta`) and branches with no number stay unlinked.
+3. `gh pr view <branch> --json number`, ONLY when you pass `--pr auto` (or set
+   `AGENTIC_CODING_HARNESS_PR=auto`) and the branch name matched nothing
+   (`prSource: "gh"`). Never by default, never during `stats`.
+
+`ach stats --by pr` (composable with `--by model,project,branch`) prints a per-PR table
+(`#482 records=... cost=...`) and adds `byPr` to `--json`; runs with no recorded PR land
+in `none`. Grouping reads only what was recorded at run time: no network, no `gh`.
+`/api/compare?by=pr` groups the web rollup the same way (PR number or `none`).
+
 ## New in 0.11.0
 
 ```sh

@@ -13,6 +13,7 @@ import { codexSessionsRoot, readCodexNativeUsage, requestedCodexEffort } from '.
 import { createContextMeter } from './context-meter.js';
 import { classifyLaunchError, classifyUnavailable } from './availability.ts';
 import { gitBranchInfo } from './git-branch.ts';
+import { resolvePr } from './git-pr.ts';
 import { runTotalsProvenance } from './provenance.ts';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
@@ -591,13 +592,15 @@ export function createDriver(options: DriverOptions): Driver {
         // unchanged; `ach run` prints its own pre-launch warning.
         const ancestorInstructions = findAncestorInstructions(agentName, runCwd);
         if (registryStateDir) {
+          const runGit = gitBranchInfo(runCwd);
           rec = {
             runId,
             agent: agentName,
             sessionId,
             pid: process.pid,
             cwd: runCwd,
-            ...gitBranchInfo(runCwd),
+            ...runGit,
+            ...resolvePr({ flag: parsed.pr, env: process.env, branch: runGit.branch, cwd: runCwd }),
             promptPreview: parsed.prompt.slice(0, 120),
             startedAt: start,
             updatedAt: Date.now(),

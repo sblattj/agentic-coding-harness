@@ -30,6 +30,8 @@ export interface RunRecord {
   cwd?: string;
   branch?: string; // git branch of cwd at run start (#47); absent when detached or not a repo
   commit?: string; // short HEAD sha at run start (#47); the only marker of a detached HEAD
+  pr?: number; // PR number this run belongs to (#48; the issue's `git.pr`); absent = unlinked
+  prSource?: "flag" | "env" | "branch" | "gh"; // how `pr` was resolved (#48)
   promptPreview?: string; // first 120 chars of prompt
   startedAt: number; // ms epoch
   updatedAt?: number; // ms epoch — heartbeat
@@ -169,6 +171,8 @@ export const RunRecordSchema = z.object({
   cwd: z.string().optional(),
   branch: z.string().optional(),
   commit: z.string().optional(),
+  pr: z.number().int().positive().optional(),
+  prSource: z.enum(["flag", "env", "branch", "gh"]).optional(),
   promptPreview: z.string().optional(),
   startedAt: z.number(),
   updatedAt: z.number().optional(),

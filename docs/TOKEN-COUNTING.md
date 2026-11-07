@@ -509,6 +509,12 @@ table; compose with `--days N`. `--merge-models` (with
 bare model rows; `--json` then echoes `mergedModels: true` and
 `modelAliases`.
 
+**`byPr` (`--by pr`, #48).** Key is the PR number recorded on the run
+(`pr` on the run record, from `ach run --pr`, `AGENTIC_CODING_HARNESS_PR`, or a
+branch-name pattern) as a string; rows from runs with no recorded PR (older records,
+transcript-only rows) key on `none`. Joined to usage rows by agent + session id like
+`byProject`; no network access.
+
 **`byProject` (`--by project` or `--project NAME`).** The key is the
 repository root of the run's `cwd`: the outermost enclosing directory holding
 `.git` (so a nested worktree groups with its repo), never the home directory

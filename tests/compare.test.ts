@@ -206,7 +206,7 @@ describe('GET /api/compare (in-process server)', () => {
     const res = await fetch(url('/api/compare?by=foo'));
     assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), {
-      error: 'by must be a comma list of: experiment, variant, workflow, agent, branch, git.branch',
+      error: 'by must be a comma list of: experiment, variant, workflow, agent, branch, pr, git.branch',
     });
   });
 
