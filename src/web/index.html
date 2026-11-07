@@ -158,6 +158,24 @@ body {
     <a data-nav="queues" href="/queues">queues</a>
   </nav>
   <div id="expfilter"><select id="expselect" aria-label="filter by experiment"></select></div>
+  <!-- runfilter markup (#68) -->
+  <style>
+    #runfilter { padding: 4px 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+    #runfilter input, #runfilter select { background: var(--bg3); color: var(--fg); border: 1px solid var(--line); font: inherit; min-width: 0; }
+    #runfilter .rf-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+    #runfilter .rf-row input[type=number] { width: 4.5em; }
+    #runfilter .rf-chip { cursor: pointer; border: 1px solid var(--line); padding: 0 5px; border-radius: 8px; user-select: none; }
+    #runfilter .rf-chip.on { background: var(--bg3); border-color: var(--fg); }
+    #runfilter #rf-count { opacity: .7; }
+  </style>
+  <div id="runfilter">
+    <input id="rf-q" type="search" placeholder="search prompt / command" aria-label="search runs">
+    <div class="rf-row"><select id="rf-agent" aria-label="filter by agent"></select>
+      <input id="rf-min" type="number" min="0" step="any" placeholder="min $" aria-label="minimum cost usd">
+      <input id="rf-max" type="number" min="0" step="any" placeholder="max $" aria-label="maximum cost usd"></div>
+    <div class="rf-row" id="rf-status"></div>
+    <div id="rf-count"></div>
+  </div>
   <div id="runlist"></div>
   <footer id="agg"></footer>
   <footer id="provlegend" title="provenance markers (docs/PROVENANCE.md)">* computed by ach (tokens x bundled price)  ≈ estimated (heuristic)  unmarked = reported by the agent CLI  n/a = not reported</footer>
@@ -275,7 +293,7 @@ function renderExpFilter() {
   sel.value = expFilter;
 }
 function sortedRuns() {
-  return filterByExperiment(runs, expFilter).sort(function (a, b) {
+  return filterByExperiment(runs, expFilter).filter(runFilterPass).sort(function (a, b) {
     var la = isLive(a) ? 0 : a.status === "running" ? 1 : 2;
     var lb = isLive(b) ? 0 : b.status === "running" ? 1 : 2;
     if (la !== lb) return la - lb;
@@ -393,6 +411,7 @@ function renderRuns() {
   var list = $("runlist");
   list.textContent = "";
   renderExpFilter();
+  renderRunFilter();
   if (!runs.length) { list.appendChild(el("div", "list-empty", "no runs")); return; }
   sortedRuns().forEach(function (r) {
     var row = buildRow(r);
@@ -690,6 +709,127 @@ function connectRunsSocket() {
   ws.onerror = function () { try { ws.close(); } catch (e) {} };
 }
 
+/* ===== run list filters (#68): mirrors GET /api/runs params; state lives in the URL ===== */
+/* runfilter:begin */
+var RF_STATUSES = ["running", "interrupted", "success", "error", "aborted", "unavailable"];
+var RF_PARAMS = ["agent", "status", "minCost", "maxCost", "q"];
+var runFilter = { agents: [], statuses: [], minCost: null, maxCost: null, q: "" };
+function rfList(raw) {
+  return String(raw || "").split(",").map(function (x) { return x.trim(); }).filter(function (x) { return x !== ""; });
+}
+function rfNum(raw) {
+  if (raw == null || String(raw).trim() === "") return null;
+  var n = Number(raw);
+  return isFinite(n) ? n : null;
+}
+function parseRunFilterQuery(search) {
+  var f = { agents: [], statuses: [], minCost: null, maxCost: null, q: "" };
+  var m = {};
+  String(search || "").replace(/^\?/, "").split("&").forEach(function (kv) {
+    if (!kv) return;
+    var i = kv.indexOf("=");
+    var k = decodeURIComponent((i < 0 ? kv : kv.slice(0, i)).replace(/\+/g, " "));
+    m[k] = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
+  });
+  f.agents = rfList(m.agent);
+  f.statuses = rfList(m.status).filter(function (s) { return RF_STATUSES.indexOf(s) >= 0; });
+  f.minCost = rfNum(m.minCost);
+  f.maxCost = rfNum(m.maxCost);
+  f.q = String(m.q || "").trim();
+  return f;
+}
+function runFilterQuery(f) {
+  var parts = [];
+  if (f.agents.length) parts.push("agent=" + encodeURIComponent(f.agents.join(",")));
+  if (f.statuses.length) parts.push("status=" + encodeURIComponent(f.statuses.join(",")));
+  if (f.minCost != null) parts.push("minCost=" + encodeURIComponent(f.minCost));
+  if (f.maxCost != null) parts.push("maxCost=" + encodeURIComponent(f.maxCost));
+  if (f.q) parts.push("q=" + encodeURIComponent(f.q));
+  return parts.join("&");
+}
+function rfEffStatus(r) {
+  if (r.status == null) return "interrupted";
+  if (r.status !== "running") return r.status;
+  return isLive(r) ? "running" : "interrupted";
+}
+function runPassesFilter(r, f) {
+  if (!r) return false;
+  if (f.agents.length && f.agents.indexOf(r.agent) < 0) return false;
+  if (f.statuses.length && f.statuses.indexOf(rfEffStatus(r)) < 0) return false;
+  if (f.minCost != null || f.maxCost != null) {
+    var c = r.totals && r.totals.costUsd;
+    if (typeof c !== "number") return false;
+    if (f.minCost != null && c < f.minCost) return false;
+    if (f.maxCost != null && c > f.maxCost) return false;
+  }
+  if (f.q) {
+    var hay = (String(r.promptPreview || "") + "\n" + (r.command || []).join(" ")).toLowerCase();
+    if (hay.indexOf(f.q.toLowerCase()) < 0) return false;
+  }
+  return true;
+}
+function runFilterPass(r) { return runPassesFilter(r, runFilter); }
+var rfSig = null;
+function renderRunFilter() {
+  var agents = [];
+  runs.forEach(function (r) { if (r && r.agent && agents.indexOf(r.agent) < 0) agents.push(r.agent); });
+  agents.sort();
+  var sig = agents.join("\u0001") + "\u0002" + runFilter.agents.join(",");
+  var sel = $("rf-agent");
+  if (sig !== rfSig) {
+    rfSig = sig;
+    sel.textContent = "";
+    var all = el("option", "", "all agents");
+    all.value = "";
+    sel.appendChild(all);
+    runFilter.agents.concat(agents).forEach(function (a, i, arr) {
+      if (arr.indexOf(a) !== i) return;
+      var op = el("option", "", a);
+      op.value = a;
+      sel.appendChild(op);
+    });
+    sel.value = runFilter.agents[0] || "";
+  }
+  var shown = filterByExperiment(runs, expFilter).filter(runFilterPass).length;
+  var active = !!runFilterQuery(runFilter);
+  $("rf-count").textContent = active ? shown + " of " + runs.length + " runs match" : "";
+}
+function syncRunFilterUrl() {
+  var qs = runFilterQuery(runFilter);
+  try { history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash); } catch (e) {}
+}
+function onRunFilterChange() {
+  syncRunFilterUrl();
+  renderRuns();
+}
+function initRunFilter() {
+  runFilter = parseRunFilterQuery(location.search);
+  $("rf-q").value = runFilter.q;
+  $("rf-min").value = runFilter.minCost == null ? "" : runFilter.minCost;
+  $("rf-max").value = runFilter.maxCost == null ? "" : runFilter.maxCost;
+  var box = $("rf-status");
+  RF_STATUSES.forEach(function (s) {
+    var chip = el("span", "rf-chip" + (runFilter.statuses.indexOf(s) >= 0 ? " on" : ""), s);
+    chip.addEventListener("click", function () {
+      var i = runFilter.statuses.indexOf(s);
+      if (i >= 0) runFilter.statuses.splice(i, 1); else runFilter.statuses.push(s);
+      chip.className = "rf-chip" + (i >= 0 ? "" : " on");
+      onRunFilterChange();
+    });
+    box.appendChild(chip);
+  });
+  $("rf-q").addEventListener("input", function () { runFilter.q = $("rf-q").value.trim(); onRunFilterChange(); });
+  $("rf-min").addEventListener("input", function () { runFilter.minCost = rfNum($("rf-min").value); onRunFilterChange(); });
+  $("rf-max").addEventListener("input", function () { runFilter.maxCost = rfNum($("rf-max").value); onRunFilterChange(); });
+  $("rf-agent").addEventListener("change", function () {
+    var v = $("rf-agent").value;
+    runFilter.agents = v ? [v] : [];
+    rfSig = null;
+    onRunFilterChange();
+  });
+}
+/* runfilter:end */
+
 /* ===== init ===== */
 function tick() {
   var rows = $("runlist").children;
@@ -701,6 +841,7 @@ function tick() {
 }
 function init() {
   showFeed(false);
+  initRunFilter();
   $("expselect").addEventListener("change", function () {
     expFilter = $("expselect").value;
     renderRuns();
@@ -713,7 +854,7 @@ function init() {
     runs = (data && data.records) || [];
     renderRuns();
     renderAggregate();
-    if (!selectedId && runs.length) selectRun(sortedRuns()[0].runId);
+    if (!selectedId && sortedRuns().length) selectRun(sortedRuns()[0].runId);
   }).catch(function () {
     var list = $("runlist");
     list.textContent = "";

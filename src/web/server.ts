@@ -12,12 +12,13 @@
 // Live per-run text is NOT taken from the hub topic: hub broadcasts carry
 // raw AgentEvents, which the dashboard cannot render. Instead each run
 // socket runs its own transcript tailer that forwards eventToText output.
-import { readFile } from "node:fs/promises";
+import { open as openFile, readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { WebSocketServer, type RawData, type WebSocket as WsSocket } from "ws";
 import type { AgentEvent } from "../core/types.ts";
-import { readRunRecord, type RunRecord } from "../core/registry.ts";
+import { readRunRecord, resolveRawTranscript, type RunRecord } from "../core/registry.ts";
+import { applyRunFilter, EVENT_SCAN_MAX_BYTES, parseRunFilter } from "./run-filter.ts";
 import { RunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
 import { computeGlobalStats, STATS_WINDOWS, windowSinceMs, type StatsWindow } from "./stats.ts";
 import { COMPARE_GROUP_ALIASES, COMPARE_GROUP_KEYS, computeCompareRows, isCompareGroupKey, resolveCompareGroupBy } from "./compare.ts";
@@ -82,6 +83,23 @@ const HEARTBEAT_MS = 30_000;
 const RUN_ACTION_ROUTE = /^\/api\/runs\/([^/]+)\/([^/]+)$/;
 const PTY_KILL_ROUTE = /^\/api\/pty\/([^/]+)\/kill$/;
 const PTY_WS_ROUTE = /^\/ws\/pty\/([^/]+)$/;
+
+/** First EVENT_SCAN_MAX_BYTES of a run's transcript, or null when it has none (#68 qin=events). */
+async function readTranscriptHead(stateDir: string, rec: RunRecord): Promise<string | null> {
+  const file = resolveRawTranscript(stateDir, rec);
+  if (file === "") return null;
+  let fh;
+  try {
+    fh = await openFile(file, "r");
+    const buf = Buffer.alloc(EVENT_SCAN_MAX_BYTES);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    return buf.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    await fh?.close();
+  }
+}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -501,7 +519,15 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         }
 
         if (get && pathname === "/api/runs") {
-          return sendJson(res, 200, { records: hub.snapshotRuns() });
+          // #68: no filter params => the historical `{records}` snapshot, byte for byte.
+          const parsed = parseRunFilter(url.searchParams);
+          if (!parsed.ok) return jsonError(res, 400, parsed.error);
+          if (!parsed.active) return sendJson(res, 200, { records: hub.snapshotRuns() });
+          const page = await applyRunFilter(hub.snapshotRuns(), parsed.filter, {
+            readEvents: async (r) => readTranscriptHead(opts.stateDir, r),
+          });
+          res.setHeader("x-total-count", String(page.total));
+          return sendJson(res, 200, page);
         }
 
         // Compare rollup (spec §6.1). Sits under the same access rule as

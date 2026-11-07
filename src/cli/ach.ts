@@ -429,7 +429,9 @@ ${QUEUE_USAGE}
                   state dir — flags or env AGENTIC_CODING_HARNESS_SOURCE[_TOKEN|_MODE|
                   _POLL_MS|_MERGE]; --source-token falls back to --token;
                   --source-merge state unions the local registry under the feed;
-                  --dir is an alias of --state-dir here)
+                  --dir is an alias of --state-dir here;
+                  GET /api/runs filters: ?agent=&status=&minCost=&maxCost=&since=&until=
+                  &q=[&qin=events]&limit=&offset= , see README "Run list filters")
   ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
               (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
                framing tolerated; same tools and gateway flags as \`ach serve\`)
