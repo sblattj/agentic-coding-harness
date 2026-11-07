@@ -118,6 +118,32 @@
     ".hf-lv0 .hf-ctx-g i{background:var(--feed-teal,#2ec4b6)}",
     ".hf-lv1 .hf-ctx-g i{background:var(--feed-yellow,#e5c07b)}",
     ".hf-lv2 .hf-ctx-g i{background:var(--feed-red,#e06c75)}",
+    // Raw JSON inspector (#66): per-row "{}" button and the shared modal.
+    ".hf-row{position:relative}",
+    ".hf-raw{position:absolute;right:0;top:0;z-index:2;background:var(--feed-bg,#0b0e14);",
+    "border:1px solid var(--feed-line,#1d2534);border-radius:3px;color:var(--feed-dim,#5d6b82);",
+    "font:11px/1 var(--feed-mono,monospace);cursor:pointer;padding:2px 5px;opacity:0}",
+    ".hf-raw::before{content:\"{}\"}",
+    ".hf-row:hover>.hf-raw,.hf-raw:focus-visible{opacity:1}",
+    ".hf-raw:hover{color:var(--feed-fg,#c9d4e3);border-color:var(--feed-blue,#7aa2f7)}",
+    ".hf-insp-back{position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.6);",
+    "display:flex;align-items:center;justify-content:center;padding:4vh 4vw}",
+    ".hf-insp{display:flex;flex-direction:column;width:min(960px,100%);max-height:100%;",
+    "background:var(--feed-bg,#0b0e14);color:var(--feed-fg,#c9d4e3);",
+    "border:1px solid var(--feed-line,#1d2534);border-radius:8px;",
+    "font:12px/1.5 var(--feed-mono,monospace);box-shadow:0 10px 40px rgba(0,0,0,.6)}",
+    ".hf-insp-head{display:flex;align-items:center;gap:8px;padding:8px 12px;",
+    "border-bottom:1px solid var(--feed-line,#1d2534);flex:none}",
+    ".hf-insp-title{flex:1;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    ".hf-insp-body{overflow:auto;padding:10px 12px;min-height:0}",
+    ".hf-insp-btn{background:none;border:1px solid var(--feed-line,#1d2534);border-radius:3px;",
+    "color:var(--feed-fg,#c9d4e3);font:inherit;cursor:pointer;padding:2px 8px}",
+    ".hf-insp-btn:hover{border-color:var(--feed-blue,#7aa2f7)}",
+    ".hf-insp-pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:inherit}",
+    ".hf-insp-field{margin-top:12px;border-top:1px solid var(--feed-line,#1d2534);padding-top:6px}",
+    ".hf-insp-fhead{display:flex;align-items:center;gap:8px;color:var(--feed-dim,#5d6b82);margin-bottom:4px}",
+    ".hf-insp-fhead span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    ".hf-insp-fpre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:30vh;overflow:auto;margin:0;font:inherit}",
   ].join("");
 
   function injectCss() {
@@ -192,6 +218,124 @@
     } catch (e) {
       return String(value);
     }
+  }
+
+  /* ----------------------------------------------- raw JSON inspector (#66) */
+
+  var LONG_FIELD_MIN = 200;
+
+  /** Copy text via the async clipboard API, else a hidden textarea. Resolves true/false. */
+  function copyText(text) {
+    var legacy = function () {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok === true;
+      } catch (e) {
+        return false;
+      }
+    };
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return legacy(); });
+      }
+    } catch (e) { /* fall through */ }
+    return Promise.resolve(legacy());
+  }
+
+  /** Every string field of `value` that is long or multi-line: [{path, text}]. */
+  function longFields(value) {
+    var out = [];
+    var seen = [];
+    (function walk(v, path) {
+      if (typeof v === "string") {
+        if (v.length >= LONG_FIELD_MIN || (v.indexOf("\n") >= 0 && v.length >= 60)) out.push({ path: path, text: v });
+        return;
+      }
+      if (v === null || typeof v !== "object") return;
+      if (seen.indexOf(v) >= 0) return;
+      seen.push(v);
+      if (Array.isArray(v)) {
+        for (var i = 0; i < v.length; i++) walk(v[i], path + "[" + i + "]");
+      } else {
+        for (var k in v) {
+          if (Object.prototype.hasOwnProperty.call(v, k)) walk(v[k], path === "" ? k : path + "." + k);
+        }
+      }
+    })(value, "");
+    return out;
+  }
+
+  function flash(btn, label) {
+    var old = btn.textContent;
+    btn.textContent = label;
+    setTimeout(function () { btn.textContent = old; }, 1200);
+  }
+
+  function copyButton(label, getText) {
+    var btn = el("button", "hf-insp-btn", label);
+    btn.type = "button";
+    btn.addEventListener("click", function () {
+      copyText(getText()).then(function (ok) { flash(btn, ok ? "copied" : "copy failed"); });
+    });
+    return btn;
+  }
+
+  /**
+   * Open the shared inspector over `value` (the ORIGINAL event / span object,
+   * serialized in full, never a pre-rendered digest). One modal at a time.
+   */
+  function inspect(value, opts) {
+    if (typeof document === "undefined" || !document.body) return null;
+    injectCss();
+    var o = opts || {};
+    var prev = document.querySelector ? document.querySelector(".hf-insp-back") : null;
+    if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
+    var json = pretty(value === undefined ? null : value);
+    var back = el("div", "hf-insp-back");
+    var box = el("div", "hf-insp");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-label", "raw JSON");
+    var head = el("div", "hf-insp-head");
+    head.appendChild(el("span", "hf-insp-title", o.title || "raw JSON"));
+    head.appendChild(el("span", "hf-dim", json.length + " chars"));
+    head.appendChild(copyButton("copy JSON", function () { return json; }));
+    var close = el("button", "hf-insp-btn", "close");
+    close.type = "button";
+    head.appendChild(close);
+    box.appendChild(head);
+    var body = el("div", "hf-insp-body");
+    body.appendChild(el("pre", "hf-insp-pre", json));
+    var fields = longFields(value);
+    fields.forEach(function (f) {
+      var wrap = el("div", "hf-insp-field");
+      var fh = el("div", "hf-insp-fhead");
+      fh.appendChild(el("span", null, f.path + " (" + f.text.length + " chars)"));
+      fh.appendChild(copyButton("copy field", function () { return f.text; }));
+      wrap.appendChild(fh);
+      wrap.appendChild(el("pre", "hf-insp-fpre", f.text));
+      body.appendChild(wrap);
+    });
+    box.appendChild(body);
+    back.appendChild(box);
+    function onKey(e) { if (e.key === "Escape") shut(); }
+    function shut() {
+      document.removeEventListener("keydown", onKey);
+      if (back.parentNode) back.parentNode.removeChild(back);
+    }
+    close.addEventListener("click", shut);
+    back.addEventListener("click", function (e) { if (e.target === back) shut(); });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(back);
+    close.focus();
+    return { close: shut, element: back, json: json };
   }
 
   var ARG_PREFERRED = [
@@ -372,6 +516,8 @@
       pending: [],                 // cards with a live spinner chip
       stream: null,                // { pre, text, kind, body, gauge, ctx } chunk block; kind "message" | "reasoning"
       deltaSeq: 0,                 // ctx.seq whose +Δ has been drawn (one +Δ per model call)
+      cur: null,                   // the event renderOne is drawing (stamped on its row for the inspector)
+      events: [],                  // every appended event, in arrival order (trio span inspector)
     };
 
     /** Gauge for a frame, drawing the +Δ on the first visible row of its reading. */
@@ -403,6 +549,24 @@
       if (atBottom()) pill.hidden = true;
     });
 
+    /** "{}" button: opens the inspector over the row's original event(s). */
+    function attachRaw(row) {
+      row.hfEvents = state.cur !== null ? [state.cur] : [];
+      if (row.hfEvents.length === 0) return;
+      var raw = el("button", "hf-raw", "");
+      raw.type = "button";
+      raw.setAttribute("aria-label", "inspect raw JSON");
+      raw.setAttribute("title", "raw JSON");
+      raw.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var evs = row.hfEvents;
+        inspect(evs.length === 1 ? evs[0] : evs, {
+          title: evs.map(function (x) { return x && x.type; }).join(" + ") || "event",
+        });
+      });
+      row.appendChild(raw);
+    }
+
     function addRow(ts, bodyNode, ctx) {
       var near = atBottom();
       var row = el("div", "hf-row");
@@ -414,6 +578,7 @@
       row.hfBody = body;
       row.hfGauge = ctx ? mountCtx(body, ctx, null) : null;
       row.appendChild(body);
+      attachRaw(row);
       rows.appendChild(row);
       state.count += 1;
       while (rows.childElementCount > maxItems) {
@@ -511,6 +676,7 @@
 
     function resolveCard(rec, ev, content, isError) {
       rec.resolved = true;
+      if (rec.row && rec.row.hfEvents && ev) rec.row.hfEvents.push(ev);
       var idx = state.pending.indexOf(rec);
       if (idx >= 0) state.pending.splice(idx, 1);
       idx = state.unresolved.indexOf(rec);
@@ -538,7 +704,7 @@
       var rec = makeCard(ts, name, args, hasArgs, frameOf(ev), ev.title);
       if (typeof id === "string" && id.length > 0) state.byId[id] = rec;
       state.unresolved.push(rec);
-      addRow(ts, rec.card);
+      rec.row = addRow(ts, rec.card);
       return rec;
     }
 
@@ -566,6 +732,7 @@
             state.stream.text.trim() === reasoning.trim()) {
           // The adapter is confirming the streamed reasoning block: keep the
           // row, never add a duplicate.
+          if (state.stream.row && state.stream.row.hfEvents) state.stream.row.hfEvents.push(ev);
           endStream();
           return;
         }
@@ -582,6 +749,7 @@
         // live reasoning block is never merged into — the message opens its own
         // row below it.
         if (state.stream.text.trim() === content.trim() && content.trim() !== "") {
+          if (state.stream.row && state.stream.row.hfEvents) state.stream.row.hfEvents.push(ev);
           state.stream.pre.textContent = content;
           // The confirming message carries the model call's usage: move the
           // streamed row's gauge onto the new reading.
@@ -616,9 +784,10 @@
         var pre = el("div", cls, text);
         var ctx = frameOf(ev);
         var row = addRow(tsOf(ev), pre, ctx);
-        state.stream = { pre: pre, text: text, kind: want, body: row.hfBody, gauge: row.hfGauge, ctx: ctx };
+        state.stream = { pre: pre, text: text, kind: want, body: row.hfBody, gauge: row.hfGauge, ctx: ctx, row: row };
         return;
       }
+      if (state.stream.row && state.stream.row.hfEvents && state.cur !== null) state.stream.row.hfEvents.push(state.cur);
       state.stream.text += text;
       state.stream.pre.textContent = state.stream.text;
       if (atBottom()) container.scrollTop = container.scrollHeight;
@@ -674,6 +843,16 @@
 
     function renderOne(ev) {
       if (ev == null || typeof ev !== "object") return;
+      state.events.push(ev);
+      state.cur = ev;
+      try {
+        renderDispatch(ev);
+      } finally {
+        state.cur = null;
+      }
+    }
+
+    function renderDispatch(ev) {
       switch (ev.type) {
         case "message":
           renderMessage(ev);
@@ -753,6 +932,7 @@
         state.pending = [];
         state.stream = null;
         state.deltaSeq = 0;
+        state.events = [];
         pill.hidden = true;
         return handle;
       },
@@ -787,6 +967,8 @@
         state.stream = null;
       },
       container: container,
+      /** Every event appended since the last reset, original objects, arrival order. */
+      events: function () { return state.events; },
     };
     Object.defineProperty(handle, "count", { get: function () { return state.count; } });
     return handle;
@@ -894,5 +1076,5 @@
     };
   }
 
-  window.HarnessFeed = { create: create, connect: connect, version: 1 };
+  window.HarnessFeed = { create: create, connect: connect, inspect: inspect, copyText: copyText, version: 1 };
 })();

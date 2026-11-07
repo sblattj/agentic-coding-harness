@@ -890,6 +890,18 @@ const { result } = await runToDirectory({
   into; the feed stays visible as a strip above it. Closing the pane kills the PTY.
 - **`/trio?run=<runId>`** — traces | metrics | logs for one run, plus a **FEED | LIVE TERMINAL**
   drawer: FEED is the default and shows the same structured feed, LIVE TERMINAL mounts the PTY pane.
+  The traces pane has a **waterfall | tree** toggle. The tree nests the same spans by parent
+  (session, model call, tool call, sub-agent) with a type icon and duration per node, expand/collapse
+  per subtree (expanded to depth 2 by default), and shares the selection with the waterfall: click a
+  node to highlight its waterfall row and filter the logs. It is derived from existing events
+  (`spanTree` in `GET /api/runs/:runId/observability`; no new capture fields). Sub-agent (`Task` /
+  `Agent` tool) activity has no parent link in the persisted events, so calls that start while
+  exactly one sub-agent is open are nested under it by time; with parallel sub-agents open the
+  attribution is ambiguous and those calls stay under the main session.
+- **Raw JSON inspector**: on `/`, `/grid` and `/trio`, hover a feed row (or a waterfall / tree node)
+  and click `{}` to open the event's full pretty-printed JSON (original objects, nothing truncated;
+  a span shows the span plus its start/end events). **copy JSON** copies the whole object; long or
+  multi-line string fields (prompts, tool results) get their own scrollable block with **copy field**.
 - **`/compare`** — sortable rollup table over all runs, grouped by experiment×variant or
   workflow×agent (`GET /api/compare?by=…` returns the rows as JSON: `runs`, `avgTotalTokens`,
   `avgCostUsd`, `avgDurationMs`, `successRate` per group; `successRate` uses the same rule as the

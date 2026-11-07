@@ -156,6 +156,7 @@ describe('derive trio views (in-process, pure)', () => {
 
     assert.deepEqual(deriveRunObservability([]), {
       spans: [],
+      spanTree: [],
       metrics: [],
       logs: [],
       durationMs: 0,
