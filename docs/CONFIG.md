@@ -68,7 +68,14 @@ The env layer applies to the flags that already have an env default: `--budget-u
 `--gateway`, `--root`, `--max-jobs`, `--max-output-bytes`, `--allow-extra-args`,
 `--claude-default-config` and `--claude-no-background-tasks`; the full map is `ENV_MIRRORS` in
 `src/cli/config.ts`. Any other key goes straight from the file to the flag. `stateDir` follows the
-same rule against `AGENTIC_CODING_HARNESS_STATE_DIR`; a command's own `--state-dir` flag still wins.
+same rule against `AGENTIC_CODING_HARNESS_STATE_DIR`, and so do `web.stateDir` / `web.dir` (the
+`web` command reads the same env var); a command's own `--state-dir` flag still wins. `stats.dir`
+is a transcript root, has no env var, and so always comes from the file.
+
+Relative paths in a file resolve against that file's directory, never the process cwd, and a
+leading `~` expands to your home dir. This covers `stateDir` and every path-typed key:
+`run.evidenceDir`, `run.kiroIdeUserDataDir`, `stats.dir`, `stats.transcriptDir`, `web.dir`,
+`web.stateDir` and `serve.root` (`PATH_FLAGS` in `src/cli/config.ts`).
 
 Two limits of flag parsing to know:
 
@@ -96,16 +103,21 @@ ach config --schema
   parsed as that command's command line, to preview what would win:
   `ach config --show run -- --budget-usd 2` reports `run.budgetUsd 2 [flag]`.
 - `--set <key> <value>`: `<key>` is `stateDir` or `<section>.<key>` (`run.budgetUsd`). The value is
-  stored as a number when it looks like one, as `true`/`false` for on/off flags, as a JSON array
-  when a repeatable flag's value starts with `[`, else as a string. Writes `./.ach/config.json`
+  coerced by the key's type: a number for numeric keys (`run.budgetUsd`, `run.maxTurns`,
+  `serve.port`, ... and anything else listed in `NUMERIC_FLAGS`; a non-number is rejected),
+  `true`/`false` for on/off flags, a JSON array when a repeatable flag's value starts with `[`,
+  else the text verbatim (`--set serve.token 007` stores `"007"`, not `7`). Writes `./.ach/config.json`
   (created with a `$schema` line if absent), or the `--config` / `AGENTIC_CODING_HARNESS_CONFIG`
   file when one is given, then prints the resolved config.
 - `--dry-run` prints the resolved config as it would be after the change and writes nothing.
-- `--unset <key>` removes a key (and its section once empty).
+- `--unset <key>` removes a key (and its section once empty). It accepts any key path the target
+  file holds, known or not, so a misspelled key can be removed (`--unset run.bugdetUsd`).
 - `--json` prints `{ files: [{path, kind, loaded}], values: { "<key>": {value, source, flag} } }`.
 
-`--set` validates the whole resulting file before writing it, so it never writes a file `ach`
-would then reject.
+`--set` validates only the key and value it writes (an unknown key or a bad value is rejected and
+nothing is written). Other problems already in the file are printed as `config: warning: ...`
+lines instead of blocking the edit, so a file with a typo can still be repaired; `ach run` and
+the other commands still reject such a file until it is fixed.
 
 ## Errors
 

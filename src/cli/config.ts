@@ -72,6 +72,60 @@ export const ENV_MIRRORS: Readonly<Record<string, string>> = {
   "allow-extra-args": "AGENTIC_CODING_HARNESS_ALLOW_EXTRA_ARGS",
 };
 
+/**
+ * Mirrors that only apply in one section, keyed `<section>.<flag>`. `web`'s
+ * `--state-dir` / `--dir` fall back to the state-dir env var (store.ts
+ * stateDir()); `stats --dir` is a transcript root with no env var, so it has
+ * no entry.
+ */
+export const SECTION_ENV_MIRRORS: Readonly<Record<string, string>> = {
+  "web.state-dir": STATE_DIR_ENV,
+  "web.dir": STATE_DIR_ENV,
+};
+
+/** The env var that beats the file for `<section>` `--<flag>`, if any. */
+export function envMirror(section: string, flag: string): string | undefined {
+  return SECTION_ENV_MIRRORS[`${section}.${flag}`] ?? ENV_MIRRORS[flag];
+}
+
+/**
+ * Path-typed flags: a relative value in a config file resolves against the
+ * config file's directory (and `~` expands), not the process cwd.
+ */
+export const PATH_FLAGS: ReadonlySet<string> = new Set([
+  "dir",
+  "state-dir",
+  "transcript-dir",
+  "evidence-dir",
+  "kiro-ide-user-data-dir",
+  "root",
+]);
+
+/**
+ * Flags whose value is a number. The option tables only say string/boolean,
+ * so `--set` needs this list to store `5` (not `"5"`) for them; any other
+ * string flag keeps its text verbatim (`007` stays `"007"`).
+ */
+export const NUMERIC_FLAGS: ReadonlySet<string> = new Set([
+  "budget-usd",
+  "max-turns",
+  "wall-ms",
+  "idle-ms",
+  "kiro-startup-ms",
+  "kiro-ide-port",
+  "verify-timeout-ms",
+  "repeat",
+  "parallel",
+  "days",
+  "port",
+  "plan-window-tokens",
+  "plan-window-usd",
+  "plan-window-messages",
+  "source-poll-ms",
+  "max-jobs",
+  "max-output-bytes",
+]);
+
 type Env = Record<string, string | undefined>;
 const isSet = (v: string | undefined): v is string => v !== undefined && v !== "";
 
@@ -100,6 +154,8 @@ class CaptureSignal {
 interface ApplyEntry {
   flag: string;
   value: unknown;
+  /** The env var that beats this entry (section-aware), if any. */
+  mirror?: string | undefined;
 }
 const DIR_ALIASES: ReadonlyArray<readonly [string, string]> = [
   ["dir", "state-dir"],
@@ -138,8 +194,7 @@ export const parseArgs = ((config?: Parameters<typeof nodeParseArgs>[0]) => {
   for (const e of a.entries) {
     const spec = options[e.flag];
     if (spec === undefined || given.has(e.flag)) continue;
-    const mirror = ENV_MIRRORS[e.flag];
-    if (mirror !== undefined && isSet(process.env[mirror])) continue;
+    if (e.mirror !== undefined && isSet(process.env[e.mirror])) continue;
     const v = toOptionValue(spec, e.value);
     res.values[e.flag] = v;
     if (spec.type === "boolean") {
@@ -295,42 +350,53 @@ function valueProblem(spec: OptionSpec, v: unknown): string | undefined {
 }
 
 /** Reject unknown sections, unknown keys and type mismatches, naming the
- *  file, the section and the key. */
+ *  file, the section and the key. Throws the first problem. */
 export function validateConfig(file: LoadedFile, tables: SectionTables): void {
+  const [first] = configProblems(file, tables);
+  if (first !== undefined) throw configError(first);
+}
+
+/** Every problem in one file, as messages (empty = valid). */
+export function configProblems(file: LoadedFile, tables: SectionTables): string[] {
+  const problems: string[] = [];
   const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS];
   for (const [section, body] of Object.entries(file.data)) {
     if (section === "$schema" || section === "stateDir") {
       if (typeof body !== "string" || body === "") {
-        throw configError(`config ${file.path}: '${section}' expects a non-empty string, got ${typeName(body)}`);
+        problems.push(`config ${file.path}: '${section}' expects a non-empty string, got ${typeName(body)}`);
       }
       continue;
     }
     if (!(CONFIG_SECTIONS as readonly string[]).includes(section)) {
-      throw configError(
+      problems.push(
         `config ${file.path}: unknown section '${section}'${suggest(section, topKeys)} (expected one of: ${topKeys.join(", ")})`,
       );
+      continue;
     }
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
-      throw configError(`config ${file.path}: section '${section}' must be an object, got ${typeName(body)}`);
+      problems.push(`config ${file.path}: section '${section}' must be an object, got ${typeName(body)}`);
+      continue;
     }
     const table = tables[section as ConfigSection];
     const keys = sectionKeys(table);
     for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
       const flag = keys.get(key);
       if (flag === undefined) {
-        throw configError(
+        problems.push(
           `config ${file.path}: section '${section}' has unknown key '${key}' (${section}.${key})${suggest(key, [...keys.keys()])}; ` +
             `keys mirror \`ach ${section}\` long flags in camelCase`,
         );
+        continue;
       }
       const problem = valueProblem(table[flag]!, value);
       if (problem !== undefined) {
-        throw configError(
+        problems.push(
           `config ${file.path}: section '${section}' key '${key}' (${section}.${key}, flag --${flag}) expects ${problem}, got ${typeName(value)}`,
         );
       }
     }
   }
+  return problems;
 }
 
 // ---------------------------------------------------------------- resolution
@@ -347,16 +413,30 @@ export function mergeFiles(files: LoadedFile[], tables: SectionTables): Map<stri
     for (const [section, body] of Object.entries(f.data)) {
       if (section === "$schema") continue;
       if (section === "stateDir") {
-        out.set("stateDir", { value: resolveStateDir(body as string, f.path), file: f.path });
+        if (typeof body === "string" && body !== "") out.set("stateDir", { value: resolveStateDir(body, f.path), file: f.path });
         continue;
       }
+      // Invalid entries (unknown section/key, wrong shape) are reported by
+      // validation; they never reach the merged values.
+      if (!(CONFIG_SECTIONS as readonly string[]).includes(section)) continue;
+      if (body === null || typeof body !== "object" || Array.isArray(body)) continue;
       const keys = sectionKeys(tables[section as ConfigSection]);
       for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
-        out.set(`${section}.${keys.get(key)!}`, { value, file: f.path });
+        const flag = keys.get(key);
+        if (flag === undefined) continue;
+        out.set(`${section}.${flag}`, { value: PATH_FLAGS.has(flag) ? resolvePathValue(value, f.path) : value, file: f.path });
       }
     }
   }
   return out;
+}
+
+/** Path-typed values (string or array of strings) resolve like `stateDir`;
+ *  anything else is left for validation to report. */
+function resolvePathValue(v: unknown, file: string): unknown {
+  if (typeof v === "string" && v !== "") return resolveStateDir(v, file);
+  if (Array.isArray(v)) return v.map((x) => (typeof x === "string" && x !== "" ? resolveStateDir(x, file) : x));
+  return v;
 }
 
 /** `~` expands to HOME; a relative path is relative to the config file's dir. */
@@ -383,7 +463,10 @@ export async function applyConfig(cmd: string, explicit: string | undefined, com
   const prefix = `${cmd}.`;
   const entries = [...merged]
     .filter(([k]) => k.startsWith(prefix))
-    .map(([k, v]) => ({ flag: k.slice(prefix.length), value: v.value }));
+    .map(([k, v]) => {
+      const flag = k.slice(prefix.length);
+      return { flag, value: v.value, mirror: envMirror(cmd, flag) };
+    });
   if (entries.length > 0) armed = { mode: "apply", entries };
 }
 
@@ -435,7 +518,7 @@ export function resolveRows(opts: {
     for (const [flag, spec] of Object.entries(opts.tables[section])) {
       const key = `${section}.${flagToKey(flag)}`;
       const flagVals = opts.flags?.section === section ? opts.flags.values : undefined;
-      const mirror = ENV_MIRRORS[flag];
+      const mirror = envMirror(section, flag);
       const fileVal = opts.merged.get(`${section}.${flag}`);
       if (flagVals !== undefined && flagVals[flag] !== undefined) rows.push({ key, flag, value: flagVals[flag], source: "flag" });
       else if (mirror !== undefined && isSet(env[mirror])) rows.push({ key, flag, value: env[mirror], source: `env:${mirror}` });
@@ -478,7 +561,7 @@ export function configZodSchema(tables: SectionTables) {
     for (const [flag, spec] of Object.entries(tables[section])) {
       const scalar = scalarFor(spec);
       const t = spec.multiple ? z.union([scalar, z.array(scalar)]) : scalar;
-      const mirror = ENV_MIRRORS[flag];
+      const mirror = envMirror(section, flag);
       shape[flagToKey(flag)] = t.optional().describe(`ach ${section} --${flag}${mirror ? ` (env ${mirror} wins over this)` : ""}`);
     }
     sections[section] = z.strictObject(shape).optional().describe(`defaults for \`ach ${section}\` flags`);
@@ -505,9 +588,14 @@ export function configJsonSchema(tables: SectionTables): Record<string, unknown>
 
 // ---------------------------------------------------------------- `ach config`
 
-/** Coerce a `--set` CLI string to the JSON value stored in the file. */
-function coerceSetValue(spec: OptionSpec | undefined, raw: string, label: string): unknown {
-  if (spec === undefined) return raw; // stateDir
+/** Coerce a `--set` CLI string to the JSON value stored in the file, by the
+ *  target flag's type: booleans take true/false, NUMERIC_FLAGS parse as
+ *  numbers (non-numbers rejected), every other string flag is kept verbatim. */
+function coerceSetValue(spec: OptionSpec | undefined, flag: string | undefined, raw: string, label: string): unknown {
+  if (spec === undefined || flag === undefined) {
+    if (raw === "") throw new HarnessError(`config --set ${label}: expects a non-empty string`, "USAGE");
+    return raw; // stateDir
+  }
   if (spec.type === "boolean") {
     if (raw === "true") return true;
     if (raw === "false") return false;
@@ -520,11 +608,19 @@ function coerceSetValue(spec: OptionSpec | undefined, raw: string, label: string
       throw new HarnessError(`config --set ${label}: not a valid JSON array: ${e instanceof Error ? e.message : String(e)}`, "USAGE");
     }
   }
-  return /^-?\d+(\.\d+)?$/.test(raw.trim()) ? Number(raw) : raw;
+  if (NUMERIC_FLAGS.has(flag)) {
+    const n = raw.trim() === "" ? NaN : Number(raw);
+    if (!Number.isFinite(n)) throw new HarnessError(`config --set ${label}: expects a number, got '${raw}'`, "USAGE");
+    return n;
+  }
+  return raw;
 }
 
 /** `<section>.<key>` or `stateDir` -> its section and option spec. */
-function lookupKey(dotted: string, tables: SectionTables): { section?: ConfigSection; key: string; spec?: OptionSpec } {
+function lookupKey(
+  dotted: string,
+  tables: SectionTables,
+): { section?: ConfigSection; key: string; flag?: string; spec?: OptionSpec } {
   if (dotted === "stateDir") return { key: "stateDir" };
   const dot = dotted.indexOf(".");
   const section = dot === -1 ? dotted : dotted.slice(0, dot);
@@ -540,7 +636,37 @@ function lookupKey(dotted: string, tables: SectionTables): { section?: ConfigSec
   if (flag === undefined) {
     throw new HarnessError(`config: section '${section}' has unknown key '${key}' (${dotted})${suggest(key, [...keys.keys()])}`, "CONFIG");
   }
-  return { section: section as ConfigSection, key, spec: tables[section as ConfigSection][flag] };
+  return { section: section as ConfigSection, key, flag, spec: tables[section as ConfigSection][flag] };
+}
+
+/** True when `dotted` names a key the tables know (so lookupKey succeeds). */
+function unsetKnownKey(dotted: string, tables: SectionTables): boolean {
+  try {
+    lookupKey(dotted, tables);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Delete `dotted` (`<top>` or `<section>.<key>`) from `doc` when it is
+ *  there; false when the file does not hold that path. */
+function deleteExistingPath(doc: Record<string, unknown>, dotted: string): boolean {
+  const dot = dotted.indexOf(".");
+  if (dot === -1) {
+    if (!Object.hasOwn(doc, dotted)) return false;
+    delete doc[dotted];
+    return true;
+  }
+  const section = dotted.slice(0, dot);
+  const key = dotted.slice(dot + 1);
+  const body = doc[section];
+  if (body === null || typeof body !== "object" || Array.isArray(body) || !Object.hasOwn(body, key)) return false;
+  const copy = { ...(body as Record<string, unknown>) };
+  delete copy[key];
+  if (Object.keys(copy).length === 0) delete doc[section];
+  else doc[section] = copy;
+  return true;
 }
 
 export const CONFIG_USAGE = `  ach config --show [<section>] [--json] [-- <section flags>]
@@ -609,7 +735,6 @@ export async function cmdConfig(rest: string[], explicit: string | undefined, co
   if (passFlags !== undefined) throw new HarnessError("config --set/--unset take no -- <flags>", "USAGE");
   const dotted = (v.set ?? v.unset)!;
   const target = explicit !== undefined || isSet(process.env[CONFIG_ENV]) ? candidates[0]!.path : projectConfigPath();
-  const { section, key, spec } = lookupKey(dotted, tables);
   let raw: string | undefined;
   if (v.set !== undefined) {
     if (args.positionals.length !== 1) throw new HarnessError(`config --set ${dotted} needs exactly one <value>`, "USAGE");
@@ -619,21 +744,34 @@ export async function cmdConfig(rest: string[], explicit: string | undefined, co
   }
   const existing = files.find((f) => f.path === target) ?? readConfigFile(target, "project", true);
   const doc: Record<string, unknown> = existing ? structuredClone(existing.data) : { $schema: CONFIG_SCHEMA_URL };
-  if (section === undefined) {
-    if (raw === undefined) delete doc.stateDir;
-    else doc.stateDir = raw;
+  if (raw === undefined && !unsetKnownKey(dotted, tables)) {
+    // --unset accepts any key path the target file actually holds, known or
+    // not (so a misspelled key can be removed); else the lookup error stands.
+    if (!deleteExistingPath(doc, dotted)) lookupKey(dotted, tables);
   } else {
-    const body = { ...((doc[section] as Record<string, unknown> | undefined) ?? {}) };
-    if (raw === undefined) delete body[key];
-    else body[key] = coerceSetValue(spec, raw, dotted);
-    if (Object.keys(body).length === 0) delete doc[section];
-    else doc[section] = body;
+    const { section, key, flag, spec } = lookupKey(dotted, tables);
+    if (section === undefined) {
+      if (raw === undefined) delete doc.stateDir;
+      else doc.stateDir = coerceSetValue(undefined, undefined, raw, dotted);
+    } else {
+      const body = { ...((doc[section] as Record<string, unknown> | undefined) ?? {}) };
+      if (raw === undefined) delete body[key];
+      else {
+        // Only the new key/value is validated here; other problems in the
+        // file are reported as warnings below, never a reason to refuse.
+        const value = coerceSetValue(spec, flag, raw, dotted);
+        const problem = valueProblem(spec!, value);
+        if (problem !== undefined) throw new HarnessError(`config --set ${dotted}: expects ${problem}, got ${typeName(value)}`, "USAGE");
+        body[key] = value;
+      }
+      if (Object.keys(body).length === 0) delete doc[section];
+      else doc[section] = body;
+    }
   }
   const kind = candidates.find((c) => c.path === target)?.kind ?? "project";
   const updated: LoadedFile = { path: target, kind, data: doc };
-  validateConfig(updated, tables);
   const after = files.some((f) => f.path === target) ? files.map((f) => (f.path === target ? updated : f)) : [...files, updated];
-  for (const f of after) validateConfig(f, tables);
+  for (const f of after) for (const msg of configProblems(f, tables)) process.stderr.write(`config: warning: ${msg}\n`);
   if (v["dry-run"]) {
     process.stderr.write(`config: dry run, ${target} not written\n`);
   } else {
