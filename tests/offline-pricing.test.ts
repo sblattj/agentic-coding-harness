@@ -21,6 +21,7 @@ import {
   pricingStaleNotice,
   resolveStaleDays,
 } from "../src/core/pricing.ts";
+import { HarnessError } from "../src/core/types.ts";
 import {
   OfflineViolation,
   assertOfflineSource,
@@ -113,6 +114,12 @@ describe("snapshot refresh script (#40)", () => {
     assert.equal(readFileSync(f, "utf8"), orig.replace(/"snapshotDate": "[^"]*"/, '"snapshotDate": "2031-02-03"'));
     const bad = spawnSync(process.execPath, [script, "nope", "--file", f], { encoding: "utf8" });
     assert.equal(bad.status, 2);
+    // Date.parse normalizes impossible dates; the script must not.
+    for (const d of ["2026-02-30", "2026-13-01", "2025-02-29"]) {
+      const imp = spawnSync(process.execPath, [script, d, "--file", f], { encoding: "utf8" });
+      assert.equal(imp.status, 2, `${d}: ${imp.stdout}`);
+    }
+    assert.equal(spawnSync(process.execPath, [script, "2028-02-29", "--file", f], { encoding: "utf8" }).status, 0);
   });
 });
 
@@ -202,9 +209,74 @@ describe("--offline guard (#40)", () => {
 
   it("ach web --offline --source https://... refuses before serving", () => {
     const r = runCli(["web", "--offline", "--no-open", "--port", "0", "--source", "https://runs.example.com/feed"]);
-    assert.notEqual(r.code, 0);
-    assert.match(r.stderr, /OfflineViolation/);
-    assert.match(r.stderr, /runs\.example\.com/);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /(^|\n)harness: OfflineViolation: --offline refused a network call via web --source to https:\/\/runs\.example\.com\/feed\n$/);
+    assert.doesNotMatch(r.stderr, /unexpected error|\n\s+at /);
+  });
+
+  it("OfflineViolation is a HarnessError with code OFFLINE_VIOLATION", () => {
+    const e = new OfflineViolation("https://x.example/", "fetch");
+    assert.ok(e instanceof HarnessError);
+    assert.equal(e.code, "OFFLINE_VIOLATION");
+    assert.equal(e.exitCode, 1);
+    assert.equal(e.name, "OfflineViolation");
+  });
+
+  it("merges options over the URL the way node does (options.hostname wins)", () => {
+    installOfflineGuard();
+    assert.throws(() => http.request("http://localhost/", { hostname: "example.com" }), OfflineViolation);
+    assert.throws(() => https.get(new URL("https://127.0.0.1/"), { host: "x.example", hostname: "example.com" }), OfflineViolation);
+  });
+
+  // The test preload patches ESM exports itself, which hides the gap, so these
+  // run the guard in a child process WITHOUT the preload and use named imports.
+  const guardChild = (body: string): string => {
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    const mod = new URL("../src/core/offline.ts", import.meta.url).href;
+    const src = `import { installOfflineGuard, uninstallOfflineGuard } from ${JSON.stringify(mod)};
+import { get, request } from "node:https";
+import * as httpNs from "node:http";
+import { connect as netConnect } from "node:net";
+import { connect as tlsConnect } from "node:tls";
+import { lookup } from "node:dns";
+const probe = (label, fn) => { try { fn(); console.log(label + "=allowed"); } catch (e) { console.log(label + "=" + e.name); } };
+${body}`;
+    const p = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", src], { env, encoding: "utf8" });
+    assert.equal(p.status, 0, p.stderr);
+    return p.stdout;
+  };
+
+  it("named and namespace imports are blocked after install and restored after uninstall (syncBuiltinESMExports)", () => {
+    const out = guardChild(`
+probe("before", () => { const r = get("https://example.com/"); r.on("error", () => {}); r.destroy(); });
+installOfflineGuard();
+probe("named-get", () => get("https://example.com/"));
+probe("named-request", () => request("https://example.com/"));
+probe("ns-get", () => httpNs.get("http://example.com/"));
+probe("ns-merge", () => httpNs.request("http://localhost/", { hostname: "example.com" }));
+uninstallOfflineGuard();
+probe("after", () => { const r = get("https://example.com/"); r.on("error", () => {}); r.destroy(); });
+`);
+    for (const l of ["before=allowed", "named-get=OfflineViolation", "named-request=OfflineViolation", "ns-get=OfflineViolation", "ns-merge=OfflineViolation", "after=allowed"]) {
+      assert.ok(out.includes(l + "\n"), `${l} missing in:\n${out}`);
+    }
+  });
+
+  it("also covers net.connect, tls.connect and dns.lookup for non-loopback hosts; loopback and IPC stay allowed", () => {
+    const out = guardChild(`
+installOfflineGuard();
+probe("net", () => netConnect(80, "example.com"));
+probe("net-opts", () => netConnect({ host: "example.com", port: 80 }));
+probe("tls", () => tlsConnect({ host: "example.com", port: 443 }));
+probe("dns", () => lookup("example.com", () => {}));
+probe("net-loop", () => { const s = netConnect(1, "127.0.0.1"); s.on("error", () => {}); s.destroy(); });
+probe("net-ipc", () => { const s = netConnect("/nonexistent/ach.sock"); s.on("error", () => {}); s.destroy(); });
+probe("dns-loop", () => lookup("localhost", () => {}));
+`);
+    for (const l of ["net=OfflineViolation", "net-opts=OfflineViolation", "tls=OfflineViolation", "dns=OfflineViolation", "net-loop=allowed", "net-ipc=allowed", "dns-loop=allowed"]) {
+      assert.ok(out.includes(l + "\n"), `${l} missing in:\n${out}`);
+    }
   });
 
   it("stats / watch / dash accept --offline", () => {

@@ -70,6 +70,10 @@ Downstream consumers should read `unavailable` as **no data**, not as a failure:
 
 ## Process exit codes
 
+`--offline` (`stats`, `watch`, `dash`, `web`): a refused non-loopback network call, or a remote
+`ach web --source`, raises `HarnessError` code `OFFLINE_VIOLATION` (`OfflineViolation`, message
+`harness: OfflineViolation: ...`). It exits **1** in both modes; the ladder has no code for it.
+
 ### Default (`--exit-codes binary`, or no flag)
 
 Unchanged from earlier releases: `ach run` exits **0** when `exitStatus` is `success` and

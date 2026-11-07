@@ -84,7 +84,7 @@ import { dashboardSpan, inDashboardSpan, reconcileDashboardWithState, type Dashb
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer, pricingMeta, pricingStaleNotice } from "../core/pricing.ts";
-import { installOfflineGuard } from "../core/offline.ts";
+import { OfflineViolation, installOfflineGuard } from "../core/offline.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, orderedExtraArgs, resolveDirFlag, wantsHelp } from "./lib.ts";
 import { deriveLatency } from "../web/derive.ts";
 import {
@@ -323,7 +323,8 @@ usage:
                  and still-running runs have no verdict and are left out (shown as
                  noVerdict=N); 'unavailable' runs are also left out unless
                  --include-unavailable, which adds back only those;
-                 --offline: refuse any outbound network call (OfflineViolation);
+                 --offline: refuse any non-loopback network call via fetch, http(s),
+                 net, tls or dns (OfflineViolation);
                  --json adds a pricing block: snapshotDate, sourceUrl, modelCount,
                  ageDays, stale, source; a snapshot older than
                  AGENTIC_CODING_HARNESS_PRICING_STALE_DAYS (default 180, 0 = silent)
@@ -1326,7 +1327,17 @@ async function cmdWatch(rest: string[]): Promise<number> {
 
   await tick();
   // The interval holds the event loop open; watch runs until SIGINT/SIGTERM.
-  const timer = setInterval(() => void tick().catch(() => {}), POLL_MS);
+  const timer = setInterval(
+    () =>
+      void tick().catch((err: unknown) => {
+        // Transient tick errors are ignored, but an --offline breach is never silent.
+        if (err instanceof OfflineViolation) {
+          process.stderr.write(`harness: ${err.message}\n`);
+          process.exit(err.exitCode);
+        }
+      }),
+    POLL_MS,
+  );
   await new Promise<never>(() => {});
   return 0; // unreachable: the promise above never resolves
 }

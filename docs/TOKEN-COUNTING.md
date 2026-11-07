@@ -309,8 +309,13 @@ stderr (stdout and `--json` stay clean). `AGENTIC_CODING_HARNESS_PRICING_STALE_D
 threshold; `0` silences the notice.
 
 **`--offline`.** `ach stats`, `watch`, `dash` and `web` accept `--offline`. It installs a guard on
-`globalThis.fetch` and `node:http`/`node:https` `request`/`get`: any call to a non-loopback host
-throws `OfflineViolation` naming the URL (`src/core/offline.ts`). Loopback (`localhost`,
+`globalThis.fetch`, `node:http`/`node:https` `request`/`get` (options override the URL host, as in
+Node), `net.connect`/`net.createConnection`, `tls.connect` and `dns.lookup`, and re-syncs the ESM
+named exports so `import { get } from "node:https"` is covered too. Any call to a non-loopback host
+throws `OfflineViolation` naming the destination (`src/core/offline.ts`). `OfflineViolation` is a
+`HarnessError` with code `OFFLINE_VIOLATION` (exit 1), so the CLI prints one clean `harness:` line
+with no stack. `ach watch --offline` exits 1 on a violation instead of ignoring it. Unix-socket
+(IPC) connects are not network calls and stay allowed. Loopback (`localhost`,
 `127.0.0.0/8`, `::1`) stays allowed because it never leaves the machine (the web server's own
 UI, the kiro IDE CDP port). `ach web --offline --source https://...` is refused up front; a
 loopback `--source` is fine. The only outbound `fetch` sites in the code are the web HTTP run
