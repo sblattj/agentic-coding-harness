@@ -1,3 +1,5 @@
+// #40: pricing/stats tests run with network primitives throwing (offline guarantee).
+import "./support/no-network.mjs";
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

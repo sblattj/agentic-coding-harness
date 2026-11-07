@@ -26,6 +26,7 @@ import { modelProvenanceText, usageScopeBadge } from "../core/usage-scope.ts";
 import { collectQueueViews, fmtDuration, queueSummaryLine, sliceDetail, QUEUE_RECENT_HOURS, type QueueView } from "../core/queue-view.ts";
 import { CreditTotals, creditUnitOfAgent } from "../core/credit-units.ts";
 import { transcriptView } from "./transcript-view.ts";
+import { installOfflineGuard } from "../core/offline.ts";
 
 const REDRAW_MS = 500;
 /** Quota sources are files on disk (rollouts, statusline snapshot); re-read at most this often. */
@@ -693,6 +694,7 @@ export async function cmdDash(argv: string[]): Promise<number> {
       json: { type: "boolean", default: false },
       all: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      offline: { type: "boolean", default: false },
       "help-keys": { type: "boolean", default: false },
       "no-help": { type: "boolean", default: false },
       queues: { type: "boolean", default: false },
@@ -702,6 +704,7 @@ export async function cmdDash(argv: string[]): Promise<number> {
     },
     allowPositionals: true,
   });
+  if (args.values.offline) installOfflineGuard();
   // Same flag-over-env rule as `ach run --budget-usd`.
   const budgetRaw = args.values["budget-usd"] ?? (process.env.AGENTIC_CODING_HARNESS_BUDGET_USD || undefined);
   let budgetUsd: number | undefined;

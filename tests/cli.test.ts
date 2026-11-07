@@ -180,6 +180,7 @@ describe("harness cli", () => {
       // #142: additive, present when codex rows are in the window.
       "codexAccounting",
       "pace",
+      "pricing",
       "runs",
       "timezone",
       "total",

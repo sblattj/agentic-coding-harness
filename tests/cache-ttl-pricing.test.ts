@@ -5,6 +5,8 @@
 // {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}. The split rides
 // CanonicalTokenRecord.cacheWrite1hTokens from every claude parser to the
 // pricer, and `ach audit` recomputes from the same split.
+// #40: pricing/stats tests run with network primitives throwing (offline guarantee).
+import "./support/no-network.mjs";
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';

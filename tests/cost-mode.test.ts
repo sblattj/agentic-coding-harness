@@ -1,5 +1,7 @@
 // Issue #28: `ach stats --cost-mode auto|calculate|display`, costSource
 // provenance on every cost bucket, and reported-vs-computed disagreements.
+// #40: pricing/stats tests run with network primitives throwing (offline guarantee).
+import "./support/no-network.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, test } from "node:test";

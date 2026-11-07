@@ -1,5 +1,7 @@
 // Time windows (#26), timezone-aware day boundaries (#84) and week/month
 // rollups (#44) for `ach stats` / `ach watch`.
+// #40: pricing/stats tests run with network primitives throwing (offline guarantee).
+import "./support/no-network.mjs";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";

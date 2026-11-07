@@ -1,3 +1,5 @@
+// #40: pricing/stats tests run with network primitives throwing (offline guarantee).
+import "./support/no-network.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
