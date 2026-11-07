@@ -76,6 +76,9 @@ Two limits of flag parsing to know:
   no `--no-<flag>` form); remove the key or pass `--config` with another file;
 - for a repeatable flag, any occurrence on the command line replaces the file's whole list.
 
+`--dir` and its long forms (`--state-dir`, `--transcript-dir`) count as one flag here: `--dir` on the
+command line beats `web.stateDir` from the file instead of tripping the "disagree" check.
+
 Value checks (a negative `maxTurns`, an unknown `onBudget`) run in the command, exactly as for the
 flag, so their message names the flag (`--max-turns expects ...`), not the file.
 

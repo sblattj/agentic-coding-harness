@@ -100,7 +100,12 @@ interface ApplyEntry {
   flag: string;
   value: unknown;
 }
-type Armed = { mode: "capture" } | { mode: "apply"; entries: ApplyEntry[] };
+const DIR_ALIASES: ReadonlyArray<readonly [string, string]> = [
+  ["dir", "state-dir"],
+  ["dir", "transcript-dir"],
+];
+
+type Armed ={ mode: "capture" } | { mode: "apply"; entries: ApplyEntry[] };
 let armed: Armed | null = null;
 
 /**
@@ -122,6 +127,12 @@ export const parseArgs = ((config?: Parameters<typeof nodeParseArgs>[0]) => {
     tokens?: Array<Record<string, unknown>>;
   };
   const given = new Set((res.tokens ?? []).filter((t) => t.kind === "option").map((t) => t.name as string));
+  // `--dir` is an alias of `--state-dir` / `--transcript-dir` (lib.ts
+  // resolveDirFlag): the command-line spelling of either one beats the file's.
+  for (const [a, b] of DIR_ALIASES) {
+    if (given.has(a)) given.add(b);
+    if (given.has(b)) given.add(a);
+  }
   const injected: Array<Record<string, unknown>> = [];
   for (const e of a.entries) {
     const spec = options[e.flag];

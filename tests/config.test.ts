@@ -358,6 +358,27 @@ describe("stateDir and the parseArgs hook", () => {
     assert.equal(got!.values["brand-new"], undefined);
   });
 
+  it("a command-line --dir beats the file's alias key (web.stateDir) instead of conflicting with it", async () => {
+    let got: Record<string, unknown> | undefined;
+    const fakeWeb = async (rest: string[]) => {
+      got = parseArgs({ args: rest, options: { dir: { type: "string" }, "state-dir": { type: "string" } } }).values;
+      return 0;
+    };
+    const stub = async (rest: string[]) => {
+      parseArgs({ args: rest, options: {} });
+      return 0;
+    };
+    const commands: SectionCommands = { run: stub, stats: stub, web: fakeWeb, serve: stub };
+    const cfg = path.join(tmp, "alias.json");
+    await writeJson(cfg, { web: { stateDir: "/from/file" } });
+    await applyConfig("web", cfg, commands);
+    await fakeWeb(["--dir", "/from/cli"]);
+    assert.deepEqual({ ...got }, { dir: "/from/cli" });
+    await applyConfig("web", cfg, commands);
+    await fakeWeb([]);
+    assert.deepEqual({ ...got }, { "state-dir": "/from/file" });
+  });
+
   it("takeConfigFlag peels only leading --config forms", () => {
     assert.deepEqual(takeConfigFlag(["--config", "a.json", "run", "x"]), { argv: ["run", "x"], config: "a.json" });
     assert.deepEqual(takeConfigFlag(["--config=b.json", "stats"]), { argv: ["stats"], config: "b.json" });
