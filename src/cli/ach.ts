@@ -61,6 +61,7 @@ import { stateDir, loadOffsets, saveOffsets, appendRecords, readAllRecords, type
 import { AtifWriter } from "../emitters/atif.ts";
 import { toOtlpJson } from "../emitters/otel.ts";
 import { emitToLangfuse } from "../emitters/langfuse.ts";
+import { runSftEmit } from "../emitters/sft.ts";
 import {
   parseClaudeTranscript,
   parseCodexRollout,
@@ -387,8 +388,12 @@ usage:
                  model · session · today · block · budget; --chain keeps your
                  existing statusline in front)
             [--cost-mode auto|calculate|display] (also AGENTIC_CODING_HARNESS_COST_MODE)
-  ach emit --input <events.json> --format <atif|otel|langfuse> [--out path]
+  ach emit --input <events.json> --format <atif|otel|langfuse|sft> [--out path]
                [--agent A] [--model M] [--session-id SID]
+               (sft: OpenAI chat JSONL for fine-tuning; --input may be a RunResult
+                JSON or a trials directory; [--min-score N] [--exit success]
+                [--agent A] filter runs, --full-conversation = one sample per
+                run instead of one per assistant turn; docs/SFT-EXPORT.md)
                (langfuse POSTs OTLP to the Langfuse instance; auth via
                 --langfuse-url/--langfuse-public-key/--langfuse-secret-key or
                 env LANGFUSE_URL|LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY,
@@ -1781,14 +1786,27 @@ async function cmdEmit(rest: string[]): Promise<number> {
       "langfuse-url": { type: "string" },
       "langfuse-public-key": { type: "string" },
       "langfuse-secret-key": { type: "string" },
+      "min-score": { type: "string" },
+      exit: { type: "string" },
+      "full-conversation": { type: "boolean" },
     },
     allowPositionals: true,
   });
   const input = args.values.input;
   if (!input) throw new HarnessError("emit requires --input <events.json>", "USAGE");
   const format = args.values.format;
-  if (!format || (format !== "atif" && format !== "otel" && format !== "langfuse")) {
-    throw new HarnessError(`emit requires --format <atif|otel|langfuse> (got '${format ?? ""}')`, "USAGE");
+  if (!format || (format !== "atif" && format !== "otel" && format !== "langfuse" && format !== "sft")) {
+    throw new HarnessError(`emit requires --format <atif|otel|langfuse|sft> (got '${format ?? ""}')`, "USAGE");
+  }
+  if (format === "sft") {
+    return runSftEmit({
+      input,
+      out: args.values.out,
+      minScore: optNum(args.values["min-score"], "--min-score"),
+      exit: args.values.exit,
+      agent: args.values.agent,
+      fullConversation: args.values["full-conversation"],
+    });
   }
   let raw: string;
   try {

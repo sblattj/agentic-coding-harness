@@ -262,7 +262,8 @@ through the same `Pricer` (the old `cli/lib.ts estimateCostUsd` prefix table is 
   observation result references a known `tool_call_id`.
 - `addSubagent()` nests child trajectories under `extra.subagents`.
 
-The CLI also exposes `harness emit --input events.json --format atif|otel|langfuse [--out path]`,
+The CLI also exposes `harness emit --input events.json --format atif|otel|langfuse|sft [--out path]`
+(`sft` = OpenAI chat JSONL for fine-tuning, see [SFT-EXPORT.md](SFT-EXPORT.md)),
 routing straight through the real emitters (the `core/emitters.ts` envelope stub is deleted). ATIF
 is the durable per-run artifact for eval, replay, and diff.
 
