@@ -44,7 +44,7 @@ Every check is `verified`, `failed`, or `unproven`, the same vocabulary as
 | all | `model` | Without `--model`: `unproven`. claude/codex/gemini: the model must belong to the adapter's family (`claude-*` or a Claude Code alias such as `sonnet`; `gpt-*`/`o*`/`codex-*`; `gemini-*`), otherwise it **fails**. opencode needs `provider/model`. A model that is missing from the pricing table is `unproven`, because run cost would show as n/a. kiro: checked against the handshake's `availableModels` (deep). |
 | all | `mcp` | claude reads `<cwd>/.mcp.json`, plus `~/.claude.json` in default-config mode. gemini reads `~/.gemini/settings.json` and `<cwd>/.gemini/settings.json`. opencode reads `opencode.json[c]` in `$XDG_CONFIG_HOME/opencode` and `<cwd>`. codex does a line scan of `[mcp_servers.*]` in `config.toml`, which is not a full TOML parse. An unparseable file, or a stdio server whose command is not on PATH, **fails**. Remote URLs are not contacted. prime reads `mcpServers` in `~/.prime/agent/settings.json`. kiro: the handshake's MCP notices. |
 | harness | `stateDir` | The state dir (`AGENTIC_CODING_HARNESS_STATE_DIR`) can be created, and a probe file can be written and removed. |
-| harness | `pricing` | The price table loads and prices the flagships. The detail says whether the bundled LiteLLM extract is present. |
+| harness | `pricing` | The price table loads and prices the flagships. The detail says whether the bundled LiteLLM extract is present; the snapshot date and staleness are in `ach stats --json` (`pricing`). |
 | harness | `env` | `AGENTIC_CODING_HARNESS_*` numeric and enum variables parse. An unknown name is flagged `unproven` as a possible typo. Token values are never printed. |
 
 ## agents.d descriptors (#38)

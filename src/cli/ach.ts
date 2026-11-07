@@ -79,7 +79,8 @@ import { readCursorDashboardStore } from "../monitors/cursor-dashboard.ts";
 import { dashboardSpan, inDashboardSpan, reconcileDashboardWithState, type DashboardSpan } from "./cursor-dashboard-merge.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
-import { createPricer } from "../core/pricing.ts";
+import { createPricer, pricingMeta, pricingStaleNotice } from "../core/pricing.ts";
+import { installOfflineGuard } from "../core/offline.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, orderedExtraArgs, resolveDirFlag, wantsHelp } from "./lib.ts";
 import { deriveLatency } from "../web/derive.ts";
 import {
@@ -278,11 +279,12 @@ usage:
                  temp copy, as for ach run; the four sandbox flags work as for ach run and
                  become the plan-level sandbox: per-cell drop warnings, listed in --dry-run
                  --json, recorded on every ledger row, not part of the cell identity)
-  ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z]
+  ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z] [--offline]
                 (--since/--last: print history newer than the bound on startup;
                  --dir is an alias of --transcript-dir here)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
             [--tz Z] [--by day|week|month] [--json] [--state-only] [--include-unavailable]
+            [--offline]
                 (machine claude/codex/gemini transcripts, read-only
                  amp/goose/qwen stores, + harness state;
                  --state-only skips machine transcript dirs; agents.d usage taps
@@ -297,7 +299,12 @@ usage:
                  = successes / runs with a verdict (success, error, aborted); interrupted
                  and still-running runs have no verdict and are left out (shown as
                  noVerdict=N); 'unavailable' runs are also left out unless
-                 --include-unavailable, which adds back only those)
+                 --include-unavailable, which adds back only those;
+                 --offline: refuse any outbound network call (OfflineViolation);
+                 --json adds a pricing block: snapshotDate, sourceUrl, modelCount,
+                 ageDays, stale, source; a snapshot older than
+                 AGENTIC_CODING_HARNESS_PRICING_STALE_DAYS (default 180, 0 = silent)
+                 prints a one-line [notice] on stderr)
             [--by model|project|branch]... [--merge-models] [--model-alias FROM=TO]...
             [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
                 (--by takes time granularities and dimensions together, e.g.
@@ -395,11 +402,12 @@ usage:
                 LANGFUSE_SECRET_KEY)
   ach report <trials-dir> [--out path]
                  (single-file HTML comparison; a trials/ root scans subdirs)
-  ach dash [--json] [--all] [--state-only] [--state-dir <stateDir>] [--budget-usd N]
+  ach dash [--json] [--all] [--state-only] [--state-dir <stateDir>] [--budget-usd N] [--offline]
                (live run dashboard; --json dumps RunRecords and exits; live
                 runs get a pace row: $/h + tok/min over 15m/1h, budget ETA;
                 QUOTA column shows vendor-reported headroom per agent;
-                --dir is an alias of --state-dir here;
+                --dir is an alias of --state-dir here; --offline refuses outbound
+                network calls (loopback allowed);
                 --set-terminal-title[=FMT] keeps {active} {done} {total}
                 {pct} {spend} in the tab title, TTY only)
 ${QUEUE_USAGE}
@@ -422,14 +430,17 @@ ${QUEUE_USAGE}
   ach web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
               [--state-dir <stateDir>] [--no-open] [--source URL] [--source-token T]
               [--source-mode poll|sse|ws] [--source-poll-ms N=3000]
-              [--source-merge state|only=only]
+              [--source-merge state|only=only] [--offline]
                 (browser dashboard over the live registry; token via --token
                   or env AGENTIC_CODING_HARNESS_HTTP_TOKEN; --no-open skips the browser;
                   --source reads runs from an external http(s) feed instead of the
                   state dir — flags or env AGENTIC_CODING_HARNESS_SOURCE[_TOKEN|_MODE|
                   _POLL_MS|_MERGE]; --source-token falls back to --token;
                   --source-merge state unions the local registry under the feed;
-                  --dir is an alias of --state-dir here)
+                  --dir is an alias of --state-dir here;
+                  --offline refuses outbound network calls (OfflineViolation) and a
+                  non-loopback --source; loopback stays allowed; /api/stats carries
+                  the pricing snapshot block)
   ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
               (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
                framing tolerated; same tools and gateway flags as \`ach serve\`)
@@ -1079,9 +1090,11 @@ async function cmdWatch(rest: string[]): Promise<number> {
       last: { type: "string" },
       tz: { type: "string" },
       "exit-codes": { type: "string" },
+      offline: { type: "boolean", default: false },
     },
     allowPositionals: true,
   });
+  if (args.values.offline) installOfflineGuard();
   // Accepted for uniformity (#31); watch only ends on SIGINT/SIGTERM (exit 0)
   // and never reaches a verdict, so the ladder has nothing to add here.
   parseExitCodesMode(args.values["exit-codes"]);
@@ -1349,9 +1362,12 @@ async function cmdStats(rest: string[]): Promise<number> {
       // #25: provenance filter. Not --source: `ach web --source` is a run feed,
       // and stats rows already carry source: state|transcript.
       origin: { type: "string" },
+      // #40: no network may be touched; any outbound call throws OfflineViolation.
+      offline: { type: "boolean", default: false },
     },
     allowPositionals: true,
   });
+  if (args.values.offline) installOfflineGuard();
   const exitMode = parseExitCodesMode(args.values["exit-codes"]);
   const wantOrigin = parseStatsOrigin(args.values.origin);
   // --by carries both #44 calendar granularities (day|week|month) and #27/#43
@@ -1560,6 +1576,10 @@ async function cmdStats(rest: string[]): Promise<number> {
     for (const w of new Set(tap.warnings)) process.stderr.write(`[warn] ${w}\n`);
   }
   for (const w of new Set(pricer.drainWarnings())) process.stderr.write(`[warn] ${w}\n`);
+  // #40: bundled-snapshot provenance; the notice goes to stderr so --json stays clean.
+  const pricingInfo = pricer.meta?.() ?? pricingMeta();
+  const staleNotice = pricingStaleNotice(pricingInfo);
+  if (staleNotice !== null) process.stderr.write(staleNotice + "\n");
   for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
   const skippedRunRecords = registryScan.skipped.length;
   const skippedWarning = skippedRunRecordsWarning(stateDir(), registryScan.skipped);
@@ -1678,6 +1698,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...Object.fromEntries(Object.entries(timeMaps).map(([k, v]) => [k, mapView(v, k === "byDay" ? prov.byDay : k === "byWeek" ? prov.byWeek ?? {} : prov.byMonth ?? {})])),
           timezone: timeZone,
           window: windowJson(window),
+          pricing: pricingInfo,
           byModel: dims.byModel,
           unpricedModels: dims.unpricedModels,
           cacheHitRatio: baseCacheRatios(agg),

@@ -1106,6 +1106,7 @@ function checkPricing(): DoctorCheck {
 type EnvRule = "num" | "int" | "posint" | "flag" | "string" | "secret" | readonly string[];
 const HARNESS_ENV: Record<string, EnvRule> = {
   COST_MODE: ["auto", "calculate", "display"],
+  PRICING_STALE_DAYS: "int",
   TZ: "string",
   PROJECT_ALIASES: "string",
   BUDGET_ALERTS: "string",

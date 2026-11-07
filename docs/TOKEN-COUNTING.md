@@ -285,6 +285,54 @@ cost_usd = ( inputTokens                   × price.input
 - The CLI transcript tap prices unpriced rows through this same `Pricer` (`cli/ach.ts`) — the
   old `cli/lib.ts estimateCostUsd` prefix table is gone (that merge is closed).
 
+### Offline pricing, snapshot stamp and refresh (#40)
+
+Pricing never touches the network. The price table is `src/core/pricing-data.json`, a static
+JSON import compiled into every distribution, layered over a small embedded table
+(`FALLBACK_PRICES` in `src/core/pricing.ts`) and, optionally, a local cost-map file
+(`AGENTIC_CODING_HARNESS_PRICING_OVERRIDE` or `createPricer(path)`). There is no price fetch and
+no live refresh.
+
+**Snapshot stamp.** The file carries two top-level non-model keys: `snapshotDate` (YYYY-MM-DD, when
+the entries were last refreshed) and `sourceUrl` (the LiteLLM file they are extracted from).
+`parsePriceMap` skips both keys. `ach stats --json` adds a `pricing` block:
+`{ snapshotDate, sourceUrl, modelCount, ageDays, stale, staleDays, source }`, and the web
+dashboard's `GET /api/stats` carries the same block. `source` is `bundled`, `cost-map` (a local
+override file was layered on), or `embedded-fallback` (the bundled extract is empty or unreadable,
+so only the embedded table prices; `ach` degrades to it rather than crashing). The pricer also
+answers `sourceOf(model)` per exact key: `cost-map`, `bundled`, `embedded-fallback`, or null.
+(The bundled file is a static import, so it cannot be "removed" at runtime; the
+embedded-fallback path is exercised by passing an empty extract to `createPricer`.)
+
+**Staleness.** When the snapshot is older than 180 days, `ach stats` prints one `[notice]` line on
+stderr (stdout and `--json` stay clean). `AGENTIC_CODING_HARNESS_PRICING_STALE_DAYS=N` moves the
+threshold; `0` silences the notice.
+
+**`--offline`.** `ach stats`, `watch`, `dash` and `web` accept `--offline`. It installs a guard on
+`globalThis.fetch` and `node:http`/`node:https` `request`/`get`: any call to a non-loopback host
+throws `OfflineViolation` naming the URL (`src/core/offline.ts`). Loopback (`localhost`,
+`127.0.0.0/8`, `::1`) stays allowed because it never leaves the machine (the web server's own
+UI, the kiro IDE CDP port). `ach web --offline --source https://...` is refused up front; a
+loopback `--source` is fine. The only outbound `fetch` sites in the code are the web HTTP run
+source and the kiro IDE CDP probe, neither on a pricing path.
+
+**CI guarantee.** The pricing and stats test files import `tests/support/no-network.mjs`, which
+replaces `fetch`, `http`/`https` `request`/`get`, TCP `net.Socket.connect` and `dns.lookup` with
+stubs that throw `NetworkBlocked` (unix-socket/IPC connects and `listen()` are untouched). Spawned
+`ach` subprocesses inherit it through `NODE_OPTIONS`. A fetch added to a pricing or stats path
+fails `npm test`. `tests/offline-pricing.test.ts` proves the guard itself trips.
+
+**Refreshing the snapshot** (manual, no generator; by hand so a human reviews the diff):
+
+1. Download LiteLLM's `model_prices_and_context_window.json` (the URL in `sourceUrl`).
+2. Copy the entries for the models you care about into `src/core/pricing-data.json`, keeping keys
+   sorted and the existing LiteLLM field names (`input_cost_per_token`, `cache_read_input_token_cost`,
+   `max_input_tokens`, ...). Keep any hand-set entries for models LiteLLM lacks (those carry the
+   estimated provenance noted in `FALLBACK_PRICES` comments).
+3. Run `node scripts/stamp-pricing-snapshot.mjs` (today, UTC) or pass `YYYY-MM-DD` for the date of
+   the extract. It rewrites only the `snapshotDate` line.
+4. `npm test` (`tests/bundled-pricing.test.ts` and the pricing suites), then commit.
+
 ### `ach stats --cost-mode` and cost provenance
 
 Why the modes exist: a CLI-reported cost and our token × bundled-price math disagree in

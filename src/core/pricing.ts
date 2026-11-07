@@ -68,6 +68,10 @@ export interface Pricer {
   resolveAlias(model: string): string;
   /** Warnings accumulated so far (and drained): unpriced models, malformed map entries, family-fallback estimates. */
   drainWarnings(): string[];
+  /** Provenance of this pricer's table (issue #40). Optional so a custom Pricer still type-checks. */
+  meta?(opts?: { now?: number; env?: Record<string, string | undefined> }): PricingMeta;
+  /** Which layer prices an exact model key: cost-map, bundled extract, or the embedded table; null = no exact entry. */
+  sourceOf?(model: string): PricingSource | null;
 }
 
 // Embedded fallback: LiteLLM-verified (flagships) plus plausible per-1M USD
@@ -159,7 +163,13 @@ function loadExternalMap(path: string): Record<string, ModelPrice> {
 }
 
 function parsePriceMap(raw: unknown): Record<string, ModelPrice> {
-  const parsed = z.record(z.string(), ExternalPrice).parse(raw);
+  // Snapshot stamps (snapshotDate, sourceUrl) are not models: drop them
+  // before validation so a stamped extract or a stamped user map still parses.
+  const body =
+    typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+      ? Object.fromEntries(Object.entries(raw).filter(([k]) => !PRICING_META_KEYS.includes(k as never)))
+      : raw;
+  const parsed = z.record(z.string(), ExternalPrice).parse(body);
   const map: Record<string, ModelPrice> = {};
   for (const [key, entry] of Object.entries(parsed)) {
     const per1m = (perToken: number | undefined) =>
@@ -178,9 +188,106 @@ function parsePriceMap(raw: unknown): Record<string, ModelPrice> {
   return map;
 }
 
+/** Top-level non-model keys in pricing-data.json (and any stamped cost map). */
+export const PRICING_META_KEYS = ['snapshotDate', 'sourceUrl'] as const;
+
+/** Env var: snapshot age (days) past which stats prints a staleness notice; `0` silences it. */
+export const PRICING_STALE_DAYS_ENV = 'AGENTIC_CODING_HARNESS_PRICING_STALE_DAYS';
+export const DEFAULT_PRICING_STALE_DAYS = 180;
+
+/**
+ * Where the price table came from: `bundled` (pricing-data.json plus the
+ * embedded table), `cost-map` (a local override file was layered on top), or
+ * `embedded-fallback` (the bundled extract is missing, empty or unreadable,
+ * so only the small embedded table prices anything).
+ */
+export type PricingSource = 'bundled' | 'cost-map' | 'embedded-fallback';
+
+/** Pricing-table provenance for `ach stats --json` (`pricing` block) and the web /api/stats. */
+export interface PricingMeta {
+  /** ISO date (YYYY-MM-DD) the bundled extract was stamped, or null when unstamped. */
+  snapshotDate: string | null;
+  sourceUrl: string | null;
+  /** Models in the bundled extract (not aliases). */
+  modelCount: number;
+  /** Whole days between snapshotDate and now; null when unstamped. */
+  ageDays: number | null;
+  /** True when ageDays exceeds staleDays (never when staleDays is 0 or unstamped). */
+  stale: boolean;
+  /** Effective threshold in days; 0 = notice silenced. */
+  staleDays: number;
+  source: PricingSource;
+}
+
+interface BundledPricing {
+  prices: Record<string, ModelPrice>;
+  snapshotDate: string | null;
+  sourceUrl: string | null;
+  modelCount: number;
+  /** False when the extract is empty or failed to parse: the embedded table stands alone. */
+  ok: boolean;
+}
+
+function loadBundled(raw: unknown): BundledPricing {
+  const str = (k: string): string | null => {
+    const v = (raw as Record<string, unknown> | null | undefined)?.[k];
+    return typeof v === 'string' && v !== '' ? v : null;
+  };
+  try {
+    const prices = parsePriceMap(raw);
+    const modelCount = Object.entries(raw as Record<string, unknown>).filter(
+      ([k]) => !PRICING_META_KEYS.includes(k as never),
+    ).length;
+    return { prices, snapshotDate: str('snapshotDate'), sourceUrl: str('sourceUrl'), modelCount, ok: modelCount > 0 };
+  } catch {
+    return { prices: {}, snapshotDate: null, sourceUrl: null, modelCount: 0, ok: false };
+  }
+}
+
 // Static JSON import keeps the authoritative extract inside every distributed
 // bundle (Node CLI/library, Bun and standalone), without sibling-file lookups.
-const BUNDLED_PRICES = parsePriceMap(bundledPricingData);
+// This is the ONLY place pricing data is loaded: there is no network path.
+const BUNDLED = loadBundled(bundledPricingData);
+const BUNDLED_PRICES = BUNDLED.prices;
+
+/** Stale threshold in days from env: unset/blank/invalid -> default; `0` -> 0 (silenced). */
+export function resolveStaleDays(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[PRICING_STALE_DAYS_ENV]?.trim();
+  if (raw === undefined || raw === '') return DEFAULT_PRICING_STALE_DAYS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_PRICING_STALE_DAYS;
+}
+
+function buildMeta(
+  b: BundledPricing,
+  source: PricingSource,
+  opts: { now?: number; env?: Record<string, string | undefined> } = {},
+): PricingMeta {
+  const now = opts.now ?? Date.now();
+  const staleDays = resolveStaleDays(opts.env);
+  const t = b.snapshotDate === null ? NaN : Date.parse(`${b.snapshotDate}T00:00:00Z`);
+  const ageDays = Number.isNaN(t) ? null : Math.max(0, Math.floor((now - t) / 86_400_000));
+  return {
+    snapshotDate: Number.isNaN(t) ? null : b.snapshotDate,
+    sourceUrl: b.sourceUrl,
+    modelCount: b.modelCount,
+    ageDays,
+    stale: staleDays > 0 && ageDays !== null && ageDays > staleDays,
+    staleDays,
+    source,
+  };
+}
+
+/** Provenance of the default (bundled) table. `now` and `env` are injectable for tests. */
+export function pricingMeta(opts: { now?: number; env?: Record<string, string | undefined> } = {}): PricingMeta {
+  return buildMeta(BUNDLED, BUNDLED.ok ? 'bundled' : 'embedded-fallback', opts);
+}
+
+/** The one-line staleness notice, or null when the snapshot is fresh or the notice is silenced. */
+export function pricingStaleNotice(meta: PricingMeta): string | null {
+  if (!meta.stale || meta.ageDays === null) return null;
+  return `[notice] pricing snapshot is ${meta.ageDays} days old (stamped ${meta.snapshotDate}, threshold ${meta.staleDays}d): bundled prices may have drifted; set ${PRICING_STALE_DAYS_ENV}=0 to silence`;
+}
 
 /**
  * Per-model usage slice as embedded by the adapters under extra.raw.models
@@ -270,9 +377,13 @@ export function pricedSources(rec: CanonicalTokenRecord): { reported: boolean; c
   return { reported, computed };
 }
 
-export function createPricer(costMapPath?: string): Pricer {
+export function createPricer(costMapPath?: string, opts?: { bundled?: unknown }): Pricer {
+  // `opts.bundled` swaps the bundled extract (tests: an empty/corrupt extract
+  // exercises the embedded-fallback source); production never passes it.
+  const bundled = opts?.bundled === undefined ? BUNDLED : loadBundled(opts.bundled);
   // Preserve precedence: fallback < authoritative extract < external override.
-  let prices = { ...FALLBACK_PRICES, ...BUNDLED_PRICES };
+  let prices = { ...FALLBACK_PRICES, ...bundled.prices };
+  let overrideKeys: Set<string> | null = null;
   const warnings: string[] = [];
   // Unknown-model warnings are collapsed at drain (issue #116): one line per
   // distinct (model, path) with the number of sessions it hit, instead of one
@@ -302,7 +413,9 @@ export function createPricer(costMapPath?: string): Pricer {
   }
   if (overridePath !== undefined) {
     try {
-      prices = { ...prices, ...loadExternalMap(overridePath) };
+      const external = loadExternalMap(overridePath);
+      prices = { ...prices, ...external };
+      overrideKeys = new Set(Object.keys(external));
     } catch (err) {
       const absent = err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT';
       if (!(fromEnv && absent)) {
@@ -428,6 +541,17 @@ export function createPricer(costMapPath?: string): Pricer {
       1_000_000
     );
   },
+    meta(mo?: { now?: number; env?: Record<string, string | undefined> }): PricingMeta {
+      return buildMeta(bundled, overrideKeys !== null ? 'cost-map' : bundled.ok ? 'bundled' : 'embedded-fallback', mo);
+    },
+    sourceOf(model: string): PricingSource | null {
+      for (const k of [model.toLowerCase(), resolveAlias(model)]) {
+        if (overrideKeys?.has(k)) return 'cost-map';
+        if (bundled.prices[k] !== undefined) return 'bundled';
+        if (FALLBACK_PRICES[k] !== undefined) return 'embedded-fallback';
+      }
+      return null;
+    },
     priceByModel(rec: CanonicalTokenRecord, opts?: PriceOptions): ModelCost[] {
       if (isVendorMetered(rec)) return [];
       const slices = modelSlices(rec);

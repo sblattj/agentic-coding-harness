@@ -26,6 +26,7 @@ import { eventToText, eventsToAsciicast } from "./asciicast.ts";
 import { deriveRunObservability } from "./derive.ts";
 import { createFrameAnnotator, type ContextFrame, type FrameAnnotator } from "./context-frames.ts";
 import { collectQueueViews } from "../core/queue-view.ts";
+import { pricingMeta } from "../core/pricing.ts";
 import { renderQueuesPage } from "./queues.ts";
 import { PtyManager } from "./pty-manager.ts";
 
@@ -529,11 +530,11 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
             return jsonError(res, 400, `window must be one of: ${STATS_WINDOWS.join(", ")}`);
           }
           const now = Date.now();
-          return sendJson(
-            res,
-            200,
-            computeGlobalStats(hub.snapshotRuns(), now, windowSinceMs(w as StatsWindow, now), w as StatsWindow),
-          );
+          return sendJson(res, 200, {
+            ...computeGlobalStats(hub.snapshotRuns(), now, windowSinceMs(w as StatsWindow, now), w as StatsWindow),
+            // #40: bundled price snapshot provenance (date, model count, staleness).
+            pricing: pricingMeta(),
+          });
         }
 
         // Liveness probe for orchestrators. Auth policy matches /api/runs

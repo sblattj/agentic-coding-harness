@@ -7,6 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { HarnessError } from "../core/types.ts";
+import { assertOfflineSource, installOfflineGuard } from "../core/offline.ts";
 import { stateDir } from "../core/store.ts";
 import { resolveDirFlag } from "./lib.ts";
 import { describeListenError } from "./serve.ts";
@@ -149,6 +150,7 @@ export async function cmdWeb(rest: string[]): Promise<number> {
       dir: { type: "string" },
       "state-dir": { type: "string" },
       "no-open": { type: "boolean", default: false },
+      offline: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
       source: { type: "string" },
       "source-token": { type: "string" },
@@ -170,6 +172,7 @@ export async function cmdWeb(rest: string[]): Promise<number> {
   }
 
   const port = optPort(args.values.port, "--port");
+  if (args.values.offline) installOfflineGuard();
   // CLI flag wins over env; when both are unset: warn + force loopback.
   const token = args.values.token ?? (process.env.AGENTIC_CODING_HARNESS_HTTP_TOKEN || undefined);
   let host = args.values.host ?? DEFAULT_HOST;
@@ -189,6 +192,8 @@ export async function cmdWeb(rest: string[]): Promise<number> {
     },
     process.env,
   );
+  // #40: a remote feed is an outbound call; refuse it up front (loopback feeds are fine).
+  if (args.values.offline && source !== null) assertOfflineSource(source.url);
   const localSource = args.values["state-only"] ? new FsRunSource(dir) : new TranscriptRunSource(dir);
   let runSource: RunSource | undefined = localSource;
   let sourceUrl: string | undefined;

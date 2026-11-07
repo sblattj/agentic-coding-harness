@@ -4,6 +4,8 @@
 // (`unpricedRecords`) exactly the way a transcript record is, and `ach status`
 // prices state records the same way `ach stats` does (parity), while a state
 // record that stored an explicit costUsd 0 stays a genuine, reported $0.
+// #40: pricing/stats tests run with network primitives throwing (offline guarantee).
+import "./support/no-network.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";

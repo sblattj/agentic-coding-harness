@@ -3,6 +3,8 @@
 // The fixture spans two projects x two days; only project /alpha on day 1
 // survives `--project /alpha --until 2026-09-21`. The test enumerates the JSON
 // top-level keys, so a future section added without a check here fails it.
+// #40: pricing/stats tests run with network primitives throwing (offline guarantee).
+import "./support/no-network.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -123,6 +125,8 @@ test("every ach stats --json section honours --project and --until together", ()
       window: (v) => assert.ok(v.until, JSON.stringify(v)),
       byModel: (v) => assert.equal(sumRecords(v), 1),
       unpricedModels: (v) => assert.deepEqual(v, []),
+      // #40: bundled-snapshot provenance; a property of the table, not of the records.
+      pricing: (v) => assert.equal(v.source, "bundled"),
       cacheHitRatio: (v) => {
         assert.deepEqual(keysOf(v.byDay), ["2026-09-20"]);
         assert.deepEqual(keysOf(v.byAgent), ["claude"]);

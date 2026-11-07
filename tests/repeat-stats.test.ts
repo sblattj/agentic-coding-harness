@@ -17,6 +17,8 @@
 // - pass@k: combinatorial definition 1 − C(n−c, k)/C(n, k) (Chen et al. 2021,
 //   "Evaluating LLMs Trained on Code", eq. 1) computed with exact factorial
 //   binomials; pass^k: C(c, k)/C(n, k) (Yao et al. 2024, τ-bench).
+// #40: pricing/stats tests run with network primitives throwing (offline guarantee).
+import "./support/no-network.mjs";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 

@@ -204,7 +204,10 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 - **Unified events, cache-aware tokens** — one `AgentEvent` stream, one canonical token record;
   per-agent double-counting traps handled ([docs/TOKEN-COUNTING.md](docs/TOKEN-COUNTING.md)).
 - **LiteLLM multi-model pricing** — bundled LiteLLM extract, external cost-map override;
-  unpriced models carry an explicit unavailable price, never a silent estimate.
+  unpriced models carry an explicit unavailable price, never a silent estimate. Pricing is fully
+  offline: the snapshot is date-stamped (`ach stats --json` `pricing` block, stale notice after 180
+  days, `AGENTIC_CODING_HARNESS_PRICING_STALE_DAYS`) and `--offline` on stats/watch/dash/web makes
+  any outbound network call fail loudly ([docs/TOKEN-COUNTING.md](docs/TOKEN-COUNTING.md)).
 - **Kiro MITM credit tap** — auto-starts on `ach run --agent kiro` when `mitmdump` is on
   the PATH; captures metering credits (`extra.credits`) and the native `kiroSession` id for grep
   correlation; degrades to a warning when absent.
