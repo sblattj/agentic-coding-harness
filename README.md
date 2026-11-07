@@ -662,7 +662,9 @@ ach run --agent claude --isolate --repeat 4 --parallel 4 "..."   # four runs, fo
 1. A dirty working tree (tracked edits or untracked files) is refused with
    `DIRTY_TREE`, because the worktree starts from `HEAD` and would not contain your
    uncommitted edits. `--allow-dirty` proceeds anyway (the dirty edits stay in the main
-   tree, not in the worktree).
+   tree, not in the worktree). Files the harness itself owns never count: the project
+   `.ach/` directory, the state dir and, for `ach trial`, the matrix ledger, work root
+   and report artifacts.
 2. `git worktree add <stateDir>/worktrees/<runId> -b ach/<runId> <HEAD sha>`. Run from a
    subdirectory of the repo and the agent starts in the same subdirectory of the worktree.
 3. The agent runs inside the worktree; `--verify` runs there too. Nothing is synced back:
@@ -670,14 +672,19 @@ ach run --agent claude --isolate --repeat 4 --parallel 4 "..."   # four runs, fo
 4. By default the worktree and branch are kept. `--cleanup` commits any leftover
    uncommitted edits to the branch (commit message names the run), removes the worktree
    and keeps the branch. A failed removal leaves the worktree and is recorded.
+   A SIGINT or SIGTERM during a `--cleanup` run removes the worktree on the way out
+   (best effort; the branch stays). Anything left behind, for example after a `kill -9`,
+   lives under `<stateDir>/worktrees/<runId>`: clear it with
+   `git worktree remove --force <stateDir>/worktrees/<runId>` (then `git branch -D ach/<runId>`
+   if you do not want the branch), or `git worktree prune` once the directories are gone.
 
 The RunRecord (and `--json` output) carries
 `worktree: {path, branch, baseSha, cleanup: {status: "kept"|"removed"|"failed", commit?, error?}, nodeModules?}`;
 its `cwd` is the worktree path. Records without the field are unchanged.
 
-`--isolate-node-modules` (JS projects) symlinks each non-dot entry of the primary
-`node_modules` into the worktree, skipping dot-file caches such as `.cache` and `.bin`
-(a fresh worktree has no `node_modules`). The links are excluded from the `--cleanup`
+`--isolate-node-modules` (JS projects) symlinks each entry of the primary
+`node_modules` into the worktree, including `.bin` (npm scripts need it) and skipping
+cache dirs such as `.cache` (a fresh worktree has no `node_modules`). The links are excluded from the `--cleanup`
 commit and removed with the worktree; the primary `node_modules` is never touched.
 
 Combinations: `--parallel > 1` and `--repeat` are safe (one worktree per child).
@@ -686,8 +693,9 @@ branch), as is `--resume` (sessions are keyed by project directory). `--allow-di
 `--cleanup` and `--isolate-node-modules` without `--isolate` are usage errors.
 `--isolate` and its modifiers also work on `ach trial --matrix` / `--suite`: cells whose
 task works in the project `cwd` (`workspace: "shared"`) each get a worktree; `fresh`
-cells already run in a new empty directory and are left alone. Task `setup` runs in the
-real workspace first, so a setup that edits tracked files needs `--allow-dirty`.
+cells already run in a new empty directory and are left alone. Task `setup` runs inside
+the worktree, after it is created and before the agent starts, so its output reaches the
+agent and `verify` and the main checkout stays clean.
 
 The zero-tooling workaround is to keep benchmark workspaces outside `$HOME` and outside
 any directory that holds these files, for example under `/tmp`. The warning tells you

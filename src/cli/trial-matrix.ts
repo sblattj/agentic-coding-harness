@@ -684,8 +684,8 @@ export interface RunMatrixOptions {
   /**
    * #75: run each cell that works in the project cwd (workspace !== "fresh") in
    * its own git worktree + branch (src/core/isolate.ts). Fresh-workspace cells
-   * already get a new empty directory, so they are left alone. Setup still runs
-   * in the real workspace first; verify runs inside the worktree.
+   * already get a new empty directory, so they are left alone. Setup runs inside
+   * the worktree (not the real workspace); verify runs there too.
    */
   isolate?: Omit<IsolateOptions, "stateDir">;
   /** Called as each cell is decided / settles. */
@@ -741,6 +741,35 @@ function cellEnv(cell: MatrixCell, cwd: string): NodeJS.ProcessEnv {
   };
 }
 
+/**
+ * #75: per-cell isolate options. The harness's own files (ledger, work root and
+ * the siblings the suite runner writes next to the ledger) never count as a
+ * dirty tree, and the task's setup runs inside the worktree.
+ */
+function isolateOptsFor(cell: MatrixCell, opts: RunMatrixOptions, env: NodeJS.ProcessEnv): NonNullable<RunMatrixOptions["isolate"]> {
+  const base = opts.ledgerPath.replace(/(\.ledger)?\.jsonl$/i, "");
+  const ignorePaths = [
+    ...(opts.isolate?.ignorePaths ?? []),
+    opts.ledgerPath,
+    opts.workRoot ?? defaultWorkRoot(opts.ledgerPath),
+    `${base}.runs`,
+    `${base}.report.html`,
+  ];
+  return {
+    ...opts.isolate,
+    ignorePaths,
+    ...(cell.task.setup !== undefined
+      ? {
+          setup: {
+            command: cell.task.setup,
+            env,
+            timeoutMs: cell.task.setupTimeoutMs ?? opts.setupTimeoutMs ?? DEFAULT_SETUP_TIMEOUT_MS,
+          },
+        }
+      : {}),
+  };
+}
+
 /** Run one cell attempt; returns the ledger row to append. Throws Interrupted on abort. */
 async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<LedgerRow> {
   const startedAt = Date.now();
@@ -765,7 +794,9 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
     cwd = cell.task.cwd ?? process.cwd();
   }
   const env = cellEnv(cell, cwd);
-  if (cell.task.setup !== undefined) {
+  const isolating = opts.isolate !== undefined && cell.task.workspace !== "fresh";
+  // Under --isolate the setup runs inside the worktree (see isolateOpts below), never the main checkout.
+  if (cell.task.setup !== undefined && !isolating) {
     const setup = await raceAbort(
       runVerifier({
         command: cell.task.setup,
@@ -810,7 +841,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
         stateDir: opts.stateDir,
         labels: { experiment: cell.experiment, variant: cell.variant, cellId: cell.cellId },
         ...(opts.hermetic === true ? { hermetic: {} } : {}),
-        ...(opts.isolate !== undefined && cell.task.workspace !== "fresh" ? { isolate: opts.isolate } : {}),
+        ...(isolating ? { isolate: isolateOptsFor(cell, opts, env) } : {}),
         ...(cell.task.verify !== undefined
           ? {
               verify: {
