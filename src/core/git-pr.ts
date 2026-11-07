@@ -1,4 +1,8 @@
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+
+import { gitBranchInfo } from './git-branch.ts';
+import { isolateBranchName } from './isolate.ts';
 
 /** Where a run's recorded PR number came from (#48). */
 export type PrSource = 'flag' | 'env' | 'branch' | 'gh';
@@ -47,9 +51,38 @@ export function prFromBranch(branch: string | undefined): number | undefined {
   return undefined;
 }
 
-/** `gh pr view <branch> --json number`; undefined when gh is missing, fails, or has no PR. Opt-in only (`--pr auto`). */
+/** Per-process memo of gh lookups, keyed by repo toplevel + branch. Negative results and timeouts are cached too. */
+const ghCache = new Map<string, number | undefined>();
+
+/** Test seam: forget memoized gh lookups. */
+export function clearPrGhCache(): void {
+  ghCache.clear();
+}
+
+function repoTop(cwd: string | undefined): string {
+  if (!cwd) return '';
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 1500,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return cwd;
+  }
+}
+
+/**
+ * `gh pr view <branch> --json number`; undefined when gh is missing, fails, or has no PR.
+ * Opt-in only (`--pr auto`). Memoized per (repo toplevel, branch) for the life of the
+ * process, so `--repeat` / `--parallel` pay for the sync call (4 s cap) at most once.
+ */
 export function prFromGh(branch: string | undefined, cwd: string | undefined): number | undefined {
   if (!branch) return undefined;
+  const key = `${repoTop(cwd)}\0${branch}`;
+  if (ghCache.has(key)) return ghCache.get(key);
+  let result: number | undefined;
   try {
     const out = execFileSync('gh', ['pr', 'view', branch, '--json', 'number', '--jq', '.number'], {
       ...(cwd ? { cwd } : {}),
@@ -58,9 +91,40 @@ export function prFromGh(branch: string | undefined, cwd: string | undefined): n
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     const n = Number(out.trim());
-    return Number.isInteger(n) && n >= 1 ? n : undefined;
+    result = Number.isInteger(n) && n >= 1 ? n : undefined;
   } catch {
-    return undefined;
+    result = undefined;
+  }
+  ghCache.set(key, result);
+  return result;
+}
+
+/**
+ * `--isolate` runs the agent in a worktree on `ach/<runId>`. The PR belongs to the
+ * user's checkout, so map that worktree back to the primary checkout (the dir that
+ * owns the shared git dir) and its current branch. Isolation refuses a dirty tree,
+ * so the primary is still on the branch the worktree was cut from. Anything else
+ * (not an isolated run, lookup failure) returns the inputs unchanged.
+ */
+export function prContextFor(
+  runId: string | undefined,
+  cwd: string,
+  branch: string | undefined,
+): { branch: string | undefined; cwd: string } {
+  if (!runId || branch !== isolateBranchName(runId)) return { branch, cwd };
+  try {
+    const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 1500,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (path.basename(common) !== '.git') return { branch, cwd };
+    const primary = path.dirname(common);
+    const info = gitBranchInfo(primary);
+    return info.branch ? { branch: info.branch, cwd: primary } : { branch, cwd };
+  } catch {
+    return { branch, cwd };
   }
 }
 

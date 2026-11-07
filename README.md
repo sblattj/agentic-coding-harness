@@ -332,10 +332,15 @@ calls them `git.pr` / `git.prSource`). Without the flag the PR comes from, in or
    matches `pr-<n>`, `pull-<n>`, `issue-<n>` or `issues-<n>` (optionally followed by `-slug`),
    or `<n>-slug` where the slug starts with a letter: `482-fix-auth`, `pr-482`,
    `feat/482-x` all map to 482. `main`, `develop`, bare numbers, dates (`2026-11-07`),
-   versions (`release-1.2`, `v2-beta`) and branches with no number stay unlinked.
+   versions (`release-1.2`, `v2-beta`) and branches with no number stay unlinked. The
+   rule reads the name only, so a branch like `2fa-rollout` can link to a wrong number;
+   there is no opt-out flag, so pass `--pr <n>` to override it. With `--isolate` the
+   branch and the `gh` lookup use your original checkout, not the `ach/<runId>` worktree.
 3. `gh pr view <branch> --json number`, ONLY when you pass `--pr auto` (or set
    `AGENTIC_CODING_HARNESS_PR=auto`) and the branch name matched nothing
-   (`prSource: "gh"`). Never by default, never during `stats`.
+   (`prSource: "gh"`). Never by default, never during `stats`. The lookup is cached per
+   repo and branch for the life of the process (misses and timeouts too), so `--repeat`
+   and `--parallel` wait for `gh` at most once.
 
 `ach stats --by pr` (composable with `--by model,project,branch`) prints a per-PR table
 (`#482 records=... cost=...`) and adds `byPr` to `--json`; runs with no recorded PR land
