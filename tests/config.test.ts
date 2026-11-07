@@ -403,3 +403,137 @@ describe("stateDir and the parseArgs hook", () => {
     assert.match(sub.stdout, /ach config --set <key> <value> \[--dry-run\]/);
   });
 });
+
+describe("--set coerces by the target key's type (#41)", () => {
+  it("a string key keeps digit-only text verbatim; a numeric key still writes a number", async () => {
+    const p = await project();
+    const tok = runCli(["config", "--set", "serve.token", "007"], { cwd: p.cwd });
+    assert.equal(tok.code, 0, tok.stderr);
+    const budget = runCli(["config", "--set", "run.budgetUsd", "0.5"], { cwd: p.cwd });
+    assert.equal(budget.code, 0, budget.stderr);
+    const doc = JSON.parse(await fs.readFile(p.configFile, "utf8")) as { serve: { token: unknown }; run: { budgetUsd: unknown } };
+    assert.strictEqual(doc.serve.token, "007");
+    assert.strictEqual(doc.run.budgetUsd, 0.5);
+  });
+
+  it("a numeric key rejects a non-number and writes nothing", async () => {
+    const p = await project();
+    const r = runCli(["config", "--set", "run.budgetUsd", "lots"], { cwd: p.cwd });
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /expects a number, got 'lots'/);
+    await assert.rejects(fs.stat(p.configFile), /ENOENT/);
+  });
+
+  it("every NUMERIC_FLAGS name is a real flag in some section", async () => {
+    const { NUMERIC_FLAGS, PATH_FLAGS } = await import("../src/cli/config.ts");
+    const schema = JSON.parse(await fs.readFile(new URL("../docs/config.schema.json", import.meta.url), "utf8")) as {
+      properties: Record<string, { properties?: Record<string, unknown> }>;
+    };
+    const camel = (f: string) => f.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+    const all = new Set(["run", "stats", "web", "serve"].flatMap((s) => Object.keys(schema.properties[s]!.properties!)));
+    for (const f of [...NUMERIC_FLAGS, ...PATH_FLAGS]) assert.ok(all.has(camel(f)), `${f} is not a config key`);
+  });
+});
+
+describe("a file with a bad key can still be repaired (#41)", () => {
+  it("--unset removes a misspelled key; --set works over a bad file and warns about what remains", async () => {
+    const p = await project({ run: { bugdetUsd: 5 } });
+    const unset = runCli(["config", "--unset", "run.bugdetUsd"], { cwd: p.cwd });
+    assert.equal(unset.code, 0, unset.stderr);
+    assert.deepEqual(JSON.parse(await fs.readFile(p.configFile, "utf8")), {});
+
+    await writeJson(p.configFile, { run: { bugdetUsd: 5 } });
+    const set = runCli(["config", "--set", "run.budgetUsd", "5"], { cwd: p.cwd });
+    assert.equal(set.code, 0, set.stderr);
+    assert.match(set.stderr, /warning: .*unknown key 'bugdetUsd'/);
+    assert.deepEqual(JSON.parse(await fs.readFile(p.configFile, "utf8")), { run: { bugdetUsd: 5, budgetUsd: 5 } });
+
+    const fix = runCli(["config", "--unset", "run.bugdetUsd"], { cwd: p.cwd });
+    assert.equal(fix.code, 0, fix.stderr);
+    assert.doesNotMatch(fix.stderr, /warning/);
+    assert.deepEqual(JSON.parse(await fs.readFile(p.configFile, "utf8")), { run: { budgetUsd: 5 } });
+  });
+
+  it("--unset also removes an unknown section, and still rejects a key the file does not hold", async () => {
+    const p = await project({ bogus: { x: 1 }, run: { budgetUsd: 5 } });
+    const gone = runCli(["config", "--unset", "bogus"], { cwd: p.cwd });
+    assert.equal(gone.code, 0, gone.stderr);
+    assert.deepEqual(JSON.parse(await fs.readFile(p.configFile, "utf8")), { run: { budgetUsd: 5 } });
+    const miss = runCli(["config", "--unset", "run.nope"], { cwd: p.cwd });
+    assert.notEqual(miss.code, 0);
+    assert.match(miss.stderr, /unknown key 'nope'/);
+  });
+
+  it("--set still rejects an unknown new key even over a bad file", async () => {
+    const p = await project({ run: { bugdetUsd: 5 } });
+    const r = runCli(["config", "--set", "run.bugdetUsd2", "5"], { cwd: p.cwd });
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /unknown key 'bugdetUsd2'/);
+  });
+});
+
+describe("web state-dir mirrors the env var; path values resolve against the config file (#41)", () => {
+  it("web.stateDir / web.dir in the file lose to AGENTIC_CODING_HARNESS_STATE_DIR; stats.dir has no mirror", async () => {
+    const p = await project({ web: { stateDir: "/from/file" }, stats: { dir: "/stats/file" } });
+    const none = show(p);
+    assert.deepEqual(none.values["web.stateDir"], { value: "/from/file", source: `file:${p.configFile}`, flag: "--state-dir" });
+    const env = { AGENTIC_CODING_HARNESS_STATE_DIR: "/from/env" };
+    assert.deepEqual(show(p, [], env).values["web.stateDir"], {
+      value: "/from/env",
+      source: "env:AGENTIC_CODING_HARNESS_STATE_DIR",
+      flag: "--state-dir",
+    });
+    assert.equal(show(p, [], env).values["web.dir"]!.source, "env:AGENTIC_CODING_HARNESS_STATE_DIR");
+    assert.equal(show(p, [], env).values["stats.dir"]!.source, `file:${p.configFile}`);
+  });
+
+  it("the armed web command skips file state-dir/dir when the env var is set, and applies them when not", async () => {
+    const stub = async (rest: string[]) => {
+      parseArgs({ args: rest, options: {}, allowPositionals: true });
+      return 0;
+    };
+    let got: Record<string, unknown> = {};
+    const web = async (rest: string[]) => {
+      got = parseArgs({ args: rest, options: { dir: { type: "string" }, "state-dir": { type: "string" } }, allowPositionals: true }).values;
+      return 0;
+    };
+    const commands: SectionCommands = { run: stub, stats: stub, web, serve: stub };
+    const cfg = await writeJson(path.join(tmp, "web-mirror", "c.json"), { web: { stateDir: "st", dir: "d" } });
+    const saved = process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
+    try {
+      process.env.AGENTIC_CODING_HARNESS_STATE_DIR = "/from/env";
+      await applyConfig("web", cfg, commands);
+      await web([]);
+      assert.equal(got["state-dir"], undefined);
+      assert.equal(got.dir, undefined);
+      delete process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
+      await applyConfig("web", cfg, commands);
+      await web([]);
+      assert.equal(got["state-dir"], path.join(tmp, "web-mirror", "st"));
+    } finally {
+      if (saved === undefined) delete process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
+      else process.env.AGENTIC_CODING_HARNESS_STATE_DIR = saved;
+    }
+  });
+
+  it("relative path-typed values resolve against the config file's dir, not the cwd; non-path keys are untouched", async () => {
+    const p = await project();
+    const cfgDir = path.join(tmp, "elsewhere");
+    const cfg = await writeJson(path.join(cfgDir, "c.json"), {
+      web: { stateDir: "state", dir: "../d" },
+      stats: { transcriptDir: "./t" },
+      run: { evidenceDir: "ev", agent: "claude" },
+      serve: { root: "/abs/root", token: "rel" },
+    });
+    const r = runCli(["--config", cfg, "config", "--show", "--json"], { cwd: p.cwd });
+    assert.equal(r.code, 0, r.stderr);
+    const v = (JSON.parse(r.stdout) as Shown).values;
+    assert.equal(v["web.stateDir"]!.value, path.join(cfgDir, "state"));
+    assert.equal(v["web.dir"]!.value, path.join(tmp, "d"));
+    assert.equal(v["stats.transcriptDir"]!.value, path.join(cfgDir, "t"));
+    assert.equal(v["run.evidenceDir"]!.value, path.join(cfgDir, "ev"));
+    assert.equal(v["serve.root"]!.value, "/abs/root");
+    assert.equal(v["serve.token"]!.value, "rel");
+    assert.equal(v["run.agent"]!.value, "claude");
+  });
+});

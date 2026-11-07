@@ -653,14 +653,14 @@
           ]
         },
         "dir": {
-          "description": "ach web --dir",
+          "description": "ach web --dir (env AGENTIC_CODING_HARNESS_STATE_DIR wins over this)",
           "type": [
             "string",
             "number"
           ]
         },
         "stateDir": {
-          "description": "ach web --state-dir",
+          "description": "ach web --state-dir (env AGENTIC_CODING_HARNESS_STATE_DIR wins over this)",
           "type": [
             "string",
             "number"
