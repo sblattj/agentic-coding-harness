@@ -421,9 +421,11 @@ usage:
   ach emit --input <events.json> --format <atif|otel|langfuse|sft> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (sft: OpenAI chat JSONL for fine-tuning; --input may be a RunResult
-                JSON or a trials directory; [--min-score N] [--exit success]
-                [--agent A] filter runs, --full-conversation = one sample per
-                run instead of one per assistant turn; docs/SFT-EXPORT.md)
+                JSON or a trials directory; [--min-score N] [--exit <status>]
+                [--agent A] filter runs (--exit takes an exitStatus such as
+                success, error, timeout), --full-conversation = one sample per
+                run instead of one per assistant turn; --model, --session-id
+                and --langfuse-* are rejected; docs/SFT-EXPORT.md)
                (langfuse POSTs OTLP to the Langfuse instance; auth via
                 --langfuse-url/--langfuse-public-key/--langfuse-secret-key or
                 env LANGFUSE_URL|LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY,
@@ -1876,6 +1878,12 @@ async function cmdEmit(rest: string[]): Promise<number> {
     throw new HarnessError(`emit requires --format <atif|otel|langfuse|sft> (got '${format ?? ""}')`, "USAGE");
   }
   if (format === "sft") {
+    const otherOnly = (["model", "session-id", "langfuse-url", "langfuse-public-key", "langfuse-secret-key"] as const).filter(
+      (k) => args.values[k] !== undefined,
+    );
+    if (otherOnly.length > 0) {
+      throw new HarnessError(`${otherOnly.map((k) => `--${k}`).join(", ")} do not apply to --format sft`, "USAGE");
+    }
     return runSftEmit({
       input,
       out: args.values.out,

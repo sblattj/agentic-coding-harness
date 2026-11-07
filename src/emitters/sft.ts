@@ -4,18 +4,25 @@
 //   message(user)            -> {role:"user", content}
 //   message(system)          -> {role:"system", content}
 //   message(agent|assistant) -> {role:"assistant", content}
+//   message(reasoning: true) -> dropped (hidden chain-of-thought)
 //   tool_call                -> appended to the open assistant message's
 //                               `tool_calls` (OpenAI function-call shape;
-//                               arguments is a JSON string)
+//                               arguments is a JSON object string, see
+//                               toolArguments; an empty id gets call_sft_N)
 //   tool_result              -> {role:"tool", tool_call_id, content}
+// RunResult.prompt (the user's prompt; not an event) becomes the first user
+// turn when the events do not already open with one (withPrompt).
 // Two sampling modes: turn-level (one sample per assistant message, holding
 // the whole conversation up to and including it) and full-conversation (one
 // sample per run). Run filters (--min-score, --exit, --agent) apply per run.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { HarnessError } from "../core/types.ts";
+import { HarnessError, RunResultSchema } from "../core/types.ts";
 import type { AgentEvent } from "../core/types.ts";
 import { looksLikeRunResult, repeatEnvelopeRuns } from "../report/model.ts";
+
+/** Valid --exit values: the RunResult exitStatus set. */
+const EXIT_STATUSES: readonly string[] = RunResultSchema.shape.exitStatus.options;
 
 export interface SftToolCall {
   id: string;
@@ -37,6 +44,8 @@ export interface SftRun {
   /** Where it came from (file path, plus index inside a repeat envelope). */
   source: string;
   events: AgentEvent[];
+  /** RunResult.prompt: the user's prompt (real runs do not record it as an event). */
+  prompt?: string;
   agent?: string;
   exitStatus?: string;
   /** Numeric score: top-level `score`, else verify verdict (pass = 1, fail/error = 0). */
@@ -53,15 +62,78 @@ function text(v: unknown): string {
   return typeof v === "string" ? v : JSON.stringify(v ?? "");
 }
 
+/**
+ * Tool-call `arguments` as OpenAI wants them: a JSON string holding an object.
+ * Objects are JSON-encoded; a string that already parses to a JSON object is
+ * kept; an empty/missing value becomes "{}"; any other value (plain text,
+ * arrays, numbers, JSON scalars) is wrapped as `{"input": value}`.
+ */
+export function toolArguments(v: unknown): string {
+  if (v === undefined || v === null || v === "") return "{}";
+  if (typeof v === "string") {
+    try {
+      const p: unknown = JSON.parse(v);
+      if (p !== null && typeof p === "object" && !Array.isArray(p)) return v;
+    } catch {
+      // not JSON: wrap below
+    }
+    return JSON.stringify({ input: v });
+  }
+  if (typeof v === "object" && !Array.isArray(v)) {
+    try {
+      return JSON.stringify(v) ?? "{}";
+    } catch {
+      return "{}";
+    }
+  }
+  try {
+    return JSON.stringify({ input: v }) ?? "{}";
+  } catch {
+    return "{}";
+  }
+}
+
+/**
+ * Prepend the run's prompt as the first user turn (after any leading system
+ * messages) unless the conversation already opens with a user message.
+ * Real runs carry the prompt on RunResult.prompt, not as an event.
+ */
+export function withPrompt(messages: SftMessage[], prompt: string | undefined): SftMessage[] {
+  if (prompt === undefined || prompt === "") return messages;
+  let i = 0;
+  while (i < messages.length && messages[i]!.role === "system") i++;
+  if (messages[i]?.role === "user") return messages;
+  return [...messages.slice(0, i), { role: "user", content: prompt }, ...messages.slice(i)];
+}
+
 /** Fold an event stream into an OpenAI-valid message list (see file header). */
 export function eventsToMessages(events: readonly AgentEvent[]): SftMessage[] {
   const out: SftMessage[] = [];
   // Index (in `out`) of the assistant message that may still collect tool calls/results.
   let open = -1;
   const openCalls = new Set<string>();
+  // Empty toolCallIds (adapters that do not report one) get synthetic ids that
+  // cannot collide with any real id in the run; results with an empty id pair
+  // with the most recent unanswered synthetic call (a stack).
+  const realIds = new Set<string>();
+  for (const ev of events) {
+    if ((ev.type === "tool_call" || ev.type === "tool_result") && typeof ev.toolCallId === "string" && ev.toolCallId !== "") {
+      realIds.add(ev.toolCallId);
+    }
+  }
+  let synth = 0;
+  const nextSynthId = (): string => {
+    let id: string;
+    do id = `call_sft_${++synth}`;
+    while (realIds.has(id));
+    return id;
+  };
+  let pendingSynth: string[] = [];
 
   for (const ev of events) {
     if (ev.type === "message") {
+      // Hidden chain-of-thought (adapters stamp `reasoning: true`) is not a training target.
+      if ((ev as { reasoning?: unknown }).reasoning === true) continue;
       const role = (ev as { role?: unknown }).role;
       const src: string = typeof ev.source === "string" ? ev.source : typeof role === "string" ? role : "agent";
       const content = text(ev.content);
@@ -73,6 +145,7 @@ export function eventsToMessages(events: readonly AgentEvent[]): SftMessage[] {
         open = out.length - 1;
       }
       openCalls.clear();
+      pendingSynth = [];
     } else if (ev.type === "tool_call") {
       if (typeof ev.toolCallId !== "string" || typeof ev.functionName !== "string") continue;
       const tail = out[out.length - 1];
@@ -82,20 +155,25 @@ export function eventsToMessages(events: readonly AgentEvent[]): SftMessage[] {
         out.push({ role: "assistant", content: "" });
         open = out.length - 1;
         openCalls.clear();
+        pendingSynth = [];
       }
       const msg = out[open] as Extract<SftMessage, { role: "assistant" }>;
+      const id = ev.toolCallId === "" ? nextSynthId() : ev.toolCallId;
       (msg.tool_calls ??= []).push({
-        id: ev.toolCallId,
+        id,
         type: "function",
-        function: { name: ev.functionName, arguments: text(ev.arguments ?? {}) },
+        function: { name: ev.functionName, arguments: toolArguments(ev.arguments) },
       });
-      openCalls.add(ev.toolCallId);
+      openCalls.add(id);
+      if (ev.toolCallId === "") pendingSynth.push(id);
     } else if (ev.type === "tool_result") {
+      if (typeof ev.toolCallId !== "string" || open < 0) continue;
+      const id = ev.toolCallId === "" ? pendingSynth.pop() : ev.toolCallId;
       // A result with no pending call in the open assistant message cannot be
       // placed validly; drop it rather than emit a dangling tool message.
-      if (typeof ev.toolCallId !== "string" || open < 0 || !openCalls.has(ev.toolCallId)) continue;
-      out.push({ role: "tool", tool_call_id: ev.toolCallId, content: text(ev.content) });
-      openCalls.delete(ev.toolCallId);
+      if (id === undefined || !openCalls.has(id)) continue;
+      out.push({ role: "tool", tool_call_id: id, content: text(ev.content) });
+      openCalls.delete(id);
     }
   }
 
@@ -155,6 +233,7 @@ function toRun(source: string, o: Record<string, unknown>, fallbackAgent?: strin
   return {
     source,
     events: o.events as AgentEvent[],
+    ...(typeof o.prompt === "string" && o.prompt !== "" ? { prompt: o.prompt } : {}),
     ...(agent !== undefined ? { agent } : {}),
     ...(typeof o.exitStatus === "string" ? { exitStatus: o.exitStatus } : {}),
     ...(scoreOf(o) !== undefined ? { score: scoreOf(o) as number } : {}),
@@ -227,6 +306,9 @@ export async function loadSftRuns(input: string): Promise<SftRun[]> {
 
 /** Apply per-run filters. Throws USAGE when a filter has no data to act on. */
 export function filterSftRuns(runs: readonly SftRun[], f: SftFilters): SftRun[] {
+  if (f.exit !== undefined && !EXIT_STATUSES.includes(f.exit)) {
+    throw new HarnessError(`--exit must be one of ${EXIT_STATUSES.join(", ")} (got '${f.exit}')`, "USAGE");
+  }
   if (f.minScore !== undefined && !runs.some((r) => r.score !== undefined)) {
     throw new HarnessError(
       "--min-score needs score data, but no run in --input carries one (a numeric `score` or a `verify` verdict, e.g. from `ach run --verify --json`)",
@@ -265,7 +347,7 @@ export async function buildSft(opts: SftOptions): Promise<SftResult> {
   const kept = filterSftRuns(runs, opts);
   const lines: string[] = [];
   for (const r of kept) {
-    const msgs = eventsToMessages(r.events);
+    const msgs = withPrompt(eventsToMessages(r.events), r.prompt);
     for (const s of opts.fullConversation ? fullSample(msgs) : turnSamples(msgs)) lines.push(JSON.stringify(s));
   }
   return {

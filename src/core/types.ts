@@ -1310,6 +1310,10 @@ export interface RunResult {
   agent?: string;
   /** RunSpec.variant echoed back (spec §6.3); absent when the spec had none. */
   variant?: string;
+  /** #78: RunSpec.prompt as the caller gave it (before attachments are
+   *  inlined), so exports like `ach emit --format sft` can rebuild the user
+   *  turn. Only on the returned result; registry records keep promptSha256. */
+  prompt?: string;
   events: AgentEvent[];
   tokens: CanonicalTokenRecord[];
   totalCost: number;
@@ -1382,6 +1386,7 @@ export const RunResultSchema = z.object({
   sessionId: z.string(),
   agent: z.string().optional(),
   variant: z.string().min(1).optional(),
+  prompt: z.string().optional(),
   events: z.array(z.record(z.string(), z.unknown())),
   tokens: z.array(CanonicalTokenRecordSchema),
   totalCost: z.number(),

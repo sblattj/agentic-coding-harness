@@ -1,19 +1,99 @@
 {
-  "runId": "run-sft-demo",
-  "sessionId": "sess-sft-demo",
-  "agent": "claude",
-  "exitStatus": "success",
-  "verify": { "command": "./check.sh", "exitCode": 0, "status": "pass", "durationMs": 120, "timedOut": false },
-  "tokens": [],
-  "totalCost": 0,
-  "durationMs": 4200,
-  "warnings": [],
+  "runId": "e9b95b33-c284-4fc1-9d31-03fbf5a093bb",
+  "sessionId": "null-faedb0a0-e99a-4a5c-9f07-db5f21247008",
   "events": [
-    { "type": "message", "source": "system", "content": "You are a careful coding agent.", "timestamp": 1790000000000 },
-    { "type": "message", "source": "user", "content": "What is in notes.txt?", "timestamp": 1790000000100 },
-    { "type": "message", "source": "agent", "content": "Let me read it.", "timestamp": 1790000000200 },
-    { "type": "tool_call", "toolCallId": "call_1", "functionName": "read_file", "arguments": { "path": "notes.txt" }, "timestamp": 1790000000300 },
-    { "type": "tool_result", "toolCallId": "call_1", "content": "buy milk", "timestamp": 1790000000400 },
-    { "type": "message", "source": "agent", "content": "notes.txt says: buy milk.", "timestamp": 1790000000500 }
-  ]
+    {
+      "type": "session_start",
+      "agent": "null",
+      "timestamp": 1794082636621,
+      "sessionId": "null-faedb0a0-e99a-4a5c-9f07-db5f21247008"
+    },
+    {
+      "type": "message",
+      "source": "agent",
+      "content": "null adapter: deterministic reply 1/1 to: What is in notes.txt?",
+      "timestamp": 1794082636621,
+      "sessionId": "null-faedb0a0-e99a-4a5c-9f07-db5f21247008"
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "model": "null",
+        "inputTokens": 12,
+        "outputTokens": 8,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "costUsd": 0
+      },
+      "timestamp": 1794082636621,
+      "sessionId": "null-faedb0a0-e99a-4a5c-9f07-db5f21247008"
+    },
+    {
+      "type": "step",
+      "timestamp": 1794082636621,
+      "sessionId": "null-faedb0a0-e99a-4a5c-9f07-db5f21247008",
+      "payload": {
+        "countsAsTurn": true
+      }
+    },
+    {
+      "type": "session_end",
+      "timestamp": 1794082636621,
+      "sessionId": "null-faedb0a0-e99a-4a5c-9f07-db5f21247008"
+    }
+  ],
+  "tokens": [
+    {
+      "agent": "null",
+      "model": "null",
+      "inputTokens": 12,
+      "outputTokens": 8,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "costUsd": 0,
+      "timestamp": 1794082636621
+    }
+  ],
+  "totalCost": 0,
+  "durationMs": 17,
+  "exitStatus": "success",
+  "warnings": [],
+  "usage": {
+    "tokens": {
+      "available": true,
+      "source": "tap",
+      "scope": "call",
+      "cumulative": false,
+      "complete": false
+    },
+    "credits": {
+      "available": false
+    },
+    "usd": {
+      "available": true,
+      "source": "pricer",
+      "value": 0
+    },
+    "context": {
+      "available": false,
+      "source": "derived"
+    },
+    "cost": {
+      "costAvailability": "reported",
+      "reportedCostUsd": 0,
+      "tokens": {
+        "inputTokens": 12,
+        "outputTokens": 8,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0
+      }
+    },
+    "model": {
+      "source": "native",
+      "observed": [
+        "null"
+      ]
+    }
+  },
+  "prompt": "What is in notes.txt?"
 }

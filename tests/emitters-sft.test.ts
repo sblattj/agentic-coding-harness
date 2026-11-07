@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { before, describe, test } from "node:test";
 import { z } from "zod";
-import { eventsToMessages, fullSample, turnSamples } from "../src/emitters/sft.ts";
+import * as sft from "../src/emitters/sft.ts";
+
+const { eventsToMessages, fullSample, turnSamples } = sft;
+const withPrompt = (m: sft.SftMessage[], p: string | undefined): sft.SftMessage[] =>
+  (sft as unknown as { withPrompt: (m: sft.SftMessage[], p: string | undefined) => sft.SftMessage[] }).withPrompt(m, p);
 import type { AgentEvent } from "../src/core/types.ts";
 
 const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
@@ -90,6 +94,63 @@ describe("sft emitter: message mapping", () => {
       ev({ type: "message", source: "agent", content: "final" }, 3),
     ]);
     assert.deepEqual(m.map((x) => x.role), ["user", "assistant"]);
+  });
+
+  test("reasoning message events are dropped, not exported as assistant turns", () => {
+    const m = eventsToMessages([
+      ev({ type: "message", source: "user", content: "go" }, 0),
+      ev({ type: "message", source: "agent", content: "hidden thoughts", reasoning: true }, 1),
+      ev({ type: "message", source: "agent", content: "answer" }, 2),
+    ]);
+    assert.deepEqual(m, [{ role: "user", content: "go" }, { role: "assistant", content: "answer" }]);
+  });
+
+  test("empty toolCallIds get unique synthetic ids and pair with results positionally", () => {
+    const m = eventsToMessages([
+      ev({ type: "message", source: "user", content: "go" }, 0),
+      ev({ type: "tool_call", toolCallId: "", functionName: "f", arguments: "" }, 1),
+      ev({ type: "tool_result", toolCallId: "", content: "r1" }, 2),
+      ev({ type: "tool_call", toolCallId: "", functionName: "g", arguments: { a: 1 } }, 3),
+      ev({ type: "tool_call", toolCallId: "", functionName: "h", arguments: "ls -la" }, 4),
+      ev({ type: "tool_result", toolCallId: "", content: "r3" }, 5),
+      ev({ type: "tool_result", toolCallId: "", content: "r2" }, 6),
+      ev({ type: "message", source: "agent", content: "done" }, 7),
+    ]);
+    const sample = { messages: m };
+    assert.ok(Sample.safeParse(sample).success, JSON.stringify(Sample.safeParse(sample)));
+    const calls = m.flatMap((x) => (x.role === "assistant" ? (x.tool_calls ?? []) : []));
+    assert.equal(calls.length, 3);
+    assert.equal(new Set(calls.map((c) => c.id)).size, 3);
+    for (const c of calls) assert.ok(c.id !== "");
+    assert.deepEqual(calls.map((c) => c.function.arguments), ["{}", '{"a":1}', '{"input":"ls -la"}']);
+    for (const c of calls) JSON.parse(c.function.arguments);
+    // Most recent unanswered call (h) gets the first empty-id result after it.
+    const tools = m.filter((x) => x.role === "tool") as Array<{ tool_call_id: string; content: string }>;
+    const byId = new Map(calls.map((c) => [c.id, c.function.name]));
+    assert.deepEqual(tools.map((t) => [byId.get(t.tool_call_id), t.content]), [["f", "r1"], ["h", "r3"], ["g", "r2"]]);
+  });
+
+  test("synthetic ids never collide with real ids", () => {
+    const m = eventsToMessages([
+      ev({ type: "tool_call", toolCallId: "call_sft_1", functionName: "f", arguments: {} }, 0),
+      ev({ type: "tool_call", toolCallId: "", functionName: "g", arguments: {} }, 1),
+      ev({ type: "tool_result", toolCallId: "call_sft_1", content: "a" }, 2),
+      ev({ type: "tool_result", toolCallId: "", content: "b" }, 3),
+    ]);
+    const ids = (m[0] as { tool_calls: Array<{ id: string }> }).tool_calls.map((c) => c.id);
+    assert.equal(new Set(ids).size, 2);
+  });
+
+  test("a recorded prompt becomes the first user turn (after any system message)", () => {
+    assert.deepEqual(withPrompt([{ role: "assistant", content: "hi" }], "explain foo"), [
+      { role: "user", content: "explain foo" },
+      { role: "assistant", content: "hi" },
+    ]);
+    assert.deepEqual(withPrompt([{ role: "system", content: "s" }, { role: "assistant", content: "hi" }], "p").map((x) => x.role), ["system", "user", "assistant"]);
+    // Already starts with a user message: unchanged.
+    const m = eventsToMessages(conversation());
+    assert.deepEqual(withPrompt(m, "read a.txt"), m);
+    assert.deepEqual(withPrompt(m, undefined), m);
   });
 
   test("turn-level yields one sample per assistant message; full yields one", () => {
@@ -197,6 +258,39 @@ describe("ach emit --format sft", () => {
     const r = run(["--input", path.join(dir, "bare-events.json"), "--format", "atif", "--min-score", "4", "--full-conversation"]);
     assert.notEqual(r.code, 0);
     assert.match(r.stderr, /--min-score, --full-conversation only applies to --format sft/);
+  });
+
+  test("a real `ach run --json` result yields a user turn then the assistant turn", async () => {
+    const home = path.join(dir, "home");
+    await fs.mkdir(home, { recursive: true });
+    const p = spawnSync(process.execPath, ["--import", "tsx", CLI, "run", "--agent", "null", "--json", "explain foo"], {
+      encoding: "utf8",
+      env: { ...process.env, HOME: home, AGENTIC_CODING_HARNESS_STATE_DIR: path.join(dir, "state") },
+    });
+    assert.equal(p.status, 0, p.stderr);
+    const json = p.stdout.slice(p.stdout.indexOf("{"), p.stdout.lastIndexOf("}") + 1);
+    const res = JSON.parse(json) as { prompt?: string };
+    assert.equal(res.prompt, "explain foo");
+    const file = path.join(dir, "real-run.json");
+    await fs.writeFile(file, json);
+    const r = run(["--input", file, "--format", "sft"]);
+    assert.equal(r.code, 0, r.stderr);
+    const samples = parseJsonl(r.stdout) as Array<{ messages: Array<{ role: string; content: string }> }>;
+    assert.equal(samples.length, 1);
+    assert.deepEqual(samples[0]!.messages.map((m) => m.role), ["user", "assistant"]);
+    assert.equal(samples[0]!.messages[0]!.content, "explain foo");
+  });
+
+  test("--exit rejects a value that is not an exit status", () => {
+    const r = run(["--input", sweep(), "--format", "sft", "--exit", "succes"]);
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /--exit must be one of success, error, timeout/);
+  });
+
+  test("non-sft flags with --format sft are a USAGE error, not silently ignored", () => {
+    const r = run(["--input", sweep(), "--format", "sft", "--model", "m", "--session-id", "s", "--langfuse-url", "http://x"]);
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /--model, --session-id, --langfuse-url do not apply to --format sft/);
   });
 
   test("docs example matches the CLI output for the recorded run", async () => {
