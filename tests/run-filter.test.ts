@@ -63,6 +63,8 @@ describe('parseRunFilter', () => {
     ['minCost=abc', /minCost must be a number/],
     ['maxCost=', /maxCost must be a number/],
     ['since=yesterday', /since must be/],
+    ['since=-1', /since must be/],
+    ['until=-1', /until must be/],
     ['status=bogus', /status must be/],
     ['limit=0', /limit must be/],
     ['limit=100000', /limit must be/],
@@ -159,6 +161,21 @@ describe('index.html filter mirror', () => {
       const server = RUNS.filter((r) => ids_sync(r, sf)).map((r) => r.runId);
       assert.deepEqual(client, server, qs);
     }
+  });
+  it('malformed percent escapes do not throw (blank-dashboard bug)', () => {
+    runInContext(block![1]!, ctx);
+    assert.doesNotThrow(() => ctx.parseRunFilterQuery('?q=50%'));
+    assert.equal(ctx.parseRunFilterQuery('?q=50%').q, '50%');
+    assert.doesNotThrow(() => ctx.parseRunFilterQuery('?%ZZ=1&agent=%E0%A4%A'));
+  });
+  it('rewriting the URL keeps token and other params, replaces only filter keys', () => {
+    const c2 = createContext({ isLive: () => false, URLSearchParams });
+    runInContext(block![1]!, c2);
+    const f = c2.parseRunFilterQuery('?q=a');
+    assert.equal(c2.rfMergeSearch('?token=abc&q=old&agent=x&keep=1', f), '?token=abc&keep=1&q=a');
+    f.q = '';
+    assert.equal(c2.rfMergeSearch('?token=abc&q=a', f), '?token=abc');
+    assert.equal(c2.rfMergeSearch('', f), '');
   });
   it('round-trips the URL query', () => {
     const f = ctx.parseRunFilterQuery('?agent=kiro&status=error,success&minCost=1.5&q=a%20b');

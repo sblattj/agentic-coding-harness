@@ -46,10 +46,13 @@ function num(name: string, raw: string): number | string {
   return Number.isFinite(n) ? n : `${name} must be a number`;
 }
 
-/** Accepts ms epoch digits or any Date-parsable string (ISO 8601). */
+/** Accepts ms epoch digits or an ISO 8601 date (YYYY-MM-DD[THH:MM[:SS[.fff]][Z|+hh:mm]]); anything else is rejected. */
 function when(name: string, raw: string): number | string {
   if (/^\d+$/.test(raw)) return Number(raw);
-  const t = Date.parse(raw);
+  if (!/^\d{4}-\d{2}(-\d{2})?([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(raw.trim())) {
+    return `${name} must be a ms epoch or an ISO 8601 date`;
+  }
+  const t = Date.parse(raw.trim());
   return Number.isNaN(t) ? `${name} must be a ms epoch or an ISO 8601 date` : t;
 }
 
