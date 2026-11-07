@@ -451,7 +451,9 @@ ${QUEUE_USAGE}
                   --dir is an alias of --state-dir here;
                   --offline refuses outbound network calls (OfflineViolation) and a
                   non-loopback --source; loopback stays allowed; /api/stats carries
-                  the pricing snapshot block)
+                  the pricing snapshot block;
+                  GET /api/runs filters: ?agent=&status=&minCost=&maxCost=&since=&until=
+                  &q=[&qin=events]&limit=&offset= , see README "Run list filters")
   ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
               (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
                framing tolerated; same tools and gateway flags as \`ach serve\`)

@@ -904,6 +904,32 @@ const { result } = await runToDirectory({
   tokens, cost), `byStatus` / `byExitStatus` counts, and `perRun` avg / p50 / p95 of duration,
   tokens and cost. A run's model is the observed model (`+`-joined if several), else the requested
   one, else `unknown`. Computed on request from the in-memory run snapshot.
+- **`GET /api/runs`** — the run list. Unauthenticated like the rest of the JSON API (the token only
+  gates `/ws` and `/api/queues`). With no query it returns `{"records": [<RunRecord>...]}`, the
+  whole in-memory snapshot, unchanged.
+
+  **Run list filters.** Any of these query params switches the response to the paged shape
+  `{"records", "total", "offset", "limit"}` (`total` = matches before paging, also sent as the
+  `x-total-count` header; `limit` is `null` when absent). All filters AND together, are applied
+  in-process over the snapshot, and keep the snapshot's order. A bad value gives `400 {"error": ...}`.
+
+  | param | meaning |
+  |---|---|
+  | `agent` | agent name, or a comma list (`claude,kiro`) |
+  | `status` | comma list of `running`, `interrupted`, `success`, `error`, `aborted`, `unavailable` (the effective status: a `running` run with a dead process counts as `interrupted`) |
+  | `minCost` / `maxCost` | inclusive USD bounds on `totals.costUsd`; unpriced runs never match a cost bound |
+  | `since` / `until` | inclusive bounds on `startedAt`: ms epoch or an ISO 8601 date |
+  | `q` | case-insensitive substring of the prompt preview or the resolved command line |
+  | `qin` | `prompt` (default) or `events` (below) |
+  | `limit` / `offset` | page size (1 to 1000) and start index; `offset` defaults to 0 |
+
+  `q=...&qin=events` also searches stored event text (any string field of a transcript line).
+  It is bounded: only the newest 200 runs that pass the other filters and miss on the prompt/command
+  are scanned, and only the first 1 MiB of each transcript is read. The response adds
+  `scan: {scanned, capped, maxRuns, maxBytesPerRun}`; `capped: true` means some older runs were skipped.
+  Narrow with `since`/`agent` to scan the runs you care about. The dashboard sidebar exposes agent,
+  status chips, cost range and a prompt/command search box (event search is API-only) and mirrors
+  them in the page URL (`/?agent=kiro&status=error&minCost=1&q=parser`) so views are shareable.
 - **`/health`** — liveness plus the configured run source and whether it is healthy
   (`source`, `sourceHealthy`).
 
