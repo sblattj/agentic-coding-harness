@@ -13,7 +13,7 @@ import { codexSessionsRoot, readCodexNativeUsage, requestedCodexEffort } from '.
 import { createContextMeter } from './context-meter.js';
 import { classifyLaunchError, classifyUnavailable } from './availability.ts';
 import { gitBranchInfo } from './git-branch.ts';
-import { resolvePr } from './git-pr.ts';
+import { prContextFor, resolvePr } from './git-pr.ts';
 import { runTotalsProvenance } from './provenance.ts';
 import { parseRunSpec } from './validate.js';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
@@ -600,7 +600,7 @@ export function createDriver(options: DriverOptions): Driver {
             pid: process.pid,
             cwd: runCwd,
             ...runGit,
-            ...resolvePr({ flag: parsed.pr, env: process.env, branch: runGit.branch, cwd: runCwd }),
+            ...resolvePr({ flag: parsed.pr, env: process.env, ...prContextFor(runId, runCwd, runGit.branch) }),
             promptPreview: parsed.prompt.slice(0, 120),
             startedAt: start,
             updatedAt: Date.now(),

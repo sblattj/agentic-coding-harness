@@ -133,6 +133,34 @@ describe("ach run --pr (CLI, scripted agent)", () => {
     assert.equal(runOnce(plain, [], {}).rec?.pr, undefined);
   });
 
+  it("--isolate resolves the PR from the original checkout, not ach/<uuid>", { timeout: 120_000 }, () => {
+    const plainRun = runOnce(prBranchRepo, [], {});
+    assert.equal(plainRun.rec?.pr, 482);
+    const iso = runOnce(prBranchRepo, ["--isolate"], {});
+    assert.equal(iso.code, 0, iso.stderr);
+    assert.match(iso.rec?.branch ?? "", /^ach\//, "the record still names the worktree branch");
+    assert.equal(iso.rec?.pr, 482);
+    assert.equal(iso.rec?.prSource, "branch");
+    const onMain = runOnce(mainRepo, ["--isolate"], {});
+    assert.equal(onMain.rec?.pr, undefined);
+  });
+
+  it("--pr auto asks gh once for --repeat 3 (memoized, negative result cached)", { timeout: 120_000 }, () => {
+    const bin = fs.mkdtempSync(path.join(tmp, "bin-"));
+    const count = path.join(bin, "count");
+    fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\necho x >> '${count}'\nsleep 1\nexit 1\n`, { mode: 0o755 });
+    const stateDir = fs.mkdtempSync(path.join(tmp, "state-"));
+    const t0 = Date.now();
+    const p = spawnSync(NODE, ["--import", import.meta.resolve("tsx"), CLI, "run", "--agent", "custom", "--template", `'${NODE}' '${fake}' {prompt}`, "--pr", "auto", "--repeat", "3", "hello"], {
+      cwd: mainRepo,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENTIC_CODING_HARNESS_STATE_DIR: stateDir, AGENTIC_CODING_HARNESS_PR: "" },
+      encoding: "utf8",
+    });
+    assert.equal(p.status, 0, p.stderr);
+    assert.equal(listRunRecords(stateDir).length, 3);
+    assert.equal(fs.readFileSync(count, "utf8").trim().split("\n").length, 1, `gh calls (took ${Date.now() - t0} ms)`);
+  });
+
   it("rejects a bad --pr as a usage error", { timeout: 60_000 }, () => {
     const r = runOnce(plain, ["--pr", "banana"], {});
     assert.notEqual(r.code, 0);
