@@ -5,7 +5,7 @@
 // the server binds loopback only and runs unauthenticated with a stderr
 // warning, mirroring serve.
 import { spawnSync } from "node:child_process";
-import { parseArgs } from "node:util";
+import { parseArgs } from "./config.ts"; // #41: config-aware node:util parseArgs
 import { HarnessError } from "../core/types.ts";
 import { assertOfflineSource, installOfflineGuard } from "../core/offline.ts";
 import { stateDir } from "../core/store.ts";

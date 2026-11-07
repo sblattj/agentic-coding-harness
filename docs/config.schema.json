@@ -1,0 +1,756 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "stateDir": {
+      "description": "state root for every command (env AGENTIC_CODING_HARNESS_STATE_DIR wins); relative to this file, ~ expands",
+      "type": "string",
+      "minLength": 1
+    },
+    "run": {
+      "description": "defaults for `ach run` flags",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "description": "ach run --agent",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "model": {
+          "description": "ach run --model",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "resume": {
+          "description": "ach run --resume",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "budgetUsd": {
+          "description": "ach run --budget-usd (env AGENTIC_CODING_HARNESS_BUDGET_USD wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "maxTurns": {
+          "description": "ach run --max-turns (env AGENTIC_CODING_HARNESS_MAX_TURNS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "wallMs": {
+          "description": "ach run --wall-ms (env AGENTIC_CODING_HARNESS_WALL_MS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "idleMs": {
+          "description": "ach run --idle-ms (env AGENTIC_CODING_HARNESS_IDLE_MS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "budgetAlerts": {
+          "description": "ach run --budget-alerts (env AGENTIC_CODING_HARNESS_BUDGET_ALERTS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "warnAt": {
+          "description": "ach run --warn-at (env AGENTIC_CODING_HARNESS_WARN_THRESHOLDS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "onBudget": {
+          "description": "ach run --on-budget",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "extraArgs": {
+          "description": "ach run --extra-args",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "extraArg": {
+          "description": "ach run --extra-arg",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "permissionMode": {
+          "description": "ach run --permission-mode",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "allowedTools": {
+          "description": "ach run --allowed-tools",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "disallowedTools": {
+          "description": "ach run --disallowed-tools",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "mcpConfig": {
+          "description": "ach run --mcp-config",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "evidenceDir": {
+          "description": "ach run --evidence-dir",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroTransport": {
+          "description": "ach run --kiro-transport",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroAgent": {
+          "description": "ach run --kiro-agent",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroEngine": {
+          "description": "ach run --kiro-engine",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroEffort": {
+          "description": "ach run --kiro-effort",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroTools": {
+          "description": "ach run --kiro-tools",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroRequireMcpStartup": {
+          "description": "ach run --kiro-require-mcp-startup",
+          "type": "boolean"
+        },
+        "kiroStartupMs": {
+          "description": "ach run --kiro-startup-ms",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroRequireModelAck": {
+          "description": "ach run --kiro-require-model-ack",
+          "type": "boolean"
+        },
+        "claudeDefaultConfig": {
+          "description": "ach run --claude-default-config (env AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG wins over this)",
+          "type": "boolean"
+        },
+        "claudeNoBackgroundTasks": {
+          "description": "ach run --claude-no-background-tasks (env AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS wins over this)",
+          "type": "boolean"
+        },
+        "kiroMcpServer": {
+          "description": "ach run --kiro-mcp-server",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "kiroIdeCdp": {
+          "description": "ach run --kiro-ide-cdp",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroIdePort": {
+          "description": "ach run --kiro-ide-port",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroIdeBin": {
+          "description": "ach run --kiro-ide-bin",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroIdeUserDataDir": {
+          "description": "ach run --kiro-ide-user-data-dir",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "kiroIdeNoNewSession": {
+          "description": "ach run --kiro-ide-no-new-session",
+          "type": "boolean"
+        },
+        "template": {
+          "description": "ach run --template",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "promptStdin": {
+          "description": "ach run --prompt-stdin",
+          "type": "boolean"
+        },
+        "templateShell": {
+          "description": "ach run --template-shell",
+          "type": "boolean"
+        },
+        "json": {
+          "description": "ach run --json",
+          "type": "boolean"
+        },
+        "exitCodes": {
+          "description": "ach run --exit-codes",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "verify": {
+          "description": "ach run --verify",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "verifyTimeoutMs": {
+          "description": "ach run --verify-timeout-ms",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "repeat": {
+          "description": "ach run --repeat",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "parallel": {
+          "description": "ach run --parallel",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "experiment": {
+          "description": "ach run --experiment",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "variant": {
+          "description": "ach run --variant",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "hermetic": {
+          "description": "ach run --hermetic",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "stats": {
+      "description": "defaults for `ach stats` flags",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "description": "ach stats --agent",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "days": {
+          "description": "ach stats --days",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "since": {
+          "description": "ach stats --since",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "until": {
+          "description": "ach stats --until",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "last": {
+          "description": "ach stats --last",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "tz": {
+          "description": "ach stats --tz (env AGENTIC_CODING_HARNESS_TZ wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "by": {
+          "description": "ach stats --by",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "json": {
+          "description": "ach stats --json",
+          "type": "boolean"
+        },
+        "stateOnly": {
+          "description": "ach stats --state-only",
+          "type": "boolean"
+        },
+        "includeUnavailable": {
+          "description": "ach stats --include-unavailable",
+          "type": "boolean"
+        },
+        "exitCodes": {
+          "description": "ach stats --exit-codes",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "mergeModels": {
+          "description": "ach stats --merge-models",
+          "type": "boolean"
+        },
+        "modelAlias": {
+          "description": "ach stats --model-alias",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "project": {
+          "description": "ach stats --project",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "projectAlias": {
+          "description": "ach stats --project-alias",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "projectAliases": {
+          "description": "ach stats --project-aliases (env AGENTIC_CODING_HARNESS_PROJECT_ALIASES wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "blocks": {
+          "description": "ach stats --blocks",
+          "type": "boolean"
+        },
+        "plan": {
+          "description": "ach stats --plan (env AGENTIC_CODING_HARNESS_PLAN wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "planWindowTokens": {
+          "description": "ach stats --plan-window-tokens (env AGENTIC_CODING_HARNESS_PLAN_WINDOW_TOKENS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "planWindowUsd": {
+          "description": "ach stats --plan-window-usd (env AGENTIC_CODING_HARNESS_PLAN_WINDOW_USD wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "planWindowMessages": {
+          "description": "ach stats --plan-window-messages (env AGENTIC_CODING_HARNESS_PLAN_WINDOW_MESSAGES wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "budgetUsd": {
+          "description": "ach stats --budget-usd (env AGENTIC_CODING_HARNESS_BUDGET_USD wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "withWarehouse": {
+          "description": "ach stats --with-warehouse",
+          "type": "boolean"
+        },
+        "dir": {
+          "description": "ach stats --dir",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "transcriptDir": {
+          "description": "ach stats --transcript-dir",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "costMode": {
+          "description": "ach stats --cost-mode (env AGENTIC_CODING_HARNESS_COST_MODE wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "origin": {
+          "description": "ach stats --origin",
+          "type": [
+            "string",
+            "number"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "web": {
+      "description": "defaults for `ach web` flags",
+      "type": "object",
+      "properties": {
+        "port": {
+          "description": "ach web --port",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "host": {
+          "description": "ach web --host",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "token": {
+          "description": "ach web --token (env AGENTIC_CODING_HARNESS_HTTP_TOKEN wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "dir": {
+          "description": "ach web --dir",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "stateDir": {
+          "description": "ach web --state-dir",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "noOpen": {
+          "description": "ach web --no-open",
+          "type": "boolean"
+        },
+        "stateOnly": {
+          "description": "ach web --state-only",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "ach web --source (env AGENTIC_CODING_HARNESS_SOURCE wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "sourceToken": {
+          "description": "ach web --source-token (env AGENTIC_CODING_HARNESS_SOURCE_TOKEN wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "sourceMode": {
+          "description": "ach web --source-mode (env AGENTIC_CODING_HARNESS_SOURCE_MODE wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "sourcePollMs": {
+          "description": "ach web --source-poll-ms (env AGENTIC_CODING_HARNESS_SOURCE_POLL_MS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "sourceMerge": {
+          "description": "ach web --source-merge (env AGENTIC_CODING_HARNESS_SOURCE_MERGE wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "serve": {
+      "description": "defaults for `ach serve` flags",
+      "type": "object",
+      "properties": {
+        "port": {
+          "description": "ach serve --port",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "host": {
+          "description": "ach serve --host",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "token": {
+          "description": "ach serve --token (env AGENTIC_CODING_HARNESS_HTTP_TOKEN wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "http": {
+          "description": "ach serve --http",
+          "type": "boolean"
+        },
+        "gateway": {
+          "description": "ach serve --gateway (env AGENTIC_CODING_HARNESS_GATEWAY wins over this)",
+          "type": "boolean"
+        },
+        "root": {
+          "description": "ach serve --root (env AGENTIC_CODING_HARNESS_ROOT wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "maxJobs": {
+          "description": "ach serve --max-jobs (env AGENTIC_CODING_HARNESS_MAX_JOBS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "maxOutputBytes": {
+          "description": "ach serve --max-output-bytes (env AGENTIC_CODING_HARNESS_MAX_OUTPUT_BYTES wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "allowExtraArgs": {
+          "description": "ach serve --allow-extra-args (env AGENTIC_CODING_HARNESS_ALLOW_EXTRA_ARGS wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$id": "https://raw.githubusercontent.com/sblattj/agentic-coding-harness/main/docs/config.schema.json",
+  "title": "agentic-coding-harness config (.ach/config.json)"
+}

@@ -422,6 +422,8 @@ ach report <trials-dir> [--out path]           # single-file HTML comparison
 ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help] [--set-terminal-title[=FMT]]; ? help, q quits
 ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-file run queue, <= N live
             # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
+ach config --show [<section>] [--json]   # every resolved setting + its source (flag/env/file/default)
+ach config --set run.budgetUsd 5 [--dry-run]   # write ./.ach/config.json; ach --config <path> <cmd> to pick a file (docs/CONFIG.md)
 ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
             (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
              framing tolerated; same 10 tools and gateway flags as `ach serve`)
@@ -1052,6 +1054,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 ## Docs
 
 - [Cost modes and provenance](docs/PROVENANCE.md), [billing blocks and plan estimates](docs/USAGE-WINDOWS.md), [quota headroom](docs/QUOTA.md).
+- [Config file (`.ach/config.json`, `ach config`)](docs/CONFIG.md): per-command flag defaults, precedence flag > env > file > default, [JSON schema](docs/config.schema.json).
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).

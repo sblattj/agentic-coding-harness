@@ -4,7 +4,7 @@
 // (single or batch JSON-RPC), GET /health, with optional bearer-token auth.
 // Without a token (--token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN) the server binds
 // loopback only and runs unauthenticated with a stderr warning.
-import { parseArgs } from "node:util";
+import { parseArgs } from "./config.ts"; // #41: config-aware node:util parseArgs
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
 import { createMcpServer } from "../mcp/server.ts";
