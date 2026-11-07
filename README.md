@@ -413,8 +413,10 @@ ach smoke <message-file> [--account EMAIL] [--stub jira=JIRA_BASE_URL]... [--all
             [--cdp URL|--no-browser] [--no-fix|--fix-agent A|--fix-tool REPO] [--out DIR] [--copy] [--json]
             # run a how-to message's steps literally as a brand-new user (fresh HOME, own keychain),
             # fix the message in place, print the friction table; exit 0 clean, 1 friction, 2 usage (docs/SMOKE.md)
-ach emit --input events.json --format atif|otel|langfuse [--out path]
+ach emit --input events.json --format atif|otel|langfuse|sft [--out path]
             [--agent A] [--model M] [--session-id SID]
+            (sft: OpenAI chat JSONL for fine-tuning; --input may be a trials dir;
+             [--min-score N] [--exit success] [--agent A] [--full-conversation]; docs/SFT-EXPORT.md)
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 ach report <trials-dir> [--out path]           # single-file HTML comparison
 ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help] [--set-terminal-title[=FMT]]; ? help, q quits

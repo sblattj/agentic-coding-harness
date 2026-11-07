@@ -1,0 +1,19 @@
+{
+  "runId": "run-sft-demo",
+  "sessionId": "sess-sft-demo",
+  "agent": "claude",
+  "exitStatus": "success",
+  "verify": { "command": "./check.sh", "exitCode": 0, "status": "pass", "durationMs": 120, "timedOut": false },
+  "tokens": [],
+  "totalCost": 0,
+  "durationMs": 4200,
+  "warnings": [],
+  "events": [
+    { "type": "message", "source": "system", "content": "You are a careful coding agent.", "timestamp": 1790000000000 },
+    { "type": "message", "source": "user", "content": "What is in notes.txt?", "timestamp": 1790000000100 },
+    { "type": "message", "source": "agent", "content": "Let me read it.", "timestamp": 1790000000200 },
+    { "type": "tool_call", "toolCallId": "call_1", "functionName": "read_file", "arguments": { "path": "notes.txt" }, "timestamp": 1790000000300 },
+    { "type": "tool_result", "toolCallId": "call_1", "content": "buy milk", "timestamp": 1790000000400 },
+    { "type": "message", "source": "agent", "content": "notes.txt says: buy milk.", "timestamp": 1790000000500 }
+  ]
+}
