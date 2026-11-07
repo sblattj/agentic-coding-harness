@@ -442,6 +442,13 @@ cell then measures your instructions, not the agent. This matters for trials bec
 See the README section "Ancestor instruction files and `--hermetic`" for the copy,
 sync and cleanup rules.
 
+- `ach trial --matrix plan.json --isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]`
+  (also `--suite`) runs each `workspace: "shared"` cell in its own git worktree + branch
+  `ach/<runId>` cut from `HEAD` (`fresh` cells already get a new empty directory and are
+  skipped). `verify` runs inside the worktree. Nothing syncs back, so cells in one repo
+  cannot see each other's edits; each RunRecord carries `worktree`. Not with `--hermetic`.
+  See README "Isolated runs".
+
 ## Writing a trial: entry point and evidence hygiene (#13)
 
 **Invoke the source entry in `trials/*/run.sh`.** `ach` is only on `PATH` after

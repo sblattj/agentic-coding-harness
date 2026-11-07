@@ -641,6 +641,47 @@ git commands the agent runs in the copy act on the original repository. A driver
 with `confineToWorkspace` bound to the original workspace refuses the temp copy with
 `WORKSPACE_ESCAPE`.
 
+### Isolated runs: `--isolate` (#75)
+
+Two agents editing one checkout step on each other. `--isolate` gives each run its own
+git worktree and branch:
+
+```sh
+ach run --agent claude --isolate --verify 'npm test' "fix the failing test"
+ach run --agent claude --isolate --cleanup "try approach B"      # remove the worktree after
+ach run --agent claude --isolate --repeat 4 --parallel 4 "..."   # four runs, four worktrees
+```
+
+1. A dirty working tree (tracked edits or untracked files) is refused with
+   `DIRTY_TREE`, because the worktree starts from `HEAD` and would not contain your
+   uncommitted edits. `--allow-dirty` proceeds anyway (the dirty edits stay in the main
+   tree, not in the worktree).
+2. `git worktree add <stateDir>/worktrees/<runId> -b ach/<runId> <HEAD sha>`. Run from a
+   subdirectory of the repo and the agent starts in the same subdirectory of the worktree.
+3. The agent runs inside the worktree; `--verify` runs there too. Nothing is synced back:
+   the work lives on the branch. Review it with `git diff <baseSha>..ach/<runId>`.
+4. By default the worktree and branch are kept. `--cleanup` commits any leftover
+   uncommitted edits to the branch (commit message names the run), removes the worktree
+   and keeps the branch. A failed removal leaves the worktree and is recorded.
+
+The RunRecord (and `--json` output) carries
+`worktree: {path, branch, baseSha, cleanup: {status: "kept"|"removed"|"failed", commit?, error?}, nodeModules?}`;
+its `cwd` is the worktree path. Records without the field are unchanged.
+
+`--isolate-node-modules` (JS projects) symlinks each non-dot entry of the primary
+`node_modules` into the worktree, skipping dot-file caches such as `.cache` and `.bin`
+(a fresh worktree has no `node_modules`). The links are excluded from the `--cleanup`
+commit and removed with the worktree; the primary `node_modules` is never touched.
+
+Combinations: `--parallel > 1` and `--repeat` are safe (one worktree per child).
+`--hermetic` is refused (two competing isolation modes: temp copy synced back vs. a
+branch), as is `--resume` (sessions are keyed by project directory). `--allow-dirty`,
+`--cleanup` and `--isolate-node-modules` without `--isolate` are usage errors.
+`--isolate` and its modifiers also work on `ach trial --matrix` / `--suite`: cells whose
+task works in the project `cwd` (`workspace: "shared"`) each get a worktree; `fresh`
+cells already run in a new empty directory and are left alone. Task `setup` runs in the
+real workspace first, so a setup that edits tracked files needs `--allow-dirty`.
+
 The zero-tooling workaround is to keep benchmark workspaces outside `$HOME` and outside
 any directory that holds these files, for example under `/tmp`. The warning tells you
 whether that worked.

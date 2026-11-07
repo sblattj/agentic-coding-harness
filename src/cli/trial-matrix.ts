@@ -38,6 +38,7 @@ import { HarnessError, isKnownAgent, type AgentAdapter, type RunSpec, type Sandb
 import { DEFAULT_VERIFY_TIMEOUT_MS, runVerifier, type VerifyStatus } from "../core/verify.ts";
 import { isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { loadCatalog, reportCatalogIssues, resolveRunAgent } from "./custom-agents.ts";
+import { ISOLATE_FLAG_OPTIONS, isolateOptionsFromFlags, type IsolateOptions } from "../core/isolate.ts";
 import { HermeticSyncError, hermeticSyncErrorInfo, type HermeticSyncErrorInfo } from "../core/hermetic.ts";
 import { runOnce, type TrialOutcome } from "./trials.ts";
 import { isProviderLimitText, providerLimitReason } from "../core/provider-limit.ts";
@@ -680,6 +681,13 @@ export interface RunMatrixOptions {
    * the edits are synced back before the verifier runs there.
    */
   hermetic?: boolean;
+  /**
+   * #75: run each cell that works in the project cwd (workspace !== "fresh") in
+   * its own git worktree + branch (src/core/isolate.ts). Fresh-workspace cells
+   * already get a new empty directory, so they are left alone. Setup still runs
+   * in the real workspace first; verify runs inside the worktree.
+   */
+  isolate?: Omit<IsolateOptions, "stateDir">;
   /** Called as each cell is decided / settles. */
   onCell?: (report: CellReport, cell: MatrixCell) => void;
   /** Called right before a cell launches (setup included). */
@@ -802,6 +810,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
         stateDir: opts.stateDir,
         labels: { experiment: cell.experiment, variant: cell.variant, cellId: cell.cellId },
         ...(opts.hermetic === true ? { hermetic: {} } : {}),
+        ...(opts.isolate !== undefined && cell.task.workspace !== "fresh" ? { isolate: opts.isolate } : {}),
         ...(cell.task.verify !== undefined
           ? {
               verify: {
@@ -1033,6 +1042,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       ledger: { type: "string" },
       json: { type: "boolean", default: false },
       hermetic: { type: "boolean", default: false },
+      ...ISOLATE_FLAG_OPTIONS,
       "claude-no-background-tasks": { type: "boolean", default: false },
       // #13: the `ach run` SandboxPolicy flags; --suite only (a plan carries `sandbox` itself).
       "permission-mode": { type: "string" },
@@ -1042,6 +1052,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     },
     allowPositionals: false,
   });
+  const isolate = isolateOptionsFromFlags(args.values, { hermetic: args.values.hermetic === true, resume: false });
   const planFile = args.values.matrix;
   const suite = args.values.suite;
   // Same channel as `ach run`: the env var the Claude adapter honours (cells run in-process).
@@ -1065,6 +1076,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       retryFailed: args.values["retry-failed"],
       json: args.values.json,
       ...(args.values.hermetic ? { hermetic: true } : {}),
+      ...(isolate !== undefined ? { isolate } : {}),
     });
   }
   if (planFile === undefined || planFile.trim() === "") {
@@ -1081,6 +1093,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     retryFailed: args.values["retry-failed"],
     json: args.values.json,
     ...(args.values.hermetic ? { hermetic: true } : {}),
+    ...(isolate !== undefined ? { isolate } : {}),
   });
 }
 
@@ -1095,6 +1108,8 @@ export interface ExecuteMatrixCliOptions {
   json: boolean;
   /** #106: run every cell in a hermetic temp copy (RunMatrixOptions.hermetic). */
   hermetic?: boolean;
+  /** #75: RunMatrixOptions.isolate. */
+  isolate?: Omit<IsolateOptions, "stateDir">;
   /** Merged into the `--json` output (dry-run and real run). */
   jsonExtra?: Record<string, unknown>;
   /** Passed to runMatrix (see RunMatrixOptions.onOutcome). */
@@ -1186,6 +1201,7 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
     stateDir: state,
     retryFailed,
     ...(o.hermetic === true ? { hermetic: true } : {}),
+    ...(o.isolate !== undefined ? { isolate: o.isolate } : {}),
     ...(plan.budget !== undefined ? { budget: plan.budget } : {}),
     ...(plan.setupTimeoutMs !== undefined ? { setupTimeoutMs: plan.setupTimeoutMs } : {}),
     ...(plan.verifyTimeoutMs !== undefined ? { verifyTimeoutMs: plan.verifyTimeoutMs } : {}),

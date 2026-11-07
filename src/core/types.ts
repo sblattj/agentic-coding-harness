@@ -1327,7 +1327,35 @@ export interface RunResult {
   ancestorInstructions?: string[];
   /** #106: set when the run executed in a hermetic temp copy (--hermetic). */
   hermetic?: HermeticRunInfo;
+  /** #75: set when the run executed in its own git worktree (--isolate). */
+  worktree?: WorktreeRunInfo;
 }
+
+/** #75: the git worktree an `--isolate` run executed in (src/core/isolate.ts). */
+export interface WorktreeRunInfo {
+  /** Directory of the worktree checkout (the agent's cwd is this dir, or its subdir mirroring the original cwd). */
+  path: string;
+  /** Branch created for the run (`ach/<runId>`); kept after `--cleanup`. */
+  branch: string;
+  /** Full SHA of the commit the worktree was created from. */
+  baseSha: string;
+  /** Post-run state: kept for review (default), removed (--cleanup), or failed to remove. */
+  cleanup: { status: "kept" | "removed" | "failed"; commit?: string; error?: string };
+  /** Set by --isolate-node-modules: entries of node_modules symlinked from the primary checkout. */
+  nodeModules?: number;
+}
+
+export const WorktreeRunInfoSchema = z.object({
+  path: z.string().min(1),
+  branch: z.string().min(1),
+  baseSha: z.string().min(1),
+  cleanup: z.object({
+    status: z.enum(["kept", "removed", "failed"]),
+    commit: z.string().optional(),
+    error: z.string().optional(),
+  }),
+  nodeModules: z.number().int().nonnegative().optional(),
+});
 
 /** #106: how a `--hermetic` run was isolated (src/core/hermetic.ts). */
 export interface HermeticRunInfo {
@@ -1380,6 +1408,7 @@ export const RunResultSchema = z.object({
     .optional(),
   ancestorInstructions: z.array(z.string()).optional(),
   hermetic: HermeticRunInfoSchema.optional(),
+  worktree: WorktreeRunInfoSchema.optional(),
 });
 
 // ---------------------------------------------------------------- errors

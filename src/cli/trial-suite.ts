@@ -25,6 +25,7 @@ import {
   executeMatrixCli,
   loadTaskDir,
   parseMatrixPlan,
+  type ExecuteMatrixCliOptions,
   type MatrixCell,
   type MatrixPlan,
   type ResolvedTask,
@@ -234,6 +235,8 @@ export interface SuiteCliOptions {
   json: boolean;
   /** #106: run every cell in a hermetic temp copy (src/core/hermetic.ts). */
   hermetic?: boolean;
+  /** #75: run cells in a git worktree each (see RunMatrixOptions.isolate). */
+  isolate?: ExecuteMatrixCliOptions["isolate"];
   /** #13: sandbox policy from the `--permission-mode` / `--allowed-tools` / `--disallowed-tools` / `--mcp-config` flags. */
   sandbox?: SandboxPolicy;
   /** Tests: the agent-availability probe. */
@@ -311,6 +314,7 @@ export async function runSuiteCli(o: SuiteCliOptions): Promise<number> {
     retryFailed: o.retryFailed,
     json: o.json,
     ...(o.hermetic === true ? { hermetic: true } : {}),
+    ...(o.isolate !== undefined ? { isolate: o.isolate } : {}),
     jsonExtra,
     onOutcome: (cell, outcome) => {
       if (outcome.result !== undefined) writeCellArtifact(paths.runs, cell, outcome);

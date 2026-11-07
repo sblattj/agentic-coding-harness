@@ -40,6 +40,7 @@ import {
 import { DEFAULT_VERIFY_TIMEOUT_MS, type VerifyResult } from "../core/verify.ts";
 import { parsePrValue } from "../core/git-pr.ts";
 import { findAncestorInstructions, formatAncestorWarning } from "../core/ancestor-instructions.ts";
+import { ISOLATE_FLAG_OPTIONS, formatIsolateLine, isolateOptionsFromFlags, type IsolatedWorkspace } from "../core/isolate.ts";
 import { formatHermeticLine, HermeticSyncError, hermeticSyncErrorInfo, type HermeticWorkspace } from "../core/hermetic.ts";
 import {
   formatRepeatGroupLine,
@@ -203,6 +204,14 @@ usage:
                            Without it, ancestor instruction files are warned about and
                            recorded as ancestorInstructions; see README "Ancestor
                            instruction files". Not with --resume or --parallel > 1)
+              [--isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]]
+                          (run in its own git worktree <stateDir>/worktrees/<runId> on a new branch
+                           ach/<runId> cut from HEAD; the RunRecord keeps worktree.{path,branch,baseSha,
+                           cleanup}. Refuses a dirty tree unless --allow-dirty. Worktree + branch are
+                           kept for review; --cleanup commits leftover edits to the branch and removes
+                           the worktree (branch kept). --isolate-node-modules symlinks each non-dot
+                           node_modules entry from the primary checkout. Safe with --parallel; not
+                           with --hermetic or --resume. See README "Isolated runs")
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
                            AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
@@ -265,6 +274,7 @@ usage:
                 (re-run a checker against a saved run's cwd; appends to the record's
                  regrades[]; no agent launched, run-time verify never rewritten)
   ach trial --matrix <plan.json> [--dry-run] [--retry-failed] [--ledger PATH] [--json] [--hermetic]
+                [--isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]]
                 [--claude-no-background-tasks]
                 (resumable agents x tasks x models x trials grid; every cell is one
                  run labelled experiment/variant/cellId=agent:task:model:trialN;
@@ -275,6 +285,7 @@ usage:
                  run again; exit 1 only on errors or interruption; see docs/TRIALS.md)
   ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N]
                 [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json] [--hermetic]
+                [--isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]]
                 [--claude-no-background-tasks]
                 [--permission-mode <mode>] [--allowed-tools <list>]... [--disallowed-tools <list>]...
                 [--mcp-config <path|json>]
@@ -282,7 +293,9 @@ usage:
                  installed CLI, missing ones skipped with a reason; experiment
                  suite/core, variant agent:model; HTML report next to the ledger in
                  <stateDir>/suites/; --hermetic runs each cell's agent in a clean
-                 temp copy, as for ach run; the four sandbox flags work as for ach run and
+                 temp copy, as for ach run; --isolate runs each cell whose workspace is
+                 the project cwd in its own git worktree + branch (fresh-workspace cells
+                 already run in a new empty dir and are left alone); the four sandbox flags work as for ach run and
                  become the plan-level sandbox: per-cell drop warnings, listed in --dry-run
                  --json, recorded on every ledger row, not part of the cell identity)
   ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z] [--offline]
@@ -677,6 +690,8 @@ async function cmdRun(rest: string[]): Promise<number> {
       variant: { type: "string" },
       // #106: run in a temp copy with no ancestor instruction files.
       hermetic: { type: "boolean", default: false },
+      // #75: run in a git worktree + branch.
+      ...ISOLATE_FLAG_OPTIONS,
     },
     allowPositionals: true,
     tokens: true,
@@ -693,6 +708,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   if (hermetic && trialFlags.parallel !== undefined && trialFlags.parallel > 1) {
     throw new HarnessError("--hermetic syncs each run back into the one workspace; it cannot be combined with --parallel > 1", "USAGE");
   }
+  const isolate = isolateOptionsFromFlags(args.values, { hermetic, resume: args.values.resume !== undefined });
   const agent = args.values.agent;
   if (!agent) throw new HarnessError("run requires --agent <name>", "USAGE");
   // amp/goose/qwen (#22) are read-only transcript sources, never launchable.
@@ -772,6 +788,14 @@ async function cmdRun(rest: string[]): Promise<number> {
     stateDir: stateDir(),
     ...(trialFlags.verify !== undefined ? { verify: trialFlags.verify } : {}),
     labels: trialFlags.labels,
+    ...(isolate !== undefined
+      ? {
+          isolate: {
+            ...isolate,
+            onPrepared: (ws: IsolatedWorkspace) => process.stderr.write(`[isolate] running in ${ws.agentCwd} on branch ${ws.branch} (base ${ws.baseSha.slice(0, 7)})\n`),
+          },
+        }
+      : {}),
     ...(hermetic
       ? {
           hermetic: {
@@ -1002,6 +1026,7 @@ function runSummaryText(agent: string, result: RunResult, modelFlag: string | un
     summary += `\nancestors  ${result.ancestorInstructions.length} instruction file${result.ancestorInstructions.length === 1 ? "" : "s"} from ancestor dirs: ${result.ancestorInstructions.join(", ")}`;
   }
   if (result.hermetic !== undefined) summary += `\n${formatHermeticLine(result.hermetic)}`;
+  if (result.worktree !== undefined) summary += `\n${formatIsolateLine(result.worktree)}`;
   if (verify !== undefined) summary += `\n${formatVerifyLine(verify)}`;
   return summary;
 }
