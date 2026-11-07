@@ -1879,6 +1879,10 @@ async function cmdEmit(rest: string[]): Promise<number> {
       fullConversation: args.values["full-conversation"],
     });
   }
+  const sftOnly = (["min-score", "exit", "full-conversation"] as const).filter((k) => args.values[k] !== undefined);
+  if (sftOnly.length > 0) {
+    throw new HarnessError(`${sftOnly.map((k) => `--${k}`).join(", ")} only applies to --format sft (got '${format}')`, "USAGE");
+  }
   let raw: string;
   try {
     raw = await fs.readFile(input, "utf8");

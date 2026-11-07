@@ -193,6 +193,12 @@ describe("ach emit --format sft", () => {
     assert.match(bare.stderr, /--exit needs run outcomes/);
   });
 
+  test("sft-only flags on another format are a USAGE error, not silently ignored", () => {
+    const r = run(["--input", path.join(dir, "bare-events.json"), "--format", "atif", "--min-score", "4", "--full-conversation"]);
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /--min-score, --full-conversation only applies to --format sft/);
+  });
+
   test("docs example matches the CLI output for the recorded run", async () => {
     const r = run(["--input", path.join(EXAMPLE_DIR, "sft-run.result.json"), "--format", "sft", "--full-conversation"]);
     assert.equal(r.code, 0, r.stderr);
