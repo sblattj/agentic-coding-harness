@@ -1071,6 +1071,8 @@ export function createDriver(options: DriverOptions): Driver {
           warnings,
           usage,
           ...(typeof parsed.variant === 'string' && parsed.variant !== '' ? { variant: parsed.variant } : {}),
+          // #78: the caller's prompt (pre-attachment), for SFT export; not in the registry record.
+          ...(typeof parsed.prompt === 'string' && parsed.prompt !== '' ? { prompt: parsed.prompt } : {}),
           ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
           ...(attachmentManifest !== undefined ? { attachments: attachmentManifest } : {}),
           ...(ancestorInstructions.length > 0 ? { ancestorInstructions } : {}),

@@ -1,1 +1,1 @@
-{"messages":[{"role":"system","content":"You are a careful coding agent."},{"role":"user","content":"What is in notes.txt?"},{"role":"assistant","content":"Let me read it.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"notes.txt\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"buy milk"},{"role":"assistant","content":"notes.txt says: buy milk."}]}
+{"messages":[{"role":"user","content":"What is in notes.txt?"},{"role":"assistant","content":"null adapter: deterministic reply 1/1 to: What is in notes.txt?"}]}
