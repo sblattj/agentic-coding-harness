@@ -445,7 +445,9 @@ sync and cleanup rules.
 - `ach trial --matrix plan.json --isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]`
   (also `--suite`) runs each `workspace: "shared"` cell in its own git worktree + branch
   `ach/<runId>` cut from `HEAD` (`fresh` cells already get a new empty directory and are
-  skipped). `verify` runs inside the worktree. Nothing syncs back, so cells in one repo
+  skipped). A task `setup` and `verify` both run inside the worktree (setup first, before
+  the agent), so setup output never touches the main checkout. The default ledger and work
+  root next to the plan do not count as a dirty tree. Nothing syncs back, so cells in one repo
   cannot see each other's edits; each RunRecord carries `worktree`. Not with `--hermetic`.
   See README "Isolated runs".
 

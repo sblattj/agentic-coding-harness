@@ -10,7 +10,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { createMatrixDriver, expandMatrix, parseMatrixPlan, runMatrix } from "../src/cli/trial-matrix.ts";
-import { isolateBranchName, isolateOptionsFromFlags, materializeNodeModules } from "../src/core/isolate.ts";
+import { isolateBranchName, isolateOptionsFromFlags, materializeNodeModules, prepareIsolation } from "../src/core/isolate.ts";
 import { RunRecordSchema, listRunRecords } from "../src/core/registry.ts";
 
 const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
@@ -207,15 +207,18 @@ describe("ach run --isolate", () => {
     assert.equal(new Set(recs.map((x) => x.worktree?.path)).size, 2);
   });
 
-  it("--isolate-node-modules symlinks non-dot node_modules entries only", () => {
+  it("--isolate-node-modules symlinks node_modules entries incl. .bin, skipping caches", () => {
     const { repo, state } = fixture();
     fs.mkdirSync(path.join(repo, "node_modules", "left-pad"), { recursive: true });
     fs.mkdirSync(path.join(repo, "node_modules", ".cache"), { recursive: true });
+    fs.mkdirSync(path.join(repo, "node_modules", ".bin"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "node_modules", ".bin", "tool"), "#!/bin/sh\n");
     fs.writeFileSync(path.join(repo, "node_modules", "left-pad", "index.js"), "x");
     const r = runCli(runArgs(["--isolate", "--isolate-node-modules"]), state, repo, { MARKER: "nm" });
     assert.equal(r.code, 0, r.stderr);
     const wt = (JSON.parse(r.stdout) as { worktree: { path: string; nodeModules?: number } }).worktree;
-    assert.equal(wt.nodeModules, 1);
+    assert.equal(wt.nodeModules, 2);
+    assert.equal(fs.existsSync(path.join(wt.path, "node_modules", ".bin", "tool")), true, ".bin must be linked");
     const link = path.join(wt.path, "node_modules", "left-pad");
     assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
     assert.equal(fs.existsSync(path.join(link, "index.js")), true);
@@ -294,5 +297,120 @@ describe("ach trial --isolate (runMatrix)", () => {
     const r = runCli(["trial", "--suite", "core", "--isolate", "--hermetic", "--dry-run"], state, repo);
     assert.notEqual(r.code, 0);
     assert.match(r.stderr, /--isolate and --hermetic/);
+  });
+});
+
+describe("#75 review fixes", () => {
+  const status = (repo: string): string => git(repo, "status", "--porcelain");
+
+  it("matrix --isolate with the default ledger next to a committed plan completes every cell", () => {
+    const { repo, state } = fixture();
+    const plan = {
+      experiment: "iso2",
+      agents: ["null"],
+      trials: 2,
+      tasks: [{ id: "t", prompt: "p", workspace: "shared" }],
+    };
+    fs.writeFileSync(path.join(repo, "plan.json"), JSON.stringify(plan));
+    git(repo, "add", "plan.json");
+    git(repo, "commit", "-q", "-m", "plan");
+    const r = runCli(["trial", "--matrix", "plan.json", "--isolate", "--json"], state, repo);
+    assert.equal(r.code, 0, r.stderr + r.stdout);
+    const rows = fs
+      .readFileSync(path.join(repo, "plan.ledger.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { status: string });
+    assert.deepEqual(rows.map((x) => x.status), ["passed", "passed"]);
+  });
+
+  it("a real user change still blocks; .ach/ config alone does not", () => {
+    const { repo, state } = fixture();
+    fs.mkdirSync(path.join(repo, ".ach"));
+    fs.writeFileSync(path.join(repo, ".ach", "config.json"), "{}");
+    const ok = prepareIsolation("cfg-ok", repo, { stateDir: state });
+    assert.ok(fs.existsSync(ok.path));
+    fs.writeFileSync(path.join(repo, "mine.txt"), "wip");
+    assert.throws(() => prepareIsolation("cfg-bad", repo, { stateDir: state }), /dirty working tree.*mine\.txt/);
+    assert.equal(status(repo).includes("mine.txt"), true);
+  });
+
+  it("task setup runs inside the worktree: verify sees it and the main tree stays clean", async () => {
+    const { repo, state } = fixture();
+    const ledgerPath = path.join(root, `ledger-${++seq}.jsonl`);
+    const plan = parseMatrixPlan({
+      experiment: "iso3",
+      agents: ["null"],
+      tasks: [{ id: "s", prompt: "p", workspace: "shared", cwd: repo, setup: "echo fixture > seed.txt", verify: "test -f seed.txt" }],
+    });
+    const driver = await createMatrixDriver(["null"], state);
+    const s = await runMatrix({ cells: expandMatrix(plan, repo), ledgerPath, driver, stateDir: state, isolate: {} });
+    assert.equal(s.passed, 1, JSON.stringify(s));
+    assert.equal(status(repo), "");
+    assert.equal(fs.existsSync(path.join(repo, "seed.txt")), false);
+  });
+
+  it("a failing setup is an error cell and leaves no worktree or branch behind", async () => {
+    const { repo, state } = fixture();
+    const ledgerPath = path.join(root, `ledger-${++seq}.jsonl`);
+    const plan = parseMatrixPlan({
+      experiment: "iso4",
+      agents: ["null"],
+      tasks: [{ id: "s", prompt: "p", workspace: "shared", cwd: repo, setup: "echo boom >&2; exit 3" }],
+    });
+    const driver = await createMatrixDriver(["null"], state);
+    const s = await runMatrix({ cells: expandMatrix(plan, repo), ledgerPath, driver, stateDir: state, isolate: {} });
+    assert.equal(s.passed, 0);
+    const row = JSON.parse(fs.readFileSync(ledgerPath, "utf8").trim().split("\n")[0]!) as { status: string; error?: string };
+    assert.equal(row.status, "error");
+    assert.match(row.error ?? "", /setup failed \(exit 3\).*boom/);
+    assert.equal(git(repo, "branch", "--list", "ach/*"), "");
+    assert.equal(git(repo, "worktree", "list").split("\n").length, 1);
+  });
+
+  it("running from a gitignored subdirectory creates it in the worktree", () => {
+    const { repo, state } = fixture();
+    fs.appendFileSync(path.join(repo, ".gitignore"), "scratch/\n");
+    git(repo, "commit", "-q", "-am", "ignore");
+    const sub = path.join(repo, "scratch");
+    fs.mkdirSync(sub);
+    const r = runCli(runArgs(["--isolate"]), state, sub, { MARKER: "sub" });
+    assert.equal(r.code, 0, r.stderr);
+    const wt = (JSON.parse(r.stdout) as { worktree: { path: string } }).worktree;
+    assert.equal(fs.existsSync(path.join(wt.path, "scratch", "sub.txt")), true);
+  });
+
+  it("a prepare failure after worktree add removes the worktree and branch", () => {
+    const { repo, state } = fixture();
+    assert.throws(() => prepareIsolation("prep-fail", repo, { stateDir: state, setup: { command: "exit 1" } }), /setup failed/);
+    assert.equal(fs.existsSync(path.join(state, "worktrees", "prep-fail")), false);
+    assert.equal(git(repo, "branch", "--list", "ach/prep-fail"), "");
+  });
+
+  it("SIGTERM during an isolated --cleanup run removes the worktree", async () => {
+    const { repo, state } = fixture();
+    const script = path.join(root, `sig-${++seq}.ts`);
+    const mod = new URL("../src/core/isolate.ts", import.meta.url).pathname;
+    fs.writeFileSync(
+      script,
+      `import { prepareIsolation } from ${JSON.stringify(mod)};
+const ws = prepareIsolation("sig-run", ${JSON.stringify(repo)}, { stateDir: ${JSON.stringify(state)}, cleanup: true });
+process.stdout.write("ready " + ws.path + "\\n");
+setInterval(() => {}, 1000);
+`,
+    );
+    const child = spawn(NODE, [...LOADER, script], { cwd: repo });
+    let out = "";
+    child.stdout.on("data", (d) => (out += String(d)));
+    const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => child.on("close", (code, signal) => resolve({ code, signal })));
+    const t0 = Date.now();
+    while (!out.includes("ready ") && Date.now() - t0 < 30_000) await new Promise((r) => setTimeout(r, 50));
+    const wtPath = out.trim().split(" ")[1]!;
+    assert.equal(fs.existsSync(wtPath), true);
+    child.kill("SIGTERM");
+    const e = await exited;
+    assert.equal(e.code, 143, JSON.stringify(e));
+    assert.equal(fs.existsSync(wtPath), false);
+    assert.ok(git(repo, "branch", "--list", "ach/sig-run").length > 0, "branch is kept");
   });
 });
