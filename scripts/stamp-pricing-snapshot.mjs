@@ -17,7 +17,9 @@ for (let i = 0; i < argv.length; i++) {
   if (argv[i] === "--file") file = argv[++i] ?? file;
   else date = argv[i];
 }
-if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
+// Date.parse normalizes impossible dates (2026-02-30 -> 2026-03-02), so round-trip.
+const parsed = Date.parse(`${date}T00:00:00Z`);
+if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed) || new Date(parsed).toISOString().slice(0, 10) !== date) {
   console.error(`stamp-pricing-snapshot: '${date}' is not a YYYY-MM-DD date`);
   process.exit(2);
 }
