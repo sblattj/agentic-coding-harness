@@ -26,6 +26,8 @@ import { emptyBucket, fmtInt, fmtUsd, type AggregatableRecord, type UsageBucket 
 export const UNATTRIBUTED = "unattributed";
 export const UNKNOWN_PROJECT = "unknown";
 export const NO_BRANCH = "(no branch)";
+/** `--by pr` bucket for runs with no recorded PR (#48). */
+export const NO_PR = "none";
 
 /** A stats row plus the optional fields the extra dimensions read. */
 export interface DimRecord extends AggregatableRecord {
@@ -38,6 +40,8 @@ export interface DimRecord extends AggregatableRecord {
   cwd?: string | null;
   /** Git branch label of the run (#47): a branch name, `(detached <sha>)`, or absent. */
   branch?: string | null;
+  /** PR number recorded on the run (#48); absent = `none`. */
+  pr?: number | null;
 }
 
 /** Per-model row: cost is null when any contribution could not be priced. */
@@ -66,6 +70,8 @@ export interface DimOptions {
   byProject?: boolean;
   /** Build the byBranch rollup (#47). */
   byBranch?: boolean;
+  /** Build the byPr rollup (#48). */
+  byPr?: boolean;
   /** absolute path -> friendly project name. */
   projectAliases?: Record<string, string>;
 }
@@ -77,6 +83,7 @@ export interface DimAggregates {
   byModelDay?: Record<string, Record<string, ModelBucket>>;
   byProject?: Record<string, RatioBucket>;
   byBranch?: Record<string, RatioBucket>;
+  byPr?: Record<string, RatioBucket>;
 }
 
 // ---------------------------------------------------------------- per-model
@@ -359,6 +366,21 @@ export function branchLabel(run: { branch?: string | null; commit?: string | nul
   return run.commit ? `(detached ${run.commit})` : undefined;
 }
 
+/** Index a run record's PR number by agent+session (session alone as fallback). */
+export function prIndex(runs: { agent: string; sessionId?: string | null; pr?: number | null }[]): (agent: string, sessionId: string | null | undefined) => number | undefined {
+  const exact = new Map<string, number>();
+  const bySession = new Map<string, number>();
+  for (const run of runs) {
+    if (!run.sessionId || !run.pr) continue;
+    exact.set(`${run.agent}\u0000${run.sessionId}`, run.pr);
+    bySession.set(run.sessionId, run.pr);
+  }
+  return (agent, sessionId) => {
+    if (!sessionId) return undefined;
+    return exact.get(`${agent}\u0000${sessionId}`) ?? bySession.get(sessionId);
+  };
+}
+
 /** Index a run record's branch label by agent+session (session alone as fallback). */
 export function branchIndex(runs: { agent: string; sessionId?: string | null; branch?: string | null; commit?: string | null }[]): (agent: string, sessionId: string | null | undefined) => string | undefined {
   const exact = new Map<string, string>();
@@ -393,6 +415,7 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
   const byModelDay: Record<string, Record<string, ModelBucket>> = {};
   const byProject: Record<string, RatioBucket> = {};
   const byBranch: Record<string, RatioBucket> = {};
+  const byPr: Record<string, RatioBucket> = {};
   for (const r of records) {
     const day = opts.timeZone ? bucketKey(r.ts, "day", opts.timeZone) : r.ts ? r.ts.slice(0, 10) : "unknown";
     for (const c of contributions(r, opts.pricer, opts.costMode)) {
@@ -405,10 +428,11 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
       addRatio((byProject[name] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
     }
     if (opts.byBranch) addRatio((byBranch[r.branch || NO_BRANCH] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
+    if (opts.byPr) addRatio((byPr[r.pr ? String(r.pr) : NO_PR] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
   }
   for (const b of Object.values(byModel)) finishModel(b);
   for (const cells of Object.values(byModelDay)) for (const b of Object.values(cells)) finishModel(b);
-  for (const b of [...Object.values(byProject), ...Object.values(byBranch)]) {
+  for (const b of [...Object.values(byProject), ...Object.values(byBranch), ...Object.values(byPr)]) {
     if (b.costUsd !== null) b.costUsd = Math.round(b.costUsd * 1e6) / 1e6;
     b.cacheHitRatio = cacheHitRatio(b);
   }
@@ -422,6 +446,7 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
   if (opts.byModelDay) out.byModelDay = byModelDay;
   if (opts.byProject) out.byProject = byProject;
   if (opts.byBranch) out.byBranch = byBranch;
+  if (opts.byPr) out.byPr = byPr;
   return out;
 }
 
@@ -431,8 +456,8 @@ function isUnattributedKey(k: string): boolean {
 
 // ---------------------------------------------------------------- CLI glue
 
-export type ByDim = "model" | "project" | "branch";
-export const BY_DIMS: readonly ByDim[] = ["model", "project", "branch"];
+export type ByDim = "model" | "project" | "branch" | "pr";
+export const BY_DIMS: readonly ByDim[] = ["model", "project", "branch", "pr"];
 
 /** --by values (repeatable and/or comma-joined) -> the set of extra dimensions. */
 export function parseByDims(values: string[] | undefined): Set<ByDim> {
@@ -467,7 +492,7 @@ export function statsLine(label: string, b: Omit<UsageBucket, "costUsd"> & { cos
 }
 
 /** Text sections for the extra dimensions. byModel prints only with --by model. */
-export function renderDimsText(dims: DimAggregates, show: { model: boolean; project: boolean; branch?: boolean }): string[] {
+export function renderDimsText(dims: DimAggregates, show: { model: boolean; project: boolean; branch?: boolean; pr?: boolean }): string[] {
   const lines: string[] = [];
   const sorted = <T>(m: Record<string, T>) => Object.entries(m).sort(([a], [b]) => a.localeCompare(b));
   if (show.model) {
@@ -487,6 +512,12 @@ export function renderDimsText(dims: DimAggregates, show: { model: boolean; proj
   if (show.branch && dims.byBranch) {
     lines.push("-- by branch");
     for (const [k, b] of sorted(dims.byBranch)) lines.push(statsLine(k, b));
+  }
+  if (show.pr && dims.byPr) {
+    lines.push("-- by pr");
+    // Numeric order (482 before 1000); the `none` bucket last.
+    const byNum = Object.entries(dims.byPr).sort(([a], [b]) => (a === NO_PR ? 1 : b === NO_PR ? -1 : Number(a) - Number(b)));
+    for (const [k, b] of byNum) lines.push(statsLine(k === NO_PR ? k : `#${k}`, b));
   }
   return lines;
 }

@@ -5,9 +5,9 @@
 // tree's RunRecord (totals/endedAt/status), not the spec's older names.
 import { runVerdict, type RunRecord } from "../core/registry.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
-import { branchLabel, NO_BRANCH } from "../cli/stats-dims.ts";
+import { branchLabel, NO_BRANCH, NO_PR } from "../cli/stats-dims.ts";
 
-export const COMPARE_GROUP_KEYS = ["experiment", "variant", "workflow", "agent", "branch"] as const;
+export const COMPARE_GROUP_KEYS = ["experiment", "variant", "workflow", "agent", "branch", "pr"] as const;
 
 /** Alternate spellings accepted for a group key (#47: the issue names `git.branch`). */
 export const COMPARE_GROUP_ALIASES: Readonly<Record<string, CompareGroupKey>> = { "git.branch": "branch" };
@@ -67,6 +67,8 @@ function groupValue(rec: RunRecord, key: CompareGroupKey): string | undefined {
   if (key === "experiment") return rec.experiment ?? rec.agent;
   // Same labels as `ach stats --by branch` (#47): name, `(detached <sha>)`, `(no branch)`.
   if (key === "branch") return branchLabel(rec) ?? NO_BRANCH;
+  // Same labels as `ach stats --by pr` (#48): the number, or `none`.
+  if (key === "pr") return rec.pr ? String(rec.pr) : NO_PR;
   return rec[key];
 }
 

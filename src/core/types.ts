@@ -1039,6 +1039,12 @@ export interface RunSpec {
   /** Working directory for the agent subprocess. */
   cwd?: string;
   /**
+   * PR this run belongs to (#48): a number, or 'auto' to also allow a
+   * `gh pr view` lookup. Recorded on the RunRecord as `pr` + `prSource`;
+   * absent = env var, then branch-name pattern (src/core/git-pr.ts).
+   */
+  pr?: number | "auto";
+  /**
    * Compare-view variant label (spec §6.3): echoed onto RunResult so trial
    * reports can group the comparison by variant instead of agent, matching
    * the live /compare view. Absent on plain runs.
@@ -1115,6 +1121,7 @@ export const RunSpecSchema = z
       .min(1, { error: "prompt is required and must be a non-empty string" }),
     runId: z.string().optional(),
     cwd: z.string().optional(),
+    pr: z.union([z.number().int().positive(), z.literal("auto")]).optional(),
     variant: z.string().min(1).optional(),
     model: z.string().optional(),
     resume: z.string().optional(),

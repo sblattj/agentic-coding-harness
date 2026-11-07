@@ -38,6 +38,7 @@ import {
   writeMetricsSidecar,
 } from "./run-sandbox.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, type VerifyResult } from "../core/verify.ts";
+import { parsePrValue } from "../core/git-pr.ts";
 import { findAncestorInstructions, formatAncestorWarning } from "../core/ancestor-instructions.ts";
 import { formatHermeticLine, HermeticSyncError, hermeticSyncErrorInfo, type HermeticWorkspace } from "../core/hermetic.ts";
 import {
@@ -87,6 +88,7 @@ import {
   baseCacheRatios,
   cwdIndex,
   branchIndex,
+  prIndex,
   loadProjectAliases,
   parseByDims,
   parseModelAliases,
@@ -163,6 +165,9 @@ usage:
   ach --version | -v        print the harness version
   ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
+              [--pr N|auto]  (PR number stamped on the run record as pr + prSource; precedence
+                           flag > AGENTIC_CODING_HARNESS_PR > branch name (482-slug, pr-482, issue-482);
+                           'auto' also tries gh pr view; see ach stats --by pr)
               [--budget-alerts 0.5,0.8,1.0] [--warn-at 0.5,0.8,0.95] [--on-budget abort|warn]
                 (threshold alerts warn once per crossing, never abort; fractions in (0,1];
                  'off' disables; state in <stateDir>/alerts.json, see docs/BUDGET-ALERTS.md)
@@ -298,12 +303,13 @@ usage:
                  and still-running runs have no verdict and are left out (shown as
                  noVerdict=N); 'unavailable' runs are also left out unless
                  --include-unavailable, which adds back only those)
-            [--by model|project|branch]... [--merge-models] [--model-alias FROM=TO]...
+            [--by model|project|branch|pr]... [--merge-models] [--model-alias FROM=TO]...
             [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
                 (--by takes time granularities and dimensions together, e.g.
                  --by week,model; --by model: agent/model rows + model x day table;
                  --by branch: per-git-branch rollup (branch recorded at run start;
-                 unattributed rows land in '(no branch)'); --by project: repo-root rollup, aliases also via
+                 unattributed rows land in '(no branch)'); --by pr: per-PR rollup (PR recorded
+                 at run time via ach run --pr, env or branch name; no network; no PR = 'none'); --by project: repo-root rollup, aliases also via
                  AGENTIC_CODING_HARNESS_PROJECT_ALIASES; every row shows
                  cacheHit = cacheRead/(input+cacheRead+cacheWrite))
             [--blocks] [--budget-usd N]
@@ -586,6 +592,15 @@ export function kiroIdeConfigFromFlags(v: {
   return parsed.data;
 }
 
+/** `--pr N|auto` (#48): a usage error on anything else. */
+function parseRunPr(raw: string): number | "auto" {
+  try {
+    return parsePrValue(raw);
+  } catch (e) {
+    throw new HarnessError(`--pr: ${(e as Error).message}`, "USAGE");
+  }
+}
+
 async function cmdRun(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
@@ -593,6 +608,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       agent: { type: "string" },
       model: { type: "string" },
       resume: { type: "string" },
+      pr: { type: "string" },
       "budget-usd": { type: "string" },
       "max-turns": { type: "string" },
       "wall-ms": { type: "string" },
@@ -716,6 +732,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     prompt,
     model: args.values.model,
     resume: args.values.resume,
+    ...(args.values.pr !== undefined ? { pr: parseRunPr(args.values.pr) } : {}),
     budget: { ...budget, ...alertBudget },
     ...(extraArgs !== undefined ? { extraArgs } : {}),
     ...(sandbox !== undefined ? { sandbox } : {}),
@@ -1454,12 +1471,14 @@ async function cmdStats(rest: string[]): Promise<number> {
   const registryScan = scanRunRecords(stateDir());
   const runCwd = cwdIndex(registryScan.records);
   const runBranch = branchIndex(registryScan.records);
+  const runPr = prIndex(registryScan.records);
   const originIndex = statsOriginIndex(registryScan.records);
   let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript"; origin?: StatsOrigin })[] = stateRecords.map((r) => ({
     source: "state",
     extra: r.extra,
     cwd: runCwd(r.agent, r.sessionId),
     branch: runBranch(r.agent, r.sessionId),
+    pr: runPr(r.agent, r.sessionId),
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,
@@ -1508,7 +1527,8 @@ async function cmdStats(rest: string[]): Promise<number> {
       };
       const cwd = from?.cwd ?? runCwd(d.agent, m.sessionId ?? undefined);
       const branch = from?.branch ?? runBranch(d.agent, m.sessionId ?? undefined);
-      records.push({ ...row, ...costFor(row, d.costUsd), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), source: "transcript" });
+      const pr = runPr(d.agent, m.sessionId ?? undefined);
+      records.push({ ...row, ...costFor(row, d.costUsd), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), ...(pr ? { pr } : {}), source: "transcript" });
     }
   }
 
@@ -1545,7 +1565,8 @@ async function cmdStats(rest: string[]): Promise<number> {
       const cwd = rec.cwd ?? runCwd(rec.agent, rec.sessionId);
       // Branch only via the run registry (session match): no fixture proves transcripts carry gitBranch, and we never shell out per row.
       const branch = runBranch(rec.agent, rec.sessionId);
-      records.push({ ...row, ...costFor(row, rec.costUsd), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), source: "transcript" });
+      const pr = runPr(rec.agent, rec.sessionId);
+      records.push({ ...row, ...costFor(row, rec.costUsd), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), ...(pr ? { pr } : {}), source: "transcript" });
     }
     // agents.d usage taps (#38): descriptor-declared transcript sources.
     const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs, costMode });
@@ -1599,6 +1620,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     byModelDay: dimsBy.has("model"),
     byProject: showProject,
     byBranch: dimsBy.has("branch"),
+    byPr: dimsBy.has("pr"),
     projectAliases,
   });
   if (dims.unpricedModels.length > 0) {
@@ -1685,6 +1707,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(args.values["merge-models"] ? { mergedModels: true, modelAliases } : {}),
           ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
           ...(dims.byBranch ? { byBranch: dims.byBranch } : {}),
+          ...(dims.byPr ? { byPr: dims.byPr } : {}),
           // #142: codex token-accounting scope and completeness.
           ...(codexAccountingJson !== undefined ? { codexAccounting: codexAccountingJson } : {}),
           // #21: per-run context-window pressure from the run registry.
@@ -1733,7 +1756,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for (const m of Object.values(timeMaps)) {
       for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, view(b), prov.byDay[d] ?? prov.byWeek?.[d] ?? prov.byMonth?.[d]) + "\n");
     }
-    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject, branch: dimsBy.has("branch") })) {
+    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject, branch: dimsBy.has("branch"), pr: dimsBy.has("pr") })) {
       process.stdout.write(l + "\n");
     }
     if (outcomes !== undefined) {
