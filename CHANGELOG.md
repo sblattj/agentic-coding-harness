@@ -4,6 +4,13 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-11-08
+
+### Fixed
+
+- Trio page cost: the header total and COST card now carry the same provenance marker as the run list (`*` computed by ach, `≈` estimated, unmarked reported), with a legend under the chart. When the run's usage events sum to a different amount than the record, the COST card shows it as a second line and the header tooltip names it. Fixes #186.
+- Trio page per-tool table: it no longer cuts rows off behind the chart in a box with a hidden scrollbar. It shows the four slowest tools plus a `+K more` toggle, and scrolls only when expanded. Fixes #187.
+
 ## [0.28.0] - 2026-11-07
 
 ### Added
