@@ -166,7 +166,10 @@ describe('trio metrics cards (#32)', () => {
       textContent: text ?? '',
       children: [],
       appendChild(n) { this.children.push(n); },
-    });
+      classList: { toggle() {} },
+      setAttribute() {},
+      addEventListener() {},
+    } as Node);
     const ctx = {
       obs,
       rec: null,
@@ -175,7 +178,10 @@ describe('trio metrics cards (#32)', () => {
       K: (n: number) => String(n),
       S: (ms: number) => ((ms || 0) / 1000).toFixed(1) + 's',
       USD: () => 'n/a',
-      observedCost: () => null,
+      costView: () => ({ value: null, text: 'n/a', mark: '', title: '', alt: null }),
+      toolRowsView: (rows: unknown[]) => ({ shown: rows, hidden: 0, toggle: '' }),
+      TOOL_ROWS_CAP: 4,
+      toolsOpen: false,
       fmtDurMs: (ms: number) => (ms < 1000 ? Math.round(ms) + 'ms' : (ms / 1000).toFixed(2) + 's'),
       drawChart: () => {},
     };

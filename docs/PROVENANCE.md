@@ -54,6 +54,7 @@ in the same fields.
 | web UI | metastrip `ctx` | estimated | `≈N tok`. |
 | web UI | sidebar aggregate cost | computed if any run's cost is computed | |
 | web UI | metastrip `in` / `out` / `cache` / `credits` | reported | |
+| web UI trio | header total and COST card | per `totals.provenance.costUsd` | Same `*` / `≈` markers as the run list, with a legend under the chart. The record total is the headline; when the run's usage events sum to a different amount, the COST card shows it as a second line (`usage events $X`) and the header tooltip names it. With no record, the usage-event sum is shown unmarked. |
 | `ach stats` | `input` / `output` / `cacheRead` / `cacheWrite` / `reasoning` | reported | Machine transcripts and harness state. A bucket whose records all stated `tokensAvailable: false` has no label. |
 | `ach stats` | `cost` | per `--cost-mode` | `auto`: reported where the line carried a cost, else computed. `calculate`: computed. `display`: reported, or `n/a`. A mixed bucket is `computed` (the split is in `costBySource`). |
 | `ach stats --json` | `costBySource.reported` / `.computed` | as named | |
@@ -84,5 +85,5 @@ how many members are missing.
 The trio cumulative USD series sums canonical `costUsd` values. It does not
 substitute one model's rates for another. Once a usage record lacks a cost,
 the cumulative total is unknown. The run header can still show an explicitly
-available registry total when one exists. Empty event streams do not prove
+available registry total when one exists, marked by its provenance. Empty event streams do not prove
 zero spend.

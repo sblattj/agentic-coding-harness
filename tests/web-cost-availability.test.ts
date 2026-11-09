@@ -61,7 +61,11 @@ it('trio uses explicit canonical costs, never guessed rates or partial sums', ()
   assert.equal(deriveRunObservability([event(2), event(3)]).totalCostUsd, 5);
   assert.equal(runInNewContext(source('trio', 'USD') + '\nUSD(undefined)'), 'n/a');
   assert.equal(runInNewContext(source('trio', 'USD') + '\nUSD(0)'), '$0.000');
-  const code = source('trio', 'costUnavailable') + source('trio', 'observedCost') + '\nobservedCost()';
+  // #186: the headline cost goes through costView (provenance-marked); value
+  // stays null for unknown cost and 0 for a known zero.
+  const html = readFileSync(new URL('../src/web/trio.html', import.meta.url), 'utf8');
+  const blk = (name: string) => html.split(`/* ${name}:begin */`)[1]!.split(`/* ${name}:end */`)[0]!;
+  const code = blk('provenance') + blk('trio-cost') + '\ncostView(rec, obs).value';
   assert.equal(runInNewContext(code, { rec: record(0, true), obs: { totalCostUsd: 0 } }), null);
   const zero = record(0, true);
   zero.usage!.usd.available = true;

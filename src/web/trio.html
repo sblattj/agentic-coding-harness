@@ -175,13 +175,18 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3f
 .v.c-cr, .v.c-cw { color: var(--teal); }
 .v.c-cost { color: var(--amber); } .v.c-el { color: var(--fg); }
 .v.c-lat { color: var(--cyan); }
-.toollat { padding: 6px 10px 0; flex: none; font: 10.5px var(--mono); color: var(--dim); max-height: 7.5em; overflow-y: auto; }
+.stat .sub { font: 10px var(--mono); color: var(--dim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toollat { padding: 6px 10px 0; flex: none; font: 10.5px var(--mono); color: var(--dim); }
+.toollat.open { max-height: 40%; overflow-y: auto; }
+.toollat .more { font: inherit; color: var(--cyan); background: none; border: 0; padding: 1px 0; cursor: pointer; }
+.toollat .more:hover { text-decoration: underline; }
+.provlegend { font: 9.5px var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .toollat:empty { display: none; }
 .toollat .tl { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 10px; padding: 1px 0; }
 .toollat .tl b { color: var(--fg); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toollat .tl.hd { color: var(--faint); text-transform: uppercase; letter-spacing: .1em; font-size: 9px; }
 .toollat .err { color: var(--red); }
-.chartwrap { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto; padding: 8px 10px 10px; gap: 4px; }
+.chartwrap { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto auto; padding: 8px 10px 10px; gap: 4px; }
 .chartbox { position: relative; min-height: 0; }
 #chart { width: 100%; height: 100%; display: block; }
 #chart .grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
@@ -403,6 +408,7 @@ footer.min .tbody { display: none; }
       </div>
       <div class="axt" id="axT"></div>
       <div class="legend"><span><i class="sw sw-t"></i>tokens</span><span><i class="sw sw-u"></i>cost</span></div>
+      <div class="provlegend" title="provenance markers (docs/PROVENANCE.md)">* computed by ach (tokens x bundled price)  ≈ estimated (heuristic)  unmarked = reported by the agent CLI  n/a = not reported</div>
     </div>
   </section>
   <section class="panel logs" aria-label="logs">
@@ -447,15 +453,89 @@ function K(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
   return String(Math.round(n));
 }
-function costUnavailable() {
-  return rec && (rec.metering === "none" || (rec.usage && rec.usage.usd && rec.usage.usd.available === false));
+/* ===== provenance markers (#186; byte-identical to index.html's block, pinned by tests/web-trio-cost.test.ts) ===== */
+/* provenance:begin */
+var PROV_MARK = { reported: "", computed: "*", estimated: "\u2248" };
+/* Stored totals.provenance wins; a local record written before it existed is
+   derived (the driver always priced costUsd itself); an external record
+   without a map is never guessed at. */
+function provOf(r) {
+  var t = (r && r.totals) || null;
+  if (!t) return {};
+  if (t.provenance) return t.provenance;
+  if (r.source === "external") return {};
+  var out = {};
+  var usdKnown = !(r.usage && r.usage.usd && r.usage.usd.available === false);
+  if (usdKnown) {
+    if (t.costSource) out.costUsd = t.costSource;
+    else if (t.costUsd > 0) out.costUsd = "computed";
+  }
+  if (t.contextTokens != null) out.contextTokens = "estimated";
+  return out;
 }
-function observedCost() {
-  if (costUnavailable()) return null;
-  if (rec && rec.usage && rec.usage.usd && rec.usage.usd.available === true && rec.totals) return rec.totals.costUsd;
-  return obs && obs.totalCostUsd;
+function provMark(r, field) {
+  var p = provOf(r)[field];
+  return p ? PROV_MARK[p] || "" : "";
 }
+/* Context occupancy is DERIVED: always rendered with the estimated marker.
+   #141: a turn-total reading is cumulative usage, never occupancy (records
+   written before #141 still set totals.contextTokens from it). */
+function fmtCtx(r) {
+  var c = r && r.usage && r.usage.context;
+  if (c && c.basis === "turn-total") {
+    var cum = c.cumulativeTokens != null ? c.cumulativeTokens : c.tokens;
+    return cum == null ? "n/a" : "n/a (cumulative " + Number(cum).toLocaleString("en-US") + " tok, not occupancy)";
+  }
+  var t = r && r.totals;
+  if (!t || t.contextTokens == null) return "";
+  return PROV_MARK.estimated + Number(t.contextTokens).toLocaleString("en-US") + " tok";
+}
+/* provenance:end */
+
+/* trio-cost:begin */
+var PROV_TITLE = { reported: "reported by the agent CLI", computed: "computed by ach (tokens x bundled price)", estimated: "estimated (heuristic)" };
 function USD(n) { return n == null || !isFinite(n) ? "n/a" : "$" + Number(n).toFixed(3); }
+function costUnavailableFor(r) {
+  return !!r && (r.metering === "none" || !!(r.usage && r.usage.usd && r.usage.usd.available === false));
+}
+/* The run's headline cost (#186). The record's total wins, so trio agrees
+   with the grid and `ach stats`, and it carries the same provenance marker
+   the grid shows. When the run's own usage events total a different amount
+   (an older record priced by ach while the agent CLI stated its own cost),
+   that figure is surfaced as `alt` instead of being silently dropped. */
+function costView(r, o) {
+  if (!o) return { value: null, text: "–", mark: "", title: "", alt: null };
+  if (costUnavailableFor(r)) return { value: null, text: "n/a", mark: "", title: "cost not reported", alt: null };
+  var fromRec = !!(r && r.usage && r.usage.usd && r.usage.usd.available === true && r.totals);
+  var v = fromRec ? r.totals.costUsd : o.totalCostUsd;
+  if (v == null || !isFinite(v)) return { value: null, text: "n/a", mark: "", title: "cost not reported", alt: null };
+  var p = fromRec ? provOf(r).costUsd : undefined;
+  var mark = p ? PROV_MARK[p] || "" : "";
+  var title = fromRec ? (p ? PROV_TITLE[p] : "run record total") : "sum of the run's usage events";
+  var alt = null;
+  var s = o.totalCostUsd;
+  if (fromRec && s != null && isFinite(s) && Math.abs(s - v) > Math.max(0.0005, 0.005 * Math.max(Math.abs(s), Math.abs(v)))) {
+    alt = s;
+    title += " · the run's usage events total " + USD(s);
+  }
+  return { value: v, text: USD(v) + mark, mark: mark, title: title, alt: alt };
+}
+/* trio-cost:end */
+
+/* tool-rows:begin */
+/* Per-tool table (#187): a hidden-scrollbar overflow box cut its last row in
+   half under the chart, with no sign more rows existed. Show the first `cap`
+   rows plus an explicit "+K more" toggle instead; expanded shows them all. */
+var TOOL_ROWS_CAP = 4;
+function toolRowsView(rows, open, cap) {
+  rows = rows || [];
+  if (rows.length <= cap) return { shown: rows, hidden: 0, toggle: "" };
+  if (open) return { shown: rows, hidden: 0, toggle: "show fewer ▴" };
+  return { shown: rows.slice(0, cap), hidden: rows.length - cap, toggle: "+" + (rows.length - cap) + " more ▾" };
+}
+/* tool-rows:end */
+var toolsOpen = false; // per-tool table expanded (#187)
+function costUnavailable() { return costUnavailableFor(rec); }
 function S(ms) { return ((ms || 0) / 1000).toFixed(1) + "s"; }
 function fmtDurMs(ms) {
   ms = Number(ms) || 0;
@@ -516,7 +596,9 @@ function renderHeader() {
   } else {
     $("pulseTxt").textContent = status.toUpperCase();
   }
-  $("totalCost").textContent = obs ? USD(observedCost()) : "\u2013";
+  var cv = costView(rec, obs);
+  $("totalCost").textContent = cv.text;
+  $("totalCost").title = cv.title;
 }
 
 /* ===== fatal states ===== */
@@ -676,7 +758,10 @@ function renderMetrics() {
     ["cache read", last ? K(last.cacheRead) : "\u2013", "c-cr"],
     ["cache write", last ? K(last.cacheWrite) : "\u2013", "c-cw"],
     ["cache hit", obs && obs.cacheHitRatio != null ? (obs.cacheHitRatio * 100).toFixed(1) + "%" : (last ? "n/a" : "\u2013"), "c-cr"],
-    ["cost", obs ? USD(observedCost()) : "\u2013", "c-cost"],
+    (function () {
+      var cv = costView(rec, obs);
+      return ["cost", cv.text, "c-cost", cv.title, cv.alt != null ? "usage events " + USD(cv.alt) : ""];
+    })(),
     ["duration", obs ? S(obs.durationMs) : "\u2013", "c-el"],
   ];
   // latency (#32): n/a when the log cannot support the metric (no model_call_*
@@ -697,6 +782,7 @@ function renderMetrics() {
     if (c[3]) d.title = c[3];
     d.appendChild(el("div", "k", c[0]));
     d.appendChild(el("div", "v " + c[2], c[1]));
+    if (c[4]) d.appendChild(el("div", "sub", c[4]));
     box.appendChild(d);
   });
   // per-model cache-hit (#69): one compact card per model from obs.byModel
@@ -715,7 +801,9 @@ function renderMetrics() {
     var hd = el("div", "tl hd");
     ["tool", "calls", "avg", "p95", "total"].forEach(function (h) { hd.appendChild(el("span", null, h)); });
     tl.appendChild(hd);
-    toolRows.forEach(function (r) {
+    var view = toolRowsView(toolRows, toolsOpen, TOOL_ROWS_CAP);
+    tl.classList.toggle("open", toolsOpen);
+    view.shown.forEach(function (r) {
       var row = el("div", "tl");
       row.title = r.name + " \u00b7 max " + fmtDurMs(r.maxMs) + (r.errors ? " \u00b7 " + r.errors + " error(s)" : "");
       row.appendChild(el("b", null, r.name));
@@ -725,6 +813,13 @@ function renderMetrics() {
       row.appendChild(el("span", null, "\u03a3 " + fmtDurMs(r.totalMs)));
       tl.appendChild(row);
     });
+    if (view.toggle) {
+      var more = el("button", "more", view.toggle);
+      more.type = "button";
+      more.setAttribute("aria-expanded", toolsOpen ? "true" : "false");
+      more.addEventListener("click", function () { toolsOpen = !toolsOpen; renderMetrics(); });
+      tl.appendChild(more);
+    }
   }
   var nPts = obs && obs.metrics ? obs.metrics.length : 0;
   $("chartMeta").textContent = nPts ? nPts + " usage points" : "";
