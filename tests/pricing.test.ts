@@ -55,10 +55,12 @@ describe('embedded fallback map', () => {
     assert.equal(p.price(rec('gemini-2.5-pro', 1_000_000, 1_000_000)), 1.25 + 10);
   });
 
-  it('prices the expanded entries: claude-fable-5-1 and gemini-3-pro', () => {
+  it('prices the expanded entries: claude-fable-5-1, claude-fable-5-2 and gemini-3-pro', () => {
     const p = createPricer();
     // fable (LiteLLM): 10 / 50 / 0.25 / 12.5 per 1M
     assert.equal(p.price(rec('claude-fable-5-1', 1_000_000, 500_000, 1_000_000, 1_000_000)), 10 + 25 + 0.25 + 12.5);
+    // fable 5.2 (Anthropic list, 2026-11-09): 8 / 40 / 0.2 / 10 per 1M
+    assert.equal(p.price(rec('claude-fable-5-2', 1_000_000, 500_000, 1_000_000, 1_000_000)), 8 + 20 + 0.2 + 10);
     // gemini-3-pro (LiteLLM gemini-3-pro-preview): 2 / 12 / 0.2 / 0 per 1M (no cache-write charge)
     assert.equal(p.price(rec('gemini-3-pro', 1_000_000, 1_000_000, 2_000_000)), 2 + 12 + 0.4);
   });
@@ -102,6 +104,7 @@ describe('alias resolution', () => {
     assert.equal(resolveAlias('CLAUDE-SONNET-4'), 'claude-sonnet-4');
     assert.equal(resolveAlias('google/gemini-3-pro-preview'), 'gemini-3-pro');
     assert.equal(resolveAlias('claude-fable-5-1'), 'claude-fable-5-1'); // no date/channel suffix to strip
+    assert.equal(resolveAlias('claude-fable-5-2'), 'claude-fable-5-2');
     assert.equal(resolveAlias('claude-opus-5[1m]'), 'claude-opus-5'); // context-window tag
   });
 

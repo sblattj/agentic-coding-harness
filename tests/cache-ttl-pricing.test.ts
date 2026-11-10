@@ -87,7 +87,7 @@ describe('issue #105: claude-opus-5-5 list rates + 1h cache-write pricing', () =
       'claude-sonnet-4', 'claude-sonnet-4-5', 'claude-sonnet-4-6', 'claude-sonnet-5', 'claude-sonnet-5-5',
       'claude-haiku-4-5', 'claude-3-haiku', 'claude-3-7-sonnet', 'claude-4-sonnet', 'claude-4-opus',
       'claude-opus-4', 'claude-opus-4-1', 'claude-opus-4-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5',
-      'claude-fable-5', 'claude-fable-5-1',
+      'claude-fable-5', 'claude-fable-5-1', 'claude-fable-5-2',
     ];
     for (const m of models) {
       const input = p.price(rec(m, { input: 1_000_000 }));

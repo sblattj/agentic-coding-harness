@@ -96,6 +96,7 @@ const FALLBACK_PRICES: Record<string, ModelPrice> = {
   // mirror #103 shipped — it reproduces CLI-reported costs to the micro-dollar.
   'claude-opus-5-5': { input: 4, output: 20, cache_read: 0.2, cache_creation: 5, cache_creation_1h: 8 },
   'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_creation: 12.5, cache_creation_1h: 20 },
+  'claude-fable-5-2': { input: 8, output: 40, cache_read: 0.2, cache_creation: 10, cache_creation_1h: 16 },
   'gpt-5': { input: 1.25, output: 10, cache_read: 0.125, cache_creation: 0 },
   'gpt-5.6': { input: 4, output: 20, cache_read: 0.4, cache_creation: 5 },
   'gemini-2.5-pro': { input: 1.25, output: 10, cache_read: 0.125, cache_creation: 0 },
