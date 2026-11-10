@@ -4,6 +4,8 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-11-09
+
 ### Added
 
 - Pricing for `claude-fable-5-2` (Fable 5.2): $8 input, $40 output, $10 5-minute cache write, $16 1-hour cache write, $0.20 cache read per 1M tokens, from Anthropic's list prices. Fable 5.2 runs used to fall back to the Fable 5.1 rates and came out 25% too high.
