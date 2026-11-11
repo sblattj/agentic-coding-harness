@@ -4,6 +4,11 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Fixed
+
+- `--agent kiro-ide` on Kiro IDE 1.4.154: that version replaced the Autopilot switch (`#autopilot-toggle`) with a "Permission mode" picker (Supervised, Accept file changes, Approve for me), so every run printed "could not read the Autopilot switch" and could not stop on a Supervised chat. The adapter now reads the picker: Supervised fails fast like Autopilot off (the error names the mode), and the other two count as on, with a warning for "Accept file changes" because it still asks before running commands. The old switch is still read on older IDEs.
+- `--agent kiro-ide --kiro-ide-no-new-session`: on a chat that already showed earlier turns, the run took the first turn's credits and elapsed time and ran the reply past its own footer (live on 1.4.154: `ready Est. Credits Used: 0 Elapsed time: 2s ...`). The parser now reads the footer after this turn's prompt.
+
 ## [0.28.2] - 2026-11-09
 
 ### Added

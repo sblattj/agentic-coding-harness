@@ -93,6 +93,7 @@ interface World {
   state: {
     text: string;
     autopilot: "on" | "off";
+    permissionMode: string | null;
     deep: string;
     sent: boolean;
     enter: number;
@@ -118,6 +119,8 @@ async function world(
   opts: {
     final?: string;
     autopilot?: "on" | "off";
+    /** Kiro IDE 1.4.154+: the permission mode picker's label (absent before 1.4.154). */
+    permissionMode?: string;
     deep?: string;
     title?: string;
     withChat?: boolean;
@@ -133,6 +136,7 @@ async function world(
   const state = {
     text: opts.used ? `${FIXTURE_WS_A.replace(/hello from ws-a/, "old")}` : IDLE_TEXT,
     autopilot: opts.autopilot ?? "on",
+    permissionMode: opts.permissionMode ?? null,
     deep: opts.deep ?? "Kiro Free 0 / 50 | Autocomplete",
     sent: false,
     enter: 0,
@@ -198,6 +202,7 @@ async function world(
         if (e.startsWith("!!document.querySelector")) return val(contextId === 3 && !state.history && !state.flash);
         if (contextId !== 3) return val(null);
         if (e.includes("autopilot-toggle")) return val(state.autopilot);
+        if (e.includes("kiro-pm-trigger-label")) return val(state.permissionMode);
         if (e.includes("New session")) {
           state.history = false;
           state.text = IDLE_TEXT;
@@ -338,6 +343,24 @@ describe("KiroIdeAdapter (fake CDP)", () => {
     assert.equal(exit, "error");
     assert.match((events.find((e) => e.type === "error") as any).message, /not in Autopilot/);
     assert.ok(!w.fake.calls.some((c) => c.method === "Input.insertText"));
+  });
+
+  it("runs in Accept file changes but warns that a command can still wait on a person", async () => {
+    const w = await world({ permissionMode: "Accept file changes" });
+    const adapter = new KiroIdeAdapter(fast);
+    const h = await adapter.launch(specFor(w.fake));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "success");
+    assert.ok(events.some((e: any) => e.type === "progress" && /Accept file changes.*asks before it runs commands/.test(e.text)));
+  });
+
+  it("names the permission mode when a Supervised chat fails fast", async () => {
+    const w = await world({ autopilot: "off", permissionMode: "Supervised" });
+    const adapter = new KiroIdeAdapter(fast);
+    const h = await adapter.launch(specFor(w.fake));
+    const [events, exit] = await Promise.all([collect(h), h.wait()]);
+    assert.equal(exit, "error");
+    assert.match((events.find((e) => e.type === "error") as any).message, /permission mode "Supervised"/);
   });
 
   it("times out when no chat target appears", async () => {

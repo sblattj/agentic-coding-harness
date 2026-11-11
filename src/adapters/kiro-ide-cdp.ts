@@ -34,9 +34,22 @@ export const KIRO_IDE_SELECTORS = {
   // chat input; its body text starts "Session History ..." and the "New session" button is still present.
   historyText: "Session History",
   newSessionLabel: "New session",
+  // Autopilot. Before 1.4.154: a checkbox switch #autopilot-toggle. Kiro IDE 1.4.154 (live 2026-11-10) replaced it
+  // with a "Permission mode" combobox whose label is Supervised, Accept file changes or Approve for me.
+  autopilotToggleId: "autopilot-toggle",
+  permissionModeTrigger: "button.kiro-pm-trigger",
+  permissionModeLabel: "span.kiro-pm-trigger-label",
 } as const;
 
 const sel = (s: string): string => JSON.stringify(s);
+
+/** The 1.4.154+ permission mode label (e.g. "Approve for me"), or null when there is no such control. */
+export const READ_PERMISSION_MODE_JS = `(() => { const l = document.querySelector(${sel(KIRO_IDE_SELECTORS.permissionModeLabel)}); const t = (l && (l.textContent || '').trim()) || ''; return t || null; })()`;
+/**
+ * 'on' | 'off' | 'unknown'. The old switch wins when present; otherwise the permission mode: Supervised pauses on
+ * every edit (off); Accept file changes and Approve for me run unattended like the old Autopilot (on).
+ */
+export const AUTOPILOT_STATE_JS = `(() => { const i = document.getElementById(${sel(KIRO_IDE_SELECTORS.autopilotToggleId)}); if (i) return i.checked ? 'on' : 'off'; const m = ${READ_PERMISSION_MODE_JS}; if (!m) return 'unknown'; return /^supervised$/i.test(m) ? 'off' : 'on'; })()`;
 
 /** The picker's current state: `{trigger, expanded, label}` (label null when the span is absent). */
 export const READ_MODEL_JS = `(() => { const t = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelTrigger)}); const l = document.querySelector(${sel(KIRO_IDE_SELECTORS.modelLabel)}); return { trigger: !!t, expanded: !!t && t.getAttribute('aria-expanded') === 'true', label: l ? (l.textContent || '').trim() : null }; })()`;

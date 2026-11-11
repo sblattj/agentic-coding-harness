@@ -304,6 +304,17 @@ has that workbench url, which is why the target fallback applies only without a 
 endpoint fails doctor's `cdp` row and makes the run exit with an error before any target is created or any
 input is sent, in attach mode and in launch mode (ach does not spawn Kiro against a port a browser holds).
 
+### Autopilot and the permission mode
+
+A supervised tool call would block until the wall timeout, so the run checks the chat is unattended before it
+types. Up to Kiro IDE 1.4.86 that was the Autopilot switch, a checkbox `#autopilot-toggle`. Kiro IDE 1.4.154
+(observed 2026-11-10) replaced it with a "Permission mode" picker, `button.kiro-pm-trigger` with its label in
+`span.kiro-pm-trigger-label`, offering Supervised, Accept file changes and Approve for me. The switch wins
+when present. Otherwise Supervised counts as off and the run fails fast, the other two count as on, and the
+label is logged under `ACH_KIRO_IDE_DEBUG=1`. "Approve for me" lets a model decide actions your rules don't
+cover and asks you when it is unsure, so a run in that mode can still wait on a person. With neither
+control found, the run proceeds and says so.
+
 ### Model picker (`--model`)
 
 The chat's model picker decides which model a Kiro IDE run uses, and a fresh profile defaults to whatever

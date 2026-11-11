@@ -1,0 +1,46 @@
+Checkpoint
+Restore
+
+Read package.json in this workspace and tell me the package name and version, in one line.
+
+Kiro
+
+1 tool call
+Read File
+package.json
+
+Package @example/widgets, version 1.2.3.
+
+Est. Credits Used: 0.08
+Elapsed time: 10s
+Checkpoint
+Restore
+
+Without reading any file again: which file did you just read, and what version did it say? One line.
+
+Kiro
+
+I read 
+package.json
+, and it gave the version as 1.2.3.
+
+Est. Credits Used: 0.02
+Elapsed time: 1s
+Checkpoint
+Restore
+
+Reply with one word: ready
+
+Kiro
+
+ready
+
+Est. Credits Used: 0
+Elapsed time: 2s
+
+
+
+
+Claude Haiku 5.5
+Default
+Approve for me

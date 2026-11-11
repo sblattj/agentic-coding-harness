@@ -42,6 +42,8 @@ import {
   kiroIdeWrongEndpointMessage,
   listTargets,
   type CdpTarget,
+  AUTOPILOT_STATE_JS,
+  READ_PERMISSION_MODE_JS,
 } from "./kiro-ide-cdp.ts";
 
 export const KIRO_IDE_CAPABILITIES: AdapterCapabilities = {
@@ -109,12 +111,6 @@ const TOOL_NAME_RE = /^[A-Z][a-z]+(?: [A-Z][a-z]+)*$/;
  */
 export function parseKiroIdeTurn(fullText: string, prompt: string): KiroIdeTurn {
   const text = fullText.replace(/\r\n/g, "\n");
-  const creditsMatch = CREDITS_RE.exec(text);
-  const elapsedMatch = ELAPSED_RE.exec(text);
-  const credits = creditsMatch ? Number(creditsMatch[1]) : null;
-  const elapsedSeconds = elapsedMatch
-    ? Number(elapsedMatch[1] ?? 0) * 3600 + Number(elapsedMatch[2] ?? 0) * 60 + Number(elapsedMatch[3])
-    : null;
 
   // 1. Start boundary: after the prompt echo.
   let start = 0;
@@ -138,7 +134,21 @@ export function parseKiroIdeTurn(fullText: string, prompt: string): KiroIdeTurn 
       start = restore + "\nRestore\n".length + (m ? m[0].length : 0);
     }
   }
-  // 2. End boundary: the credits line (else the elapsed line, else the end).
+  // 2. This turn's footer: the first credits / elapsed lines AFTER the start. A pane that still shows
+  // earlier turns (--kiro-ide-no-new-session) has their footers above it; matching from the top read the
+  // first turn's credits and ran the reply past this turn's footer (live, Kiro IDE 1.4.154).
+  const after = (re: RegExp): RegExpExecArray | null => {
+    const m = re.exec(text.slice(start));
+    if (m) m.index += start;
+    return m;
+  };
+  const creditsMatch = after(CREDITS_RE);
+  const elapsedMatch = after(ELAPSED_RE);
+  const credits = creditsMatch ? Number(creditsMatch[1]) : null;
+  const elapsedSeconds = elapsedMatch
+    ? Number(elapsedMatch[1] ?? 0) * 3600 + Number(elapsedMatch[2] ?? 0) * 60 + Number(elapsedMatch[3])
+    : null;
+  // End boundary: the credits line (else the elapsed line, else the end).
   let end = creditsMatch ? creditsMatch.index : elapsedMatch ? elapsedMatch.index : text.length;
   if (end < start) end = text.length;
   const lines = text.slice(start, end).split("\n").map((l) => l.trimEnd());
@@ -257,8 +267,6 @@ export function workspaceTitleMatches(title: string, cwd: string | undefined): b
     .includes(base);
 }
 
-const AUTOPILOT_STATE_JS =
-  "(() => { const i = document.getElementById('autopilot-toggle'); return i ? (i.checked ? 'on' : 'off') : 'unknown'; })()";
 const HAS_INPUT_JS = `!!document.querySelector(${JSON.stringify(KIRO_IDE_SELECTORS.chatInput)})`;
 const FOCUS_INPUT_JS = `(() => { const e = document.querySelector(${JSON.stringify(KIRO_IDE_SELECTORS.chatInput)}); if (!e) return false; e.focus(); return document.activeElement === e || e.contains(document.activeElement); })()`;
 // Observed: a button with aria-label "New session" in the chat webview.
@@ -802,14 +810,20 @@ export class KiroIdeAdapter implements AgentAdapter {
 
       // ---- 4. Autopilot (a supervised tool call would block until the wall timeout)
       const mode = await chat.evaluate<string>(AUTOPILOT_STATE_JS, ctx);
-      dbg(`autopilot=${mode}`);
+      const permissionMode = await chat.evaluate<string | null>(READ_PERMISSION_MODE_JS, ctx).catch(() => null);
+      dbg(`autopilot=${mode}${permissionMode ? ` permissionMode=${JSON.stringify(permissionMode)}` : ""}`);
       if (mode === "off") {
         throw new RunFailure(
-          "Kiro IDE chat is not in Autopilot mode (supervised tool calls would block waiting for approval); turn Autopilot on in the chat and retry",
+          `Kiro IDE chat is not in Autopilot mode${permissionMode ? ` (permission mode "${permissionMode}")` : ""}: supervised tool calls would block waiting for approval; turn Autopilot on, or pick "Accept file changes" or "Approve for me" as the chat's permission mode, and retry`,
+        );
+      }
+      if (mode === "on" && permissionMode && /^accept file changes$/i.test(permissionMode)) {
+        progress(
+          'kiro-ide: permission mode "Accept file changes" asks before it runs commands; a command in this run can wait on a person until the timeout',
         );
       }
       if (mode !== "on") {
-        progress("kiro-ide: could not read the Autopilot switch (#autopilot-toggle missing); proceeding");
+        progress("kiro-ide: could not read the Autopilot switch or the permission mode (selectors drifted?); proceeding");
       }
 
       // ---- 5. new session
