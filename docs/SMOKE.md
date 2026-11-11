@@ -158,8 +158,8 @@ When a step prints a device-code prompt (a device URL plus a code) or an OAuth /
 hands a URL to the `open` shim, the harness takes over while the CLI keeps running.
 
 1. It connects to your real browser at `--cdp` (default `$CDP_BASE`, else
-   `http://127.0.0.1:9333`). If the endpoint reports itself as Electron (an IDE such as Kiro on
-   `:9222`), it refuses before creating any tab.
+   `http://127.0.0.1:9222`). If the endpoint reports itself as Electron (an IDE such as Kiro
+   listening on that port), it refuses before creating any tab.
 2. It opens a **new background tab** (`Target.createTarget`, `background: true`). It never
    reuses or navigates one of your tabs.
 3. It reads only what the page **shows**: emails in the visible text and in `data-email`,

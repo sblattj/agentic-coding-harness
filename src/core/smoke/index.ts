@@ -56,7 +56,7 @@ export interface SmokeOptions {
   account?: string;
   /** Agent for prompt steps (default claude). */
   agent?: string;
-  /** CDP endpoint of the user's browser (default $CDP_BASE or http://127.0.0.1:9333). */
+  /** CDP endpoint of the user's browser (default $CDP_BASE or http://127.0.0.1:9222). */
   cdp?: string;
   /** false = --no-browser: auth steps are handed to the user with a login script. */
   browser?: boolean;

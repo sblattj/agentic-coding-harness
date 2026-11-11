@@ -290,7 +290,7 @@ export function defaultLoginScript(req: AuthRequest & { command?: string }): str
 // ---------------------------------------------------------------- handler
 
 export interface BrowserAuthOptions {
-  /** CDP endpoint of the user's real browser; default $CDP_BASE or http://127.0.0.1:9333. */
+  /** CDP endpoint of the user's real browser; default $CDP_BASE or http://127.0.0.1:9222. */
   endpoint?: string;
   /** Whole-request budget, cleanup included; default 180000. */
   timeoutMs?: number;
@@ -310,7 +310,7 @@ export function normalizeEndpoint(endpoint: string): string {
 class Deadline extends Error {}
 
 export function createBrowserAuthHandler(opts: BrowserAuthOptions = {}): AuthHandler {
-  const endpoint = normalizeEndpoint(opts.endpoint ?? process.env.CDP_BASE ?? "http://127.0.0.1:9333");
+  const endpoint = normalizeEndpoint(opts.endpoint ?? process.env.CDP_BASE ?? "http://127.0.0.1:9222");
   const timeoutMs = opts.timeoutMs ?? 180_000;
   const approveTexts = opts.approveTexts ?? DEFAULT_APPROVE_TEXTS;
   const pollMs = opts.pollMs ?? 400;

@@ -107,8 +107,8 @@ describe("page regexes and helpers", () => {
     assert.ok(!SUCCESS_RE.test("Sign in to continue"));
   });
   it("endpoint normalization", () => {
-    assert.equal(normalizeEndpoint("http://127.0.0.1:9333/"), "127.0.0.1:9333");
-    assert.equal(normalizeEndpoint("127.0.0.1:9333"), "127.0.0.1:9333");
+    assert.equal(normalizeEndpoint("http://127.0.0.1:9222/"), "127.0.0.1:9222");
+    assert.equal(normalizeEndpoint("127.0.0.1:9222"), "127.0.0.1:9222");
   });
   it("injected JS round-trips its marker", () => {
     assert.deepEqual(parseAuthJs(authJs.clickAccount("a@example.com")), { op: "click-account", args: "a@example.com" });
