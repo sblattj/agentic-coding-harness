@@ -176,3 +176,22 @@ describe('review fixes: UTF-8 boundaries, aux-only deltas, poll errors', () => {
     assert.ok(errors.length >= 1, 'the read failure is reported, not swallowed');
   });
 });
+
+describe('sub-agent usage without main-file changes', () => {
+  it('a growing sub-agent transcript is metered on a normal poll', async () => {
+    const root = tmpRoot();
+    const proj = join(root, '-p');
+    mkdirSync(join(proj, SID, 'subagents'), { recursive: true });
+    writeFileSync(join(proj, `${SID}.jsonl`), assistant('m1', 'r1', { input_tokens: 1, output_tokens: 1 }, [{ type: 'text', text: 'a' }]));
+    const usage: AgentEvent[] = [];
+    const tail = new TranscriptTail({ sessionId: SID, root, onEvent: (e) => { if (e.type === 'usage') usage.push(e); } });
+    await tail.poll();
+    assert.equal(usage.length, 1);
+    // Only the sub-agent file changes; the main transcript stays untouched.
+    writeFileSync(join(proj, SID, 'subagents', 'agent-a.jsonl'), assistant('s1', 'rs1', { input_tokens: 40, output_tokens: 9 }, [{ type: 'text', text: 'sub' }]));
+    await tail.poll();
+    assert.equal(usage.length, 2, 'sub-agent usage lands without waiting for the exit flush');
+    assert.equal((usage[1]!.usage as { inputTokens: number }).inputTokens, 40);
+    tail.stop();
+  });
+});

@@ -200,6 +200,27 @@ export function usageDelta(model: string, now: ModelTotals, before: ModelTotals 
   };
 }
 
+/** Name, size and mtime of every sub-agent transcript of a session ("" when none). */
+export function subagentSignature(projectDir: string, sessionId: string): string {
+  const sub = path.join(projectDir, sessionId, "subagents");
+  let names: string[];
+  try {
+    names = readdirSync(sub).filter((n) => n.endsWith(".jsonl")).sort();
+  } catch {
+    return "";
+  }
+  const parts: string[] = [];
+  for (const n of names) {
+    try {
+      const st = statSync(path.join(sub, n));
+      parts.push(`${n}:${st.size}:${st.mtimeMs}`);
+    } catch {
+      /* removed between listing and stat */
+    }
+  }
+  return parts.join("|");
+}
+
 export interface TranscriptTailOptions {
   sessionId: string;
   /** Projects root to search (default claudeProjectsRoot()). */
@@ -233,6 +254,7 @@ export class TranscriptTail {
   #busy: Promise<void> = Promise.resolve();
   #lastSize = -1;
   #lastMtime = -1;
+  #lastSubSig = "";
 
   constructor(opts: TranscriptTailOptions) {
     this.#opts = opts;
@@ -291,13 +313,16 @@ export class TranscriptTail {
     } catch {
       return;
     }
-    // Subagent files grow the session without touching the main file, so a
-    // forced poll (exit flush) always re-reads usage.
     const changed = size !== this.#lastSize || mtime !== this.#lastMtime;
     this.#lastSize = size;
     this.#lastMtime = mtime;
+    // Sub-agent transcripts grow the session's usage without touching the
+    // main file, so their sizes and mtimes count as a change too.
+    const subSig = subagentSignature(path.dirname(this.#file), this.#opts.sessionId);
+    const subChanged = subSig !== this.#lastSubSig;
+    this.#lastSubSig = subSig;
     if (changed && size > this.#offset) await this.#readNewLines(size);
-    if (changed || force) await this.#emitUsage();
+    if (changed || subChanged || force) await this.#emitUsage();
   }
 
   async #readNewLines(size: number): Promise<void> {

@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { PassThrough } from 'node:stream';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { LivePty, loadBunPty, NEEDS_BUN_PTY, type PtyLike } from '../src/interactive/live-pty.ts';
 import { connectLive, continueLive, frameReader, MAX_CLIENT_BACKLOG, probeLive, startLiveServer, type StepState } from '../src/interactive/live-socket.ts';
 import { listLiveRuns, liveSocketPath, readLiveInfo, removeLiveInfo, resolveLiveRun, writeLiveInfo } from '../src/interactive/live-registry.ts';
 import { StepController } from '../src/interactive/steps.ts';
-import { ChordFilter } from '../src/interactive/terminal-bridge.ts';
+import { bridgeTerminal, ChordFilter } from '../src/interactive/terminal-bridge.ts';
 import { claudeTuiArgs, stripAnsi, trustDialogKeys } from '../src/interactive/claude-tui.ts';
 import { assertInteractiveSupported, parseInteractiveFlags } from '../src/interactive/flags.ts';
 
@@ -246,14 +247,45 @@ describe('StepController', () => {
 });
 
 describe('ChordFilter', () => {
+  const flat = (r: { passthrough: string; actions: string[] }) => ({ passthrough: r.passthrough, actions: r.actions });
   it('passes keys through and turns Ctrl-] d / n into actions', () => {
     const f = new ChordFilter();
-    assert.deepEqual(f.feed('abc'), { passthrough: 'abc', actions: [] });
-    assert.deepEqual(f.feed('x\x1d'), { passthrough: 'x', actions: [] });
-    assert.deepEqual(f.feed('n'), { passthrough: '', actions: ['next'] });
-    assert.deepEqual(f.feed('\x1d\x1d'), { passthrough: '\x1d', actions: [] });
-    assert.deepEqual(f.feed('\x1dq'), { passthrough: '\x1dq', actions: [] });
-    assert.deepEqual(f.feed('y\x1dd'), { passthrough: 'y', actions: ['detach'] });
+    assert.deepEqual(flat(f.feed('abc')), { passthrough: 'abc', actions: [] });
+    assert.deepEqual(flat(f.feed('x\x1d')), { passthrough: 'x', actions: [] });
+    assert.deepEqual(flat(f.feed('n')), { passthrough: '', actions: ['next'] });
+    assert.deepEqual(flat(f.feed('\x1d\x1d')), { passthrough: '\x1d', actions: [] });
+    assert.deepEqual(flat(f.feed('\x1dq')), { passthrough: '\x1dq', actions: [] });
+    assert.deepEqual(flat(f.feed('y\x1dd')), { passthrough: 'y', actions: ['detach'] });
+  });
+
+  it('keeps typing order around Ctrl-] n and drops what follows Ctrl-] d', () => {
+    const f = new ChordFilter();
+    assert.deepEqual(f.feed('a\x1dnb\x1ddzz').ops, [{ input: 'a' }, { action: 'next' }, { input: 'b' }, { action: 'detach' }]);
+  });
+});
+
+describe('bridgeTerminal', () => {
+  it('detaches before any key typed after Ctrl-] d in the same chunk reaches the PTY', async () => {
+    const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+    const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+    const log: string[] = [];
+    let detached = 0;
+    bridgeTerminal({
+      target: { input: (d) => log.push(`in:${d}`), resize: () => {}, continueStep: () => log.push('next') },
+      onDetach: () => {
+        detached++;
+        log.push('detach');
+      },
+      stdin,
+      stdout,
+      driveSize: false,
+    });
+    (stdin as unknown as PassThrough).write('ab\x1dncd\x1ddrm -rf\r');
+    await new Promise((r) => setImmediate(r));
+    (stdin as unknown as PassThrough).write('later');
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(log, ['in:ab', 'next', 'in:cd', 'detach']);
+    assert.equal(detached, 1);
   });
 });
 
