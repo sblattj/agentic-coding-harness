@@ -139,3 +139,40 @@ describe('TranscriptTail', () => {
     assert.equal(tail.file, null);
   });
 });
+
+describe('review fixes: UTF-8 boundaries, aux-only deltas, poll errors', () => {
+  it('usageDelta emits when only cacheWrite1h or reasoning grew', () => {
+    const before = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, reasoning: 0 };
+    assert.equal(usageDelta('m', { ...before, cacheWrite1h: 5 }, before, SID, 1)?.cacheWrite1hTokens, 5);
+    assert.equal(usageDelta('m', { ...before, reasoning: 3 }, before, SID, 1)?.reasoningTokens, 3);
+  });
+
+  it('a multi-byte character split across two polls decodes intact', async () => {
+    const root = tmpRoot();
+    mkdirSync(join(root, '-p'), { recursive: true });
+    const file = join(root, '-p', `${SID}.jsonl`);
+    writeFileSync(file, '');
+    const events: AgentEvent[] = [];
+    const tail = new TranscriptTail({ sessionId: SID, root, onEvent: (e) => events.push(e) });
+    const line = Buffer.from(JSON.stringify({ type: 'user', message: { content: 'naïve ✓ 日本' } }) + '\n', 'utf8');
+    const cut = line.indexOf(Buffer.from('✓', 'utf8')) + 1; // inside the 3-byte check mark
+    appendFileSync(file, line.subarray(0, cut));
+    await tail.poll();
+    appendFileSync(file, line.subarray(cut));
+    await tail.poll();
+    await tail.flush();
+    const msgs = events.filter((e) => e.type === 'message');
+    assert.equal(msgs.length, 1);
+    assert.equal(msgs[0]!.content, 'naïve ✓ 日本');
+  });
+
+  it('a failing poll reaches onError and polling continues', async () => {
+    const root = tmpRoot();
+    mkdirSync(join(root, '-p', `${SID}.jsonl`), { recursive: true }); // a directory: open/read fails
+    const errors: unknown[] = [];
+    const tail = new TranscriptTail({ sessionId: SID, root, onEvent: () => {}, onError: (e) => errors.push(e) });
+    await tail.poll();
+    await tail.poll(true);
+    assert.ok(errors.length >= 1, 'the read failure is reported, not swallowed');
+  });
+});

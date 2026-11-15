@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { LivePty, loadBunPty, NEEDS_BUN_PTY, type PtyLike } from '../src/interactive/live-pty.ts';
-import { connectLive, continueLive, probeLive, startLiveServer, type StepState } from '../src/interactive/live-socket.ts';
+import { connectLive, continueLive, frameReader, probeLive, startLiveServer, type StepState } from '../src/interactive/live-socket.ts';
 import { listLiveRuns, liveSocketPath, readLiveInfo, removeLiveInfo, resolveLiveRun, writeLiveInfo } from '../src/interactive/live-registry.ts';
 import { StepController } from '../src/interactive/steps.ts';
 import { ChordFilter } from '../src/interactive/terminal-bridge.ts';
@@ -297,3 +297,16 @@ describe('interactive flags', () => {
   });
 });
 
+
+describe('frameReader', () => {
+  it('keeps a multi-byte character split across socket chunks intact', () => {
+    const frames: Array<Record<string, unknown>> = [];
+    const read = frameReader((f) => frames.push(f));
+    const wire = Buffer.from(JSON.stringify({ t: 'out', d: '❯ héllo ✓' }) + '\n', 'utf8');
+    const cut = wire.indexOf(Buffer.from('✓', 'utf8')) + 2; // two bytes into the three
+    read(wire.subarray(0, cut));
+    assert.equal(frames.length, 0);
+    read(wire.subarray(cut));
+    assert.deepEqual(frames, [{ t: 'out', d: '❯ héllo ✓' }]);
+  });
+});

@@ -13,6 +13,7 @@
 //                     {t:"exit", code}      then the server closes the socket
 //   client -> server  {t:"in", d} keystrokes · {t:"resize", cols, rows}
 //                     {t:"continue"} release a --pause-between pause
+import { StringDecoder } from "node:string_decoder";
 import { rmSync } from "node:fs";
 import net from "node:net";
 
@@ -70,10 +71,13 @@ function send(sock: net.Socket, frame: Frame): void {
 }
 
 /** Split a byte stream into JSON frames; malformed lines are dropped. */
-function frameReader(onFrame: (f: Frame) => void): (chunk: Buffer | string) => void {
+export function frameReader(onFrame: (f: Frame) => void): (chunk: Buffer | string) => void {
   let buf = "";
+  // A multi-byte character can straddle two socket chunks; the decoder holds
+  // the partial bytes until the rest arrives instead of emitting U+FFFD.
+  const decoder = new StringDecoder("utf8");
   return (chunk) => {
-    buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    buf += typeof chunk === "string" ? chunk : decoder.write(chunk);
     let i: number;
     while ((i = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, i);

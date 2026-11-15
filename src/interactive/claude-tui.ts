@@ -146,12 +146,18 @@ export class ClaudeInteractiveAdapter implements AgentAdapter {
     push({ type: "session_start", agent: "claude", sessionId, ...(spec.model ? { model: spec.model } : {}), timestamp: Date.now() });
 
     const steps = o.then !== undefined && o.then.length > 0 ? new StepController({ prompts: o.then, pauseBetween: o.pauseBetween === true, write: (d) => void live.write(d), log }) : null;
+    let meterErrorWarned = false;
     const tail = new TranscriptTail({
       sessionId,
       root: o.projectsRoot ?? claudeProjectsRoot(cleanEnv),
       ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
       onEvent: push,
       onTurnEnd: () => steps?.turnEnded(),
+      onError: (err) => {
+        if (meterErrorWarned) return;
+        meterErrorWarned = true;
+        notice(`interactive: reading the session transcript failed (${err instanceof Error ? err.message : String(err)}); token totals may be incomplete until it recovers`);
+      },
     });
     tail.start();
 

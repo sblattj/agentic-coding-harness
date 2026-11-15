@@ -184,7 +184,7 @@ export function usageDelta(model: string, now: ModelTotals, before: ModelTotals 
     cacheWrite1h: Math.max(0, now.cacheWrite1h - b.cacheWrite1h),
     reasoning: Math.max(0, now.reasoning - b.reasoning),
   };
-  if (d.input + d.output + d.cacheRead + d.cacheWrite === 0) return null;
+  if (d.input + d.output + d.cacheRead + d.cacheWrite + d.cacheWrite1h + d.reasoning === 0) return null;
   return {
     agent: "claude",
     model,
@@ -209,6 +209,9 @@ export interface TranscriptTailOptions {
   onEvent: (e: AgentEvent) => void;
   /** Called once per end-of-turn marker, with the running count. */
   onTurnEnd?: (count: number) => void;
+  /** A poll failed (unreadable transcript, I/O error). Metering keeps
+   *  polling; the caller decides how loudly to report it. */
+  onError?: (err: unknown) => void;
 }
 
 /**
@@ -220,7 +223,9 @@ export class TranscriptTail {
   readonly #root: string;
   #file: string | null = null;
   #offset = 0;
-  #partial = "";
+  // Bytes after the last newline: a line still being written, possibly
+  // ending mid-character, so it stays raw until its newline lands.
+  #partial: Buffer = Buffer.alloc(0);
   #seen = new Set<string>();
   #emitted = new Map<string, ModelTotals>();
   #turnEnds = 0;
@@ -255,7 +260,15 @@ export class TranscriptTail {
 
   /** One serialized poll (concurrent callers queue behind the running one). */
   poll(force = false): Promise<void> {
-    this.#busy = this.#busy.then(() => this.#pollOnce(force)).catch(() => {});
+    this.#busy = this.#busy
+      .then(() => this.#pollOnce(force))
+      .catch((err: unknown) => {
+        try {
+          this.#opts.onError?.(err);
+        } catch {
+          /* a reporting failure must not stop metering */
+        }
+      });
     return this.#busy;
   }
 
@@ -294,9 +307,12 @@ export class TranscriptTail {
       const buf = Buffer.alloc(len);
       const { bytesRead } = await fh.read(buf, 0, len, this.#offset);
       this.#offset += bytesRead;
-      const text = this.#partial + buf.subarray(0, bytesRead).toString("utf8");
-      const lines = text.split("\n");
-      this.#partial = lines.pop() ?? "";
+      const bytes = Buffer.concat([this.#partial, buf.subarray(0, bytesRead)]);
+      // Split on the newline byte, never inside a UTF-8 sequence (0x0a cannot
+      // occur in one), and decode whole lines only.
+      const lastNl = bytes.lastIndexOf(0x0a);
+      this.#partial = lastNl < 0 ? bytes : Buffer.from(bytes.subarray(lastNl + 1));
+      const lines = lastNl < 0 ? [] : bytes.subarray(0, lastNl).toString("utf8").split("\n");
       for (const l of lines) {
         const trimmed = l.trim();
         if (trimmed === "") continue;
