@@ -193,6 +193,12 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     writeFileSync(join(sb.state, 'live', 'other000-0000.json'), JSON.stringify({ ...live, runId: 'other000-0000', pid: process.pid }));
     assert.equal((await fetch(`${base}/api/live/other000-0000`)).status, 404);
     assert.equal((await fetch(`${base}/api/live/other000-0000/continue`, { method: 'POST' })).status, 404, 'continue checks the socket owner too');
+    const forged = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent('run:other000-0000')}`);
+    const forgedFrames: string[] = [];
+    forged.on('message', (m) => forgedFrames.push(m.toString()));
+    await new Promise((r) => forged.once('close', r));
+    assert.ok(!forgedFrames.join('').includes('FAKE CLAUDE TUI'), 'the pane never sees another run\'s output');
+    assert.ok(forgedFrames.some((f) => f.includes('"exit"')), 'it is told the PTY is gone');
     rmSync(join(sb.state, 'live', 'other000-0000.json'));
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}`);

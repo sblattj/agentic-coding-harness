@@ -312,6 +312,15 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
   function openLivePtySocket(ms: DashSocket): void {
     const data = ms.data as LivePtySocketData;
     void connectLive(data.socket, {
+      // The hello comes first: a socket owned by another run (a stale or
+      // forged entry) is refused before any of its output reaches the pane.
+      onHello: (h) => {
+        if (data.closed || h.runId === data.runId) return;
+        data.closed = true;
+        data.client?.close();
+        safeSend(ms.ws, JSON.stringify({ type: "exit", exitCode: null }));
+        ms.ws.close();
+      },
       // The first frame is always the scrollback resync (term-pane resets on it).
       onScrollback: (d) => {
         if (!data.closed) safeSend(ms.ws, d);
