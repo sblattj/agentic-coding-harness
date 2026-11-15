@@ -723,21 +723,21 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           }
           const live = readLiveInfo(opts.stateDir, runId);
           if (live === null) return jsonError(res, 404, `run ${runId} has no live PTY`);
-          if (m[2] === "continue") {
-            if (req.method !== "POST") return notFound(res);
-            await continueLive(live.socket);
-            return sendJson(res, 200, { ok: true });
-          }
-          if (!get) return notFound(res);
+          if (m[2] === "continue" ? req.method !== "POST" : !get) return notFound(res);
+          // Only the owner answers with its own run id; a stale entry (crashed
+          // owner, reused pid, another run's socket) is neither attachable nor
+          // allowed to release a step.
           let hello;
           try {
             hello = await probeLive(live.socket);
           } catch {
             hello = null;
           }
-          // Only the owner answers with its own run id; a stale entry (crashed
-          // owner, reused pid) is not attachable.
           if (hello === null || hello.runId !== live.runId) return jsonError(res, 404, `run ${runId} has no live PTY`);
+          if (m[2] === "continue") {
+            await continueLive(live.socket);
+            return sendJson(res, 200, { ok: true });
+          }
           return sendJson(res, 200, { ...live, ptyId: RUN_PTY_PREFIX + runId, steps: hello.steps });
         }
 
