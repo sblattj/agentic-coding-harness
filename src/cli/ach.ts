@@ -148,6 +148,10 @@ import { cmdQuota } from "./quota.ts";
 import { cmdQueue, QUEUE_USAGE } from "./queue.ts";
 import { cmdArchive, statsMachineRecords, statsScanOptions, warehouseStateRecords } from "./archive.ts";
 import { cmdGc } from "./gc.ts";
+import { cmdAttach } from "./attach.ts";
+import { randomUUID } from "node:crypto";
+import { ClaudeInteractiveAdapter } from "../interactive/claude-tui.ts";
+import { assertInteractiveSupported, parseInteractiveFlags } from "../interactive/flags.ts";
 import {
   cmdAgents,
   descriptorTapRows,
@@ -216,6 +220,19 @@ usage:
                            the worktree (branch kept). --isolate-node-modules symlinks each non-dot
                            node_modules entry from the primary checkout. Safe with --parallel; not
                            with --hermetic or --resume. See README "Isolated runs")
+              [--interactive | --tui] [--then "<prompt>"]... [--pause-between] [--trust-workspace]
+                          (claude only for now: run the agent's own TUI in a PTY owned by ach
+                           instead of claude -p. Same model, permission mode, tool policy and first
+                           prompt, plus a fixed --session-id. Tokens and cost come from the session
+                           transcript (the file ach watch reads); budget/wall/idle caps, --verify and
+                           the .cast replay work as for a headless run, and a budget abort sends
+                           SIGINT, then kills. Watch and type from ach web (TUI on the run's tile)
+                           or ach attach <runId>; in a terminal the TUI is also shown here.
+                           --then types each next prompt once the agent finishes a turn;
+                           --pause-between waits for Ctrl-] n or the web NEXT STEP button first.
+                           --trust-workspace answers Claude's "trust this folder?" prompt. --idle-ms
+                           counts agent activity, so it ends a session left waiting at its prompt.
+                           Needs the npm/bun install (bun-pty); not with --repeat/--parallel/--resume)
               claude only: [--claude-default-config]  (use the default, authenticated
                            CLAUDE_CONFIG_DIR instead of a per-run one; or env
                            AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1)
@@ -458,6 +475,10 @@ ${QUEUE_USAGE}
   ach serve [--http] [--port N=8398] [--host 127.0.0.1] [--token T]
                 (MCP over streamable HTTP on POST /mcp; GET /health probe;
                  token via --token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
+  ach attach [<runId|prefix>] [--list] [--json] [--read-only] [--state-dir <stateDir>]
+                (mirror a live --interactive run's TUI in this terminal; keys go to the run.
+                 Ctrl-] d detaches and leaves the run going, Ctrl-] n sends the next --then
+                 step. No id (or --list): list the live interactive runs)
   ach web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
               [--state-dir <stateDir>] [--no-open] [--source URL] [--source-token T]
               [--source-mode poll|sse|ws] [--source-poll-ms N=3000]
@@ -701,12 +722,19 @@ async function cmdRun(rest: string[]): Promise<number> {
       hermetic: { type: "boolean", default: false },
       // #75: run in a git worktree + branch.
       ...ISOLATE_FLAG_OPTIONS,
+      // #195: interactive runs (the agent's TUI in an ach-owned PTY).
+      interactive: { type: "boolean", default: false },
+      tui: { type: "boolean", default: false },
+      then: { type: "string", multiple: true },
+      "pause-between": { type: "boolean", default: false },
+      "trust-workspace": { type: "boolean", default: false },
     },
     allowPositionals: true,
     tokens: true,
   });
   const exitMode = parseExitCodesMode(args.values["exit-codes"]);
   const trialFlags = parseTrialFlags(args.values);
+  const interactive = parseInteractiveFlags(args.values, trialFlags);
   const hermetic = args.values.hermetic === true;
   if (hermetic && args.values.resume !== undefined) {
     // Claude (and codex) look sessions up by project directory; a fresh temp
@@ -728,20 +756,36 @@ async function cmdRun(rest: string[]): Promise<number> {
   const custom = resolveRunAgent(agent, args.values, catalog ?? { descriptors: [], errors: [], warnings: [] });
   const prompt = args.positionals.join(" ").trim();
   if (!prompt) throw new HarnessError("run requires a prompt argument", "USAGE");
+  if (interactive !== null) assertInteractiveSupported(agent, args.values.resume);
 
   // The adapter registry takes no options (driver.ts defaultAdapters), so the
   // flag travels as the env var the Claude adapter already honours.
   if (args.values["claude-default-config"]) process.env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
   if (args.values["claude-no-background-tasks"]) process.env.AGENTIC_CODING_HARNESS_CLAUDE_DISABLE_BACKGROUND_TASKS = "1";
 
+  // #195: with --interactive in a terminal, the TUI is mirrored there and the
+  // usual one-line event feed would draw over it.
+  const mirror = interactive !== null && !args.values.json && process.stdin.isTTY === true && process.stdout.isTTY === true;
   const callStarts = new Map<string, number>();
   const onEvent = (e: AgentEvent) => {
+    if (mirror) return;
     const line = formatEventLine(e, callStarts);
     if (line !== null) process.stderr.write(line + "\n");
   };
   const basePricer = createPricer();
+  const runAdapters = custom.adapter ? { ...(await defaultAdapters()), [agent]: custom.adapter } : await defaultAdapters();
+  if (interactive !== null) {
+    runAdapters.claude = new ClaudeInteractiveAdapter({
+      stateDir: stateDir(),
+      then: interactive.then,
+      pauseBetween: interactive.pauseBetween,
+      trustWorkspace: interactive.trustWorkspace,
+      mirror,
+      ...(mirror && process.stdout.columns > 0 ? { cols: process.stdout.columns, rows: process.stdout.rows } : {}),
+    });
+  }
   const driver = createDriver({
-    adapters: custom.adapter ? { ...(await defaultAdapters()), [agent]: custom.adapter } : await defaultAdapters(),
+    adapters: runAdapters,
     stateDir: stateDir(),
     pricer: custom.wrapPricer ? custom.wrapPricer(basePricer) : basePricer,
     onEvent,
@@ -773,6 +817,8 @@ async function cmdRun(rest: string[]): Promise<number> {
   if (evidenceDir !== undefined && evidenceDir.trim() === "") throw new HarnessError("--evidence-dir needs a directory", "USAGE");
   const spec: RunSpec = {
     prompt,
+    // #195: an interactive run is keyed by runId before launch (live socket, .cast).
+    ...(interactive !== null ? { runId: randomUUID() } : {}),
     model: args.values.model,
     resume: args.values.resume,
     ...(args.values.pr !== undefined ? { pr: parseRunPr(args.values.pr) } : {}),
@@ -2036,7 +2082,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc", "config",
+  "trial", "queue", "replay", "smoke", "gc", "config", "attach",
 ]);
 
 /**
@@ -2089,6 +2135,8 @@ async function main(argvIn: string[]): Promise<number> {
   switch (cmd) {
     case "run":
       return cmdRun(rest);
+    case "attach":
+      return cmdAttach(rest);
     case "preflight":
       return cmdPreflight(rest);
     case "doctor":

@@ -402,6 +402,42 @@
         "isolateNodeModules": {
           "description": "ach run --isolate-node-modules",
           "type": "boolean"
+        },
+        "interactive": {
+          "description": "ach run --interactive",
+          "type": "boolean"
+        },
+        "tui": {
+          "description": "ach run --tui",
+          "type": "boolean"
+        },
+        "then": {
+          "description": "ach run --then",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "pauseBetween": {
+          "description": "ach run --pause-between",
+          "type": "boolean"
+        },
+        "trustWorkspace": {
+          "description": "ach run --trust-workspace",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
