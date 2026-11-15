@@ -4,6 +4,13 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Added
+
+- `ach run --agent claude --interactive` (alias `--tui`): runs the Claude Code TUI in a PTY owned by ach, with the run's model, permission mode, tool policy, first prompt and a fixed `--session-id`, instead of `claude -p`. Tokens and cost come from the session transcript (the records `ach watch` reads); budget, wall and idle caps, `--verify` and the `.cast` replay work as for a headless run, and a budget abort sends SIGINT, then kills. The raw TUI is recorded to `<stateDir>/casts/<runId>.cast`. Other agents print "not yet supported"; Node and standalone builds print "interactive runs need the npm/bun install". See README "Interactive runs". Fixes #195.
+- `ach web`: the grid tile (**TUI**) and the trio LIVE drawer attach to an interactive run's own PTY by run id, with scrollback replay; closing the pane detaches. Runs without a live PTY keep the spawn-a-new-session terminal, now labelled as a new, separate session. New `/api/live` routes list live runs and release `--pause-between` steps.
+- `ach attach <runId>`: mirrors a live interactive run in the terminal; `Ctrl-] d` detaches and leaves the run going.
+- `--then "<prompt>"` (repeatable) types each next prompt into the TUI once the agent finishes a turn; `--pause-between` waits for `Ctrl-] n` or the web NEXT STEP button. `--trust-workspace` answers Claude's "trust this folder?" prompt.
+
 ## [0.28.3] - 2026-11-10
 
 ### Fixed

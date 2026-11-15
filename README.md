@@ -67,8 +67,8 @@ bun install && bun run build:node && bun link
 output that `build:node` writes. Without the build there is nothing for `bun link` to
 point at. To skip the build, run the source entry directly: `bun run src/cli/ach.ts run ...`.
 
-Standalone binaries embed the web dashboard. The interactive browser terminal requires
-`bun-pty` and is unavailable in standalone builds; CLI runs, stats, terminal dashboard,
+Standalone binaries embed the web dashboard. The interactive browser terminal and
+`ach run --interactive` require `bun-pty` and are unavailable in standalone builds; CLI runs, stats, terminal dashboard,
 and the rest of the web dashboard remain available. See [packaging](docs/PACKAGING.md)
 for checksum verification and release automation.
 
@@ -273,9 +273,12 @@ HTML report next to its ledger in the state dir. See
 
 One registry, two live agent runs dashboards.
 
-**Web** — a tmux-like grid of every run, plus an observability view per run. A **LIVE** button
-spawns an interactive PTY for the run's agent and expands the tile to a full xterm.js browser
-terminal you can type into.
+**Web**: a tmux-like grid of every run, plus an observability view per run. On a run started
+with `ach run --interactive` the tile's **TUI** button attaches to that run's own PTY (same
+session, metered on the run; see [Interactive runs](#interactive-runs-ach-run---interactive)) and
+expands the tile to a full xterm.js browser terminal you can type into. On any other run the
+button reads **TERM** and spawns a NEW, separate agent session in a PTY, labelled as such: what
+you type there is not part of the run and is not metered on it.
 
 ![Web dashboard terminal grid showing live agent run tiles with token and cost readouts and interactive terminal panes](docs/assets/web-grid.png)
 
@@ -558,6 +561,8 @@ tools does not stall on an approval prompt, and you do not hand-assemble `--extr
 | cursor | `dontAsk` (`--force`), `plan`, `ask` (`--mode`) | no (permissions live in `~/.cursor/cli-config.json`) | no | no (use `.cursor/mcp.json`) |
 | opencode, kiro-ide, null, `custom`, agents.d | no | no | no | no |
 
+`ach run --agent claude --interactive` passes the same four flags to the Claude TUI.
+
 A flag the chosen agent cannot honor prints `[warn] --<flag> is not supported by agent
 '<agent>' and was dropped` and the run continues (`--extra-arg` stays the escape hatch).
 The resolved policy is printed to stderr as a `[sandbox] permissionMode=... allowedTools=...`
@@ -575,6 +580,59 @@ optional `sandbox` object at plan level, per agent entry and per task (see
 [docs/TRIALS.md](docs/TRIALS.md#sandbox-policy-in-a-plan)); the MCP `harness_run` and
 `harness_run_async` tools take a `sandbox` input object (see [docs/MCP.md](docs/MCP.md)). Both
 use the support table above and report a dropped field as a warning.
+
+### Interactive runs: `ach run --interactive`
+
+A headless run (`claude -p`) cannot be watched or steered mid-flight. `--interactive` (alias
+`--tui`) runs the agent's own TUI instead, in a PTY that the `ach run` process owns, so you can
+watch it and type into it from the web dashboard or another terminal while it is still a
+metered run with caps. Claude only for now; other agents print a clear "not yet supported".
+
+```sh
+ach run --agent claude --model claude-sonnet-5-5 --interactive --budget-usd 0.50 \
+  --permission-mode acceptEdits "refactor the parser" \
+  --then "now add tests for it" --then "run the tests and fix what fails"
+```
+
+- **Same launch as headless**: the TUI starts with the run's model, permission mode, tool
+  policy (`--allowed-tools` / `--disallowed-tools` / `--mcp-config`), extra args, the first
+  prompt and a fixed `--session-id`. It uses your default Claude config (login and settings),
+  not a per-run `CLAUDE_CONFIG_DIR`.
+- **Metering**: tokens and cost come from the session transcript
+  (`~/.claude/projects/<dir>/<sessionId>.jsonl` plus its sub-agent files), the same records
+  `ach watch` reads, keyed to the RunRecord by session id. Typing into the run from anywhere is
+  metered on it.
+- **Caps**: `--budget-usd` (with `--on-budget abort`), `--max-turns` (model turns),
+  `--wall-ms` and `--idle-ms` apply. An abort sends SIGINT to the TUI, then SIGTERM, then
+  SIGKILL, and the run ends with the same exit status as a headless one (`budget_exceeded`,
+  `timeout`, ...). `--idle-ms` counts agent activity, so it also ends a session left waiting at
+  its prompt with nobody typing.
+- **Watch and type**: `ach web`, then **TUI** on the run's tile (or LIVE in the trio drawer),
+  with scrollback replay; closing the pane detaches. `ach attach <runId|prefix>` mirrors the
+  same screen in a terminal, tmux-style: `Ctrl-] d` detaches and leaves the run going. When
+  `ach run --interactive` itself runs in a terminal it shows the TUI there too. Every viewer can
+  type (no single-writer lock yet), and the last viewer to resize sets the PTY size.
+- **Steps**: `--then "<prompt>"` (repeatable) types the next prompt once Claude finishes a turn
+  (its `turn_duration` transcript marker), so a multi-step workflow runs in one watched
+  session. `--pause-between` waits before each step for `Ctrl-] n` in a terminal or the
+  **NEXT STEP** button on the web tile.
+- **Trust prompt**: in a folder Claude has not seen (always the case with `--hermetic` and
+  `--isolate`), Claude asks whether to trust it. Answer in the TUI, or pass
+  `--trust-workspace` to have ach pick yes.
+- **Artifacts**: the raw TUI is recorded as `<stateDir>/casts/<runId>.cast` (served by
+  `/api/runs/<id>/cast`), `--verify` runs after the TUI exits, and the RunRecord, events and
+  `--json` output have the usual shape.
+- **Install**: the PTY comes from `bun-pty`, so interactive runs need the npm/bun install run
+  under Bun. The Node build and standalone binaries print "interactive runs need the npm/bun
+  install". Not combinable with `--repeat`, `--parallel` or `--resume` yet.
+- **Where the PTY is published**: a per-user Unix socket (`/tmp/ach-live-<uid>/`, or
+  `AGENTIC_CODING_HARNESS_LIVE_SOCKET_DIR`) named in `<stateDir>/live/<runId>.json` while the
+  run is live. `/api/live` and `/api/live/<runId>` list them (token-gated when `ach web` has a
+  token).
+
+The browser terminal is xterm.js. `ghostty-web` (libghostty in WASM with an xterm.js-compatible
+API) could give closer parity with a native Ghostty tab later; it has not been evaluated, and
+xterm.js stays the default.
 
 ### Metrics-only evidence: `--evidence-dir`
 
@@ -677,6 +735,9 @@ ach run --agent claude --isolate --repeat 4 --parallel 4 "..."   # four runs, fo
    lives under `<stateDir>/worktrees/<runId>`: clear it with
    `git worktree remove --force <stateDir>/worktrees/<runId>` (then `git branch -D ach/<runId>`
    if you do not want the branch), or `git worktree prune` once the directories are gone.
+
+With `--interactive`, the TUI starts in the worktree, a folder Claude has not seen, so it asks
+whether to trust it: answer in the TUI or pass `--trust-workspace` (same for `--hermetic`).
 
 The RunRecord (and `--json` output) carries
 `worktree: {path, branch, baseSha, cleanup: {status: "kept"|"removed"|"failed", commit?, error?}, nodeModules?}`;
@@ -940,12 +1001,17 @@ const { result } = await runToDirectory({
   the last model call's value dimmed; a yellow `+Δ` marks the call that grew it; hover for the
   input · cache-read · cache-write breakdown. The server computes it with the same context meter as
   `usage.context` (see [TOKEN-COUNTING.md §5](docs/TOKEN-COUNTING.md)); an unknown window shows tokens only.
-- **`/grid`** — every run as a tile, each tile body carrying that same feed. A green **LIVE** button
-  on a tile spawns an interactive PTY for the run's agent (`claude`, `opencode`, `kiro-cli`,
-  `codex`, `gemini`, else `bash -i`) and expands the tile to a full-width xterm.js pane you can type
-  into; the feed stays visible as a strip above it. Closing the pane kills the PTY.
+- **`/grid`**: every run as a tile, each tile body carrying that same feed. On a live
+  `ach run --interactive` run the green button reads **TUI** and attaches to that run's own PTY
+  (scrollback replayed, keystrokes go to the run's session); closing the pane detaches and the run
+  keeps going. On other runs it reads **TERM** and spawns a NEW, separate interactive PTY for the
+  run's agent (`claude`, `opencode`, `kiro-cli`, `codex`, `gemini`, else `bash -i`), labelled as a
+  new session; closing that pane kills it. Either way the tile expands to a full-width xterm.js pane
+  you can type into, with the feed as a strip above it. While a `--pause-between` run waits, the
+  attached pane shows a **NEXT STEP** button.
 - **`/trio?run=<runId>`** — traces | metrics | logs for one run, plus a **FEED | LIVE TERMINAL**
-  drawer: FEED is the default and shows the same structured feed, LIVE TERMINAL mounts the PTY pane.
+  drawer: FEED is the default and shows the same structured feed, LIVE TERMINAL attaches to the
+  run's own PTY when it has one and otherwise mounts a new, labelled PTY session.
   The traces pane has a **waterfall | tree** toggle. The tree nests the same spans by parent
   (session, model call, tool call, sub-agent) with a type icon and duration per node, expand/collapse
   per subtree (expanded to depth 2 by default), and shares the selection with the waterfall: click a
@@ -1003,7 +1069,10 @@ const { result } = await runToDirectory({
 
 The PTY relay is `POST /api/pty` (spawn) / `GET /api/pty` (list) / `POST /api/pty/<id>/kill` and the
 `/ws/pty/<id>` websocket (server→client raw PTY bytes, client→server keystrokes and `resize` frames).
-Agents are spawned with their non-interactive flags so a live pane does not die on a trust prompt.
+`/ws/pty/run:<runId>` is the same websocket for an interactive run's own PTY, relayed from the
+`ach run` process; `GET /api/live`, `GET /api/live/<runId>` and `POST /api/live/<runId>/continue`
+list live interactive runs, report `--then` state and release a `--pause-between` step.
+Agents in a new-session pane are spawned with their non-interactive flags so the pane does not die on a trust prompt.
 `--token` gates every websocket and PTY route. All assets are vendored under `/vendor/` — no CDN.
 PTY attach is local-only by construction: runs arriving from an external feed (`--source`) are
 refused with `409` and their tiles show no LIVE button, since there is no local process to attach to.
