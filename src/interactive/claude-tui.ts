@@ -89,6 +89,7 @@ export class ClaudeInteractiveAdapter implements AgentAdapter {
   readonly name = "claude";
   /** No --max-turns in the TUI: the driver counts model turns from the transcript. */
   readonly enforcesBudget = false;
+  readonly registryKeepaliveMs = 5_000;
   readonly #opts: ClaudeInteractiveOptions;
 
   constructor(opts: ClaudeInteractiveOptions) {
@@ -162,7 +163,7 @@ export class ClaudeInteractiveAdapter implements AgentAdapter {
       writeLiveInfo(o.stateDir, info);
       o.onLive?.(info);
       log(`[interactive] run ${runId} · session ${sessionId}`);
-      log(`[interactive] watch and type: ach web (LIVE on the run's tile) or ach attach ${runId.slice(0, 8)} (${CHORD_HELP})`);
+      log(`[interactive] watch and type: ach web (the TUI button on the run's tile) or ach attach ${runId.slice(0, 8)} (${CHORD_HELP})`);
     } catch (err) {
       notice(`interactive: could not publish the PTY for ach web / ach attach: ${err instanceof Error ? err.message : String(err)}`);
     }

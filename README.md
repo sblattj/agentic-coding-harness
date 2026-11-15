@@ -109,7 +109,7 @@ Then, from any other terminal, run an agent. This one uses the Codex CLI (sign i
 
 ```sh
 npm install -g @openai/codex
-ach run --agent codex "fix the failing test"   # shows up in the dashboard grid; LIVE opens a terminal pane
+ach run --agent codex "fix the failing test"   # shows up in the dashboard grid; TERM opens a new terminal pane
 ```
 
 ## Demo: one task, six agents, one cost table
@@ -605,7 +605,9 @@ ach run --agent claude --model claude-sonnet-5-5 --interactive --budget-usd 0.50
 - **Caps**: `--budget-usd` (with `--on-budget abort`), `--max-turns` (model turns),
   `--wall-ms` and `--idle-ms` apply. An abort sends SIGINT to the TUI, then SIGTERM, then
   SIGKILL, and the run ends with the same exit status as a headless one (`budget_exceeded`,
-  `timeout`, ...). `--idle-ms` counts agent activity, so it also ends a session left waiting at
+  `timeout`, ...). The usd cap is checked as each turn's usage lands in the transcript, so an
+  interactive run stops after the turn that crosses it (headless `claude -p` reports cost only
+  at the end, so there the cap can only warn). `--idle-ms` counts agent activity, so it also ends a session left waiting at
   its prompt with nobody typing.
 - **Watch and type**: `ach web`, then **TUI** on the run's tile (or LIVE in the trio drawer),
   with scrollback replay; closing the pane detaches. `ach attach <runId|prefix>` mirrors the

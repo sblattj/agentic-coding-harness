@@ -553,10 +553,28 @@ export function createDriver(options: DriverOptions): Driver {
         const registryWarn = (err: unknown): void => {
           warnings.push(`registry: ${err instanceof Error ? err.message : String(err)}`);
         };
+        // A throttled heartbeat schedules one trailing write, so the last
+        // event before a quiet spell (an interactive run waiting for input)
+        // still reaches the record instead of sitting stale until the end.
+        let trailingWrite: ReturnType<typeof setTimeout> | null = null;
+        let registryKeepalive: ReturnType<typeof setInterval> | null = null;
         const writeRunRecordThrottled = (force: boolean): void => {
           if (!registryStateDir || !rec) return;
           const now = Date.now();
-          if (!force && now - lastRegistryWrite < 500) return;
+          if (!force && now - lastRegistryWrite < 500) {
+            if (trailingWrite === null) {
+              trailingWrite = setTimeout(() => {
+                trailingWrite = null;
+                if (rec && rec.status === 'running') writeRunRecordThrottled(true);
+              }, 500 - (now - lastRegistryWrite));
+              trailingWrite.unref?.();
+            }
+            return;
+          }
+          if (trailingWrite !== null) {
+            clearTimeout(trailingWrite);
+            trailingWrite = null;
+          }
           lastRegistryWrite = now;
           rec.updatedAt = now;
           // Until the final verdict lands, the record's usage says only what
@@ -611,6 +629,18 @@ export function createDriver(options: DriverOptions): Driver {
           };
           applyRunRecordExtras();
           writeRunRecordThrottled(true);
+          const keepaliveMs = adapter.registryKeepaliveMs;
+          if (keepaliveMs !== undefined && keepaliveMs > 0) {
+            registryKeepalive = setInterval(() => {
+              if (!rec || rec.status !== 'running') {
+                if (registryKeepalive !== null) clearInterval(registryKeepalive);
+                registryKeepalive = null;
+                return;
+              }
+              if (Date.now() - lastRegistryWrite >= keepaliveMs) writeRunRecordThrottled(true);
+            }, Math.max(250, Math.floor(keepaliveMs / 2)));
+            registryKeepalive.unref?.();
+          }
         }
         // Same summing rule as cmdRun (src/cli/ach.ts): canonical token
         // fields summed per usage record; extra.credits (kiro MITM metering
@@ -661,6 +691,10 @@ export function createDriver(options: DriverOptions): Driver {
           // Bridged handles resolve the real session id late; prefer it when
           // the stream never carried a session event.
           if (handle.sessionId) rec.sessionId = handle.sessionId;
+          if (registryKeepalive !== null) {
+            clearInterval(registryKeepalive);
+            registryKeepalive = null;
+          }
           writeRunRecordThrottled(true);
         };
 
@@ -844,6 +878,10 @@ export function createDriver(options: DriverOptions): Driver {
           if (idleTimer !== null) clearTimeout(idleTimer);
           wallTimer = null;
           idleTimer = null;
+          // The registry keepalive (#195) only covers the live stream; the
+          // final record write follows below.
+          if (registryKeepalive !== null) clearInterval(registryKeepalive);
+          registryKeepalive = null;
           activeRuns.delete(runId);
         }
 

@@ -10,6 +10,11 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 - `ach web`: the grid tile (**TUI**) and the trio LIVE drawer attach to an interactive run's own PTY by run id, with scrollback replay; closing the pane detaches. Runs without a live PTY keep the spawn-a-new-session terminal, now labelled as a new, separate session. New `/api/live` routes list live runs and release `--pause-between` steps.
 - `ach attach <runId>`: mirrors a live interactive run in the terminal; `Ctrl-] d` detaches and leaves the run going.
 - `--then "<prompt>"` (repeatable) types each next prompt into the TUI once the agent finishes a turn; `--pause-between` waits for `Ctrl-] n` or the web NEXT STEP button. `--trust-workspace` answers Claude's "trust this folder?" prompt.
+- Adapters can set `registryKeepaliveMs`: the driver then rewrites the RunRecord at least that often while the run is going, so a run that sits quiet by design (the interactive TUI waiting for a person) stays live in `ach web` instead of reading as interrupted after 15s. The interactive Claude adapter uses 5s.
+
+### Fixed
+
+- RunRecord heartbeats: an event that landed inside the 500ms write throttle was not written until the next event or the end of the run, so a run that went quiet right after a usage event showed stale totals (often 0) while running. A trailing write now lands it.
 
 ## [0.28.3] - 2026-11-10
 

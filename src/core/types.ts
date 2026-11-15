@@ -1228,6 +1228,13 @@ export interface AgentAdapter {
    */
   requiresModel?: boolean;
   /**
+   * Registry keepalive (#195): when set, the driver rewrites the RunRecord at
+   * least this often (ms) while the run is going, even with no events, so a
+   * run that sits quiet by design (an interactive TUI waiting for a person)
+   * stays `live` instead of reading as interrupted after 15s.
+   */
+  registryKeepaliveMs?: number;
+  /**
    * Adapter-owned profile/config validation (issue #9): check the
    * agent-specific parts of a spec WITHOUT launching. The driver calls this
    * before launch and fails the run on errors; consumers that want the same
