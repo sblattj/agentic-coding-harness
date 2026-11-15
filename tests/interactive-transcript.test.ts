@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { unlinkSync } from 'node:fs';
+import { chmodSync, unlinkSync } from 'node:fs';
 import { parseClaudeSession } from '../src/monitors/transcripts.ts';
 import {
   claudeProjectsRoot,
@@ -213,5 +213,26 @@ describe('transcript that disappears after discovery', () => {
     writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'back' } }) + '\n');
     await tail.poll();
     assert.ok(events.some((e) => e.type === 'message' && e.content === 'back'), 'polling recovers');
+  });
+});
+
+describe('a failed transcript read is retried', () => {
+  const root0 = typeof process.getuid === 'function' && process.getuid() === 0;
+  it('lines that could not be read once arrive on the next poll', { skip: root0 || process.platform === 'win32' ? 'needs a non-root POSIX user' : false }, async () => {
+    const root = tmpRoot();
+    mkdirSync(join(root, '-p'), { recursive: true });
+    const file = join(root, '-p', `${SID}.jsonl`);
+    writeFileSync(file, '');
+    const events: AgentEvent[] = [];
+    const errors: unknown[] = [];
+    const tail = new TranscriptTail({ sessionId: SID, root, onEvent: (e) => events.push(e), onError: (e) => errors.push(e) });
+    await tail.poll();
+    appendFileSync(file, JSON.stringify({ type: 'user', message: { content: 'after the glitch' } }) + '\n');
+    chmodSync(file, 0o000); // stat still works, open fails
+    await tail.poll();
+    assert.equal(errors.length, 1, 'the failed read is reported');
+    chmodSync(file, 0o644); // file unchanged since the failed poll
+    await tail.poll();
+    assert.ok(events.some((e) => e.type === 'message' && e.content === 'after the glitch'), 'the next poll retries the read');
   });
 });

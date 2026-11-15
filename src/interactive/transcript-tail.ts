@@ -310,15 +310,17 @@ export class TranscriptTail {
     const size = st.size;
     const mtime = st.mtimeMs;
     const changed = size !== this.#lastSize || mtime !== this.#lastMtime;
-    this.#lastSize = size;
-    this.#lastMtime = mtime;
     // Sub-agent transcripts grow the session's usage without touching the
     // main file, so their sizes and mtimes count as a change too.
     const subSig = subagentSignature(path.dirname(this.#file), this.#opts.sessionId);
     const subChanged = subSig !== this.#lastSubSig;
-    this.#lastSubSig = subSig;
     if (changed && size > this.#offset) await this.#readNewLines(size);
     if (changed || subChanged || force) await this.#emitUsage();
+    // Only after the read and the usage pass succeed: if either throws, the
+    // next poll still sees the change and retries.
+    this.#lastSize = size;
+    this.#lastMtime = mtime;
+    this.#lastSubSig = subSig;
   }
 
   async #readNewLines(size: number): Promise<void> {
