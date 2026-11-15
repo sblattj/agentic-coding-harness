@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { LivePty, loadBunPty, NEEDS_BUN_PTY, type PtyLike } from '../src/interactive/live-pty.ts';
-import { connectLive, continueLive, frameReader, probeLive, startLiveServer, type StepState } from '../src/interactive/live-socket.ts';
+import { connectLive, continueLive, frameReader, MAX_CLIENT_BACKLOG, probeLive, startLiveServer, type StepState } from '../src/interactive/live-socket.ts';
 import { listLiveRuns, liveSocketPath, readLiveInfo, removeLiveInfo, resolveLiveRun, writeLiveInfo } from '../src/interactive/live-registry.ts';
 import { StepController } from '../src/interactive/steps.ts';
 import { ChordFilter } from '../src/interactive/terminal-bridge.ts';
@@ -308,5 +308,31 @@ describe('frameReader', () => {
     assert.equal(frames.length, 0);
     read(wire.subarray(cut));
     assert.deepEqual(frames, [{ t: 'out', d: '❯ héllo ✓' }]);
+  });
+});
+
+describe('live socket backpressure', () => {
+  it('drops a viewer that stops reading instead of buffering without bound', { timeout: 30_000 }, async () => {
+    const net = await import('node:net');
+    const dir = tmp('ach-bp-');
+    const fake = new FakePty();
+    const live = new LivePty(fake, { cols: 80, rows: 24 });
+    const socketPath = join(dir, 's.sock');
+    const server = await startLiveServer({ socketPath, runId: 'run-bp', sessionId: 'sess-bp', agent: 'claude', target: live });
+    const stuck = net.createConnection(socketPath);
+    await new Promise<void>((r) => stuck.once('connect', () => r()));
+    stuck.pause(); // a frozen viewer: never reads
+    const deadline = Date.now() + 10_000;
+    while (server.clients() === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(server.clients(), 1);
+    const chunk = 'x'.repeat(64 * 1024);
+    for (let sent = 0; sent < MAX_CLIENT_BACKLOG * 2 && server.clients() > 0; sent += chunk.length) {
+      fake.emit(chunk);
+      await new Promise((r) => setImmediate(r));
+    }
+    while (server.clients() > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(server.clients(), 0, 'the stuck viewer was dropped');
+    stuck.destroy();
+    await server.close();
   });
 });

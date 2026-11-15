@@ -65,8 +65,18 @@ export interface LiveServerHandle {
 
 type Frame = Record<string, unknown> & { t: string };
 
+/** Unflushed bytes a client may queue before it is dropped. A viewer that
+ *  stops reading (a frozen browser tab) would otherwise grow the run
+ *  process's memory without bound; a dropped viewer reconnects and gets the
+ *  scrollback again. */
+export const MAX_CLIENT_BACKLOG = 8 * 1024 * 1024;
+
 function send(sock: net.Socket, frame: Frame): void {
   if (sock.destroyed || !sock.writable) return;
+  if (sock.writableLength > MAX_CLIENT_BACKLOG) {
+    sock.destroy();
+    return;
+  }
   sock.write(JSON.stringify(frame) + "\n");
 }
 

@@ -49,6 +49,7 @@ export async function cmdAttach(rest: string[]): Promise<number> {
 
   let bridge: TerminalBridge | null = null;
   let detached = false;
+  let connectFailed = false;
   let exitCode: number | null = null;
   const closed = new Promise<void>((resolve) => {
     void connectLive(info.socket, {
@@ -82,12 +83,14 @@ export async function cmdAttach(rest: string[]): Promise<number> {
       },
       (err: Error) => {
         process.stderr.write(`[attach] could not connect to ${info.socket}: ${err.message}\n`);
+        connectFailed = true;
         resolve();
       },
     );
   });
   await closed;
   (bridge as TerminalBridge | null)?.stop();
+  if (connectFailed) return 1;
   if (detached) {
     process.stderr.write(`\r\n[attach] detached from ${info.runId}; the run keeps going\r\n`);
     return 0;

@@ -1292,9 +1292,14 @@ function startLive() {
   ensureXterm()
     .then(function () {
       if (seq !== liveSeq) return null;
+      // Only a 404 means "no live PTY"; any other failure is an error, not a
+      // reason to spawn a separate session.
       return fetch("/api/live/" + encodeURIComponent(RUN_ID) + "?token=" + encodeURIComponent(TOKEN))
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .catch(function () { return null; });
+        .then(function (r) {
+          if (r.status === 404) return null;
+          if (!r.ok) throw new Error("http " + r.status + " from /api/live");
+          return r.json();
+        });
     })
     .then(function (live) {
       if (seq !== liveSeq) return "stale";
