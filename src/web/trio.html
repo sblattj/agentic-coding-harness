@@ -1219,6 +1219,8 @@ var MODE = "feed";     // "feed" | "live"
 var livePane = null;   // createTermPane result while a live session is mounted
 var liveId = null;     // PTY session id — killed on teardown
 var liveSeq = 0;       // guards async spawns against mode switches / collapse / retry
+var liveAttached = false; // #195: pane is the run's own PTY: detach, never kill
+var stepTimer = 0;
 
 function killPty(id) {
   if (!id) return;
@@ -1231,8 +1233,39 @@ function killPty(id) {
 function stopLive() {
   liveSeq++;                        // invalidate any in-flight spawn
   if (livePane) { try { livePane.dispose(); } catch (e) {} livePane = null; }
-  killPty(liveId);
+  if (stepTimer) { clearInterval(stepTimer); stepTimer = 0; }
+  if (!liveAttached) killPty(liveId);   // an attached interactive run only detaches
+  liveAttached = false;
   liveId = null;
+}
+
+// --then / --pause-between: NEXT STEP button while the run waits for it.
+function watchSteps(box) {
+  var btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "nextstep";
+  btn.style.cssText = "display:none;position:absolute;right:10px;bottom:10px;z-index:5;padding:4px 10px;cursor:pointer";
+  box.style.position = "relative";
+  box.appendChild(btn);
+  btn.addEventListener("click", function () {
+    fetch("/api/live/" + encodeURIComponent(RUN_ID) + "/continue?token=" + encodeURIComponent(TOKEN), { method: "POST" })
+      .finally(function () { btn.style.display = "none"; });
+  });
+  function poll() {
+    fetch("/api/live/" + encodeURIComponent(RUN_ID) + "?token=" + encodeURIComponent(TOKEN))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        var s = j && j.steps;
+        if (s && s.waiting) {
+          btn.textContent = "NEXT STEP \u25b6 " + (s.sent + 1) + "/" + s.total;
+          btn.title = s.next || "";
+          btn.style.display = "";
+        } else btn.style.display = "none";
+      })
+      .catch(function () {});
+  }
+  stepTimer = setInterval(poll, 2000);
+  poll();
 }
 
 function liveErr(msg, hint) {
@@ -1252,12 +1285,34 @@ function startLive() {
     $("termMeta").textContent = "external run";
     return;
   }
-  box.appendChild(el("div", "player-msg", "spawning live session\u2026"));
+  box.appendChild(el("div", "player-msg", "attaching\u2026"));
   $("termMeta").textContent = "live pty";
   var cmd = agentCommand(rec && rec.agent);
+  // #195: an interactive run (ach run --interactive) owns a PTY: attach to it.
   ensureXterm()
     .then(function () {
       if (seq !== liveSeq) return null;
+      return fetch("/api/live/" + encodeURIComponent(RUN_ID) + "?token=" + encodeURIComponent(TOKEN))
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; });
+    })
+    .then(function (live) {
+      if (seq !== liveSeq) return "stale";
+      if (!live || typeof live.ptyId !== "string") return null;
+      box.textContent = "";
+      liveId = live.ptyId;
+      liveAttached = true;
+      var label = "run " + String(RUN_ID).slice(0, 8) + " \u00b7 " + (live.agent || "") + " TUI (attached, session " + String(live.sessionId || "").slice(0, 8) + ")";
+      livePane = createTermPane(box, { id: live.ptyId, token: TOKEN, live: true, command: label });
+      watchSteps(box);
+      $("termMeta").textContent = "attached \u00b7 this run's own TUI";
+      return "attached";
+    })
+    .then(function (attached) {
+      if (attached) return null;
+      if (seq !== liveSeq) return null;
+      box.textContent = "";
+      box.appendChild(el("div", "player-msg", "this run has no live PTY: spawning a NEW, separate session\u2026"));
       return fetch("/api/pty?token=" + encodeURIComponent(TOKEN), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1268,11 +1323,13 @@ function startLive() {
       });
     })
     .then(function (info) {
+      if (info === null && liveAttached) return;             // attached to the run's own PTY
       if (seq !== liveSeq) { if (info && info.id) killPty(info.id); return; }  // stale spawn: don't leak it
       if (!info || !info.id) throw new Error("spawn response missing id");
       liveId = info.id;
-      livePane = createTermPane(box, { id: info.id, token: TOKEN, live: true, command: cmd.join(" ") });
-      $("termMeta").textContent = "live pty \u00b7 " + cmd.join(" ");
+      box.textContent = "";
+      livePane = createTermPane(box, { id: info.id, token: TOKEN, live: true, command: "NEW session (this run has no live PTY): " + cmd.join(" ") });
+      $("termMeta").textContent = "new session \u00b7 " + cmd.join(" ") + " \u00b7 not this run";
     })
     .catch(function (err) {
       if (seq !== liveSeq) return;

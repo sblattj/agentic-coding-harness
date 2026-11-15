@@ -30,6 +30,10 @@ import { collectQueueViews } from "../core/queue-view.ts";
 import { createPricer, pricingMeta } from "../core/pricing.ts";
 import { renderQueuesPage } from "./queues.ts";
 import { PtyManager } from "./pty-manager.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { join as joinPath } from "node:path";
+import { listLiveRuns, readLiveInfo } from "../interactive/live-registry.ts";
+import { connectLive, continueLive, probeLive, type LiveClient } from "../interactive/live-socket.ts";
 
 export interface WebServerOptions {
   port: number;
@@ -67,7 +71,19 @@ interface PtySocketData {
   closed: boolean;
 }
 
-type WsData = RunsSocketData | RunSocketData | PtySocketData;
+/** #195: a browser attached to an interactive run's PTY (owned by `ach run`). */
+interface LivePtySocketData {
+  mode: "livepty";
+  runId: string;
+  socket: string;
+  client: LiveClient | null;
+  closed: boolean;
+}
+
+/** PTY ids of the form run:<runId> address an interactive run's own PTY. */
+export const RUN_PTY_PREFIX = "run:";
+
+type WsData = RunsSocketData | RunSocketData | PtySocketData | LivePtySocketData;
 
 /** A live dashboard websocket plus the bookkeeping the server keeps for it. */
 interface DashSocket {
@@ -84,6 +100,7 @@ const HEARTBEAT_MS = 30_000;
 const RUN_ACTION_ROUTE = /^\/api\/runs\/([^/]+)\/([^/]+)$/;
 const PTY_KILL_ROUTE = /^\/api\/pty\/([^/]+)\/kill$/;
 const PTY_WS_ROUTE = /^\/ws\/pty\/([^/]+)$/;
+const LIVE_ROUTE = /^\/api\/live\/([^/]+)(?:\/(continue))?$/;
 
 /** First EVENT_SCAN_MAX_BYTES of a run's transcript, or null when it has none (#68 qin=events). */
 async function readTranscriptHead(stateDir: string, rec: RunRecord): Promise<string | null> {
@@ -288,6 +305,60 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
     });
   }
 
+  function openLivePtySocket(ms: DashSocket): void {
+    const data = ms.data as LivePtySocketData;
+    void connectLive(data.socket, {
+      // The first frame is always the scrollback resync (term-pane resets on it).
+      onScrollback: (d) => {
+        if (!data.closed) safeSend(ms.ws, d);
+      },
+      onOut: (d) => {
+        if (!data.closed) safeSend(ms.ws, d);
+      },
+      onExit: (exitCode) => {
+        if (data.closed) return;
+        data.closed = true;
+        safeSend(ms.ws, JSON.stringify({ type: "exit", exitCode }));
+        ms.ws.close();
+      },
+      onClose: () => {
+        if (data.closed) return;
+        data.closed = true;
+        safeSend(ms.ws, JSON.stringify({ type: "exit", exitCode: null }));
+        ms.ws.close();
+      },
+    }).then(
+      (client) => {
+        if (data.closed) client.close();
+        else data.client = client;
+      },
+      () => {
+        data.closed = true;
+        safeSend(ms.ws, JSON.stringify({ type: "exit", exitCode: null }));
+        ms.ws.close();
+      },
+    );
+  }
+
+  function handleLivePtyMessage(ms: DashSocket, msg: string): void {
+    const data = ms.data as LivePtySocketData;
+    if (data.client === null) return;
+    if (msg.startsWith("{")) {
+      try {
+        const ctrl = JSON.parse(msg) as { type?: unknown; cols?: unknown; rows?: unknown };
+        if (ctrl !== null && typeof ctrl === "object" && ctrl.type === "resize") {
+          const cols = Number(ctrl.cols);
+          const rows = Number(ctrl.rows);
+          if (Number.isInteger(cols) && cols > 0 && Number.isInteger(rows) && rows > 0) data.client.resize(cols, rows);
+          return;
+        }
+      } catch {
+        // not a control frame; raw keystrokes below
+      }
+    }
+    data.client.input(msg);
+  }
+
   function handlePtyMessage(ms: DashSocket, msg: string): void {
     const data = ms.data as PtySocketData;
     if (msg.startsWith("{")) {
@@ -364,6 +435,10 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
   }
 
   function onSocketOpen(ms: DashSocket): void {
+    if (ms.data.mode === "livepty") {
+      openLivePtySocket(ms);
+      return;
+    }
     if (ms.data.mode === "pty") {
       openPtySocket(ms);
       return;
@@ -393,6 +468,13 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
       detachPtySocket(ms);
       return;
     }
+    if (ms.data.mode === "livepty") {
+      // Closing a browser pane detaches; the run keeps going.
+      ms.data.closed = true;
+      ms.data.client?.close();
+      ms.data.client = null;
+      return;
+    }
     if (ms.data.mode === "run" && ms.data.tailer !== null) {
       clearInterval(ms.data.tailer);
       tailers.delete(ms.data.tailer);
@@ -419,6 +501,12 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         sessionId = decodeURIComponent(ptyWs[1] as string);
       } catch {
         sessionId = ptyWs[1] as string;
+      }
+      if (sessionId.startsWith(RUN_PTY_PREFIX)) {
+        const runId = sessionId.slice(RUN_PTY_PREFIX.length);
+        const live = readLiveInfo(opts.stateDir, runId);
+        if (live === null) return { reject: { status: 404, message: `run ${runId} has no live PTY` } };
+        return { data: { mode: "livepty", runId, socket: live.socket, client: null, closed: false } };
       }
       const info = ptyManager.get(sessionId);
       if (info === null) return { reject: { status: 404, message: "not found" } };
@@ -588,6 +676,11 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           if (rec === null) return notFound(res);
           const events = await hub.readTranscript(runId);
           if (action === "cast") {
+            // #195: an interactive run recorded its real TUI; serve that.
+            const tuiCast = /^[A-Za-z0-9._-]+$/.test(runId) ? joinPath(opts.stateDir, "casts", `${runId}.cast`) : "";
+            if (tuiCast !== "" && existsSync(tuiCast)) {
+              return res.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(readFileSync(tuiCast, "utf8"));
+            }
             const body = eventsToAsciicast(events, { title: runId });
             return res.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(body);
           }
@@ -595,6 +688,41 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
             return sendJson(res, 200, deriveRunObservability(events, rec.usage?.credits));
           }
           return notFound(res);
+        }
+
+        // #195: interactive runs' own PTYs. Token-gated like /api/queues
+        // (entries carry working directories).
+        if (pathname === "/api/live" || LIVE_ROUTE.test(pathname)) {
+          if (opts.token !== undefined) {
+            const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
+            if (url.searchParams.get("token") !== opts.token && bearer !== opts.token) return jsonError(res, 401, "unauthorized");
+          }
+          if (pathname === "/api/live") {
+            if (!get) return notFound(res);
+            return sendJson(res, 200, { live: listLiveRuns(opts.stateDir) });
+          }
+          const m = LIVE_ROUTE.exec(pathname)!;
+          let runId: string;
+          try {
+            runId = decodeURIComponent(m[1] as string);
+          } catch {
+            runId = m[1] as string;
+          }
+          const live = readLiveInfo(opts.stateDir, runId);
+          if (live === null) return jsonError(res, 404, `run ${runId} has no live PTY`);
+          if (m[2] === "continue") {
+            if (req.method !== "POST") return notFound(res);
+            await continueLive(live.socket);
+            return sendJson(res, 200, { ok: true });
+          }
+          if (!get) return notFound(res);
+          let steps = null;
+          try {
+            steps = (await probeLive(live.socket)).steps;
+          } catch {
+            // owner busy or gone; the entry itself is still useful
+          }
+          return sendJson(res, 200, { ...live, ptyId: RUN_PTY_PREFIX + runId, steps });
         }
 
         if (pathname === "/api/pty") {
@@ -685,6 +813,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
     });
     ws.on("message", (msg: RawData) => {
       if (ms.data.mode === "pty") handlePtyMessage(ms, rawToString(msg));
+      else if (ms.data.mode === "livepty") handleLivePtyMessage(ms, rawToString(msg));
       // dashboard clients never send frames; nothing to do
     });
     ws.on("close", () => onSocketClose(ms));

@@ -396,7 +396,7 @@ main { flex: 1; display: block; }
   </main>
 
   <footer id="ftr">
-    <span><span class="green">❯</span> click a tile to select · TRIO opens the detail view · LIVE spawns an interactive PTY</span>
+    <span><span class="green">❯</span> click a tile to select · TRIO opens the detail view · TUI attaches to an interactive run (TERM spawns a new session for other runs)</span>
     <span>live = running + heartbeat &lt; 60s</span>
   </footer>
 </div>
@@ -823,7 +823,89 @@ function runCost(r) {
     st.liveBusy = false;
     // the hidden event stream kept updating; park it at the bottom on return
     st.dom.body.scrollTop = st.dom.body.scrollHeight;
+    if (st.stepTimer) { clearInterval(st.stepTimer); st.stepTimer = 0; }
+    // An attached interactive run only detaches; a spawned session is killed.
+    if (st.attached) { st.attached = false; return; }
     killPty(ptyId);
+  }
+
+  // #195: runs started with `ach run --interactive` own a PTY; LIVE attaches to
+  // it (same session, metered on the run). Other runs fall back to spawning a
+  // NEW, separate agent session, labelled as such.
+  var liveRunIds = new Set();
+  function tokenQ(first) {
+    return TOKEN ? (first ? "?" : "&") + "token=" + encodeURIComponent(TOKEN) : "";
+  }
+  function refreshLiveRuns() {
+    fetch("/api/live" + tokenQ(true))
+      .then(function (r) { return r.ok ? r.json() : { live: [] }; })
+      .then(function (j) {
+        liveRunIds = new Set((j.live || []).map(function (x) { return x.runId; }));
+        runs.forEach(function (st) {
+          if (st.pane || st.liveBusy) return;
+          var has = liveRunIds.has(st.rec.runId);
+          st.dom.liveBtn.textContent = has ? "TUI ➜" : "TERM ➜";
+          st.dom.liveBtn.title = has
+            ? "attach to this run's own interactive TUI (same session, metered on this run)"
+            : "no live PTY for this run: spawns a NEW, separate agent session (not metered on this run)";
+        });
+      })
+      .catch(function () { /* older server or offline */ });
+  }
+  setInterval(refreshLiveRuns, 3000);
+  setTimeout(refreshLiveRuns, 300);
+
+  function mountPane(st, id, label, attached) {
+    var host = document.createElement("div");
+    host.className = "tlive";
+    // keep terminal clicks/keys inside the pane: the tile's own handlers
+    // would otherwise toggle selection and swallow Space/Enter keydowns
+    host.addEventListener("click", function (ev) { ev.stopPropagation(); });
+    host.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
+    st.dom.tile.appendChild(host);
+    st.liveHost = host;
+    st.dom.tile.classList.add("expanded");
+    st.ptyId = id;
+    st.attached = attached;
+    st.pane = createTermPane(host, { id: id, token: TOKEN, live: true, command: label });
+    if (attached) watchSteps(st, host);
+    st.dom.liveBtn.textContent = "✕ CLOSE";
+    st.dom.liveBtn.disabled = false;
+    st.dom.liveBtn.classList.add("on");
+  }
+
+  // --then / --pause-between: a NEXT STEP button while the run waits.
+  function watchSteps(st, host) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "liveb nextstep";
+    btn.style.display = "none";
+    btn.style.position = "absolute";
+    btn.style.right = "8px";
+    btn.style.bottom = "8px";
+    btn.style.zIndex = "5";
+    host.style.position = "relative";
+    host.appendChild(btn);
+    btn.addEventListener("click", function () {
+      fetch("/api/live/" + encodeURIComponent(st.rec.runId) + "/continue" + tokenQ(true), { method: "POST" })
+        .finally(function () { btn.style.display = "none"; });
+    });
+    function poll() {
+      if (!st.liveHost) { clearInterval(st.stepTimer); return; }
+      fetch("/api/live/" + encodeURIComponent(st.rec.runId) + tokenQ(true))
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          var s = j && j.steps;
+          if (s && s.waiting) {
+            btn.textContent = "NEXT STEP ▶ " + (s.sent + 1) + "/" + s.total;
+            btn.title = s.next || "";
+            btn.style.display = "";
+          } else btn.style.display = "none";
+        })
+        .catch(function () {});
+    }
+    st.stepTimer = setInterval(poll, 2000);
+    poll();
   }
 
   function spawnLive(st) {
@@ -835,8 +917,30 @@ function runCost(r) {
     st.liveBusy = true;
     st.dom.liveBtn.disabled = true;
     st.dom.liveBtn.textContent = "TERM…";
+    fetch("/api/live/" + encodeURIComponent(st.rec.runId) + tokenQ(true))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .catch(function () { return null; })
+      .then(function (live) {
+        if (live && typeof live.ptyId === "string") {
+          st.liveBusy = false;
+          try {
+            mountPane(st, live.ptyId, "run " + String(st.rec.runId).slice(0, 8) + " · " + (live.agent || st.rec.agent) + " TUI (attached, session " + String(live.sessionId || "").slice(0, 8) + ")", true);
+          } catch (e) {
+            if (st.liveHost) { st.liveHost.remove(); st.liveHost = null; }
+            st.dom.tile.classList.remove("expanded");
+            st.ptyId = null;
+            resetLiveButton(st);
+            liveNote(st, "[attach failed: " + (e && e.message ? e.message : e) + "]");
+          }
+          return;
+        }
+        spawnNewSession(st);
+      });
+  }
+
+  function spawnNewSession(st) {
     var cmd = ptyCommandFor(st.rec.agent);
-    fetch("/api/pty" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : ""), {
+    fetch("/api/pty" + tokenQ(true), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ command: cmd.command, args: cmd.args, cols: 120, rows: 34, runId: st.rec.runId })
@@ -852,37 +956,17 @@ function runCost(r) {
       .then(function (info) {
         st.liveBusy = false;
         if (!info || typeof info.id !== "string") throw new Error("spawn response missing id");
-        st.ptyId = info.id;
-        var host = document.createElement("div");
-        host.className = "tlive";
-        // keep terminal clicks/keys inside the pane: the tile's own handlers
-        // would otherwise toggle selection and swallow Space/Enter keydowns
-        host.addEventListener("click", function (ev) { ev.stopPropagation(); });
-        host.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
-        st.dom.tile.appendChild(host);
-        st.liveHost = host;
-        st.dom.tile.classList.add("expanded");
         try {
-          st.pane = createTermPane(host, {
-            id: info.id,
-            token: TOKEN,
-            live: true,
-            command: cmd.command + (cmd.args.length ? " " + cmd.args.join(" ") : "")
-          });
+          mountPane(st, info.id, "NEW session (this run has no live PTY): " + cmd.command + (cmd.args.length ? " " + cmd.args.join(" ") : ""), false);
         } catch (e) {
           // terminal stack failed to mount — tear down the session we just made
-          host.remove();
-          st.liveHost = null;
+          if (st.liveHost) { st.liveHost.remove(); st.liveHost = null; }
           st.dom.tile.classList.remove("expanded");
-          killPty(st.ptyId);
+          killPty(info.id);
           st.ptyId = null;
           resetLiveButton(st);
           liveNote(st, "— live failed: " + (e && e.message ? e.message : e) + " —");
-          return;
         }
-        st.dom.liveBtn.textContent = "✕ CLOSE";
-        st.dom.liveBtn.disabled = false;
-        st.dom.liveBtn.classList.add("on");
       })
       .catch(function (err) {
         st.liveBusy = false;
