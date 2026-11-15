@@ -202,6 +202,22 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     ws.send('\r');
     await waitFor('typed in the browser, answered by the run', () => frames.join('').includes('echo: from-web'), 20_000, () => frames.join(''));
     ws.close();
+    // Keys sent the moment the socket opens, before the server's relay
+    // connection is up, are held and delivered, not dropped.
+    const early = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}`);
+    const earlyFrames: string[] = [];
+    early.on('message', (m) => earlyFrames.push(m.toString()));
+    await new Promise((r, j) => {
+      early.once('open', () => {
+        early.send('early-bird');
+        r(null);
+      });
+      early.once('error', j);
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    early.send('\r');
+    await waitFor('keys sent on open reach the run', () => earlyFrames.join('').includes('echo: early-bird'), 20_000, () => earlyFrames.join(''));
+    early.close();
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(liveFiles(sb.state).length, 1, 'closing the browser pane leaves the run going');
 
@@ -212,7 +228,7 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     await typeLine(client, '/exit');
     assert.equal(await run.done, 0, run.stderr());
     const result = JSON.parse(run.stdout());
-    assert.deepEqual(sumTokens(result.tokens), { input: 20, output: 10, cacheRead: 200, cacheWrite: 100 }, 'the browser turn is metered on the run');
+    assert.deepEqual(sumTokens(result.tokens), { input: 30, output: 15, cacheRead: 300, cacheWrite: 150 }, 'the browser turns are metered on the run');
     const cast = await (await fetch(`${base}/api/runs/${live.runId}/cast`)).text();
     assert.ok(cast.includes('FAKE CLAUDE TUI'));
     assert.equal((await fetch(`${base}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}`)).status, 404, 'no live PTY after the run ends');

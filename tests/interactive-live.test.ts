@@ -6,11 +6,12 @@ import { PassThrough } from 'node:stream';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { LivePty, loadBunPty, NEEDS_BUN_PTY, type PtyLike } from '../src/interactive/live-pty.ts';
-import { connectLive, continueLive, frameReader, MAX_CLIENT_BACKLOG, probeLive, startLiveServer, type StepState } from '../src/interactive/live-socket.ts';
+import { confirmLive, connectLive, continueLive, frameReader, listConfirmedLiveRuns, MAX_CLIENT_BACKLOG, PendingInput, probeLive, startLiveServer, type StepState } from '../src/interactive/live-socket.ts';
 import { listLiveRuns, liveSocketPath, readLiveInfo, removeLiveInfo, resolveLiveRun, writeLiveInfo } from '../src/interactive/live-registry.ts';
 import { StepController } from '../src/interactive/steps.ts';
 import { bridgeTerminal, ChordFilter } from '../src/interactive/terminal-bridge.ts';
 import { claudeTuiArgs, stripAnsi, trustDialogKeys } from '../src/interactive/claude-tui.ts';
+import { attachTarget } from '../src/cli/attach.ts';
 import { assertInteractiveSupported, parseInteractiveFlags } from '../src/interactive/flags.ts';
 
 // ---------------------------------------------------------------------------
@@ -366,5 +367,63 @@ describe('live socket backpressure', () => {
     assert.equal(server.clients(), 0, 'the stuck viewer was dropped');
     stuck.destroy();
     await server.close();
+  });
+});
+
+describe('stale live entries (crashed owner, reused pid)', () => {
+  it('an entry whose socket does not answer is not attachable; the real owner is', async () => {
+    const state = tmp('ach-stale-');
+    const sockDir = tmp('ach-stales-');
+    // The pid is alive (it is ours, as if the OS reused a crashed owner's pid)
+    // and a file sits at the socket path, so the registry check passes.
+    const staleSock = join(sockDir, 'stale.sock');
+    writeFileSync(staleSock, '');
+    writeLiveInfo(state, { runId: 'stale000-0000', sessionId: 's-x', agent: 'claude', pid: process.pid, socket: staleSock, cwd: '/w', startedAt: 1 });
+    const stale = readLiveInfo(state, 'stale000-0000');
+    assert.ok(stale !== null, 'the pid check alone would call it live');
+    assert.equal(await confirmLive(stale!), false);
+
+    const fake = new FakePty();
+    const live = new LivePty(fake, { cols: 80, rows: 24 });
+    const realSock = join(sockDir, 'real.sock');
+    const server = await startLiveServer({ socketPath: realSock, runId: 'real0000-0000', sessionId: 's-r', agent: 'claude', target: live });
+    writeLiveInfo(state, { runId: 'real0000-0000', sessionId: 's-r', agent: 'claude', pid: process.pid, socket: realSock, cwd: '/w', startedAt: 2 });
+    // An entry pointing at another run's socket is not confirmed either.
+    writeLiveInfo(state, { runId: 'other000-0000', sessionId: 's-o', agent: 'claude', pid: process.pid, socket: realSock, cwd: '/w', startedAt: 3 });
+    assert.deepEqual((await listConfirmedLiveRuns(state)).map((r) => r.runId), ['real0000-0000']);
+    await server.close();
+  });
+});
+
+describe('attachTarget', () => {
+  it('--read-only sends no keys, no resizes and no step releases', () => {
+    const calls: string[] = [];
+    const client = { input: () => calls.push('input'), resize: () => calls.push('resize'), continueStep: () => calls.push('continue') };
+    const ro = attachTarget(client, true);
+    ro.input('x');
+    ro.resize(80, 24);
+    ro.continueStep();
+    assert.deepEqual(calls, []);
+    const rw = attachTarget(client, false);
+    rw.input('x');
+    rw.resize(80, 24);
+    rw.continueStep();
+    assert.deepEqual(calls, ['input', 'resize', 'continue']);
+  });
+});
+
+describe('PendingInput', () => {
+  it('holds early input in order, bounded, and delivers it once', () => {
+    const q = new PendingInput(10);
+    assert.equal(q.hold('abc'), true);
+    assert.equal(q.hold('\r'), true);
+    assert.equal(q.hold('toolongforit'), false, 'over the cap is refused');
+    assert.equal(q.hold('de'), true);
+    const out: string[] = [];
+    q.drain((m) => out.push(m));
+    assert.deepEqual(out, ['abc', '\r', 'de']);
+    assert.equal(q.size, 0);
+    q.drain((m) => out.push(m));
+    assert.equal(out.length, 3, 'delivered once');
   });
 });

@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
+import { unlinkSync } from 'node:fs';
 import { parseClaudeSession } from '../src/monitors/transcripts.ts';
 import {
   claudeProjectsRoot,
@@ -193,5 +194,24 @@ describe('sub-agent usage without main-file changes', () => {
     assert.equal(usage.length, 2, 'sub-agent usage lands without waiting for the exit flush');
     assert.equal((usage[1]!.usage as { inputTokens: number }).inputTokens, 40);
     tail.stop();
+  });
+});
+
+describe('transcript that disappears after discovery', () => {
+  it('reports the stat failure through onError and recovers when it is back', async () => {
+    const root = tmpRoot();
+    mkdirSync(join(root, '-p'), { recursive: true });
+    const file = join(root, '-p', `${SID}.jsonl`);
+    writeFileSync(file, '');
+    const errors: unknown[] = [];
+    const events: AgentEvent[] = [];
+    const tail = new TranscriptTail({ sessionId: SID, root, onEvent: (e) => events.push(e), onError: (e) => errors.push(e) });
+    await tail.poll();
+    unlinkSync(file);
+    await tail.poll();
+    assert.equal(errors.length, 1, 'the vanished transcript is reported');
+    writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'back' } }) + '\n');
+    await tail.poll();
+    assert.ok(events.some((e) => e.type === 'message' && e.content === 'back'), 'polling recovers');
   });
 });

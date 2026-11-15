@@ -304,15 +304,11 @@ export class TranscriptTail {
       this.#file = findSessionTranscript(this.#root, this.#opts.sessionId);
       if (this.#file === null) return;
     }
-    let size: number;
-    let mtime: number;
-    try {
-      const st = statSync(this.#file);
-      size = st.size;
-      mtime = st.mtimeMs;
-    } catch {
-      return;
-    }
+    // A transcript found once and unreadable now throws here; poll() hands
+    // the error to onError and the next poll retries.
+    const st = statSync(this.#file);
+    const size = st.size;
+    const mtime = st.mtimeMs;
     const changed = size !== this.#lastSize || mtime !== this.#lastMtime;
     this.#lastSize = size;
     this.#lastMtime = mtime;

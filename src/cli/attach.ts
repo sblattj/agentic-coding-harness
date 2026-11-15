@@ -3,9 +3,9 @@
 import { parseArgs } from "./config.ts";
 import { HarnessError } from "../core/types.ts";
 import { stateDir } from "../core/store.ts";
-import { listLiveRuns, resolveLiveRun } from "../interactive/live-registry.ts";
-import { connectLive } from "../interactive/live-socket.ts";
-import { CHORD_HELP, bridgeTerminal, type TerminalBridge } from "../interactive/terminal-bridge.ts";
+import { resolveLiveRun } from "../interactive/live-registry.ts";
+import { connectLive, confirmLive, listConfirmedLiveRuns, type LiveClient } from "../interactive/live-socket.ts";
+import { CHORD_HELP, bridgeTerminal, type BridgeTarget, type TerminalBridge } from "../interactive/terminal-bridge.ts";
 
 export async function cmdAttach(rest: string[]): Promise<number> {
   const args = parseArgs({
@@ -21,7 +21,7 @@ export async function cmdAttach(rest: string[]): Promise<number> {
   const dir = args.values["state-dir"] ?? stateDir();
   const id = args.positionals[0];
   if (args.values.list || id === undefined) {
-    const live = listLiveRuns(dir);
+    const live = await listConfirmedLiveRuns(dir);
     if (args.values.json) {
       process.stdout.write(JSON.stringify({ live }, null, 2) + "\n");
       return 0;
@@ -40,6 +40,9 @@ export async function cmdAttach(rest: string[]): Promise<number> {
     info = resolveLiveRun(dir, id);
   } catch (err) {
     throw new HarnessError(err instanceof Error ? err.message : String(err), "USAGE");
+  }
+  if (!(await confirmLive(info))) {
+    throw new HarnessError(`no live interactive run '${id}' (its registry entry is stale: the socket does not answer for run ${info.runId})`, "USAGE");
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new HarnessError("ach attach needs a terminal (stdin and stdout must be a TTY)", "USAGE");
@@ -65,15 +68,7 @@ export async function cmdAttach(rest: string[]): Promise<number> {
     }).then(
       (client) => {
         bridge = bridgeTerminal({
-          target: {
-            input: (d) => {
-              if (!readOnly) client.input(d);
-            },
-            resize: (c, r) => {
-              if (!readOnly) client.resize(c, r);
-            },
-            continueStep: () => client.continueStep(),
-          },
+          target: attachTarget(client, readOnly),
           driveSize: !readOnly,
           onDetach: () => {
             detached = true;
@@ -97,4 +92,20 @@ export async function cmdAttach(rest: string[]): Promise<number> {
   }
   process.stderr.write(`\r\n[attach] run ${info.runId} ended${exitCode !== null ? ` (TUI exit ${exitCode})` : ""}\r\n`);
   return 0;
+}
+
+/** What the terminal may do to the run: `--read-only` sends no keys, no
+ *  resizes and no step releases (Ctrl-] n), so it can only watch. */
+export function attachTarget(client: Pick<LiveClient, "input" | "resize" | "continueStep">, readOnly: boolean): BridgeTarget {
+  return {
+    input: (d) => {
+      if (!readOnly) client.input(d);
+    },
+    resize: (c, r) => {
+      if (!readOnly) client.resize(c, r);
+    },
+    continueStep: () => {
+      if (!readOnly) client.continueStep();
+    },
+  };
 }

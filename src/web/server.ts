@@ -32,8 +32,8 @@ import { renderQueuesPage } from "./queues.ts";
 import { PtyManager } from "./pty-manager.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
-import { listLiveRuns, readLiveInfo } from "../interactive/live-registry.ts";
-import { connectLive, continueLive, probeLive, type LiveClient } from "../interactive/live-socket.ts";
+import { readLiveInfo } from "../interactive/live-registry.ts";
+import { connectLive, continueLive, listConfirmedLiveRuns, PendingInput, probeLive, type LiveClient } from "../interactive/live-socket.ts";
 
 export interface WebServerOptions {
   port: number;
@@ -78,10 +78,14 @@ interface LivePtySocketData {
   socket: string;
   client: LiveClient | null;
   closed: boolean;
+  /** Messages from the browser that arrived before the live socket connected. */
+  pending: PendingInput;
 }
 
 /** PTY ids of the form run:<runId> address an interactive run's own PTY. */
 export const RUN_PTY_PREFIX = "run:";
+/** Input held per browser pane while its live socket connects. */
+const LIVE_PENDING_MAX = 64 * 1024;
 
 type WsData = RunsSocketData | RunSocketData | PtySocketData | LivePtySocketData;
 
@@ -329,8 +333,13 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
       },
     }).then(
       (client) => {
-        if (data.closed) client.close();
-        else data.client = client;
+        if (data.closed) {
+          client.close();
+          return;
+        }
+        data.client = client;
+        // Keys typed while the socket was connecting, in order.
+        data.pending.drain((msg) => handleLivePtyMessage(ms, msg));
       },
       () => {
         data.closed = true;
@@ -342,7 +351,11 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
 
   function handleLivePtyMessage(ms: DashSocket, msg: string): void {
     const data = ms.data as LivePtySocketData;
-    if (data.client === null) return;
+    if (data.client === null) {
+      // Not connected yet: hold the message (bounded) rather than drop it.
+      if (!data.closed) data.pending.hold(msg);
+      return;
+    }
     if (msg.startsWith("{")) {
       try {
         const ctrl = JSON.parse(msg) as { type?: unknown; cols?: unknown; rows?: unknown };
@@ -506,7 +519,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         const runId = sessionId.slice(RUN_PTY_PREFIX.length);
         const live = readLiveInfo(opts.stateDir, runId);
         if (live === null) return { reject: { status: 404, message: `run ${runId} has no live PTY` } };
-        return { data: { mode: "livepty", runId, socket: live.socket, client: null, closed: false } };
+        return { data: { mode: "livepty", runId, socket: live.socket, client: null, closed: false, pending: new PendingInput(LIVE_PENDING_MAX) } };
       }
       const info = ptyManager.get(sessionId);
       if (info === null) return { reject: { status: 404, message: "not found" } };
@@ -699,7 +712,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           }
           if (pathname === "/api/live") {
             if (!get) return notFound(res);
-            return sendJson(res, 200, { live: listLiveRuns(opts.stateDir) });
+            return sendJson(res, 200, { live: await listConfirmedLiveRuns(opts.stateDir) });
           }
           const m = LIVE_ROUTE.exec(pathname)!;
           let runId: string;
@@ -716,13 +729,16 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
             return sendJson(res, 200, { ok: true });
           }
           if (!get) return notFound(res);
-          let steps = null;
+          let hello;
           try {
-            steps = (await probeLive(live.socket)).steps;
+            hello = await probeLive(live.socket);
           } catch {
-            // owner busy or gone; the entry itself is still useful
+            hello = null;
           }
-          return sendJson(res, 200, { ...live, ptyId: RUN_PTY_PREFIX + runId, steps });
+          // Only the owner answers with its own run id; a stale entry (crashed
+          // owner, reused pid) is not attachable.
+          if (hello === null || hello.runId !== live.runId) return jsonError(res, 404, `run ${runId} has no live PTY`);
+          return sendJson(res, 200, { ...live, ptyId: RUN_PTY_PREFIX + runId, steps: hello.steps });
         }
 
         if (pathname === "/api/pty") {

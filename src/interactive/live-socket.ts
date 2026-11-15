@@ -16,6 +16,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { rmSync } from "node:fs";
 import net from "node:net";
+import { listLiveRuns, type LiveRunInfo } from "./live-registry.ts";
 
 export interface LiveTarget {
   readonly alive: boolean;
@@ -262,4 +263,57 @@ export async function continueLive(socketPath: string): Promise<void> {
   c.continueStep();
   await new Promise((r) => setTimeout(r, 50));
   c.close();
+}
+
+/**
+ * True when the run's socket answers with a hello for this run id. The
+ * registry's pid check alone can be fooled by a crashed owner whose pid the
+ * OS has since reused; only the owner itself can answer on the socket.
+ */
+export async function confirmLive(info: LiveRunInfo, timeoutMs = 1500): Promise<boolean> {
+  try {
+    const hello = await probeLive(info.socket, timeoutMs);
+    return hello.runId === info.runId;
+  } catch {
+    return false;
+  }
+}
+
+/** listLiveRuns, keeping only entries whose owner answers on the socket. */
+export async function listConfirmedLiveRuns(stateDir: string): Promise<LiveRunInfo[]> {
+  const all = listLiveRuns(stateDir);
+  const ok = await Promise.all(all.map((i) => confirmLive(i)));
+  return all.filter((_, k) => ok[k]);
+}
+
+/**
+ * Input from a viewer that arrives before its relay connection is up (the
+ * browser can type the moment its WebSocket opens). Held in order up to
+ * `maxBytes`, then delivered once the connection is ready; beyond the cap
+ * new input is refused rather than growing without bound.
+ */
+export class PendingInput {
+  #items: string[] = [];
+  #bytes = 0;
+  constructor(private readonly maxBytes = 64 * 1024) {}
+
+  /** Hold one message; false when it would exceed the cap. */
+  hold(msg: string): boolean {
+    if (this.#bytes + msg.length > this.maxBytes) return false;
+    this.#items.push(msg);
+    this.#bytes += msg.length;
+    return true;
+  }
+
+  /** Hand every held message to `deliver`, oldest first, and empty the queue. */
+  drain(deliver: (msg: string) => void): void {
+    const items = this.#items;
+    this.#items = [];
+    this.#bytes = 0;
+    for (const m of items) deliver(m);
+  }
+
+  get size(): number {
+    return this.#items.length;
+  }
 }
