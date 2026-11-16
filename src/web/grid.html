@@ -1241,6 +1241,7 @@ function runCost(r) {
   // #202: older transcripts are still being indexed in the background.
   function scanNote(scan) {
     if (!scan || scan.complete) return "";
+    if (!scan.filesTotal) return " · indexing sessions";
     return " · indexing older sessions (" + scan.filesParsed + " of " + scan.filesTotal + " files)";
   }
 

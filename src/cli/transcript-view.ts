@@ -2,7 +2,9 @@
 import { createHash } from 'node:crypto';
 import { descriptorDirs, loadAgentDescriptors, readDescriptorTap } from '../core/agent-descriptors.ts';
 import { withPricingHints } from '../core/pricing-hints.ts';
-import { createPricer, pricingMeta } from '../core/pricing.ts';
+import { createPricer, PRICING_OVERRIDE_ENV, pricingMeta } from '../core/pricing.ts';
+import { VERSION } from '../version.ts';
+import { statSync } from 'node:fs';
 import type { RunRecord } from '../core/registry.ts';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -149,6 +151,7 @@ export class TranscriptIndex {
   /** Files parsed over this index's life (tests assert reuse). */
   parseCount = 0;
   private dirty = false;
+  private walked = false;
   private loaded = false;
   private lastSave = 0;
 
@@ -191,7 +194,8 @@ export class TranscriptIndex {
   }
 
   progress(): TranscriptIndexProgress {
-    return { complete: this.pending === 0, filesParsed: this.total - this.pending, filesTotal: this.total };
+    // Nothing is complete before the first walk has counted the files.
+    return { complete: this.walked && this.pending === 0, filesParsed: this.total - this.pending, filesTotal: this.total };
   }
 
   async update(opts: TranscriptIndexUpdate = {}): Promise<void> {
@@ -225,6 +229,7 @@ export class TranscriptIndex {
     }
     this.total = found.size;
     this.pending = pending;
+    this.walked = true;
     for (const w of [...drainTranscriptWarnings(), ...this.pricer.drainWarnings()]) process.stderr.write(`[warn] ${w}\n`);
   }
 
@@ -248,11 +253,24 @@ export class TranscriptIndex {
 
 const CACHE_VERSION = 1;
 
-/** Cached rows carry computed costs: a different price table invalidates them. */
+/**
+ * Cached rows are parser output priced with the current table: a new ach
+ * version (parsers, row shape), a different bundled extract, or a different
+ * or edited pricing override file invalidates them.
+ */
 function cacheKey(): string {
   const meta = pricingMeta();
-  const env = Object.keys(process.env).filter((k) => k.startsWith('AGENTIC_CODING_HARNESS_PRIC')).sort().map((k) => `${k}=${process.env[k]}`);
-  return JSON.stringify([meta.snapshotDate, meta.modelCount, meta.source, env]);
+  const override = process.env[PRICING_OVERRIDE_ENV]?.trim() || null;
+  let overrideStamp: string | null = null;
+  if (override !== null) {
+    try {
+      const st = statSync(override);
+      overrideStamp = `${st.mtimeMs}:${st.size}`;
+    } catch {
+      overrideStamp = 'missing';
+    }
+  }
+  return JSON.stringify([VERSION, meta.snapshotDate, meta.modelCount, meta.source, override, overrideStamp]);
 }
 
 async function fileStamp(file: string): Promise<{ stamp: string; mtimeMs: number } | null> {

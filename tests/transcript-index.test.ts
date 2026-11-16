@@ -2,7 +2,7 @@
 // re-reads only changed files, the first pass can take recent files (by
 // mtime) and backfill the rest, and merged rows equal transcriptView's.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -10,6 +10,10 @@ import { TranscriptIndex, transcriptView } from '../src/cli/transcript-view.ts';
 import { parseClaudeTranscript, scanOptionsForRoot } from '../src/monitors/transcripts.ts';
 import { TranscriptRunSource } from '../src/web/run-source-transcript.ts';
 import type { RunRecord } from '../src/core/registry.ts';
+import { PRICING_OVERRIDE_ENV } from '../src/core/pricing.ts';
+import { VERSION } from '../src/version.ts';
+import { startWebServer } from '../src/web/server.ts';
+import { FsRunSource } from '../src/web/run-source.ts';
 
 const DAY = 86_400_000;
 const homes: string[] = [];
@@ -77,6 +81,7 @@ describe('TranscriptIndex', () => {
   it('minMtimeMs parses recent files first and leaves the rest pending', async () => {
     const f = fixture();
     const idx = new TranscriptIndex(f.state, f.scan);
+    assert.equal(idx.progress().complete, false, 'not complete before the first walk');
     await idx.update({ minMtimeMs: Date.now() - 7 * DAY });
     assert.deepEqual(idx.progress(), { complete: false, filesParsed: 3, filesTotal: 4 });
     assert.equal((await idx.rows([])).some((r) => r.sessionId === 's-old'), false);
@@ -114,15 +119,37 @@ describe('TranscriptIndex cache file', () => {
     assert.equal((await c.rows([])).find((r) => r.sessionId === 's-old')!.totals!.inputTokens, 25);
   });
 
-  it('a corrupt or foreign cache is ignored', async () => {
+  it('a corrupt cache, another version, or another price table forces a re-read', async () => {
     const f = fixture();
     const cache = join(f.state, 'cache', 'transcript-index.json');
-    mkdirSync(join(f.state, 'cache'), { recursive: true });
-    for (const body of ['{not json', JSON.stringify({ v: 999, key: 'x', files: [] }), JSON.stringify({ v: 1, key: 'other-prices', files: [] })]) {
-      writeFileSync(cache, body);
+    const a = new TranscriptIndex(f.state, f.scan, cache);
+    await a.update();
+    await a.save();
+    const good = JSON.parse(readFileSync(cache, 'utf8'));
+    assert.equal(good.files.length, 4, 'the saved cache holds every file');
+    const reread = async (): Promise<number> => {
       const idx = new TranscriptIndex(f.state, f.scan, cache);
       await idx.update();
-      assert.equal(idx.parseCount, 4);
+      return idx.parseCount;
+    };
+    writeFileSync(cache, JSON.stringify(good));
+    assert.equal(await reread(), 0, 'control: the intact cache is reused');
+    for (const body of ['{not json', JSON.stringify({ ...good, v: 999 }), JSON.stringify({ ...good, key: 'other' })]) {
+      writeFileSync(cache, body);
+      assert.equal(await reread(), 4);
+    }
+    // The key carries the ach version and the override file's identity.
+    const key = JSON.parse(good.key);
+    assert.equal(key[0], VERSION);
+    writeFileSync(cache, JSON.stringify(good));
+    const override = join(f.home, 'prices.json');
+    writeFileSync(override, '{}');
+    const prev = process.env[PRICING_OVERRIDE_ENV];
+    process.env[PRICING_OVERRIDE_ENV] = override;
+    try {
+      assert.equal(await reread(), 4, 'a pricing override invalidates rows priced without it');
+    } finally {
+      if (prev === undefined) delete process.env[PRICING_OVERRIDE_ENV]; else process.env[PRICING_OVERRIDE_ENV] = prev;
     }
   });
 });
@@ -157,5 +184,43 @@ describe('streaming JSONL reader', () => {
     assert.deepEqual(recs.map((r) => r.input), [1, 2]);
     assert.deepEqual(await parseClaudeTranscript(join(home, 'missing.jsonl')), []);
     assert.deepEqual(await parseClaudeTranscript(home), [], 'a directory reads as empty');
+  });
+});
+
+describe('scan progress on the server surface', () => {
+  async function get(base: string, path: string): Promise<Record<string, unknown>> {
+    const res = await fetch(base + path);
+    assert.equal(res.status, 200, path);
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  it('a transcript source reports scan on /api/runs and transcriptScan on /api/stats and /health', async () => {
+    const f = fixture();
+    const src = new TranscriptRunSource(f.state, f.scan, { recentMs: 7 * DAY });
+    const server = await startWebServer({ port: 0, host: '127.0.0.1', stateDir: f.state, runSource: src, listWindow: { pageSize: 50 } });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const deadline = Date.now() + 10_000;
+      while (!src.progress().complete && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+      const done = { complete: true, filesParsed: 4, filesTotal: 4 };
+      assert.deepEqual((await get(base, '/api/runs')).scan, done);
+      assert.deepEqual((await get(base, '/api/stats')).transcriptScan, done);
+      assert.deepEqual((await get(base, '/health')).transcriptScan, done);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('a registry-only source (--state-only) carries none of them', async () => {
+    const f = fixture();
+    const server = await startWebServer({ port: 0, host: '127.0.0.1', stateDir: f.state, runSource: new FsRunSource(f.state), listWindow: { pageSize: 50 } });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      assert.equal('scan' in (await get(base, '/api/runs')), false);
+      assert.equal('transcriptScan' in (await get(base, '/api/stats')), false);
+      assert.equal('transcriptScan' in (await get(base, '/health')), false);
+    } finally {
+      await server.close();
+    }
   });
 });
