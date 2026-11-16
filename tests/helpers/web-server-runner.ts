@@ -3,7 +3,7 @@
 //
 // The server is node:http based (runtime-agnostic), but the tests spawn
 // this file as a bun subprocess so the PTY relay (bun-pty) also works
-// where the scenario needs it. argv: [stateDir, token, listWindowJson?] — an
+// where the scenario needs it. argv: [stateDir, token, listWindowJson?]; an
 // empty token argument means "no token"; the optional third argument is a
 // JSON RunListWindow (#198) for the bounded list views.
 import { startWebServer } from '../../src/web/server.ts';

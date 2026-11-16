@@ -1188,8 +1188,8 @@ function runCost(r) {
       }
       // #198: with a bounded list, older runs may exist outside --recent.
       emptyEl.textContent = listMeta && listMeta.total > 0
-        ? "no runs in the recent window — load older below"
-        : "no runs recorded — start one with ach run …";
+        ? "no runs in the recent window: load older below"
+        : "no runs recorded: start one with ach run …";
     } else if (emptyEl) {
       emptyEl.remove();
     }
