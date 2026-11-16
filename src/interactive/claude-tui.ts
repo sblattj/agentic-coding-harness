@@ -85,6 +85,70 @@ export function claudeTuiArgs(spec: RunSpec, sessionId: string): string[] {
   return args;
 }
 
+/**
+ * Single-consumer event queue between the interactive adapter and the driver
+ * (#197). attach() releases each event once it is yielded, so memory is
+ * bounded by the unconsumed window, not by the transcript length. Events
+ * pushed before attach() (session_start) wait in the queue. Because consumed
+ * events are gone, a second attach() only sees what the first has not taken;
+ * the driver attaches once per run. Exported for tests.
+ */
+export class EventQueue {
+  #items: Array<AgentEvent | undefined> = [];
+  #head = 0;
+  #done = false;
+  readonly #waiters = new Set<() => void>();
+
+  push(e: AgentEvent): void {
+    this.#items.push(e);
+    this.#wake();
+  }
+
+  /** No more events: attach() returns once it has drained the rest. */
+  close(): void {
+    this.#done = true;
+    this.#wake();
+  }
+
+  /** Events still held (pushed, not yet yielded). */
+  get retained(): number {
+    return this.#items.length - this.#head;
+  }
+
+  /** Array slots in use, consumed holes included (tests: proves compaction). */
+  get capacity(): number {
+    return this.#items.length;
+  }
+
+  async *attach(): AsyncGenerator<AgentEvent> {
+    for (;;) {
+      while (this.#head < this.#items.length) {
+        const e = this.#items[this.#head]!;
+        this.#items[this.#head++] = undefined; // free the payload now
+        this.#compact();
+        yield e;
+      }
+      if (this.#done) return;
+      await new Promise<void>((r) => this.#waiters.add(r));
+    }
+  }
+
+  #compact(): void {
+    if (this.#head === this.#items.length) {
+      this.#items = [];
+      this.#head = 0;
+    } else if (this.#head >= 1024 && this.#head * 2 >= this.#items.length) {
+      this.#items = this.#items.slice(this.#head);
+      this.#head = 0;
+    }
+  }
+
+  #wake(): void {
+    for (const w of this.#waiters) w();
+    this.#waiters.clear();
+  }
+}
+
 export class ClaudeInteractiveAdapter implements AgentAdapter {
   readonly name = "claude";
   /** No --max-turns in the TUI: the driver counts model turns from the transcript. */
@@ -133,14 +197,8 @@ export class ClaudeInteractiveAdapter implements AgentAdapter {
     });
 
     // ---- event queue the driver attaches to
-    const events: AgentEvent[] = [];
-    const waiters = new Set<() => void>();
-    let done = false;
-    const push = (e: AgentEvent) => {
-      events.push(e);
-      for (const w of waiters) w();
-      waiters.clear();
-    };
+    const queue = new EventQueue();
+    const push = (e: AgentEvent) => queue.push(e);
     const notice = (warning: string) => push({ type: "step", agent: "claude", sessionId, data: { kind: "stderrNotice", warning, countsAsTurn: false }, timestamp: Date.now() });
 
     push({ type: "session_start", agent: "claude", sessionId, ...(spec.model ? { model: spec.model } : {}), timestamp: Date.now() });
@@ -221,23 +279,14 @@ export class ClaudeInteractiveAdapter implements AgentAdapter {
       } else if (code !== 0) {
         push({ type: "error", agent: "claude", message: `claude TUI exited ${code}`, data: { exitCode: code }, timestamp: Date.now() });
       }
-      done = true;
-      for (const w of waiters) w();
-      waiters.clear();
+      queue.close();
       if (aborted || live.interrupted) return "aborted";
       return code === 0 ? "success" : "error";
     });
 
     return {
       sessionId,
-      async *attach() {
-        let cursor = 0;
-        for (;;) {
-          while (cursor < events.length) yield events[cursor++]!;
-          if (done) return;
-          await new Promise<void>((r) => waiters.add(r));
-        }
-      },
+      attach: () => queue.attach(),
       abort() {
         aborted = true;
         live.interrupt();
