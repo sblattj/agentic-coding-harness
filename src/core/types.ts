@@ -18,6 +18,7 @@
 // legacy optional aliases the emitters read.
 import { z } from "zod";
 import type { AttachmentManifest } from "./attachments.js";
+import type { LatencyMetrics } from "./latency.ts";
 
 // ---------------------------------------------------------------- agents
 
@@ -1235,6 +1236,15 @@ export interface AgentAdapter {
    */
   registryKeepaliveMs?: number;
   /**
+   * Result event tail (#199): when set, RunResult.events keeps only the last
+   * this many events and RunResult.eventSummary carries the whole-run facts
+   * (event count, turns, latency). Tokens, cost and the RunRecord stay exact;
+   * the raw transcript and outputDir events.jsonl still get every event. For
+   * runs with no natural end (the interactive TUI), so memory does not grow
+   * with the transcript. Unset: every event is kept, as before.
+   */
+  resultEventTail?: number;
+  /**
    * Adapter-owned profile/config validation (issue #9): check the
    * agent-specific parts of a spec WITHOUT launching. The driver calls this
    * before launch and fails the run on errors; consumers that want the same
@@ -1321,7 +1331,13 @@ export interface RunResult {
    *  inlined), so exports like `ach emit --format sft` can rebuild the user
    *  turn. Only on the returned result; registry records keep promptSha256. */
   prompt?: string;
+  /** Every event in order; only the trailing ones when eventSummary is set (#199). */
   events: AgentEvent[];
+  /**
+   * #199: set when the adapter capped the kept events (AgentAdapter.resultEventTail).
+   * Whole-run facts readers must take from here instead of recounting `events`.
+   */
+  eventSummary?: RunEventSummary;
   tokens: CanonicalTokenRecord[];
   totalCost: number;
   durationMs: number;
@@ -1340,6 +1356,18 @@ export interface RunResult {
   hermetic?: HermeticRunInfo;
   /** #75: set when the run executed in its own git worktree (--isolate). */
   worktree?: WorktreeRunInfo;
+}
+
+/** #199: whole-run facts for a RunResult whose `events` is a tail. */
+export interface RunEventSummary {
+  /** Events the run produced (adapter events plus budget alerts). */
+  total: number;
+  /** Events kept in RunResult.events (the last ones). */
+  retained: number;
+  /** Turns counted the way budget.maxTurns counts them (countsAsTurn). */
+  turns: number;
+  /** ttft / throughput / tool durations over every event, as deriveLatency would give. */
+  latency: LatencyMetrics;
 }
 
 /** #75: the git worktree an `--isolate` run executed in (src/core/isolate.ts). */
@@ -1395,6 +1423,14 @@ export const RunResultSchema = z.object({
   variant: z.string().min(1).optional(),
   prompt: z.string().optional(),
   events: z.array(z.record(z.string(), z.unknown())),
+  eventSummary: z
+    .object({
+      total: z.number().int().nonnegative(),
+      retained: z.number().int().nonnegative(),
+      turns: z.number().int().nonnegative(),
+      latency: z.record(z.string(), z.unknown()),
+    })
+    .optional(),
   tokens: z.array(CanonicalTokenRecordSchema),
   totalCost: z.number(),
   durationMs: z.number(),

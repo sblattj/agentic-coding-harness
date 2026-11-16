@@ -15,7 +15,7 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 ### Fixed
 
 - RunRecord heartbeats: an event that landed inside the 500ms write throttle was not written until the next event or the end of the run, so a run that went quiet right after a usage event showed stale totals (often 0) while running. A trailing write now lands it.
-- Interactive runs (`--interactive`): the adapter kept every event in its queue for the whole run, so the queue grew with the transcript. Events are now released once the driver has consumed them, so the queue holds only the unconsumed window. Token totals are unchanged. The driver's own `RunResult.events` still keeps every event (#199). Fixes #197.
+- Interactive runs (`--interactive`): memory no longer grows with the transcript. The adapter's queue releases each event once the driver has consumed it, and the driver keeps only the last 2000 events in `RunResult.events` (so in `--json` output and `result.json`), with a new `eventSummary` (event count, turns, latency) covering the whole run. Tokens, cost, the RunRecord, `maxTurns` fractions, latency and the `unavailable` verdict still count every event, and the raw transcript and `events.jsonl` still have all of them. Headless runs keep every event as before; the headless Claude adapter also stops holding a second copy. Fixes #197, #199.
 
 ## [0.28.3] - 2026-11-10
 

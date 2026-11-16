@@ -1,4 +1,4 @@
-import type { AgentEvent, EventTimestamp } from "./types.ts";
+import type { AgentEvent, EventTimestamp, RunResult } from "./types.ts";
 
 /**
  * Latency metrics (#32) derived from a run's AgentEvent[] timestamps. Pure, no
@@ -115,7 +115,12 @@ function isOutputEvent(ev: AgentEvent): boolean {
   return src === "agent" || src === "assistant";
 }
 
-export function deriveLatency(events: AgentEvent[]): LatencyMetrics {
+/**
+ * Incremental form of deriveLatency (#199): observe events as they arrive and
+ * read the metrics at the end, without keeping the events. State held is the
+ * open calls plus one small record per tool call and one number per model call.
+ */
+export function createLatencyAccumulator(): { observe(ev: AgentEvent): void; result(): LatencyMetrics } {
   const openModels: OpenModelCall[] = [];
   const ttfts: number[] = [];
   const e2es: number[] = [];
@@ -128,7 +133,7 @@ export function deriveLatency(events: AgentEvent[]): LatencyMetrics {
     return -1;
   };
 
-  for (const ev of events) {
+  const observe = (ev: AgentEvent): void => {
     const ms = toEventMs(ev.timestamp);
     switch (ev.type) {
       case "model_call_start":
@@ -208,31 +213,45 @@ export function deriveLatency(events: AgentEvent[]): LatencyMetrics {
         inner.firstOutputMs = ms;
       }
     }
-  }
-
-  const byTool = new Map<string, { values: number[]; errors: number }>();
-  for (const t of tools) {
-    if (!t.closed || t.startMs === null || t.endMs === null || t.endMs < t.startMs) continue;
-    const row = byTool.get(t.name) ?? { values: [], errors: 0 };
-    row.values.push(t.endMs - t.startMs);
-    if (t.isError) row.errors++;
-    byTool.set(t.name, row);
-  }
-  const toolRows: ToolLatencyRow[] = [];
-  for (const [name, { values, errors }] of byTool) {
-    const stats = durationStats(values);
-    if (stats !== null) toolRows.push({ name, ...stats, errors });
-  }
-  toolRows.sort((a, b) => b.totalMs - a.totalMs || a.name.localeCompare(b.name));
-
-  const haveGen = genTokens > 0 && genMs > 0;
-  return {
-    ttft: durationStats(ttfts),
-    modelCalls: durationStats(e2es),
-    outputTokensPerSec: haveGen ? genTokens / (genMs / 1000) : null,
-    tpotMs: haveGen ? genMs / genTokens : null,
-    tools: toolRows,
   };
+
+  const result = (): LatencyMetrics => {
+    const byTool = new Map<string, { values: number[]; errors: number }>();
+    for (const t of tools) {
+      if (!t.closed || t.startMs === null || t.endMs === null || t.endMs < t.startMs) continue;
+      const row = byTool.get(t.name) ?? { values: [], errors: 0 };
+      row.values.push(t.endMs - t.startMs);
+      if (t.isError) row.errors++;
+      byTool.set(t.name, row);
+    }
+    const toolRows: ToolLatencyRow[] = [];
+    for (const [name, { values, errors }] of byTool) {
+      const stats = durationStats(values);
+      if (stats !== null) toolRows.push({ name, ...stats, errors });
+    }
+    toolRows.sort((a, b) => b.totalMs - a.totalMs || a.name.localeCompare(b.name));
+
+    const haveGen = genTokens > 0 && genMs > 0;
+    return {
+      ttft: durationStats(ttfts),
+      modelCalls: durationStats(e2es),
+      outputTokensPerSec: haveGen ? genTokens / (genMs / 1000) : null,
+      tpotMs: haveGen ? genMs / genTokens : null,
+      tools: toolRows,
+    };
+  };
+  return { observe, result };
+}
+
+export function deriveLatency(events: readonly AgentEvent[]): LatencyMetrics {
+  const acc = createLatencyAccumulator();
+  for (const ev of events) acc.observe(ev);
+  return acc.result();
+}
+
+/** A settled run's latency: the driver's whole-run figure when `events` is only a tail (#199). */
+export function runLatency(result: Pick<RunResult, "events" | "eventSummary">): LatencyMetrics {
+  return result.eventSummary?.latency ?? deriveLatency(result.events);
 }
 
 /** True when the metrics hold at least one measured value. */

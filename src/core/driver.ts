@@ -11,7 +11,7 @@ import { ChainWriter, canonicalTotals } from './hash-chain.ts';
 import { computeUsageAvailability, liveUsageAvailability } from './usage-availability.js';
 import { codexSessionsRoot, readCodexNativeUsage, requestedCodexEffort } from './codex-native.ts';
 import { createContextMeter } from './context-meter.js';
-import { classifyLaunchError, classifyUnavailable } from './availability.ts';
+import { classifyLaunchError, createAvailabilityTracker } from './availability.ts';
 import { gitBranchInfo } from './git-branch.ts';
 import { prContextFor, resolvePr } from './git-pr.ts';
 import { runTotalsProvenance } from './provenance.ts';
@@ -34,7 +34,8 @@ import { NullAdapter } from '../adapters/null.js';
 import { scrubEnvVars, takeOnOutput } from '../adapters/shared.js';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
 import type { BudgetAlertEvent } from './types.js';
-import { deriveLatency, hasLatency } from './latency.ts';
+import { createLatencyAccumulator, hasLatency } from './latency.ts';
+import { EventTail } from './event-retention.ts';
 import { findAncestorInstructions } from './ancestor-instructions.ts';
 
 /** Alert cooldown from AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H; a bad value warns and keeps the 24h default (#20). */
@@ -118,6 +119,11 @@ export function countsAsTurn(agent: string, event: AgentEvent): boolean {
   const payload = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : undefined;
   if (agent === 'kiro') return payload?.kind === 'runFinished';
   return payload?.countsAsTurn !== false;
+}
+
+/** A settled run's turn count: the driver's whole-run count when `events` is only a tail (#199). */
+export function runTurns(result: Pick<RunResult, 'events' | 'eventSummary'>, agent: string): number {
+  return result.eventSummary?.turns ?? result.events.filter((e) => e.type === 'step' && countsAsTurn(agent, e)).length;
 }
 
 // RunSpec validation lives in src/core/validate.ts (RunSpecSchema in
@@ -433,7 +439,17 @@ export function createDriver(options: DriverOptions): Driver {
           transcript.write(`${chain.frame(JSON.stringify(event))}\n`);
         };
 
-        const events: AgentEvent[] = [];
+        // #199: RunResult.events, capped to a tail when the adapter asks
+        // (interactive runs). Latency and the unavailable verdict are folded
+        // in as events arrive, so they cover the whole run either way.
+        const events = new EventTail(adapter.resultEventTail);
+        const latencyAcc = createLatencyAccumulator();
+        const availability = createAvailabilityTracker();
+        const recordEvent = (event: AgentEvent): void => {
+          events.push(event);
+          latencyAcc.observe(event);
+          availability.observe(event);
+        };
         const tokens: CanonicalTokenRecord[] = [];
         const pricer = options.pricer ?? createPricer();
         warnings.push(...pricer.drainWarnings());
@@ -727,7 +743,7 @@ export function createDriver(options: DriverOptions): Driver {
             limit: a.limit,
             data: describeAlert(a),
           };
-          events.push(alertEvent);
+          recordEvent(alertEvent);
           writeTranscript(alertEvent);
           artifacts?.event(alertEvent);
           onEvent?.(alertEvent);
@@ -741,7 +757,7 @@ export function createDriver(options: DriverOptions): Driver {
         try {
           for await (const event of handle.attach()) {
             armIdleTimer(); // every AgentEvent defers the idle deadline
-            events.push(event);
+            recordEvent(event);
             writeTranscript(event);
             artifacts?.event(event);
             onEvent?.(event);
@@ -1084,14 +1100,14 @@ export function createDriver(options: DriverOptions): Driver {
         // Driver enforcement verdicts override whatever the adapter reported.
         // An adapter `error` with an outage signature is reclassified
         // `unavailable` (#60, src/core/availability.ts).
-        const unavailableReason = enforcedStatus === null ? classifyUnavailable({ adapterExit, events }) : null;
+        const unavailableReason = enforcedStatus === null ? availability.classify(adapterExit) : null;
         if (unavailableReason !== null) warnings.push(`unavailable: ${unavailableReason}`);
         const exitStatus: ExitStatus = enforcedStatus ?? (unavailableReason !== null ? 'unavailable' : adapterExit);
         // Latency (#32) once, at finalize: deriving per throttled write would be
         // O(events) on every event, and the live trio view re-derives it from
         // the transcript on each /observability fetch anyway.
         if (rec) {
-          const latency = deriveLatency(events);
+          const latency = latencyAcc.result();
           if (hasLatency(latency)) rec.latency = latency;
         }
         finalizeRunRecord(exitStatus);
@@ -1101,7 +1117,8 @@ export function createDriver(options: DriverOptions): Driver {
         const result: RunResult = {
           runId,
           sessionId: handle.sessionId,
-          events,
+          events: events.toArray(),
+          ...(events.cap !== undefined ? { eventSummary: { total: events.total, retained: events.retained, turns: steps, latency: latencyAcc.result() } } : {}),
           tokens,
           totalCost: cumulativeCost,
           durationMs: Date.now() - start,

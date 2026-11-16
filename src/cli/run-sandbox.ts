@@ -7,7 +7,7 @@
 // translates to CLI flags itself.
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { countsAsTurn } from "../core/driver.ts";
+import { runTurns } from "../core/driver.ts";
 import { HarnessError, type RunResult, type SandboxPolicy, SandboxPolicySchema } from "../core/types.ts";
 import { describeSandbox } from "../core/sandbox-policy.ts";
 import { VERSION } from "../version.ts";
@@ -167,7 +167,7 @@ export function buildRunMetrics(input: {
     runId: result.runId,
     exitStatus: result.exitStatus,
     wallSeconds: Math.round(result.durationMs) / 1000,
-    turns: result.events.filter((e) => e.type === "step" && countsAsTurn(input.agent, e)).length,
+    turns: runTurns(result, input.agent),
     cost: { usd: u !== undefined && !u.usd.available ? null : result.totalCost, provenance },
     tokens: u !== undefined && !u.tokens.available ? null : tokens,
     credits:

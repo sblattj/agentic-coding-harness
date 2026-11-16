@@ -86,7 +86,7 @@ import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer, pricingMeta, pricingStaleNotice } from "../core/pricing.ts";
 import { OfflineViolation, installOfflineGuard } from "../core/offline.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, orderedExtraArgs, resolveDirFlag, wantsHelp } from "./lib.ts";
-import { deriveLatency } from "../web/derive.ts";
+import { runLatency } from "../core/latency.ts";
 import {
   aggregateDims,
   baseCacheRatios,
@@ -1075,7 +1075,7 @@ function runSummaryText(agent: string, result: RunResult, modelFlag: string | un
   }
   if (agent === "kiro" && kiroSession !== undefined) summary += `\nkiroSession ${kiroSession}`;
   // #32: ttft / throughput / per-tool durations, only the ones measured.
-  for (const l of formatLatencyLines(deriveLatency(result.events))) summary += `\n${l}`;
+  for (const l of formatLatencyLines(runLatency(result))) summary += `\n${l}`;
   // #106: ancestor instruction files that reached the run, or the hermetic copy.
   if (result.ancestorInstructions !== undefined && result.ancestorInstructions.length > 0) {
     summary += `\nancestors  ${result.ancestorInstructions.length} instruction file${result.ancestorInstructions.length === 1 ? "" : "s"} from ancestor dirs: ${result.ancestorInstructions.join(", ")}`;

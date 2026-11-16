@@ -17,7 +17,16 @@ import { startLiveServer, type LiveServerHandle } from "./live-socket.ts";
 import { liveSocketPath, removeLiveInfo, writeLiveInfo, type LiveRunInfo } from "./live-registry.ts";
 import { StepController } from "./steps.ts";
 import { TranscriptTail, claudeProjectsRoot } from "./transcript-tail.ts";
+import { EventQueue } from "../core/event-retention.ts";
 import { CHORD_HELP, bridgeTerminal, type TerminalBridge } from "./terminal-bridge.ts";
+
+export { EventQueue };
+
+/**
+ * RunResult.events keeps only this many trailing events for an interactive
+ * run (#199); whole-run facts ride RunResult.eventSummary.
+ */
+export const INTERACTIVE_RESULT_EVENT_TAIL = 2000;
 
 /** Env vars that make a nested Claude Code think it is a child session (no transcript saved). */
 const NESTED_SESSION_VARS = ["CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT"];
@@ -85,75 +94,12 @@ export function claudeTuiArgs(spec: RunSpec, sessionId: string): string[] {
   return args;
 }
 
-/**
- * Single-consumer event queue between the interactive adapter and the driver
- * (#197). attach() releases each event once it is yielded, so memory is
- * bounded by the unconsumed window, not by the transcript length. Events
- * pushed before attach() (session_start) wait in the queue. Because consumed
- * events are gone, a second attach() only sees what the first has not taken;
- * the driver attaches once per run. Exported for tests.
- */
-export class EventQueue {
-  #items: Array<AgentEvent | undefined> = [];
-  #head = 0;
-  #done = false;
-  readonly #waiters = new Set<() => void>();
-
-  push(e: AgentEvent): void {
-    this.#items.push(e);
-    this.#wake();
-  }
-
-  /** No more events: attach() returns once it has drained the rest. */
-  close(): void {
-    this.#done = true;
-    this.#wake();
-  }
-
-  /** Events still held (pushed, not yet yielded). */
-  get retained(): number {
-    return this.#items.length - this.#head;
-  }
-
-  /** Array slots in use, consumed holes included (tests: proves compaction). */
-  get capacity(): number {
-    return this.#items.length;
-  }
-
-  async *attach(): AsyncGenerator<AgentEvent> {
-    for (;;) {
-      while (this.#head < this.#items.length) {
-        const e = this.#items[this.#head]!;
-        this.#items[this.#head++] = undefined; // free the payload now
-        this.#compact();
-        yield e;
-      }
-      if (this.#done) return;
-      await new Promise<void>((r) => this.#waiters.add(r));
-    }
-  }
-
-  #compact(): void {
-    if (this.#head === this.#items.length) {
-      this.#items = [];
-      this.#head = 0;
-    } else if (this.#head >= 1024 && this.#head * 2 >= this.#items.length) {
-      this.#items = this.#items.slice(this.#head);
-      this.#head = 0;
-    }
-  }
-
-  #wake(): void {
-    for (const w of this.#waiters) w();
-    this.#waiters.clear();
-  }
-}
-
 export class ClaudeInteractiveAdapter implements AgentAdapter {
   readonly name = "claude";
   /** No --max-turns in the TUI: the driver counts model turns from the transcript. */
   readonly enforcesBudget = false;
   readonly registryKeepaliveMs = 5_000;
+  readonly resultEventTail = INTERACTIVE_RESULT_EVENT_TAIL;
   readonly #opts: ClaudeInteractiveOptions;
 
   constructor(opts: ClaudeInteractiveOptions) {

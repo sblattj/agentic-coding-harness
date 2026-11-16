@@ -19,7 +19,7 @@
 // usage says USD is unavailable (kiro: credits only) never reads "near the
 // USD budget" — that would be an estimate, not a measurement.
 
-import { countsAsTurn } from "../core/driver.ts";
+import { runTurns } from "../core/driver.ts";
 import { HarnessError, type RunResult } from "../core/types.ts";
 import type { TrialOutcome } from "./trials.ts";
 
@@ -71,7 +71,7 @@ export function budgetFractions(result: RunResult, opts: { budget?: LadderBudget
   }
   if (b.maxTurns !== undefined && b.maxTurns > 0) {
     const agent = opts.agent ?? result.agent ?? "";
-    const turns = result.events.filter((e) => e.type === "step" && countsAsTurn(agent, e)).length;
+    const turns = runTurns(result, agent);
     out.push({ dimension: "maxTurns", used: turns, limit: b.maxTurns, fraction: turns / b.maxTurns });
   }
   if (b.wallMs !== undefined && b.wallMs > 0) {

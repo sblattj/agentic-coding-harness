@@ -81,23 +81,46 @@ export interface AvailabilityInput {
  * and timeouts keep their meaning.
  */
 export function classifyUnavailable(input: AvailabilityInput): string | null {
-  if (input.adapterExit !== 'error') return null;
-  // A caller error (e.g. a --model the agent does not offer) is not an outage: keep `error`.
-  if (input.events.some((e) => e.type === 'error' && errorEventBody(e)?.kind === 'invalid_request')) return null;
-  const spawnFailure = input.events.find(isSpawnFailureEvent);
-  if (spawnFailure !== undefined) {
-    return `agent CLI could not be started (${eventText(spawnFailure)})`;
-  }
-  const authFailure = input.events.find(isAuthFailureEvent);
-  if (authFailure !== undefined) {
-    const bodyMessage = errorEventBody(authFailure)?.message;
-    return eventText(authFailure) || (typeof bodyMessage === 'string' && bodyMessage) || 'agent CLI is not logged in';
-  }
-  const active = input.events.some((e) => ACTIVITY_TYPES.has(e.type));
-  if (!active) {
-    return 'agent CLI exited with an error before its first event (missing auth, service outage, or a startup failure)';
-  }
-  return null;
+  const tracker = createAvailabilityTracker();
+  for (const e of input.events) tracker.observe(e);
+  return tracker.classify(input.adapterExit);
+}
+
+/**
+ * Incremental form of classifyUnavailable (#199): keeps only the facts the
+ * rules read (the first spawn and auth failures, whether a caller error or
+ * any activity was seen), so the driver can classify a run whose events it
+ * did not keep.
+ */
+export function createAvailabilityTracker(): { observe(e: AgentEvent): void; classify(adapterExit: AdapterExit): string | null } {
+  let invalidRequest = false;
+  let spawnFailure: AgentEvent | undefined;
+  let authFailure: AgentEvent | undefined;
+  let active = false;
+  return {
+    observe(e) {
+      if (e.type === 'error' && errorEventBody(e)?.kind === 'invalid_request') invalidRequest = true;
+      if (spawnFailure === undefined && isSpawnFailureEvent(e)) spawnFailure = e;
+      if (authFailure === undefined && isAuthFailureEvent(e)) authFailure = e;
+      if (ACTIVITY_TYPES.has(e.type)) active = true;
+    },
+    classify(adapterExit) {
+      if (adapterExit !== 'error') return null;
+      // A caller error (e.g. a --model the agent does not offer) is not an outage: keep `error`.
+      if (invalidRequest) return null;
+      if (spawnFailure !== undefined) {
+        return `agent CLI could not be started (${eventText(spawnFailure)})`;
+      }
+      if (authFailure !== undefined) {
+        const bodyMessage = errorEventBody(authFailure)?.message;
+        return eventText(authFailure) || (typeof bodyMessage === 'string' && bodyMessage) || 'agent CLI is not logged in';
+      }
+      if (!active) {
+        return 'agent CLI exited with an error before its first event (missing auth, service outage, or a startup failure)';
+      }
+      return null;
+    },
+  };
 }
 
 /**
