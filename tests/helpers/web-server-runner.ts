@@ -3,16 +3,19 @@
 //
 // The server is node:http based (runtime-agnostic), but the tests spawn
 // this file as a bun subprocess so the PTY relay (bun-pty) also works
-// where the scenario needs it. argv: [stateDir, token] — an empty token
-// argument means "no token".
+// where the scenario needs it. argv: [stateDir, token, listWindowJson?] — an
+// empty token argument means "no token"; the optional third argument is a
+// JSON RunListWindow (#198) for the bounded list views.
 import { startWebServer } from '../../src/web/server.ts';
+import type { RunListWindow } from '../../src/web/run-window.ts';
 
-const [stateDir = '', token = ''] = process.argv.slice(2);
+const [stateDir = '', token = '', listWindow = ''] = process.argv.slice(2);
 const handle = await startWebServer({
   port: 0, // ephemeral: the real port is reported on the READY line
   host: '127.0.0.1',
   token: token === '' ? undefined : token,
   stateDir,
+  ...(listWindow === '' ? {} : { listWindow: JSON.parse(listWindow) as RunListWindow }),
 });
 process.stdout.write(`READY ${handle.port}\n`);
 

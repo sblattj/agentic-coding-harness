@@ -280,6 +280,17 @@ expands the tile to a full xterm.js browser terminal you can type into. On any o
 button reads **TERM** and spawns a NEW, separate agent session in a PTY, labelled as such: what
 you type there is not part of the run and is not metered on it.
 
+**Bounded run list.** `ach web` reads the run registry plus this machine's agent transcripts
+(Claude Code, Codex, Gemini and the rest, as `ach stats` does), which can be tens of thousands of
+sessions. So every list view (`/api/runs`, the `/ws?runs=1` snapshot and each push) carries one
+page: the newest `--page-size` runs (default 200) started within `--recent` (default `7d`; a
+`<N>m|h|d|w` duration or `all`). Running runs are always included. Under the grid, **load older**
+fetches the next page, newest first, until every run is shown, and a tile opens its event feed
+only when it scrolls into view (and drops it again off-screen once the run is done). Set the
+defaults in the config file as `web.recent` / `web.pageSize`. `--state-only` skips the transcript
+scan and shows only registry runs (`ach run`); `/api/stats` and `/api/compare` still roll up every
+run.
+
 ![Web dashboard terminal grid showing live agent run tiles with token and cost readouts and interactive terminal panes](docs/assets/web-grid.png)
 
 **Observability trio** — traces, metrics, and logs for a single run, with a live terminal
@@ -1041,8 +1052,15 @@ const { result } = await runToDirectory({
   tokens and cost. A run's model is the observed model (`+`-joined if several), else the requested
   one, else `unknown`. Computed on request from the in-memory run snapshot.
 - **`GET /api/runs`**: the run list. Unauthenticated like the rest of the JSON API (the token only
-  gates `/ws` and `/api/queues`). With no query it returns `{"records": [<RunRecord>...]}`, the
-  whole in-memory snapshot, unchanged.
+  gates `/ws` and `/api/queues`). With no query, `ach web` returns page one of the bounded list
+  (see [Bounded run list](#live-dashboards-terminal-ach-dash-and-web-ach-web)):
+  `{"records", "total", "nextOffset", "window": {"recentMs", "pageSize"}}`, with `total` also in
+  the `x-total-count` header. List records are slim: `verify.outputTail` (also on `regrades`),
+  `seal` and `corrections` are left out. A server started through `startWebServer` without a
+  `listWindow` keeps the historical `{"records": [<RunRecord>...]}` full snapshot.
+- **`GET /api/runs/<runId>`**: one full RunRecord, `{"record": ...}`, from the same snapshot
+  (registry, transcript and external rows alike); `404` for an unknown id. The trio view reads its
+  record here.
 
   **Run list filters.** Any of these query params switches the response to the paged shape
   `{"records", "total", "offset", "limit"}` (`total` = matches before paging, also sent as the
@@ -1058,6 +1076,7 @@ const { result } = await runToDirectory({
   | `q` | case-insensitive substring of the prompt preview or the resolved command line |
   | `qin` | `prompt` (default) or `events` (below) |
   | `limit` / `offset` | page size (1 to 1000) and start index; `offset` defaults to 0 |
+  | `order` | `newest`: sort by `startedAt` descending (run id breaks ties) before paging, so `order=newest&offset=<nextOffset>&limit=<pageSize>` continues after page one |
 
   `q=...&qin=events` also searches stored event text (any string field of a transcript line).
   It is bounded: only the newest 200 runs that pass the other filters and miss on the prompt/command

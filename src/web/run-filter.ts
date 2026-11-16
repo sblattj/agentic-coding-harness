@@ -3,6 +3,7 @@
 // Everything here is side-effect free except `scanEventsFor`, which reads
 // transcripts through an injected, byte-capped reader.
 import { effectiveStatus, type RunRecord } from "../core/registry.ts";
+import { newestFirst } from "./run-window.ts";
 
 /** Query params that, when ANY is present, switch /api/runs to the filtered shape. */
 export const RUN_FILTER_PARAMS = [
@@ -16,6 +17,7 @@ export const RUN_FILTER_PARAMS = [
   "qin",
   "limit",
   "offset",
+  "order",
 ] as const;
 
 /** Bounds for `qin=events` (documented in README, "Run list filters"). */
@@ -36,6 +38,8 @@ export interface RunFilter {
   qinEvents: boolean;
   limit?: number;
   offset: number;
+  /** "newest" (#198): sort by startedAt descending (runId tie-break) before paging. */
+  order?: "newest";
 }
 
 export type ParsedRunFilter = { ok: true; filter: RunFilter; active: boolean } | { ok: false; error: string };
@@ -111,6 +115,11 @@ export function parseRunFilter(params: URLSearchParams): ParsedRunFilter {
       return { ok: false, error: "offset must be a non-negative integer" };
     }
     f.offset = n;
+  }
+  const order = params.get("order");
+  if (order !== null) {
+    if (order !== "newest") return { ok: false, error: "order must be: newest" };
+    f.order = "newest";
   }
   return { ok: true, filter: f, active };
 }
@@ -216,6 +225,7 @@ export async function applyRunFilter(
       maxBytesPerRun: EVENT_SCAN_MAX_BYTES,
     };
   }
+  if (f.order === "newest") matched = newestFirst(matched);
   const page = f.limit === undefined ? matched.slice(f.offset) : matched.slice(f.offset, f.offset + f.limit);
   const out: RunPage = { records: page, total: matched.length, offset: f.offset, limit: f.limit ?? null };
   if (scan !== undefined) out.scan = scan;

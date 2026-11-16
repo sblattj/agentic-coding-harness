@@ -40,13 +40,21 @@ export interface RunEventMessage {
 export interface RunsMessage {
   type: "runs";
   records: RunRecord[];
+  /** Set when the server bounds its list views (#198): see run-window.ts. */
+  total?: number;
+  nextOffset?: number;
+  window?: { recentMs: number | null; pageSize: number };
 }
+
+/** Maps the full snapshot to the published runs body; identity by default. */
+export type RunsView = (records: RunRecord[]) => Omit<RunsMessage, "type">;
 
 export type HubMessage = RunEventMessage | RunsMessage;
 
 export class RunEventHub {
   private publisher: WsPublisher | null = null;
   private watching = false;
+  private runsView: RunsView = (records) => ({ records });
 
   constructor(
     private readonly stateDir: string,
@@ -63,10 +71,19 @@ export class RunEventHub {
     this.publisher.publish(RUN_TOPIC_PREFIX + runId, JSON.stringify(msg));
   }
 
+  /** #198: bound what each runs push carries (the server's list window). */
+  setRunsView(view: RunsView): void {
+    this.runsView = view;
+  }
+
+  /** The runs message a socket gets on open and on every change. */
+  runsMessage(records: RunRecord[] = this.snapshotRuns()): RunsMessage {
+    return { type: "runs", ...this.runsView(records) };
+  }
+
   publishRuns(records: RunRecord[]): void {
     if (!this.publisher) return;
-    const msg: RunsMessage = { type: "runs", records };
-    this.publisher.publish(RUNS_TOPIC, JSON.stringify(msg));
+    this.publisher.publish(RUNS_TOPIC, JSON.stringify(this.runsMessage(records)));
   }
 
   snapshotRuns(): RunRecord[] {

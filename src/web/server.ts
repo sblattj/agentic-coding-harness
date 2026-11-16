@@ -19,6 +19,7 @@ import { WebSocketServer, type RawData, type WebSocket as WsSocket } from "ws";
 import type { AgentEvent } from "../core/types.ts";
 import { readRunRecord, resolveRawTranscript, type RunRecord } from "../core/registry.ts";
 import { applyRunFilter, EVENT_SCAN_MAX_BYTES, parseRunFilter } from "./run-filter.ts";
+import { slimRunRecord, windowRuns, type RunListWindow } from "./run-window.ts";
 import { RunEventHub, RUN_TOPIC_PREFIX, RUNS_TOPIC, type WsPublisher } from "./hub.ts";
 import { computeGlobalStats, STATS_WINDOWS, windowSinceMs, type StatsWindow } from "./stats.ts";
 import { COMPARE_GROUP_ALIASES, COMPARE_GROUP_KEYS, computeCompareRows, isCompareGroupKey, resolveCompareGroupBy } from "./compare.ts";
@@ -45,6 +46,9 @@ export interface WebServerOptions {
   runSource?: RunSource;
   /** Public URL of the external source, surfaced by GET /health. */
   sourceUrl?: string;
+  /** #198: bound every run-list view to the newest page (see run-window.ts).
+   *  Unset = the historical full snapshot. `ach web` always sets it. */
+  listWindow?: RunListWindow;
 }
 
 export interface WebServerHandle {
@@ -102,6 +106,7 @@ const NOT_LIVE_AFTER_MS = 60_000;
 const TAIL_INTERVAL_MS = 500;
 const HEARTBEAT_MS = 30_000;
 const RUN_ACTION_ROUTE = /^\/api\/runs\/([^/]+)\/([^/]+)$/;
+const RUN_ROUTE = /^\/api\/runs\/([^/]+)$/;
 const PTY_KILL_ROUTE = /^\/api\/pty\/([^/]+)\/kill$/;
 const PTY_WS_ROUTE = /^\/ws\/pty\/([^/]+)$/;
 const LIVE_ROUTE = /^\/api\/live\/([^/]+)(?:\/(continue))?$/;
@@ -236,6 +241,8 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
   // injected through the class constructor; passing undefined selects the
   // historical FsRunSource default (behavior identical to pre-0.8.0).
   const hub = new RunEventHub(opts.stateDir, opts.runSource);
+  const listWindow = opts.listWindow;
+  if (listWindow !== undefined) hub.setRunsView((records) => windowRuns(records, listWindow));
 
   /** True when the current source reports this run as external — no local
    *  process exists to attach a PTY to. Checked against the source snapshot
@@ -467,7 +474,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
     }
     if (ms.data.mode === "runs") {
       subscribe(ms, RUNS_TOPIC);
-      safeSend(ms.ws, JSON.stringify({ type: "runs", records: hub.snapshotRuns() }));
+      safeSend(ms.ws, JSON.stringify(hub.runsMessage()));
       return;
     }
     subscribe(ms, RUN_TOPIC_PREFIX + ms.data.runId);
@@ -633,12 +640,35 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           // #68: no filter params => the historical `{records}` snapshot, byte for byte.
           const parsed = parseRunFilter(url.searchParams);
           if (!parsed.ok) return jsonError(res, 400, parsed.error);
-          if (!parsed.active) return sendJson(res, 200, { records: hub.snapshotRuns() });
+          if (!parsed.active) {
+            if (listWindow === undefined) return sendJson(res, 200, { records: hub.snapshotRuns() });
+            // #198: page one of the window; older pages via ?order=newest&offset=.
+            const win = windowRuns(hub.snapshotRuns(), listWindow);
+            res.setHeader("x-total-count", String(win.total));
+            return sendJson(res, 200, win);
+          }
           const page = await applyRunFilter(hub.snapshotRuns(), parsed.filter, {
             readEvents: async (r) => readTranscriptHead(opts.stateDir, r),
           });
+          if (listWindow !== undefined) page.records = page.records.map(slimRunRecord);
           res.setHeader("x-total-count", String(page.total));
           return sendJson(res, 200, page);
+        }
+
+        // #198: one full record by id (list views carry slim records and only
+        // a window of them), from the source snapshot so transcript and
+        // external rows resolve too.
+        const runRoute = RUN_ROUTE.exec(pathname);
+        if (get && runRoute !== null) {
+          let runId: string;
+          try {
+            runId = decodeURIComponent(runRoute[1] as string);
+          } catch {
+            return jsonError(res, 400, "bad run id");
+          }
+          const found = hub.snapshotRuns().find((r) => r.runId === runId);
+          if (found === undefined) return notFound(res);
+          return sendJson(res, 200, { record: found });
         }
 
         // Compare rollup (spec §6.1). Sits under the same access rule as

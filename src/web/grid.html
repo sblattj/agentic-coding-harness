@@ -144,7 +144,29 @@ main { flex: 1; display: block; }
   box-shadow: inset 0 0 40px rgba(0, 0, 0, .35);
   transition: border-color .15s;
 }
+/* #198: off-screen tiles skip layout and paint (rows are a fixed 340px) */
+.tile:not(.expanded) { content-visibility: auto; contain-intrinsic-size: auto 340px; }
 .tile:hover { border-color: var(--edge2); }
+#older {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 4px 10px 16px;
+  color: var(--faint);
+  font-size: 12px;
+}
+#older[hidden] { display: none; }
+#older-btn {
+  font: inherit;
+  color: var(--green);
+  background: var(--panel);
+  border: 1px solid var(--edge2);
+  border-radius: 4px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+#older-btn:disabled { opacity: .5; cursor: progress; }
 .tile.selected { border-color: var(--green2); box-shadow: 0 0 0 1px var(--green2), inset 0 0 40px rgba(0, 0, 0, .35); }
 .tile:focus-visible, .trio:focus-visible { outline: 1px dashed var(--green); outline-offset: 2px; }
 
@@ -393,6 +415,7 @@ main { flex: 1; display: block; }
 
   <main>
     <div id="grid" role="group" aria-label="Agent terminal panes"></div>
+    <div id="older" hidden><span id="older-note"></span><button id="older-btn" type="button">load older</button></div>
   </main>
 
   <footer id="ftr">
@@ -734,6 +757,39 @@ function runCost(r) {
 
   // ------- per-run structured feed -------
 
+  // #198: tile element -> state, for the visibility observer.
+  var tileState = new WeakMap();
+  var visObserver = ("IntersectionObserver" in window)
+    ? new IntersectionObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          var st = tileState.get(entries[i].target);
+          if (!st) continue;
+          st.visible = entries[i].isIntersecting;
+          if (st.visible) attachFeed(st); else detachFeed(st);
+        }
+      }, { root: null, rootMargin: "400px 0px" })
+    : null;
+
+  function attachFeed(st) {
+    if (!st.feed) {
+      if (!window.HarnessFeed) {
+        st.dom.body.textContent = "feed unavailable (/feed.js failed to load)";
+        return;
+      }
+      st.feed = window.HarnessFeed.create(st.dom.body, { compact: true, maxItems: 2000 });
+    }
+    openRunFeed(st);
+  }
+
+  // Off-screen and done: drop the socket and the rendered backlog; scrolling
+  // back replays it. Live runs and tiles with a terminal attached stay.
+  function detachFeed(st) {
+    if (st.live || st.pane || st.liveHost || st.ptyId || st.liveBusy) return;
+    if (st.conn) { try { st.conn.close(); } catch (e) { /* noop */ } st.conn = null; }
+    if (st.feed) { try { st.feed.destroy(); } catch (e) { /* noop */ } st.feed = null; }
+    st.ended = false;
+  }
+
   // Every tile — live or finished — gets the shared HarnessFeed. A finished run
   // receives its backlog followed by `end`, so the tile shows the whole run.
   function openRunFeed(st) {
@@ -1034,8 +1090,27 @@ function runCost(r) {
     elCost.textContent = (priced ? "$" + cost.toFixed(2) : "n/a") + (unpriced ? " + " + unpriced + " unpriced" : "");
   }
 
-  function handleRecords(records) {
+  // Which tiles a run-list message removes (pure; tested in
+  // tests/web-bounded-list.test.ts).
+  function tilesToPrune(states, seen, prune, boundary) {
+    var gone = [];
+    if (prune === "all") {
+      states.forEach(function (st, id) { if (!seen.has(id)) gone.push(id); });
+    } else if (prune === "window" && boundary != null) {
+      states.forEach(function (st, id) {
+        if (!seen.has(id) && !st.older && st.rec.startedAt >= boundary) gone.push(id);
+      });
+    }
+    return gone;
+  }
+
+  // o.prune: "all" drops every tile missing from `records` (a full snapshot);
+  // "window" only drops tiles inside the pushed window's age range that are
+  // gone (deleted runs), keeping older pages; "none" never drops (an older page).
+  function handleRecords(records, o) {
     if (!Array.isArray(records)) return;
+    o = o || {};
+    var prune = o.prune || "all";
     var seen = new Set();
     for (var i = 0; i < records.length; i++) {
       var rec = records[i];
@@ -1066,14 +1141,14 @@ function runCost(r) {
             if (ev.key === "Enter" || ev.key === " ") ev.stopPropagation();
           });
         })(st);
+        if (o.older) st.older = true;
         runs.set(rec.runId, st);
+        tileState.set(dom.tile, st);
         grid.appendChild(dom.tile);
-        if (window.HarnessFeed) {
-          st.feed = window.HarnessFeed.create(dom.body, { compact: true, maxItems: 2000 });
-        } else {
-          dom.body.textContent = "feed unavailable (/feed.js failed to load)";
-        }
-        openRunFeed(st);
+        // #198: the feed (a socket plus its backlog) opens when the tile
+        // scrolls near the viewport, not for every tile at once.
+        if (visObserver) visObserver.observe(dom.tile);
+        else attachFeed(st);
       } else {
         st.rec = rec;
         st.dom.prompt.textContent = "❯ " + (rec.promptPreview || "(no prompt)");
@@ -1093,12 +1168,13 @@ function runCost(r) {
       updateElapsed(st, Date.now());
     }
     // drop tiles for runs that vanished from the registry
-    var gone = [];
-    runs.forEach(function (st, id) { if (!seen.has(id)) gone.push(id); });
+    var gone = tilesToPrune(runs, seen, prune, o.boundary);
     for (var g = 0; g < gone.length; g++) {
       var st2 = runs.get(gone[g]);
       if (st2.pane || st2.ptyId) closeLive(st2);   // dispose pane + kill the PTY
       finishRun(st2);
+      if (visObserver) visObserver.unobserve(st2.dom.tile);
+      tileState.delete(st2.dom.tile);
       grid.removeChild(st2.dom.tile);
       runs.delete(gone[g]);
       if (selectedId === gone[g]) selectedId = null;
@@ -1108,9 +1184,12 @@ function runCost(r) {
       if (!emptyEl) {
         emptyEl = document.createElement("div");
         emptyEl.id = "empty";
-        emptyEl.textContent = "no runs recorded — start one with agh run …";
         grid.appendChild(emptyEl);
       }
+      // #198: with a bounded list, older runs may exist outside --recent.
+      emptyEl.textContent = listMeta && listMeta.total > 0
+        ? "no runs in the recent window — load older below"
+        : "no runs recorded — start one with ach run …";
     } else if (emptyEl) {
       emptyEl.remove();
     }
@@ -1135,6 +1214,59 @@ function runCost(r) {
       (TOKEN ? "&token=" + encodeURIComponent(TOKEN) : "");
     window.location.href = url;
   }
+
+  // ------- bounded list + "load older" (#198) -------
+
+  // Set when the server bounds its list views: page one is the newest
+  // `pageSize` runs within `--recent`; olderCursor walks the rest newest first.
+  var listMeta = null;
+  var olderCursor = 0;
+  var olderBusy = false;
+  var elOlder = document.getElementById("older");
+  var elOlderBtn = document.getElementById("older-btn");
+  var elOlderNote = document.getElementById("older-note");
+
+  function applyRunList(data) {
+    if (!data.window) { listMeta = null; handleRecords(data.records, { prune: "all" }); renderOlder(); return; }
+    var n = typeof data.nextOffset === "number" ? data.nextOffset : data.records.length;
+    listMeta = { total: data.total, pageSize: data.window.pageSize };
+    if (n > olderCursor) olderCursor = n;
+    // records[0..n) are the newest-first prefix; its last start time bounds
+    // the range a missing tile can be pruned from.
+    var boundary = n > 0 && data.records[n - 1] ? data.records[n - 1].startedAt : null;
+    handleRecords(data.records, { prune: "window", boundary: boundary });
+    renderOlder();
+  }
+
+  function renderOlder() {
+    if (!listMeta) { elOlder.hidden = true; return; }
+    var left = Math.max(0, listMeta.total - olderCursor);
+    elOlder.hidden = false;
+    elOlderNote.textContent = "showing " + runs.size + " of " + listMeta.total + " runs";
+    elOlderBtn.hidden = left === 0;
+    elOlderBtn.disabled = olderBusy;
+    elOlderBtn.textContent = olderBusy ? "loading…" : "load older (" + left + " more)";
+  }
+
+  function loadOlder() {
+    if (olderBusy || !listMeta) return;
+    olderBusy = true;
+    renderOlder();
+    var q = "/api/runs?order=newest&offset=" + olderCursor + "&limit=" + listMeta.pageSize;
+    fetch(q, { headers: { accept: "application/json" } })
+      .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+      .then(function (page) {
+        if (!page || !Array.isArray(page.records)) return;
+        olderCursor += page.records.length;
+        if (typeof page.total === "number") listMeta.total = page.total;
+        if (page.records.length === 0) olderCursor = listMeta.total;
+        handleRecords(page.records, { prune: "none", older: true });
+      })
+      .catch(function () { /* keep the button; the next click retries */ })
+      .then(function () { olderBusy = false; renderOlder(); });
+  }
+
+  elOlderBtn.addEventListener("click", loadOlder);
 
   // ------- runs socket with reconnect -------
 
@@ -1163,7 +1295,7 @@ function runCost(r) {
     sock.onmessage = function (ev) {
       var msg;
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
-      if (msg.type === "runs" && Array.isArray(msg.records)) handleRecords(msg.records);
+      if (msg.type === "runs" && Array.isArray(msg.records)) applyRunList(msg);
     };
     sock.onclose = function () {
       runsSock = null;
@@ -1212,7 +1344,7 @@ function runCost(r) {
     // initial snapshot over HTTP; the socket refreshes it on open + changes
     fetch("/api/runs", { headers: { accept: "application/json" } })
       .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
-      .then(function (data) { if (data && Array.isArray(data.records)) handleRecords(data.records); })
+      .then(function (data) { if (data && Array.isArray(data.records)) applyRunList(data); })
       .catch(function () {
         if (runs.size === 0) {
           var emptyEl = document.getElementById("empty") || null;

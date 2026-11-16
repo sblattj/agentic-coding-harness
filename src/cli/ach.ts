@@ -480,10 +480,16 @@ ${QUEUE_USAGE}
                  Ctrl-] d detaches and leaves the run going, Ctrl-] n sends the next --then
                  step. No id (or --list): list the live interactive runs)
   ach web [trials-dir] [--port N=8399] [--host 127.0.0.1] [--token T]
-              [--state-dir <stateDir>] [--no-open] [--source URL] [--source-token T]
+              [--state-dir <stateDir>] [--no-open] [--state-only]
+              [--recent <N>m|h|d|w|all=7d] [--page-size N=200] [--source URL] [--source-token T]
               [--source-mode poll|sse|ws] [--source-poll-ms N=3000]
               [--source-merge state|only=only] [--offline]
-                (browser dashboard over the live registry; token via --token
+                (browser dashboard over the live registry plus this machine's agent
+                  transcripts; --state-only shows only registry runs (ach run) and skips
+                  the transcript scan; the run list holds the newest --page-size runs
+                  started within --recent (running runs always), and "load older" on
+                  /grid pages back through the rest (config keys web.recent, web.pageSize);
+                  token via --token
                   or env AGENTIC_CODING_HARNESS_HTTP_TOKEN; --no-open skips the browser;
                   --source reads runs from an external http(s) feed instead of the
                   state dir — flags or env AGENTIC_CODING_HARNESS_SOURCE[_TOKEN|_MODE|
@@ -494,7 +500,8 @@ ${QUEUE_USAGE}
                   non-loopback --source; loopback stays allowed; /api/stats carries
                   the pricing snapshot block;
                   GET /api/runs filters: ?agent=&status=&minCost=&maxCost=&since=&until=
-                  &q=[&qin=events]&limit=&offset= , see README "Run list filters")
+                  &q=[&qin=events]&limit=&offset=&order=newest , see README "Run list filters";
+                  GET /api/runs/<runId> returns one full record)
   ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
               (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
                framing tolerated; same tools and gateway flags as \`ach serve\`)

@@ -714,6 +714,20 @@
           "description": "ach web --state-only",
           "type": "boolean"
         },
+        "recent": {
+          "description": "ach web --recent",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "pageSize": {
+          "description": "ach web --page-size",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
         "source": {
           "description": "ach web --source (env AGENTIC_CODING_HARNESS_SOURCE wins over this)",
           "type": [

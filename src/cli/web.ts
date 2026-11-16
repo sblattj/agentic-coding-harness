@@ -16,6 +16,9 @@ import { TranscriptRunSource } from "../web/run-source-transcript.ts";
 import { FsRunSource, type RunSource } from "../web/run-source.ts";
 import { HttpRunSource } from "../web/run-source-http.ts";
 import { MergedRunSource } from "../web/run-source-merged.ts";
+import { DEFAULT_PAGE_SIZE, DEFAULT_RECENT_MS, type RunListWindow } from "../web/run-window.ts";
+import { RUN_LIMIT_MAX } from "../web/run-filter.ts";
+import { parseDuration } from "./time-window.ts";
 
 const DEFAULT_PORT = 8399;
 const DEFAULT_HOST = "127.0.0.1";
@@ -140,6 +143,31 @@ export function resolveSourceOptions(flags: SourceFlagValues, env: EnvLookup): R
   return { url: parsed.toString(), host: parsed.host, token, mode, pollMs, merge };
 }
 
+/** #198: `--recent <N>m|h|d|w|all` (default 7d) and `--page-size N`
+ *  (default 200, at most RUN_LIMIT_MAX) bound every run-list view. */
+export function resolveListWindow(recent: string | undefined, pageSize: string | undefined): RunListWindow {
+  let recentMs: number | undefined = DEFAULT_RECENT_MS;
+  if (recent !== undefined) {
+    if (recent.trim().toLowerCase() === "all") recentMs = undefined;
+    else {
+      const d = parseDuration(recent);
+      if (d === undefined || d <= 0) {
+        throw new HarnessError(`--recent expects <N>m|h|d|w (e.g. 7d) or all, got '${recent}'`, "USAGE");
+      }
+      recentMs = d;
+    }
+  }
+  let size = DEFAULT_PAGE_SIZE;
+  if (pageSize !== undefined) {
+    const n = Number(pageSize);
+    if (!Number.isInteger(n) || n < 1 || n > RUN_LIMIT_MAX) {
+      throw new HarnessError(`--page-size expects an integer from 1 to ${RUN_LIMIT_MAX}, got '${pageSize}'`, "USAGE");
+    }
+    size = n;
+  }
+  return recentMs === undefined ? { pageSize: size } : { recentMs, pageSize: size };
+}
+
 export async function cmdWeb(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
@@ -152,6 +180,8 @@ export async function cmdWeb(rest: string[]): Promise<number> {
       "no-open": { type: "boolean", default: false },
       offline: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
+      recent: { type: "string" },
+      "page-size": { type: "string" },
       source: { type: "string" },
       "source-token": { type: "string" },
       "source-mode": { type: "string" },
@@ -172,6 +202,7 @@ export async function cmdWeb(rest: string[]): Promise<number> {
   }
 
   const port = optPort(args.values.port, "--port");
+  const listWindow = resolveListWindow(args.values.recent, args.values["page-size"]);
   if (args.values.offline) installOfflineGuard();
   // CLI flag wins over env; when both are unset: warn + force loopback.
   const token = args.values.token ?? (process.env.AGENTIC_CODING_HARNESS_HTTP_TOKEN || undefined);
@@ -219,8 +250,8 @@ export async function cmdWeb(rest: string[]): Promise<number> {
   try {
     handle = await startWebServer(
       runSource === undefined
-        ? { port, host, token, stateDir: dir }
-        : { port, host, token, stateDir: dir, runSource, sourceUrl },
+        ? { port, host, token, stateDir: dir, listWindow }
+        : { port, host, token, stateDir: dir, runSource, sourceUrl, listWindow },
     );
   } catch (err) {
     const described = describeListenError(err, host, port);

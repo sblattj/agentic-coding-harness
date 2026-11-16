@@ -1420,16 +1420,11 @@ function fetchObs() {
       };
     });
 }
+// #198: one record by id; the list endpoints only carry a recent window.
 function fetchRec() {
-  return api("/api/runs")
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      var records = (data && data.records) || [];
-      rec = null;
-      for (var i = 0; i < records.length; i++) {
-        if (records[i].runId === RUN_ID) { rec = records[i]; break; }
-      }
-    })
+  return api("/api/runs/" + encodeURIComponent(RUN_ID))
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (data) { rec = (data && data.record) || null; })
     .catch(function () { rec = null; });
 }
 function renderAll() {

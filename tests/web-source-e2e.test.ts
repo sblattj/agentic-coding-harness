@@ -148,7 +148,9 @@ function killGroup(child: ChildProcess): Promise<void> {
 }
 
 function spawnCliWeb(extraArgs: string[]): CliHandle {
-  const child = spawn('npx', ['tsx', 'src/cli/ach.ts', 'web', ...extraArgs], {
+  // #198: `ach web` pages its run list to the last 7 days by default; these
+  // fixtures are dated years back, so take every run regardless of age.
+  const child = spawn('npx', ['tsx', 'src/cli/ach.ts', 'web', '--recent', 'all', ...extraArgs], {
     cwd: WORKTREE_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: cliEnv(),
