@@ -27,6 +27,7 @@ import type {
   RunSpec as CoreRunSpec,
   SandboxPolicy,
 } from '../core/types.js';
+import { EventQueue } from '../core/event-retention.ts';
 import { isProviderLimitText } from '../core/provider-limit.ts';
 import {
   launchDriverHandle,
@@ -759,9 +760,9 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
 
   private readonly opts: Required<Pick<ClaudeAdapterOptions, 'stateDir' | 'command'>> &
     ClaudeAdapterOptions;
-  private readonly events: AgentEvent[] = [];
+  /** Released as attach() yields them (#199): the driver holds what it keeps. */
+  private readonly queue = new EventQueue<AgentEvent>();
   private readonly meta = new WeakMap<AgentEvent, ClaudeLineMeta>();
-  private readonly waiters = new Set<() => void>();
   private child: HarnessChildProcess | null = null;
   private done = false;
   private aborted = false;
@@ -962,17 +963,13 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
     });
   }
 
-  /** Async generator yielding events as they arrive (replays anything buffered first). */
-  async *attach(): AsyncGenerator<AgentEvent> {
-    let cursor = 0;
-    for (;;) {
-      while (cursor < this.events.length) {
-        yield this.events[cursor++]!;
-      }
-      if (this.done) return;
-      // notify() clears all waiters on every push, so no per-waiter cleanup needed.
-      await new Promise<void>((resolve) => this.waiters.add(resolve));
-    }
+  /**
+   * Async generator yielding events as they arrive (anything buffered before
+   * the first call comes first). Single consumer: each event is released once
+   * yielded, so a second attach() sees only what the first has not taken.
+   */
+  attach(): AsyncGenerator<AgentEvent> {
+    return this.queue.attach();
   }
 
   /**
@@ -1160,8 +1157,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
 
   private push(event: AgentEvent, meta?: ClaudeLineMeta): void {
     if (meta !== undefined) this.meta.set(event, meta);
-    this.events.push(event);
-    this.notify();
+    this.queue.push(event);
   }
 
   private finish(): void {
@@ -1171,12 +1167,7 @@ export class ClaudeCodeAdapter implements CoreAgentAdapter {
       signal: this.exitInfo?.signal ?? null,
       aborted: this.aborted,
     });
-    this.notify();
-  }
-
-  private notify(): void {
-    for (const wake of this.waiters) wake();
-    this.waiters.clear();
+    this.queue.close();
   }
 
   private clearKillTimer(): void {

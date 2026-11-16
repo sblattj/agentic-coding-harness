@@ -872,3 +872,30 @@ describe('ClaudeCodeAdapter provider-limit stream', () => {
     assert.equal((await run([chatty])).length, 0);
   });
 });
+
+describe('ClaudeCodeAdapter event queue (#199)', () => {
+  it('releases each event once attach() has yielded it', async () => {
+    const { adapter, captured, stateDir } = makeAdapter();
+    try {
+      adapter.spawn({ prompt: 'long run' });
+      const queue = (adapter as unknown as { queue: { retained: number; capacity: number } }).queue;
+      let seen = 0;
+      const consumer = (async () => {
+        for await (const _ of adapter.attach()) seen++;
+      })();
+      let maxCapacity = 0;
+      for (let i = 0; i < 500; i++) {
+        captured.child.feed(FIXTURE_LINES[1]!.replace('msg_01XkQ2AbCdEfGh', `msg_${i}`) + '\n');
+        for (let k = 0; k < 3; k++) await new Promise((r) => setImmediate(r));
+        maxCapacity = Math.max(maxCapacity, queue.capacity);
+      }
+      captured.child.end(0);
+      await consumer;
+      assert.ok(seen >= 500, `saw ${seen} events`);
+      assert.ok(maxCapacity < 50, `queue grew to ${maxCapacity} slots`);
+      assert.equal(queue.retained, 0);
+    } finally {
+      cleanup(stateDir);
+    }
+  });
+});
