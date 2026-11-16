@@ -136,4 +136,16 @@ describe('EventTail', () => {
     for (let i = 0; i < 10; i++) all.push({ type: 'step', timestamp: i } as unknown as AgentEvent);
     assert.equal(all.toArray().length, 10);
   });
+
+  it('a fractional cap below 1 keeps every event instead of breaking the ring', () => {
+    for (const cap of [0.5, 0, -1, Number.NaN]) {
+      const t = new EventTail(cap);
+      for (let i = 0; i < 5; i++) t.push({ type: 'step', timestamp: i } as unknown as AgentEvent);
+      assert.equal(t.cap, undefined, `cap ${cap}`);
+      assert.deepEqual(t.toArray().map((e) => e.timestamp), [0, 1, 2, 3, 4], `cap ${cap}`);
+    }
+    const t = new EventTail(2.7);
+    for (let i = 0; i < 5; i++) t.push({ type: 'step', timestamp: i } as unknown as AgentEvent);
+    assert.deepEqual(t.toArray().map((e) => e.timestamp), [3, 4]);
+  });
 });

@@ -79,7 +79,8 @@ export class EventTail {
   #total = 0;
 
   constructor(cap?: number) {
-    this.cap = cap !== undefined && Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : undefined;
+    // Below 1 (after flooring) there is no usable ring: keep everything.
+    this.cap = cap !== undefined && Number.isFinite(cap) && Math.floor(cap) >= 1 ? Math.floor(cap) : undefined;
   }
 
   push(e: AgentEvent): void {
