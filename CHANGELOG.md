@@ -4,6 +4,8 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-16
+
 ### Added
 
 - `ach run --agent claude --interactive` (alias `--tui`): runs the Claude Code TUI in a PTY owned by ach, with the run's model, permission mode, tool policy, first prompt and a fixed `--session-id`, instead of `claude -p`. Tokens and cost come from the session transcript (the records `ach watch` reads); budget, wall and idle caps, `--verify` and the `.cast` replay work as for a headless run, and a budget abort sends SIGINT, then kills. The raw TUI is recorded to `<stateDir>/casts/<runId>.cast`. Other agents print "not yet supported"; Node and standalone builds print "interactive runs need the npm/bun install". See README "Interactive runs". Fixes #195.
@@ -14,6 +16,7 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ### Changed
 
+- `ach smoke` browser sign-in: the default CDP endpoint is now `http://127.0.0.1:9222` (was `:9333`) when `--cdp` and `$CDP_BASE` are unset. Electron endpoints are still refused before any tab opens.
 - `ach web`: bare `GET /api/runs` and the `/ws?runs=1` messages now carry one page (`{records, total, nextOffset, window}`) instead of the whole snapshot, and runs older than `--recent` (default 7 days) are off page one, including runs from a `--source` feed. Pass `--recent all` (or set `web.recent`) for the old age-free view, and page with `?order=newest&offset=&limit=`. `startWebServer` without `listWindow` is unchanged.
 
 ### Fixed
