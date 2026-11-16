@@ -85,6 +85,9 @@ body {
 .glyph.aborted, .status.aborted { color: var(--orange); }
 .glyph.interrupted, .status.interrupted { color: var(--yellow); }
 .list-empty { padding: 16px 12px; color: var(--dim); }
+.list-older { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 12px 14px; color: var(--dim); font-size: 12px; }
+.list-older button { font: inherit; color: inherit; background: transparent; border: 1px solid #2a3446; border-radius: 4px; padding: 4px 12px; cursor: pointer; }
+.list-older button:disabled { opacity: .5; cursor: progress; }
 #agg { padding: 8px 12px; color: var(--dim); border-top: 1px solid var(--line); }
 #provlegend { padding: 0 12px 8px; color: var(--dim); font-size: 11px; white-space: pre-wrap; }
 
@@ -214,6 +217,11 @@ var TOKEN = new URLSearchParams(location.search).get("token") || "";
 })();
 
 var runs = [];
+/* #198: set when the server bounds its list (newest page within --recent). */
+var listMeta = null;
+var olderCursor = 0;
+var olderBusy = false;
+var olderIds = new Set();
 var selectedId = null;
 var modelCache = {};
 var modelCachePending = {};
@@ -412,11 +420,71 @@ function renderRuns() {
   list.textContent = "";
   renderExpFilter();
   renderRunFilter();
-  if (!runs.length) { list.appendChild(el("div", "list-empty", "no runs")); return; }
+  if (!runs.length) list.appendChild(el("div", "list-empty", listMeta && listMeta.total > 0 ? "no runs in the recent window" : "no runs"));
   sortedRuns().forEach(function (r) {
     var row = buildRow(r);
     refreshRow(row);
     list.appendChild(row);
+  });
+  renderOlder(list);
+}
+/* ===== bounded list + "load older" (#198) ===== */
+/* Pure: the run list after a bounded push. Keeps runs a "load older" page
+   fetched and runs older than the push's window (its prefix boundary);
+   drops the rest that the push no longer carries (deleted runs). */
+function mergeRunList(current, data, older) {
+  var incoming = data.records || [];
+  if (!data.window) return incoming.slice();
+  var n = typeof data.nextOffset === "number" ? data.nextOffset : incoming.length;
+  var boundary = n > 0 && incoming[n - 1] ? incoming[n - 1].startedAt : null;
+  var seen = new Set(incoming.map(function (r) { return r.runId; }));
+  var kept = current.filter(function (r) {
+    if (seen.has(r.runId)) return false;
+    return older.has(r.runId) || boundary == null || r.startedAt < boundary;
+  });
+  return incoming.concat(kept);
+}
+function applyRunList(data) {
+  runs = mergeRunList(runs, data, olderIds);
+  if (data.window) {
+    listMeta = { total: data.total, pageSize: data.window.pageSize };
+    var n = typeof data.nextOffset === "number" ? data.nextOffset : data.records.length;
+    if (n > olderCursor) olderCursor = n;
+  } else {
+    listMeta = null;
+  }
+}
+function renderOlder(list) {
+  if (!listMeta) return;
+  var left = Math.max(0, listMeta.total - olderCursor);
+  var box = el("div", "list-older", "showing " + runs.length + " of " + listMeta.total + " runs");
+  if (left > 0) {
+    var btn = el("button", "", olderBusy ? "loading\u2026" : "load older (" + left + " more)");
+    btn.type = "button";
+    btn.disabled = olderBusy;
+    btn.addEventListener("click", loadOlder);
+    box.appendChild(btn);
+  }
+  list.appendChild(box);
+}
+function loadOlder() {
+  if (olderBusy || !listMeta) return;
+  olderBusy = true;
+  renderRuns();
+  fetch("/api/runs?order=newest&offset=" + olderCursor + "&limit=" + listMeta.pageSize).then(function (res) {
+    if (!res.ok) throw new Error("http " + res.status);
+    return res.json();
+  }).then(function (page) {
+    var recs = (page && page.records) || [];
+    olderCursor += recs.length;
+    if (typeof page.total === "number") listMeta.total = page.total;
+    if (!recs.length) olderCursor = listMeta.total;
+    var have = new Set(runs.map(function (r) { return r.runId; }));
+    recs.forEach(function (r) { olderIds.add(r.runId); if (!have.has(r.runId)) runs.push(r); });
+  }).catch(function () { /* keep the button; the next click retries */ }).then(function () {
+    olderBusy = false;
+    renderRuns();
+    renderAggregate();
   });
 }
 function renderAggregate() {
@@ -692,7 +760,7 @@ function connectRunsSocket() {
     var msg;
     try { msg = JSON.parse(m.data); } catch (e) { return; }
     if (msg.type === "runs" && msg.records) {
-      runs = msg.records;
+      applyRunList(msg);
       runsRetry = 0;
       renderRuns();
       renderAggregate();
@@ -863,7 +931,7 @@ function init() {
     if (!res.ok) throw new Error("http " + res.status);
     return res.json();
   }).then(function (data) {
-    runs = (data && data.records) || [];
+    applyRunList(data && Array.isArray(data.records) ? data : { records: [] });
     renderRuns();
     renderAggregate();
     if (!selectedId && sortedRuns().length) selectRun(sortedRuns()[0].runId);

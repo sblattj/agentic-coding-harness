@@ -284,7 +284,7 @@ you type there is not part of the run and is not metered on it.
 (Claude Code, Codex, Gemini and the rest, as `ach stats` does), which can be tens of thousands of
 sessions. So every list view (`/api/runs`, the `/ws?runs=1` snapshot and each push) carries one
 page: the newest `--page-size` runs (default 200) started within `--recent` (default `7d`; a
-`<N>m|h|d|w` duration or `all`). Running runs are always included. Under the grid, **load older**
+`<N>m|h|d|w` duration or `all`). Running runs are always included. Under the grid and the main run list, **load older**
 fetches the next page, newest first, until every run is shown, and a tile opens its event feed
 only when it scrolls into view (and drops it again off-screen once the run is done). Set the
 defaults in the config file as `web.recent` / `web.pageSize`. `--state-only` skips the transcript

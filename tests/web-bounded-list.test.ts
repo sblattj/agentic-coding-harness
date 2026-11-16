@@ -4,7 +4,7 @@
 // grid prunes only tiles inside the pushed window.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -238,5 +238,66 @@ describe('grid tilesToPrune', () => {
   it('an older page prunes nothing; a full snapshot prunes every missing tile', () => {
     assert.deepEqual(prune(states, [], 'none', 10), []);
     assert.deepEqual(prune(states, ['new'], 'all', null).sort(), ['fell-out', 'gone', 'older-page']);
+  });
+});
+
+describe('ach web reads web.recent / web.pageSize from the config file', { skip: isBun ? false : 'bun not on PATH' }, () => {
+  let state = '';
+  let child: ChildProcess | undefined;
+  after(() => {
+    child?.kill('SIGTERM');
+    if (state) rmSync(state, { recursive: true, force: true });
+  });
+
+  it('a numeric pageSize and recent "all" bound the real CLI list', async () => {
+    state = mkdtempSync(join(tmpdir(), 'harness-bounded-cfg-'));
+    // Years old: outside the 7d default, so only recent "all" shows them.
+    for (let i = 0; i < 5; i++) writeRunRecord(state, rec(`c${i}`, NOW - 400 * DAY - i * 1000));
+    const cfg = join(state, 'config.json');
+    writeFileSync(cfg, JSON.stringify({ web: { recent: 'all', pageSize: 3 } }));
+    child = spawn('bun', [ACH, 'web', '--no-open', '--state-only', '--port', '0', '--state-dir', state], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, HOME: state, AGENTIC_CODING_HARNESS_CONFIG: cfg, AGENTIC_CODING_HARNESS_HTTP_TOKEN: '' },
+    });
+    child.stderr!.setEncoding('utf8');
+    let err = '';
+    const port = await new Promise<number>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`web never ready: ${err}`)), 20_000);
+      child!.stderr!.on('data', (c: string) => {
+        err += c;
+        const m = /web dashboard: http:\/\/[^:]+:(\d+)/.exec(err);
+        if (m) { clearTimeout(t); resolve(Number(m[1])); }
+      });
+    });
+    const body = (await (await fetch(`http://127.0.0.1:${port}/api/runs`)).json()) as { records: RunRecord[]; total: number; window: { recentMs: number | null; pageSize: number } };
+    assert.deepEqual(body.window, { recentMs: null, pageSize: 3 });
+    assert.deepEqual(body.records.map((r) => r.runId), ['c0', 'c1', 'c2']);
+    assert.equal(body.total, 5);
+  });
+});
+
+describe('index mergeRunList', () => {
+  const html = readFileSync(new URL('../src/web/index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('function mergeRunList(');
+  let end = -1;
+  for (let i = html.indexOf('{', start), depth = 0; i < html.length; i++) {
+    if (html[i] === '{') depth++;
+    if (html[i] === '}' && --depth === 0) { end = i + 1; break; }
+  }
+  const fn = html.slice(start, end);
+  type R = { runId: string; startedAt: number };
+  const merge = (current: R[], data: unknown, older: string[]): string[] =>
+    [...(runInNewContext(`${fn}\nmergeRunList(current, data, older).map(function (r) { return r.runId; })`, { current, data, older: new Set(older) }) as string[])];
+
+  const current: R[] = [
+    { runId: 'new', startedAt: 30 }, { runId: 'gone', startedAt: 35 },
+    { runId: 'older-page', startedAt: 33 }, { runId: 'fell-out', startedAt: 5 },
+  ];
+  it('a bounded push keeps older-page runs and runs older than the window, drops deleted ones', () => {
+    const data = { records: [{ runId: 'newer', startedAt: 40 }, { runId: 'new', startedAt: 30 }], nextOffset: 2, total: 9, window: { recentMs: null, pageSize: 2 } };
+    assert.deepEqual(merge(current, data, ['older-page']), ['newer', 'new', 'older-page', 'fell-out']);
+  });
+  it('an unbounded snapshot replaces the list', () => {
+    assert.deepEqual(merge(current, { records: [{ runId: 'only', startedAt: 1 }] }, ['older-page']), ['only']);
   });
 });
