@@ -447,7 +447,7 @@ function mergeRunList(current, data, older) {
 function applyRunList(data) {
   runs = mergeRunList(runs, data, olderIds);
   if (data.window) {
-    listMeta = { total: data.total, pageSize: data.window.pageSize };
+    listMeta = { total: data.total, pageSize: data.window.pageSize, scan: data.scan || null };
     var n = typeof data.nextOffset === "number" ? data.nextOffset : data.records.length;
     if (n > olderCursor) olderCursor = n;
   } else {
@@ -457,7 +457,9 @@ function applyRunList(data) {
 function renderOlder(list) {
   if (!listMeta) return;
   var left = Math.max(0, listMeta.total - olderCursor);
-  var box = el("div", "list-older", "showing " + runs.length + " of " + listMeta.total + " runs");
+  var scan = listMeta.scan;
+  var box = el("div", "list-older", "showing " + runs.length + " of " + listMeta.total + " runs" +
+    (scan && !scan.complete ? " \u00b7 indexing older sessions (" + scan.filesParsed + " of " + scan.filesTotal + " files)" : ""));
   if (left > 0) {
     var btn = el("button", "", olderBusy ? "loading\u2026" : "load older (" + left + " more)");
     btn.type = "button";

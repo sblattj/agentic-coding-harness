@@ -1229,7 +1229,7 @@ function runCost(r) {
   function applyRunList(data) {
     if (!data.window) { listMeta = null; handleRecords(data.records, { prune: "all" }); renderOlder(); return; }
     var n = typeof data.nextOffset === "number" ? data.nextOffset : data.records.length;
-    listMeta = { total: data.total, pageSize: data.window.pageSize };
+    listMeta = { total: data.total, pageSize: data.window.pageSize, scan: data.scan || null };
     if (n > olderCursor) olderCursor = n;
     // records[0..n) are the newest-first prefix; its last start time bounds
     // the range a missing tile can be pruned from.
@@ -1238,11 +1238,17 @@ function runCost(r) {
     renderOlder();
   }
 
+  // #202: older transcripts are still being indexed in the background.
+  function scanNote(scan) {
+    if (!scan || scan.complete) return "";
+    return " · indexing older sessions (" + scan.filesParsed + " of " + scan.filesTotal + " files)";
+  }
+
   function renderOlder() {
     if (!listMeta) { elOlder.hidden = true; return; }
     var left = Math.max(0, listMeta.total - olderCursor);
     elOlder.hidden = false;
-    elOlderNote.textContent = "showing " + runs.size + " of " + listMeta.total + " runs";
+    elOlderNote.textContent = "showing " + runs.size + " of " + listMeta.total + " runs" + scanNote(listMeta.scan);
     elOlderBtn.hidden = left === 0;
     elOlderBtn.disabled = olderBusy;
     elOlderBtn.textContent = olderBusy ? "loading…" : "load older (" + left + " more)";

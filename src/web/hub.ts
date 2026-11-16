@@ -16,7 +16,7 @@ import {
   readRunRecord,
   resolveRawTranscript,
 } from "../core/registry.ts";
-import { FsRunSource, type RunSource } from "./run-source.ts";
+import { FsRunSource, type RunSource, type ScanProgress } from "./run-source.ts";
 
 export const RUN_TOPIC_PREFIX = "run:";
 export const RUNS_TOPIC = "runs";
@@ -44,6 +44,8 @@ export interface RunsMessage {
   total?: number;
   nextOffset?: number;
   window?: { recentMs: number | null; pageSize: number };
+  /** #202: present while (and after) a transcript backfill runs. */
+  scan?: ScanProgress;
 }
 
 /** Maps the full snapshot to the published runs body; identity by default. */
@@ -88,6 +90,11 @@ export class RunEventHub {
 
   snapshotRuns(): RunRecord[] {
     return this.source.snapshot();
+  }
+
+  /** #202: transcript backfill progress, when the source indexes files. */
+  scanProgress(): ScanProgress | undefined {
+    return this.source.progress?.();
   }
 
   async readTranscript(runId: string): Promise<AgentEvent[]> {

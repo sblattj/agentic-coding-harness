@@ -18,7 +18,8 @@
 // deleting toCanonicalTokenRecord(); it bridges for now.
 
 import type { CanonicalTokenRecord as CentralTokenRecord } from "../core/types.ts";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
@@ -73,21 +74,37 @@ export interface CanonicalTokenRecord {
 // Shared JSONL reader
 // ---------------------------------------------------------------------------
 
-async function* readJsonlLines(path: string): AsyncGenerator<unknown> {
-  let text: string;
+async function* readJsonlLines(path: string, mayMatter?: (line: string) => boolean): AsyncGenerator<unknown> {
+  // #202: stream the file instead of reading it whole. Claude Code sessions
+  // reach hundreds of MB; a full read plus split held several copies at once
+  // (about 5 GB RSS for one dashboard pass over 15 GB of history).
+  let stream;
   try {
-    text = await readFile(path, "utf8");
+    stream = createReadStream(path, { encoding: "utf8", highWaterMark: 1 << 20 });
   } catch {
     return;
   }
-  for (const line of text.replace(/^\uFEFF/, "").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      yield JSON.parse(trimmed);
-    } catch {
-      // Malformed line: skip, batch accounting must not die on one bad record.
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  let first = true;
+  try {
+    for await (let line of lines) {
+      if (first) { line = line.replace(/^\uFEFF/, ""); first = false; }
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      // A cheap text test first: lines that cannot carry what the caller
+      // reads are never JSON.parse'd (most of a Claude session's bytes).
+      if (mayMatter !== undefined && !mayMatter(trimmed)) continue;
+      try {
+        yield JSON.parse(trimmed);
+      } catch {
+        // Malformed line: skip, batch accounting must not die on one bad record.
+      }
     }
+  } catch {
+    // Unreadable (missing, a directory, permission): nothing to yield, as before.
+  } finally {
+    lines.close();
+    stream.destroy();
   }
 }
 
@@ -141,7 +158,9 @@ export async function parseClaudeTranscript(
   path: string,
 ): Promise<CanonicalTokenRecord[]> {
   const byKey = new Map<string, CanonicalTokenRecord>();
-  for await (const raw of readJsonlLines(path)) {
+  // Only assistant lines with a usage object count; a JSON key is always
+  // written literally, so a line without `"usage"` cannot be one.
+  for await (const raw of readJsonlLines(path, (l) => l.includes('"usage"'))) {
     const line = ClaudeLineSchema.safeParse(raw);
     if (!line.success) continue;
     const rec = line.data;
@@ -408,6 +427,20 @@ function childIdsOf(payload: unknown, ownPath: string): string[] {
  * creation (an undatable turn id ends the replay early: under-claiming the
  * parent's history beats silently counting it twice).
  */
+/**
+ * #202: a rollout's `response_item` lines (model output, tool calls, file
+ * contents) are most of its bytes and nothing here reads their payload, only
+ * their position. Keep the line (indexes drive replay detection) without the
+ * payload body, so a 100 MB rollout does not stay in memory while parsed.
+ */
+function slimCodexLine(raw: unknown): unknown {
+  if (raw === null || typeof raw !== "object") return raw;
+  const l = raw as { type?: unknown; timestamp?: unknown; payload?: unknown };
+  if (l.type !== "response_item") return raw;
+  const pt = l.payload !== null && typeof l.payload === "object" ? (l.payload as { type?: unknown }).type : undefined;
+  return { type: l.type, ...(l.timestamp !== undefined ? { timestamp: l.timestamp } : {}), payload: pt === undefined ? {} : { type: pt } };
+}
+
 function codexReplayFlags(lines: unknown[]): boolean[] {
   const flags: boolean[] = [];
   let metaSeen = false;
@@ -508,7 +541,7 @@ export async function parseCodexRolloutSession(path: string): Promise<CodexRollo
   });
 
   const lines: unknown[] = [];
-  for await (const raw of readJsonlLines(path)) lines.push(raw);
+  for await (const raw of readJsonlLines(path)) lines.push(slimCodexLine(raw));
   const replayedAt = codexReplayFlags(lines);
   // Format preference (see above): legacy counts whenever the session's OWN
   // lines have it (a replayed legacy prefix says nothing about this session).

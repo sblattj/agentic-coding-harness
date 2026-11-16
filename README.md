@@ -291,6 +291,14 @@ defaults in the config file as `web.recent` / `web.pageSize`. `--state-only` ski
 scan and shows only registry runs (`ach run`); `/api/stats` and `/api/compare` still roll up every
 run.
 
+Transcripts are indexed per file (path, mtime, size). On start the server parses the files touched
+within `--recent` first, then backfills older ones in the background; until it finishes, the list
+shows "indexing older sessions (N of M files)", `/api/runs` carries `scan: {complete, filesParsed,
+filesTotal}` and `/api/stats` / `/health` carry it as `transcriptScan` (stats totals cover only the
+files indexed so far). Each 30s refresh re-reads only files that changed. The index is saved to
+`<stateDir>/cache/transcript-index.json` (rebuilt when the bundled price table changes; safe to
+delete), so a restart re-reads only what changed since.
+
 ![Web dashboard terminal grid showing live agent run tiles with token and cost readouts and interactive terminal panes](docs/assets/web-grid.png)
 
 **Observability trio** — traces, metrics, and logs for a single run, with a live terminal

@@ -225,7 +225,11 @@ export async function cmdWeb(rest: string[]): Promise<number> {
   );
   // #40: a remote feed is an outbound call; refuse it up front (loopback feeds are fine).
   if (args.values.offline && source !== null) assertOfflineSource(source.url);
-  const localSource = args.values["state-only"] ? new FsRunSource(dir) : new TranscriptRunSource(dir);
+  // #202: transcripts touched within --recent are parsed before the server
+  // answers; older ones backfill in the background.
+  const localSource = args.values["state-only"]
+    ? new FsRunSource(dir)
+    : new TranscriptRunSource(dir, {}, listWindow.recentMs === undefined ? {} : { recentMs: listWindow.recentMs });
   let runSource: RunSource | undefined = localSource;
   let sourceUrl: string | undefined;
   if (source !== null) {

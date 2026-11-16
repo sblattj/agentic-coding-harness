@@ -242,7 +242,13 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
   // historical FsRunSource default (behavior identical to pre-0.8.0).
   const hub = new RunEventHub(opts.stateDir, opts.runSource);
   const listWindow = opts.listWindow;
-  if (listWindow !== undefined) hub.setRunsView((records) => windowRuns(records, listWindow));
+  /** #202: page one plus the transcript backfill progress, when there is one. */
+  const windowView = (records: RunRecord[]) => {
+    const win = windowRuns(records, listWindow!);
+    const scan = hub.scanProgress();
+    return scan === undefined ? win : { ...win, scan };
+  };
+  if (listWindow !== undefined) hub.setRunsView(windowView);
 
   /** True when the current source reports this run as external — no local
    *  process exists to attach a PTY to. Checked against the source snapshot
@@ -643,7 +649,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           if (!parsed.active) {
             if (listWindow === undefined) return sendJson(res, 200, { records: hub.snapshotRuns() });
             // #198: page one of the window; older pages via ?order=newest&offset=.
-            const win = windowRuns(hub.snapshotRuns(), listWindow);
+            const win = windowView(hub.snapshotRuns());
             res.setHeader("x-total-count", String(win.total));
             return sendJson(res, 200, win);
           }
@@ -698,6 +704,8 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           const now = Date.now();
           return sendJson(res, 200, {
             ...computeGlobalStats(hub.snapshotRuns(), now, windowSinceMs(w as StatsWindow, now), w as StatsWindow),
+            // #202: totals cover only the transcripts indexed so far until complete.
+            ...(hub.scanProgress() === undefined ? {} : { transcriptScan: hub.scanProgress() }),
             // #40: bundled price snapshot provenance (date, model count, staleness).
             pricing: createPricer().meta?.() ?? pricingMeta(),
           });
@@ -710,6 +718,8 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
             ok: true,
             source: opts.sourceUrl ?? null,
             sourceHealthy: opts.runSource?.health?.().healthy ?? null,
+            // #202: only for sources that index transcripts.
+            ...(hub.scanProgress() === undefined ? {} : { transcriptScan: hub.scanProgress() }),
           });
         }
 

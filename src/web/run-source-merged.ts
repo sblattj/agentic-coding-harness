@@ -5,7 +5,7 @@
 // external feed over the local registry). Health is the AND of the
 // children; children without a health() implementation count as healthy.
 import type { RunRecord } from "../core/registry.ts";
-import { type RunSource, type SourceHealth } from "./run-source.ts";
+import { type RunSource, type ScanProgress, type SourceHealth } from "./run-source.ts";
 
 export class MergedRunSource implements RunSource {
   constructor(private readonly sources: RunSource[]) {}
@@ -26,6 +26,16 @@ export class MergedRunSource implements RunSource {
 
   stop(): Promise<void> {
     return Promise.all(this.sources.map((s) => s.stop())).then(() => undefined);
+  }
+
+  progress(): ScanProgress | undefined {
+    let out: ScanProgress | undefined;
+    for (const source of this.sources) {
+      const p = source.progress?.();
+      if (p === undefined) continue;
+      out = out === undefined ? { ...p } : { complete: out.complete && p.complete, filesParsed: out.filesParsed + p.filesParsed, filesTotal: out.filesTotal + p.filesTotal };
+    }
+    return out;
   }
 
   health(): SourceHealth {

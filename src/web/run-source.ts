@@ -17,6 +17,14 @@ export interface RunSource {
   snapshot(): RunRecord[];
   stop(): Promise<void>;
   health?(): SourceHealth;
+  /** #202: transcript backfill progress, for sources that index files. */
+  progress?(): ScanProgress | undefined;
+}
+
+export interface ScanProgress {
+  complete: boolean;
+  filesParsed: number;
+  filesTotal: number;
 }
 
 /** Filesystem-backed source: reads and watches <stateDir>/runs/. */
