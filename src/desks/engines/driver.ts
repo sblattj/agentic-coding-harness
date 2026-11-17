@@ -363,6 +363,8 @@ export class DriverEngine implements Engine {
             ...u,
             costUsd: result.totalCost,
             messageId: runId,
+            // The turn's own run already wrote these token records (see UsageSample.recorded).
+            recorded: true,
             ...(spec.model !== undefined ? { model: spec.model } : {}),
           },
         });

@@ -127,6 +127,16 @@ describe("host meter: token records and ach stats", () => {
     assert.ok(Math.abs(totals.costUsd! - expected) < 1e-9, `costUsd ${totals.costUsd} vs ${expected}`);
   });
 
+  it("recorded usage (driver turn runs wrote their own records) counts toward totals but writes no raw line", async () => {
+    const state = mkState();
+    const m = createHostMeter(mkSpec(state, { agent: "claude", engine: "driver" }));
+    m.begin({ sessionId: "ses_r", pid: 1 });
+    m.usage(sample({ messageId: "turn-1", inputTokens: 1000, outputTokens: 100, costUsd: 0.5, recorded: true }));
+    assert.equal((await readAllRecords()).length, 0);
+    assert.equal(m.totals().inputTokens, 1000);
+    assert.equal(m.totals().costUsd, 0.5);
+  });
+
   it("a repeated messageId is not double counted (deltas are written; stats sums to the latest total)", async () => {
     const state = mkState();
     const m = createHostMeter(mkSpec(state));

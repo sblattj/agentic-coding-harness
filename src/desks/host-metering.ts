@@ -33,6 +33,12 @@ export interface UsageSample {
   /** Engine message id; a repeated id replaces (not adds to) the earlier sample. */
   messageId?: string;
   at: number;
+  /**
+   * True when the engine's own child run already wrote token records for this usage
+   * (driver engine: each turn is a core-driver run). The meter still counts it toward
+   * totals and budget but writes no raw line, so `ach stats` never counts it twice.
+   */
+  recorded?: boolean;
 }
 
 export interface HostMeter {
@@ -249,7 +255,7 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
       messages.set(key, next);
       const deltaReported = reported === null ? null : d(reported, prev?.reported ?? 0);
       const empty = delta.inputTokens + delta.outputTokens + delta.cacheReadTokens + delta.cacheWriteTokens === 0 && !(deltaReported && deltaReported > 0);
-      if (!empty) {
+      if (!empty && s.recorded !== true) {
         const line = {
           ts: s.at,
           agent: spec.agent,

@@ -337,6 +337,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
         costUsd: typeof d.costUsd === "number" ? d.costUsd : null,
         messageId: typeof d.messageId === "string" ? d.messageId : undefined,
         at: Date.now(),
+        ...(d.recorded === true ? { recorded: true } : {}),
       };
       try {
         meter?.usage(sample);
