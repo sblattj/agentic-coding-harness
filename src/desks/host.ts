@@ -54,6 +54,8 @@ export interface HostDeps {
   env?: NodeJS.ProcessEnv;
   /** Heartbeat interval override (tests). */
   heartbeatMs?: number;
+  /** In-memory event cap override (tests); default HOST_EVENT_MEMORY_CAP. */
+  eventMemoryCap?: number;
 }
 
 export function newMessageId(): string {
@@ -197,6 +199,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   const makeMeter = deps.createHostMeter ?? (fake ? () => nullMeter() : realCreateHostMeter);
   const feedStarter = deps.startFeed ?? realStartFeed;
   const installSignals = deps.installSignals ?? true;
+  const memoryCap = Math.max(1, deps.eventMemoryCap ?? HOST_EVENT_MEMORY_CAP);
 
   const paths = deskPaths(spec.stateDir, spec.stack);
   const eventsFile = join(paths.events, `${spec.runId}.jsonl`);
@@ -222,7 +225,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   const record = (type: HostEventType, data: Record<string, unknown>): HostEvent => {
     const ev: HostEvent = { seq: ++seq, at: Date.now(), runId: spec.runId, name: spec.name, type, data };
     events.push(ev);
-    if (events.length > HOST_EVENT_MEMORY_CAP) events.splice(0, events.length - HOST_EVENT_MEMORY_CAP);
+    if (events.length > memoryCap) events.splice(0, events.length - memoryCap);
     try {
       mkdirSync(paths.events, { recursive: true });
       appendFileSync(eventsFile, `${JSON.stringify(ev)}\n`);
@@ -546,6 +549,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     if (sessionId !== undefined) meter.begin({ sessionId, pid: process.pid });
   } catch (e) {
     record("error", { error: `engine start failed: ${errText(e)}` });
+    if (stopping !== undefined) return done; // a stop was already in flight; it owns finish + close
     process.stderr.write(`desk host ${spec.name}: engine start failed: ${errText(e)}\n`);
     setState("error");
     stopping = Promise.resolve(HOST_EXIT.engineFailed);

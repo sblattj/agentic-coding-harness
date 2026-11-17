@@ -157,7 +157,7 @@ interface Started {
   feedStopped: () => boolean;
 }
 
-async function start(over: Partial<HostSpec> = {}, tweak: (e: FakeEngine, m: FakeMeter) => void = () => {}): Promise<Started> {
+async function start(over: Partial<HostSpec> = {}, tweak: (e: FakeEngine, m: FakeMeter) => void = () => {}, extra: HostDeps = {}): Promise<Started> {
   const stateDir = tmpDir();
   const spec = baseSpec(stateDir, over);
   const engine = new FakeEngine();
@@ -175,6 +175,7 @@ async function start(over: Partial<HostSpec> = {}, tweak: (e: FakeEngine, m: Fak
     },
     installSignals: false,
     onReady: (i) => (url = i.url),
+    ...extra,
   };
   const done = runHost(spec, deps);
   await waitFor(async () => (url !== '' ? (await hostHealth(url))?.state === 'idle' : false), 'host idle');
@@ -293,6 +294,26 @@ describe('desk host: events', () => {
       assert.equal(s.meter.usages.length, 1);
       assert.equal(s.meter.usages[0]?.costUsd, 0.01);
       assert.equal(s.meter.usages[0]?.messageId, 'msg1');
+      const hb = s.meter.heartbeats;
+      const iBusy = hb.indexOf('busy');
+      assert.ok(iBusy >= 0 && hb.indexOf('idle', iBusy) > iBusy, `heartbeat on state change: ${hb.join(',')}`);
+    } finally {
+      await stopAndWait(s);
+    }
+  });
+
+  it('since older than the memory window reads the complete file', async () => {
+    const s = await start({}, () => {}, { eventMemoryCap: 5 });
+    try {
+      await hostSend(s.url, 'human', 'x');
+      s.engine.finishTurn();
+      await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle');
+      const last = (await hostHealth(s.url))?.lastSeq ?? 0;
+      assert.ok(last > 5);
+      const all = await hostEvents(s.url, 0);
+      assert.deepEqual(all.map((e) => e.seq), Array.from({ length: last }, (_, i) => i + 1));
+      const recent = await hostEvents(s.url, last - 2);
+      assert.deepEqual(recent.map((e) => e.seq), [last - 1, last]);
     } finally {
       await stopAndWait(s);
     }
@@ -533,9 +554,8 @@ async function portFree(port: number): Promise<boolean> {
 }
 
 describe('desk host: real child process via spawnHost', () => {
-  it('ach desk host --spec runs EchoEngine, answers HTTP, exits on /stop and frees the port', { timeout: 90_000 }, async () => {
+  async function childHost(port: number, how: 'stop' | 'sigterm'): Promise<void> {
     const stateDir = tmpDir();
-    const port = 5711;
     assert.equal(await portFree(port), true, `port ${port} free before the test`);
     const spec = baseSpec(stateDir, { port, name: 'ECHO', runId: 'run_echo_1' });
     mkdirSync(join(stateDir, 'specs'), { recursive: true });
@@ -562,11 +582,14 @@ describe('desk host: real child process via spawnHost', () => {
       const r = await hostSend(url, 'BRAVO', 'ping');
       assert.equal(r.delivered, 'now');
       await waitFor(async () => (await hostEvents(url)).some((e) => e.type === 'text' && e.data.text === 'echo: [desk-msg from BRAVO] ping'), 'echo reply');
-      await hostStop(url);
+      if (how === 'stop') await hostStop(url);
+      else process.kill(hostPid, 'SIGTERM');
       await waitFor(() => !pidAlive(hostPid) && !pidAlive(pid), 'host process exit', 15_000);
       assert.equal(await hostHealth(url, 1000), null);
       assert.equal(await portFree(port), true, 'port freed');
-      assert.ok(existsSync(join(deskPaths(stateDir, 'test').events, 'run_echo_1.jsonl')));
+      const file = join(deskPaths(stateDir, 'test').events, 'run_echo_1.jsonl');
+      const evs = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as HostEvent);
+      assert.ok(evs.some((e) => e.type === 'status' && e.data.state === 'stopping'), `${how}: stopping recorded`);
     } finally {
       for (const p of [hostPid, pid]) if (p > 0 && pidAlive(p)) process.kill(p, 'SIGKILL');
       if (saved.self === undefined) delete process.env.ACH_SELF_ARGV;
@@ -574,7 +597,10 @@ describe('desk host: real child process via spawnHost', () => {
       if (saved.fake === undefined) delete process.env.ACH_DESK_FAKE_ENGINE;
       else process.env.ACH_DESK_FAKE_ENGINE = saved.fake;
     }
-  });
+  }
+
+  it('ach desk host --spec runs EchoEngine, answers HTTP, exits on /stop and frees the port', { timeout: 90_000 }, () => childHost(5711, 'stop'));
+  it('SIGTERM stops the host the same way: process exits, port freed', { timeout: 90_000 }, () => childHost(5712, 'sigterm'));
 
   it('EchoEngine replies "echo: <text>"', async () => {
     const e = new EchoEngine(1);
