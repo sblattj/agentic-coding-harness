@@ -421,6 +421,7 @@ describe('desks web api: routes', () => {
 
   it('statusForError maps service messages', () => {
     assert.equal(statusForError(new Error('desks: unknown desk X')), 404);
+    assert.equal(statusForError(new Error('desks: lane approve: only the human or the decisions desk may decide pending lanes (you are X)')), 403);
     assert.equal(statusForError(new Error('lane foo not found')), 404);
     assert.equal(statusForError(new Error('no such decision D4')), 404);
     assert.equal(statusForError(new Error('desks: stack default is already up (ORCH alive)')), 409);

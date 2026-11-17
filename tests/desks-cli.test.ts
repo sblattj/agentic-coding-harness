@@ -212,6 +212,51 @@ describe("lane argument parsing -> service call args", () => {
   });
 });
 
+describe("sender identity inside a desk session", () => {
+  const env = { ACH_DESK_NAME: "ORCHESTRATOR" } as NodeJS.ProcessEnv;
+  it("refuses --from that differs from $ACH_DESK_NAME, on every sender command", async () => {
+    const cases: [string, string[]][] = [
+      ["desk", ["send", "WORKER", "hi", "--from", "DECISIONS"]],
+      ["desk", ["answer", "D1", "yes", "--from", "DECISIONS"]],
+      ["lane", ["new", "x", "--goal", "g", "--from", "DECISIONS"]],
+      ["lane", ["stop", "x", "--from", "DECISIONS"]],
+      ["lane", ["approve", "L1", "--from", "DECISIONS"]],
+      ["lane", ["reject", "L1", "--from", "human"]],
+    ];
+    for (const [which, argv] of cases) {
+      const r = rig({}, { env });
+      const code = which === "desk" ? await cmdDesk(argv, r.deps) : await cmdLane(argv, r.deps);
+      assert.notEqual(code, 0, argv.join(" "));
+      assert.match(r.stderr(), /ACH_DESK_NAME/, argv.join(" "));
+      assert.equal(r.calls.length, 0, argv.join(" "));
+    }
+  });
+  it("accepts --from equal to $ACH_DESK_NAME, and absent --from; a human terminal keeps --from", async () => {
+    const r = rig({}, { env });
+    assert.equal(await cmdDesk(["send", "WORKER", "hi", "--from", "ORCHESTRATOR"], r.deps), 0);
+    assert.equal(await cmdDesk(["send", "WORKER", "hi"], r.deps), 0);
+    assert.deepEqual(r.calls.map((c) => (c.args as { from: string }).from), ["ORCHESTRATOR", "ORCHESTRATOR"]);
+    const h = rig();
+    assert.equal(await cmdDesk(["send", "WORKER", "hi", "--from", "DECISIONS"], h.deps), 0);
+    assert.equal((h.calls[0]!.args as { from: string }).from, "DECISIONS");
+  });
+});
+
+describe("-h / --help inside message text", () => {
+  it("is sent, not treated as help; help is only the first arg after the subcommand", async () => {
+    const r = rig();
+    assert.equal(await cmdDesk(["send", "WORKER", "use -h for help"], r.deps), 0);
+    assert.equal(await cmdDesk(["send", "WORKER", "--", "-h"], r.deps), 0);
+    assert.equal(r.calls.length, 2);
+    assert.deepEqual(r.calls.map((c) => (c.args as { text: string }).text), ["use -h for help", "-h"]);
+    const h = rig();
+    assert.equal(await cmdDesk(["send", "-h"], h.deps), 0);
+    assert.equal(await cmdDesk(["--help"], h.deps), 0);
+    assert.equal(h.calls.length, 0);
+    assert.match(h.stdout(), /usage:/);
+  });
+});
+
 describe("lane status for an ended lane", () => {
   it("shows state stopped and the final goal state", async () => {
     const r = rig({ laneStatus: [row({ name: "LANE1", kind: "lane", state: "stopped", goalState: "achieved", launchedBy: "human", costUsd: null })] });

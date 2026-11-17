@@ -102,9 +102,9 @@ export const DESK_USAGE = `usage:
 export const LANE_USAGE = `usage:
   ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N] [--brief TEXT] [--from NAME]
   ach lane status [name] [--json]
-  ach lane stop <name> [--now]
-  ach lane approve <Ln>
-  ach lane reject <Ln> [--reason R]
+  ach lane stop <name> [--now] [--from NAME]
+  ach lane approve <Ln> [--from NAME]
+  ach lane reject <Ln> [--reason R] [--from NAME]
   every subcommand takes [--stack S]; --from defaults to $ACH_DESK_NAME, else "human"`;
 
 // ---------------------------------------------------------------- pure helpers
@@ -271,10 +271,15 @@ export function formatChatEvent(e: HostEvent, opts: { echoHuman?: boolean } = {}
 
 type Ctx = { d: DeskDeps; stack: string | undefined; json: boolean };
 
+/** Sender identity. Inside a desk/lane session ($ACH_DESK_NAME set) --from must be absent or equal to it. */
 const fromName = (v: unknown, env: NodeJS.ProcessEnv): string => {
-  if (typeof v === "string" && v !== "") return v;
   const e = env.ACH_DESK_NAME;
-  return e !== undefined && e !== "" ? e : "human";
+  const me = e !== undefined && e !== "" ? e : undefined;
+  if (typeof v === "string" && v !== "") {
+    if (me !== undefined && v !== me) return usage(`--from ${v} refused: this session is ${me} ($ACH_DESK_NAME); a desk cannot act as another sender`);
+    return v;
+  }
+  return me ?? "human";
 };
 
 function emitJson(c: Ctx, v: unknown): void {
@@ -593,7 +598,8 @@ async function dispatch(which: "desk" | "lane", rest: string[], depsIn: Partial<
   const helpText = which === "desk" ? DESK_USAGE : LANE_USAGE;
   const errOut = depsIn?.stderr ?? ((s: string) => void process.stderr.write(s));
   const outOut = depsIn?.stdout ?? ((s: string) => void process.stdout.write(s));
-  if (sub === "-h" || sub === "--help" || (sub !== undefined && (args.includes("--help") || args.includes("-h")) && !args.includes("--"))) {
+  const isHelp = (a: string | undefined): boolean => a === "-h" || a === "--help";
+  if (isHelp(sub) || (sub !== undefined && isHelp(args[0]))) {
     outOut(`${helpText}\n`);
     return 0;
   }

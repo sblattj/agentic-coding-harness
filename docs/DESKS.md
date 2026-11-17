@@ -7,7 +7,7 @@ A small team of agents that message each other, with ach metering every one of t
 - A **message** is text delivered into another session as a user turn, prefixed `[desk-msg from <NAME>]`. A turn with no header was typed by the human, who outranks every peer.
 - The **roster** is one JSON file and the only source of truth for who is alive and where.
 
-The default layout has three desks:
+The shipped default layout (`desks.default.yaml`) has three desks (ORCHESTRATOR, DECISIONS, LISTENER) with no MCP servers, no feed and `lanes.approval: none`. The diagram and table below show an example layout with tools and a feed wired in; see [desks.yaml](#desksyaml) for how to get it:
 
 ```
 +------------------+-----------------+
@@ -17,7 +17,7 @@ The default layout has three desks:
 +------------------+-----------------+
 ```
 
-| Desk | Port | Tools (plus the `ach` desk tools) | Job |
+| Desk | Port | Example tools (plus the `ach` desk tools) | Job |
 |---|---|---|---|
 | ORCHESTRATOR | portBase+1 | tracker, browser | routes work, launches lanes and probes, checks lane evidence |
 | DECISIONS | portBase+2 | none | ownership calls, the human's decision list, relays answers |
@@ -62,7 +62,7 @@ Host API (JSON, 127.0.0.1 only):
 | `GET /attach` | the argv a terminal pane runs to show the session |
 | `POST /stop` | stop feed and engine, then exit |
 
-Identity comes from the environment (`ACH_DESK_NAME`, `ACH_DESK_STACK`), never from tool arguments, so a session cannot send as someone else. Self-send is refused. Every message is a `message_in` event in the target's run and a `message_out` event in the sender's, so replay shows the conversation.
+Identity comes from the environment (`ACH_DESK_NAME`, `ACH_DESK_STACK`), never from tool arguments, so a tool call cannot send as someone else. The CLI takes its sender from `--from`, else `$ACH_DESK_NAME`, else `human`, and refuses a `--from` that differs from `$ACH_DESK_NAME` (inside a desk or lane session). Self-send is refused. Every message is a `message_in` event in the target's run and a `message_out` event in the sender's, so replay shows the conversation.
 
 ### Message rules
 
@@ -84,6 +84,8 @@ Each host loads `roles/common.md` plus `roles/<role>.md` as instructions, with `
 ## desks.yaml
 
 `ach desk up` reads `--layout F`, else `./desks.yaml`, else `~/.config/ach/desks.yaml`, else the built-in default layout. The resolved layout is saved as `layout.json` in the stack's state directory.
+
+An example layout (the shipped default sets `mcps: []` on every desk, has the feed commented out and uses `approval: none`):
 
 ```yaml
 portBase: 4800
@@ -121,7 +123,7 @@ lanes:
 | `rolesDir` | string | none | Extra roles directory searched before the built-in `roles/`. |
 | `mcpServers` | map name to `{command, args?, env?}` | none | Definitions for MCP names, for engines that cannot read your own config by name (driver engine). The opencode engine resolves names from its own config. |
 | `desks` | DeskSpec[] | required | The desks. |
-| `lanes` | LanesSpec | required | Lane defaults. |
+| `lanes` | LanesSpec | `{defaultMcps: [], ports: [10, 99], approval: none}` | Lane defaults (optional). |
 
 ### DeskSpec
 
@@ -131,7 +133,7 @@ lanes:
 | `role` | string | required | Role prompt: `<rolesDir>/<role>.md`, then built-in `roles/`. |
 | `agent` | string | `layout.agent` | Agent CLI for this desk. |
 | `model` | string | `layout.model` | Model for this desk. |
-| `mcps` | string[] | required | MCP server names this desk gets. The `ach` desk tools are always added. Anything else is forced off. |
+| `mcps` | string[] | `[]` | MCP server names this desk gets. The `ach` desk tools are always added. Anything else is forced off. |
 | `pane` | `left` \| `right-top` \| `right-bottom` \| `none` | none | Where its pane goes in the desks window. |
 | `feed` | FeedSpec | none | Event source for this desk. |
 | `cwd` | string | `layout.cwd` | Working directory. |
@@ -154,10 +156,10 @@ If `activeCheck` says nothing is active, the desk gets one "waiting for the next
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `defaultMcps` | string[] | required | MCP names a lane gets when `lane_new` passes none. |
+| `defaultMcps` | string[] | `[]` | MCP names a lane gets when `lane_new` passes none. |
 | `ports` | `[lo, hi]` | `[10, 99]` | Port offsets from `portBase`, inclusive. |
 | `approval` | `decisions` \| `none` | `none` | With `decisions`, `lane_new` from a desk other than DECISIONS (or the human) returns a pending request until `lane approve`. |
-| `defaultGoalFlags` | string | none | Prefixed to every lane objective, e.g. `--max-minutes 45`. |
+| `defaultGoalFlags` | string | none | Prefixed to every lane objective, e.g. `--max-minutes 45`, except an objective that itself starts with `--` (it carries its own flags) is left as is. |
 | `agent`, `model` | string | layout values | Defaults for lanes. |
 | `budgetUsd` | number | none | Default per-lane budget; feeds the existing [budget alerts](BUDGET-ALERTS.md). |
 
@@ -205,14 +207,16 @@ ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [-
 ach lane status [name] [--json]
 ach lane stop <name> [--now] [--from NAME]
 ach lane approve <Ln> [--from NAME]
-ach lane reject <Ln> [--reason R]
+ach lane reject <Ln> [--reason R] [--from NAME]
 ```
 
 Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else `human`.
 
 - `desk up` refuses when any desk of the stack is alive. `--port-base` overrides the layout (a test stack beside the live one). `--tmux-session` picks the tmux session that gets the `desks` window and the lane windows.
 - `desk down` stops every lane, then every desk (feed, pane, host), and leaves an empty roster with no processes.
-- `desk send` and `desk answer` send as `human`.
+- `desk send` and `desk answer` send as `--from`, else `$ACH_DESK_NAME`, else `human`. Inside a desk or lane session (`$ACH_DESK_NAME` set) a `--from` that differs is refused.
+- `-h` or `--help` is help only as the first argument after the subcommand; inside message text it is sent like any other word.
+- Only the human or the stack's decisions desk (the desk with role `decisions`) may `lane approve` or `lane reject`, from the CLI, MCP tools and web API alike (the web API answers 403 otherwise).
 - `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions.
 - `lane stop` refuses desk names. A busy lane gets up to 15 s to finish its turn, plus about 2 s for the goal verdict, so a lane that just sent DONE is judged before it dies; `--now` skips the wait (emergency stops; `desk down` always stops at once). It closes the pane, stops the host and removes the roster entry.
 - `ach lane status <name>` also answers for a lane that already ended: the roster has forgotten it, so the row is rebuilt from `lanes.log` with `state: "stopped"` and `goalState` (the final goal state, taken from the lane's last `goal` event so a verdict reported while the host was stopping counts). Without a name only live lanes are listed.
