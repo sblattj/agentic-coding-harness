@@ -255,6 +255,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   let meter: HostMeter | undefined;
   let lastPreview: string | undefined;
   let budgetAlerted = false;
+  let tokenRecordFailuresSeen = 0;
   let stopping: Promise<number> | undefined;
   /** Engine creation + engine.start(), while in flight: stop() waits for it so no engine outlives the host. */
   let startup: Promise<void> | undefined;
@@ -384,6 +385,12 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
       };
       try {
         meter?.usage(sample);
+        // A lost token record undercounts `ach desk costs`; the meter keeps running, so make it visible.
+        const lost = meter?.totals().tokenRecordFailures ?? 0;
+        if (lost > tokenRecordFailuresSeen) {
+          tokenRecordFailuresSeen = lost;
+          record("error", { error: "metering: token record write failed", tokenRecordFailures: lost });
+        }
         if (!budgetAlerted && meter?.overBudget() === true) {
           budgetAlerted = true;
           record("error", { error: "budget exceeded", budgetUsd: spec.budgetUsd ?? null });
@@ -556,7 +563,8 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
             clearInterval(ka);
             sseClients.delete(res);
           };
-          req.on("close", cleanup);
+          // Only the response's close means the client went away: the request's close can fire
+          // as soon as its (empty) body is consumed, which would drop a live subscriber.
           res.on("close", cleanup);
           if (stopping !== undefined) res.end();
           return;

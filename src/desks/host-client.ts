@@ -143,11 +143,17 @@ export function hostSubscribe(
       backoff = BACKOFF_START_MS;
       const decoder = new TextDecoder();
       let buf = "";
+      // A chunk may end between the \r and \n of a CRLF; hold a trailing \r back until the next
+      // chunk so the pair normalizes as one line ending (SSE allows CRLF, LF and lone CR).
+      let carry = "";
       const reader = res.body.getReader();
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+        let text = carry + decoder.decode(value, { stream: true });
+        carry = text.endsWith("\r") ? "\r" : "";
+        if (carry !== "") text = text.slice(0, -1);
+        buf += text.replace(/\r\n?/g, "\n");
         let i: number;
         while ((i = buf.indexOf("\n\n")) >= 0) {
           const block = buf.slice(0, i);
