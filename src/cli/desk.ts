@@ -162,7 +162,7 @@ const clip = (s: string, n: number): string => {
 
 const goalCell = (r: RosterRow): string => {
   const g = r.goalStatus;
-  if (g === undefined) return "-";
+  if (g === undefined) return r.goalState ?? "-";
   return g.plan !== undefined ? `${g.state} ${g.plan.verified}/${g.plan.total}` : g.state;
 };
 
@@ -171,7 +171,7 @@ export function formatRoster(view: RosterView): string {
   for (const r of view.rows) {
     rows.push([
       r.name, r.kind, r.state, r.agent, r.model ?? "-", String(r.port), String(r.queueDepth), goalCell(r),
-      r.costUsd === null ? "-" : fmtUsd(r.treeCostUsd !== null && r.kind === "desk" ? r.treeCostUsd : r.costUsd),
+      (r.kind === "desk" ? r.treeCostUsd : r.costUsd) === null ? "-" : fmtUsd((r.kind === "desk" ? r.treeCostUsd : r.costUsd) as number),
     ]);
   }
   let out = view.rows.length === 0 ? `stack ${view.stack}: no desks running\n` : pad(rows);

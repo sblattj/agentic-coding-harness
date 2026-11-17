@@ -183,6 +183,23 @@ describe("host meter: pricing", () => {
     assert.equal(m.totals().inputTokens, 1000);
     assert.equal(m.overBudget(), false);
   });
+
+  it("unpriced usage is flagged costUnpriced in the RunRecord (costUsd 0 there means unknown), priced usage is not", () => {
+    const state = mkState();
+    const spec = mkSpec(state, { model: "ferry/no-such-model-xyz" });
+    const m = createHostMeter(spec);
+    m.begin({ pid: 1 });
+    m.usage(sample({ model: "ferry/no-such-model-xyz", costUsd: null }));
+    m.finish("success");
+    assert.equal(readRunRecord(state, spec.runId)?.totals?.costUnpriced, true);
+    const state2 = mkState();
+    const spec2 = mkSpec(state2);
+    const m2 = createHostMeter(spec2);
+    m2.begin({ pid: 1 });
+    m2.usage(sample({ costUsd: 0.5 }));
+    m2.finish("success");
+    assert.equal(readRunRecord(state2, spec2.runId)?.totals?.costUnpriced, undefined);
+  });
 });
 
 describe("host meter: totals throttle, heartbeat, finish", () => {

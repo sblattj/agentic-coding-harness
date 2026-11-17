@@ -55,6 +55,7 @@ import type {
   PaneSlot,
   PendingLane,
   RosterEntry,
+  GoalStatus,
   RosterRow,
   RosterView,
   Sender,
@@ -184,6 +185,45 @@ function appendLanesLog(stateDir: string, stack: string, v: Record<string, unkno
   const f = deskPaths(stateDir, stack).lanesLog;
   mkdirSync(dirname(f), { recursive: true });
   appendFileSync(f, `${JSON.stringify({ at: Date.now(), ...v })}\n`);
+}
+
+/** State of the last `goal` event in a run's events file, or null when none (or no file). */
+function lastGoalState(stateDir: string, stack: string, runId: string): GoalStatus["state"] | null {
+  let text: string;
+  try {
+    text = readFileSync(join(deskPaths(stateDir, stack).events, `${runId}.jsonl`), "utf8");
+  } catch {
+    return null;
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i] as string;
+    if (l === "") continue;
+    try {
+      const ev = JSON.parse(l) as { type?: string; data?: { goal?: { state?: GoalStatus["state"] } } };
+      if (ev.type === "goal" && typeof ev.data?.goal?.state === "string") return ev.data.goal.state;
+    } catch {
+      /* torn line */
+    }
+  }
+  return null;
+}
+
+function readLanesLog(stateDir: string, stack: string): Array<Record<string, unknown>> {
+  try {
+    return readFileSync(deskPaths(stateDir, stack).lanesLog, "utf8")
+      .split("\n")
+      .filter((l) => l !== "")
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l) as Record<string, unknown>];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
 }
 
 /** The stack's resolved layout: layout.json written by deskUp, else the searched layout. */
@@ -1019,12 +1059,50 @@ export async function laneStop(o: StackOpts & { name: string; by?: Sender }): Pr
   if (!e) throw new Error(`desks: unknown lane "${o.name}" in stack "${stack}"`);
   if (e.kind !== "lane") throw new Error(`desks: ${o.name} is a desk, not a lane; lane_stop refuses desk names`);
   const h = await hostHealth(e.url, 1500);
-  const goalState = h !== null && h.runId === e.runId ? h.goal?.state ?? "none" : "dead";
+  const preStop = h !== null && h.runId === e.runId ? h.goal?.state ?? "none" : "dead";
   await closePane(readStackTerminal(stateDir, stack), e.terminal);
   await stopEntry(stateDir, stack, e);
-  appendLanesLog(stateDir, stack, { event: "stop", name: o.name, by: o.by ?? "human", goalState, runId: e.runId });
+  // The goal plugin can report its verdict while the host is stopping (after the /health read above):
+  // the host's events file is complete, so its last goal event is the final state.
+  const goalState = lastGoalState(stateDir, stack, e.runId) ?? preStop;
+  appendLanesLog(stateDir, stack, { event: "stop", name: o.name, by: o.by ?? "human", goalState, runId: e.runId, entry: e });
   await removeEntry(stateDir, stack, o.name);
   return { stopped: o.name };
+}
+
+/** A row for a lane that was stopped (lanes.log has a stop entry, the roster no longer has it). */
+function stoppedLaneRow(stateDir: string, stack: string, name: string): RosterRow | null {
+  const log = readLanesLog(stateDir, stack).filter((l) => l.name === name);
+  const stop = [...log].reverse().find((l) => l.event === "stop");
+  if (!stop) return null;
+  const start = [...log].reverse().find((l) => l.event === "start" && l.runId === stop.runId);
+  const snap = stop.entry as RosterEntry | undefined;
+  const runId = String(stop.runId ?? "");
+  const base: RosterEntry = snap ?? {
+    name,
+    kind: "lane",
+    role: "lane",
+    agent: "-",
+    engine: "opencode",
+    mcps: [],
+    port: typeof start?.port === "number" ? start.port : 0,
+    url: "",
+    pid: 0,
+    runId,
+    cwd: "",
+    startedAt: typeof start?.at === "number" ? start.at : 0,
+    ...(typeof start?.goal === "string" ? { goal: start.goal.slice(0, 400) } : {}),
+    ...(typeof start?.by === "string" ? { launchedBy: start.by } : {}),
+  };
+  let costUsd: number | null = null;
+  try {
+    const rec = listRunRecords(stateDir).find((r) => r.runId === runId);
+    if (rec) costUsd = recordCost(rec);
+  } catch {
+    /* no registry */
+  }
+  // The events file wins over a log entry written before laneStop read it after the stop.
+  return { ...base, state: "stopped", queueDepth: 0, goalState: lastGoalState(stateDir, stack, runId) ?? (stop.goalState as RosterRow["goalState"]), costUsd, treeCostUsd: costUsd };
 }
 
 export async function laneStatus(o: StackOpts & { name?: string } = {}): Promise<RosterView["rows"]> {
@@ -1034,6 +1112,8 @@ export async function laneStatus(o: StackOpts & { name?: string } = {}): Promise
   const one = lanes.filter((r) => r.name === o.name);
   if (one.length === 0) {
     if (v.rows.some((r) => r.name === o.name)) throw new Error(`desks: ${o.name} is a desk, not a lane`);
+    const ended = stoppedLaneRow(ctx(o).stateDir, v.stack, o.name);
+    if (ended) return [ended];
     throw new Error(`desks: unknown lane "${o.name}" in stack "${v.stack}"`);
   }
   return one;
@@ -1109,12 +1189,28 @@ export async function decisionList(o: StackOpts & { state?: Decision["state"] } 
 
 /** Own cost + every lane below it. null when nothing in the tree has a record. */
 function treeCost(r: DeskCostRow): number | null {
-  let sum: number | null = r.costUsd;
+  if (r.costUsd === null) return null;
+  let sum = r.costUsd;
   for (const l of r.lanes) {
     const c = treeCost(l);
-    if (c !== null) sum = (sum ?? 0) + c;
+    if (c === null) return null; // any unknown part makes the tree total unknown, never a partial sum
+    sum += c;
   }
   return sum;
+}
+
+/**
+ * A record's own cost, or null when it is unknown. The meter writes 0 for usage it could not price
+ * (RunRecord.totals.costUsd is a required number): costUnpriced marks those; records written before
+ * the flag (desk host, tokens seen, 0 cost, no costSource) are treated the same.
+ */
+function recordCost(rec: RunRecord): number | null {
+  const t = rec.totals;
+  if (!t) return null;
+  if (t.costUnpriced === true) return null;
+  const tokens = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens;
+  if (t.costUsd === 0 && tokens > 0 && t.costSource === undefined && rec.producer === "ach-desk-host") return null;
+  return t.costUsd;
 }
 
 /** Cost per desk and per lane tree, from the run registry. */
@@ -1159,7 +1255,7 @@ export async function deskCosts(o: StackOpts = {}): Promise<DeskCostRow[]> {
       kind,
       runId,
       ...(parentRunId !== undefined ? { parentRunId } : {}),
-      costUsd: rec?.totals ? rec.totals.costUsd : null,
+      costUsd: rec ? recordCost(rec) : null,
       inputTokens: rec?.totals?.inputTokens ?? 0,
       outputTokens: rec?.totals?.outputTokens ?? 0,
       lanes,
@@ -1174,6 +1270,14 @@ export async function deskCosts(o: StackOpts = {}): Promise<DeskCostRow[]> {
     if (seen.has(e.runId)) continue;
     if (e.parentRunId && liveIds.has(e.parentRunId)) continue; // nested above
     out.push(row(e.runId, e.name, "lane", e.parentRunId, seen));
+  }
+  // Stopped lanes (gone from the roster) keep their spend: top-level unless a launcher row above already holds them.
+  const laneRecs = records.filter((r) => r.desk?.kind === "lane").sort((a, b) => a.startedAt - b.startedAt);
+  for (const r of laneRecs) {
+    if (seen.has(r.runId)) continue;
+    const parent = r.parentRunId ? byId.get(r.parentRunId) : undefined;
+    if (parent?.desk?.kind === "lane" && !seen.has(parent.runId)) continue; // nested when its parent lane is emitted
+    out.push(row(r.runId, r.desk?.name ?? r.runId, "lane", r.parentRunId, seen));
   }
   return out;
 }
