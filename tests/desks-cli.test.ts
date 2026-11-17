@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { describe, it } from "node:test";
 import { cmdDesk, cmdLane, formatChatEvent, formatRoster, parseSince, type DeskDeps, type DeskService } from "../src/cli/desk.ts";
+import type { HostTarget } from "../src/desks/host-client.ts";
 import type { Decision, DeskMessage, HostEvent, RosterEntry, RosterRow, RosterView } from "../src/desks/types.ts";
 
 type Call = { fn: string; args: unknown };
@@ -61,7 +62,7 @@ function rig(returns: Record<string, unknown> = {}, opts: { hostEvents?: HostEve
     decisionList: fn("decisionList", [decision()]), deskCosts: fn("deskCosts", []),
   } as unknown as DeskService;
   const host = {
-    hostEvents: async (_u: string, _s?: number) => opts.hostEvents ?? [],
+    hostEvents: async (_t: HostTarget, _s?: number) => opts.hostEvents ?? [],
     hostSubscribe: (target: unknown, since: number, cb: (e: HostEvent) => void) => {
       const s = { target, since, cb, stopped: false };
       subscribed.push(s);

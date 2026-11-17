@@ -21,6 +21,9 @@ import {
 } from '../src/web/desks-api.ts';
 import { startWebServer, type WebServerHandle } from '../src/web/server.ts';
 import { deskPaths } from '../src/desks/roster.ts';
+import type { HostTarget } from '../src/desks/host-client.ts';
+
+const urlOf = (t: HostTarget): string => (typeof t === 'string' ? t : t.url);
 import type { Decision, DecisionEvent, DeskMessage, HostEvent, RosterRow, RosterView } from '../src/desks/types.ts';
 
 const STACK = 'web-test';
@@ -101,15 +104,15 @@ interface Harness {
   base: string;
   calls: Call[];
   st: { view: RosterView; throwFor?: Record<string, Error> };
-  subs: Array<{ url: string; since: number; emit: (e: HostEvent) => void; unsubscribed: boolean }>;
-  attachUrls: string[];
+  subs: Array<{ url: HostTarget; since: number; emit: (e: HostEvent) => void; unsubscribed: boolean }>;
+  attachUrls: HostTarget[];
 }
 
 async function harness(stateDir: string, token?: string): Promise<Harness> {
   const calls: Call[] = [];
   const st: Harness['st'] = { view: viewOf([row('ORCH')]) };
   const subs: Harness['subs'] = [];
-  const attachUrls: string[] = [];
+  const attachUrls: HostTarget[] = [];
   const deps: DesksApiDeps = {
     service: fakeService(calls, st),
     hostSubscribe: (url, since, onEvent) => {
@@ -122,7 +125,7 @@ async function harness(stateDir: string, token?: string): Promise<Harness> {
     hostLastSeq: async () => 7,
     hostAttach: async (url) => {
       attachUrls.push(url);
-      return ['opencode', 'attach', url];
+      return ['opencode', 'attach', urlOf(url)];
     },
     engines: async (sd) => {
       assert.equal(sd, stateDir, 'engines probe uses the server state dir');
@@ -671,9 +674,9 @@ describe('desks web api: stream', () => {
     assert.ok(rosterFrames() > before);
     assert.ok(r2);
     await until(() => h.subs.length === 3);
-    assert.equal(h.subs.find((x) => x.url.endsWith('/DECISIONS'))!.unsubscribed, true, 'removed row is unsubscribed');
-    assert.equal(h.subs.find((x) => x.url.endsWith('/ORCH'))!.unsubscribed, false, 'kept row keeps its subscription');
-    assert.equal(h.subs.filter((x) => x.url.endsWith('/ORCH')).length, 1, 'kept row is not resubscribed');
+    assert.equal(h.subs.find((x) => urlOf(x.url).endsWith('/DECISIONS'))!.unsubscribed, true, 'removed row is unsubscribed');
+    assert.equal(h.subs.find((x) => urlOf(x.url).endsWith('/ORCH'))!.unsubscribed, false, 'kept row keeps its subscription');
+    assert.equal(h.subs.filter((x) => urlOf(x.url).endsWith('/ORCH')).length, 1, 'kept row is not resubscribed');
 
     // closing the client cleans up every subscription and the stream itself
     assert.equal(openDesksStreamCount(), 1);
