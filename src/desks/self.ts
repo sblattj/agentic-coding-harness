@@ -14,3 +14,20 @@ export function achSelfArgv(env: NodeJS.ProcessEnv = process.env): string[] {
   const script = process.argv[1];
   return script === undefined ? [process.execPath] : [process.execPath, ...process.execArgv, script];
 }
+
+/**
+ * The `desks` MCP server every desk/lane engine gets: `ach mcp` over stdio with
+ * the desk identity in env. Frozen in wave 0; both engines use it.
+ */
+export function desksMcpDef(o: { name: string; stack: string; stateDir: string }, env: NodeJS.ProcessEnv = process.env): {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+} {
+  const [command, ...rest] = achSelfArgv(env);
+  return {
+    command: command as string,
+    args: [...rest, "mcp"],
+    env: { ACH_DESK_NAME: o.name, ACH_DESK_STACK: o.stack, AGENTIC_CODING_HARNESS_STATE_DIR: o.stateDir },
+  };
+}
