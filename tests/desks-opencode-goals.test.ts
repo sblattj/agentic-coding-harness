@@ -79,12 +79,25 @@ describe("readOpencodeGoal", () => {
   it("plan progress counts done+pass actions", () => {
     const dir = tmp();
     const actions = [
-      { status: "done", verdict: "pass" },
-      { status: "done", verdict: "fail" },
+      { status: "done", verdict: "pass", claim: "c", evidence: "e" },
+      { status: "done", verdict: "fail", claim: "c", evidence: "e" },
       { status: "pending", verdict: null },
     ];
     put(dir, "e".repeat(64), { goals: [live({ plan: { actions } })] });
     assert.deepEqual(readOpencodeGoal({ dir, sessionId: SID }).plan, { verified: 1, total: 3 });
+  });
+
+  it("plan progress needs claim and evidence as well as done+pass", () => {
+    const dir = tmp();
+    const actions = [
+      { status: "done", verdict: "pass", claim: "c", evidence: "e" },
+      { status: "done", verdict: "pass", claim: "c" },
+      { status: "done", verdict: "pass", evidence: "e" },
+      { status: "done", verdict: "pass", claim: "  ", evidence: "e" },
+      { status: "done", verdict: "pass" },
+    ];
+    put(dir, "f".repeat(64), { goals: [live({ plan: { actions } })] });
+    assert.deepEqual(readOpencodeGoal({ dir, sessionId: SID }).plan, { verified: 1, total: 5 });
   });
 
   it("achieved result only in archives[].results[]; newest wins; live goal beats results", () => {

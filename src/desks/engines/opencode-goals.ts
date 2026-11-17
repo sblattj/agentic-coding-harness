@@ -145,7 +145,8 @@ function planOf(goal: Json): { verified: number; total: number } | undefined {
   const plan = goal.plan;
   const actions = isObj(plan) && Array.isArray(plan.actions) ? plan.actions.filter(isObj) : [];
   if (!actions.length) return undefined;
-  const verified = actions.filter((a) => a.status === "done" && a.verdict === "pass").length;
+  // Same rule as the plugin's planActionVerified: done + claim + evidence + verdict "pass".
+  const verified = actions.filter((a) => a.status === "done" && a.verdict === "pass" && str(a.claim).trim() !== "" && str(a.evidence).trim() !== "").length;
   return { verified, total: actions.length };
 }
 
