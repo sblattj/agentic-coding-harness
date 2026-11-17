@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { parseLayout } from '../src/desks/config.ts';
-import { deskPaths, putEntry, readRoster, validStackName } from '../src/desks/roster.ts';
-import { deskEvents, deskSwitchEngine, laneApprove, laneNew, laneStop, resolveStack } from '../src/desks/service.ts';
+import { appendPendingLane, deskPaths, putEntry, readRoster, updateRoster, validStackName } from '../src/desks/roster.ts';
+import { deskEvents, deskRoster, deskSwitchEngine, laneApprove, laneNew, laneReject, laneStop, resolveStack } from '../src/desks/service.ts';
 import type { PendingLane, RosterEntry } from '../src/desks/types.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
@@ -157,6 +157,40 @@ describe('"human" is reserved', () => {
       () => parseLayout(JSON.stringify({ desks: [{ name: 'HUMAN', role: 'orchestrator' }] }), 'inline'),
       /desks\[0\]\.name: .*reserved/,
     );
+  });
+});
+
+describe('stale holds expire', () => {
+  it('a starting reservation holds a name only while fresh and its pid lives', async () => {
+    const { sd, stack } = setupStack('decisions');
+    await updateRoster(sd, stack, (r) => {
+      r.starting = { held: { token: 't', pid: process.pid, at: Date.now() } };
+    });
+    await assert.rejects(laneNew({ stateDir: sd, stack, name: 'HELD', goal: 'x', launchedBy: 'ORCHESTRATOR' }), /being started/);
+    await updateRoster(sd, stack, (r) => {
+      r.starting = { held: { token: 't', pid: process.pid, at: Date.now() - 10 * 60_000 } };
+    });
+    assert.ok('pending' in (await laneNew({ stateDir: sd, stack, name: 'held', goal: 'x', launchedBy: 'ORCHESTRATOR' })), 'old reservation ignored');
+    await updateRoster(sd, stack, (r) => {
+      r.starting = { gone: { token: 't', pid: 999_999_9, at: Date.now() } };
+    });
+    assert.ok('pending' in (await laneNew({ stateDir: sd, stack, name: 'gone', goal: 'x', launchedBy: 'ORCHESTRATOR' })), 'dead-pid reservation ignored');
+  });
+
+  it('an approving request is refused while fresh and pending again once stale', async () => {
+    const { sd, stack } = setupStack('decisions');
+    const r = await laneNew({ stateDir: sd, stack, name: 'slow', goal: 'x', launchedBy: 'ORCHESTRATOR' });
+    const p = (r as { pending: PendingLane }).pending;
+    appendPendingLane(sd, stack, { ...p, state: 'approving', decidedBy: 'DECISIONS', decidedAt: Date.now() });
+    await assert.rejects(laneApprove({ stateDir: sd, stack, id: p.id, by: 'DECISIONS' }), /already approving/);
+    await assert.rejects(laneReject({ stateDir: sd, stack, id: p.id, by: 'DECISIONS' }), /already approving/);
+    await assert.rejects(laneNew({ stateDir: sd, stack, name: 'SLOW', goal: 'x', launchedBy: 'ORCHESTRATOR' }), /already pending/);
+    assert.deepEqual((await deskRoster({ stateDir: sd, stack, prune: false })).pendingLanes, [], 'a fresh approving request is not listed as pending');
+    appendPendingLane(sd, stack, { ...p, state: 'approving', decidedBy: 'DECISIONS', decidedAt: Date.now() - 10 * 60_000 });
+    const listed = (await deskRoster({ stateDir: sd, stack, prune: false })).pendingLanes;
+    assert.deepEqual(listed.map((x) => [x.id, x.state]), [[p.id, 'pending']], 'a crashed approve is listed as pending again');
+    const rej = await laneReject({ stateDir: sd, stack, id: p.id, by: 'DECISIONS' });
+    assert.equal(rej.state, 'rejected');
   });
 });
 

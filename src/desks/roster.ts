@@ -237,7 +237,7 @@ export function nextPendingLaneId(stateDir: string, stack: string): string {
 
 /** "human" (any case) is the user's sender and approver identity, never a desk or lane. */
 export function reservedName(name: string): boolean {
-  return name.toLowerCase() === "human";
+  return typeof name === "string" && name.toLowerCase() === "human";
 }
 
 /** Validates a desk/lane name: /^[A-Z][A-Z0-9_-]{0,31}$/ for desks; lanes also allow lower-case: /^[a-z0-9][a-z0-9_-]{0,47}$/i. Reserved names fail. */

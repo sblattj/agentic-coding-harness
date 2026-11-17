@@ -729,7 +729,9 @@ export async function deskRoster(o: StackOpts & { me?: string; prune?: boolean }
     portBase: roster.portBase,
     ...(o.me !== undefined ? { me: o.me } : {}),
     rows,
-    pendingLanes: readPendingLanes(stateDir, stack).filter((p) => p.state === "pending"),
+    pendingLanes: readPendingLanes(stateDir, stack)
+      .filter((p) => effectiveState(p) === "pending")
+      .map((p) => (p.state === "pending" ? p : { ...p, state: "pending" as const })),
     openDecisions: readDecisions(stateDir, stack).filter((d) => d.state === "open"),
   };
 }
@@ -981,11 +983,16 @@ async function startLane(stateDir: string, stack: string, req: LaneReq, skipPend
     r.starting = { ...liveReservations(r), [req.name]: { token, pid: process.pid, at: Date.now() } };
   });
   try {
-    return await startReservedLane(stateDir, stack, req, layout, token);
-  } finally {
-    await updateRoster(stateDir, stack, (r) => {
-      dropReservation(r, req.name, token);
-    });
+    return await startReservedLane(stateDir, stack, req, layout, token); // success already swapped the reservation for the entry
+  } catch (e) {
+    try {
+      await updateRoster(stateDir, stack, (r) => {
+        dropReservation(r, req.name, token);
+      });
+    } catch {
+      /* a stuck lock must not hide the start error; the reservation goes stale on its own */
+    }
+    throw e;
   }
 }
 

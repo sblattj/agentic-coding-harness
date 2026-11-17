@@ -441,6 +441,9 @@ describe('desks web api: routes', () => {
     assert.equal(statusForError(new Error('no such decision D4')), 404);
     assert.equal(statusForError(new Error('desks: stack default is already up (ORCH alive)')), 409);
     assert.equal(statusForError(new Error('refusing self-send')), 409);
+    assert.equal(statusForError(new Error('desks: invalid stack name "../x"')), 400);
+    assert.equal(statusForError(new Error('desks: invalid desk or lane name "../x"')), 400);
+    assert.equal(statusForError(new Error('desks: invalid run id "../x"')), 400);
     assert.equal(statusForError(new Error('desks: deskUp not implemented yet')), 500);
     assert.equal(statusForError('boom'), 500);
   });
