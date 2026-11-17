@@ -218,6 +218,8 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   let lastPreview: string | undefined;
   let budgetAlerted = false;
   let stopping: Promise<number> | undefined;
+  /** Engine creation + engine.start(), while in flight: stop() waits for it so no engine outlives the host. */
+  let startup: Promise<void> | undefined;
   let heartbeat: NodeJS.Timeout | undefined;
   let resolveDone!: (code: number) => void;
   const done = new Promise<number>((r) => (resolveDone = r));
@@ -320,6 +322,8 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
 
   const onEngineEvent = (e: EngineEvent): void => {
     record(e.type, e.data);
+    // fatal: the engine cannot continue (its server died); stop with status error, exit 1.
+    if (e.type === "error" && e.data.fatal === true) void stop("error", HOST_EXIT.engineFailed);
     if (e.type === "turn_start") {
       if (state === "idle") setState("busy");
     } else if (e.type === "turn_end") {
@@ -377,8 +381,10 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     });
   };
 
-  function stop(status?: "success" | "error" | "aborted", code = HOST_EXIT.ok): Promise<number> {
+  function stop(status?: "success" | "error" | "aborted", code: number = HOST_EXIT.ok): Promise<number> {
     if (stopping !== undefined) return stopping;
+    // Only a start still in flight when stop() begins needs the second engine stop below.
+    const startInFlight = startup;
     stopping = (async () => {
       setState("stopping");
       if (heartbeat !== undefined) clearInterval(heartbeat);
@@ -394,6 +400,16 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
       if (engine !== undefined) {
         try {
           await engine.stop();
+        } catch (e) {
+          record("error", { error: `engine stop: ${errText(e)}` });
+        }
+      }
+      if (startInFlight !== undefined) {
+        // An engine.start() still running when stop() began may have come up after the stop above:
+        // wait for it to settle, then stop the engine again.
+        await startInFlight.catch(() => undefined);
+        try {
+          await engine?.stop();
         } catch (e) {
           record("error", { error: `engine stop: ${errText(e)}` });
         }
@@ -542,17 +558,25 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
 
   // --- startup -----------------------------------------------------------------
   try {
-    meter = makeMeter(spec);
-    engine = await makeEngine(spec.engine);
-    engine.onEvent(onEngineEvent);
-    meter.begin({ pid: process.pid });
-    const started = await engine.start(spec);
-    sessionId = started.sessionId;
-    engineUrl = started.engineUrl;
-    if (sessionId !== undefined) meter.begin({ sessionId, pid: process.pid });
+    startup = (async () => {
+      meter = makeMeter(spec);
+      const eng = await makeEngine(spec.engine);
+      engine = eng;
+      eng.onEvent(onEngineEvent);
+      meter.begin({ pid: process.pid });
+      if (stopping !== undefined) return; // stopped while the engine was being created: never start it
+      const started = await eng.start(spec);
+      sessionId = started.sessionId;
+      engineUrl = started.engineUrl;
+      if (sessionId !== undefined) meter.begin({ sessionId, pid: process.pid });
+    })().finally(() => {
+      startup = undefined;
+    });
+    await startup;
   } catch (e) {
+    // A stop already in flight owns finish + close; a start it cut short is not an error.
+    if (stopping !== undefined) return done;
     record("error", { error: `engine start failed: ${errText(e)}` });
-    if (stopping !== undefined) return done; // a stop was already in flight; it owns finish + close
     process.stderr.write(`desk host ${spec.name}: engine start failed: ${errText(e)}\n`);
     setState("error");
     stopping = Promise.resolve(HOST_EXIT.engineFailed);

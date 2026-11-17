@@ -437,9 +437,16 @@ describe('desk host: other routes', () => {
 
   it('/stop responds, stops engine, finishes meter, closes server, resolves 0', async () => {
     const s = await start();
+    let stopCalls = 0;
+    const origStop = s.engine.stop.bind(s.engine);
+    s.engine.stop = async () => {
+      stopCalls++;
+      await origStop();
+    };
     await hostStop(s.url);
     assert.equal(await s.done, 0);
     assert.equal(s.engine.stopped, true);
+    assert.equal(stopCalls, 1, 'a stop with no start in flight stops the engine once');
     assert.deepEqual(s.meter.finished, ['aborted']);
     assert.equal(await hostHealth(s.url, 1000), null, 'server closed');
   });
@@ -513,6 +520,78 @@ describe('desk host: lanes, budget, failures', () => {
     assert.equal(await hostHealth(url, 1000), null, 'server closed after failure');
     const file = join(deskPaths(stateDir, 'test').events, 'run_test_1.jsonl');
     assert.ok(readFileSync(file, 'utf8').includes('engine start failed: boom: no agent'));
+  });
+
+  it('stop while engine.start is in flight: the engine is stopped again after start settles', async () => {
+    const stateDir = tmpDir();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    // An engine that cannot abort its own start: it comes up after stop() was called once.
+    let live = false;
+    const engine = new FakeEngine();
+    engine.start = async () => {
+      await gate;
+      live = true;
+      return { sessionId: 'sess-1' };
+    };
+    engine.stop = async () => {
+      engine.stopped = true;
+      live = false;
+    };
+    let url = '';
+    const done = runHost(baseSpec(stateDir), {
+      createEngine: async () => engine,
+      createHostMeter: () => new FakeMeter(),
+      installSignals: false,
+      onReady: (i) => (url = i.url),
+    });
+    await waitFor(() => url !== '', 'ready');
+    await hostStop(url);
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    const code = await Promise.race([done, new Promise<string>((r) => setTimeout(() => r('timeout'), 3000))]);
+    assert.equal(code, 0);
+    assert.equal(live, false, 'no engine left running after stop');
+  });
+
+  it('stop while the engine is still being created: start is never called', async () => {
+    const stateDir = tmpDir();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const engine = new FakeEngine();
+    let startCalls = 0;
+    engine.start = async () => {
+      startCalls++;
+      return { sessionId: 'sess-1' };
+    };
+    let url = '';
+    const done = runHost(baseSpec(stateDir), {
+      createEngine: async () => {
+        await gate;
+        return engine;
+      },
+      createHostMeter: () => new FakeMeter(),
+      installSignals: false,
+      onReady: (i) => (url = i.url),
+    });
+    await waitFor(() => url !== '', 'ready');
+    await hostStop(url);
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    const code = await Promise.race([done, new Promise<string>((r) => setTimeout(() => r('timeout'), 3000))]);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(code, 0);
+    assert.ok(startCalls === 0 || engine.stopped, 'an engine that started was stopped');
+    assert.equal(startCalls, 0, 'start skipped once a stop is in flight');
+  });
+
+  it('a fatal engine error stops the host with status error and exit 1', async () => {
+    const s = await start();
+    (s.engine as unknown as { emit(e: EngineEvent): void }).emit({ type: 'error', data: { error: 'opencode serve exited (1)', fatal: true } });
+    const code = await Promise.race([s.done, new Promise<string>((r) => setTimeout(() => r('timeout'), 3000))]);
+    assert.equal(code, 1);
+    assert.equal(s.engine.stopped, true);
+    assert.deepEqual(s.meter.finished, ['error']);
   });
 
   it('port in use: exit 3, engine never started', async () => {

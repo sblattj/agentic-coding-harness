@@ -2,7 +2,7 @@
 // against a real `opencode serve` (ACH_DESKS_LIVE=1).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -66,6 +66,7 @@ class FakeOpencode {
   sessionId = "ses_fake1";
 
   messageDelayMs = 0;
+  failPrompt = false;
 
   constructor() {
     this.server = createServer((req, res) => void this.handle(req, res));
@@ -115,6 +116,7 @@ class FakeOpencode {
       return json(200, this.messages);
     }
     if (req.method === "POST" && url.pathname === `/session/${sid}/prompt_async`) {
+      if (this.failPrompt) return json(500, { error: "prompt refused" });
       res.writeHead(204);
       return void res.end();
     }
@@ -162,7 +164,21 @@ function fakeSpawn(fake: FakeOpencode, calls: SpawnCall[], onSpawn?: (n: number)
   };
 }
 
-function setup(o: { mcps?: string[]; model?: string; leakFirstBoot?: string } = {}) {
+/** Wrap a spawn seam to count serves that were spawned and have not exited. */
+function liveCounter(inner: SpawnServe): { spawn: SpawnServe; live: () => number } {
+  let live = 0;
+  return {
+    live: () => live,
+    spawn: (o) => {
+      const p = inner(o);
+      live++;
+      void p.exited.then(() => live--);
+      return p;
+    },
+  };
+}
+
+function setup(o:{ mcps?: string[]; model?: string; leakFirstBoot?: string } = {}) {
   const home = tmp("ach-oce-home-");
   const cwd = tmp("ach-oce-cwd-");
   const stateDir = tmp("ach-oce-state-");
@@ -690,6 +706,189 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     await eng.stop();
     assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
     assert.equal(await portIsOpen(port), false);
+  });
+
+  it("stop() during the lock-retry sleep: start rejects, no serve is respawned", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    const normal = fakeSpawn(fake, []);
+    let spawns = 0;
+    const lockedFirst: SpawnServe = (o) => {
+      spawns++;
+      if (spawns > 1) return normal(o);
+      mkdirSync(dirname(o.logFile), { recursive: true });
+      appendFileSync(o.logFile, "database is locked\n");
+      return { pid: 999, kill() {}, exited: Promise.resolve(1) };
+    };
+    const live = liveCounter(lockedFirst);
+    const eng = new OpenCodeEngine({ env, spawn: live.spawn, stopGraceMs: 500, lockRetryDelayMs: 300 });
+    const started = eng.start(spec).then(() => "started", (e: Error) => e.message);
+    await until(() => spawns === 1, 2000, "first boot");
+    await sleep(30);
+    await eng.stop();
+    const r = await started;
+    await eng.stop();
+    assert.match(r, /stopped during start/);
+    assert.equal(spawns, 1, "no re-boot after stop");
+    assert.equal(live.live(), 0, "no live serve");
+    assert.equal(await portIsOpen(port), false);
+  });
+
+  it("stop() while the first port probe is pending: nothing is spawned", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    const calls: SpawnCall[] = [];
+    const live = liveCounter(fakeSpawn(fake, calls));
+    const eng = new OpenCodeEngine({ env, spawn: live.spawn, stopGraceMs: 500 });
+    const started = eng.start(spec).then(() => "started", (e: Error) => e.message);
+    await eng.stop();
+    const r = await started;
+    await eng.stop();
+    assert.match(r, /stopped during start/);
+    assert.equal(calls.length, 0);
+    assert.equal(live.live(), 0);
+    assert.equal(await portIsOpen(port), false);
+  });
+
+  it("stop() between leak-restart boots: no second boot", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    fake.mcp = { desks: { status: "connected" }, hidden: { status: "connected" } };
+    const calls: SpawnCall[] = [];
+    let eng!: OpenCodeEngine;
+    let stopCall: Promise<void> | undefined;
+    const spawn: SpawnServe = (o) => {
+      if (calls.length > 0) {
+        const f = new FakeOpencode();
+        f.port = port;
+        return fakeSpawn(f, calls)(o);
+      }
+      const p = fakeSpawn(fake, calls)(o);
+      return {
+        ...p,
+        kill(sig) {
+          stopCall ??= eng.stop();
+          p.kill(sig);
+        },
+      };
+    };
+    const live = liveCounter(spawn);
+    eng = new OpenCodeEngine({ env, spawn: live.spawn, stopGraceMs: 500 });
+    const r = await eng.start(spec).then(() => "started", (e: Error) => e.message);
+    await stopCall;
+    await eng.stop();
+    assert.match(r, /stopped during start/);
+    assert.equal(calls.length, 1, "no second boot after stop");
+    assert.equal(live.live(), 0);
+    assert.equal(await portIsOpen(port), false);
+  });
+
+  it("the lock retry reads only this boot's log lines, not an older boot's", async () => {
+    const { env, spec } = setup();
+    spec.enginePort = await new FakeOpencode().listen();
+    let spawns = 0;
+    const spawn: SpawnServe = (o) => {
+      spawns++;
+      mkdirSync(dirname(o.logFile), { recursive: true });
+      appendFileSync(o.logFile, spawns === 1 ? "Error: Unexpected error\n\ndatabase is locked\n" : "Error: bad config\n");
+      return { pid: 999, kill() {}, exited: Promise.resolve(1) };
+    };
+    const eng = new OpenCodeEngine({ env, spawn, stopGraceMs: 500, lockRetryDelayMs: 10 });
+    const r = await eng.start(spec).then(() => "started", (e: Error) => e.message);
+    assert.equal(spawns, 2, "one lock retry, then the bad config is final");
+    assert.match(r, /exited \(1\) before ready[\s\S]*bad config/);
+    assert.doesNotMatch(r, /database is locked/, "the error shows only this boot's log");
+  });
+
+  it("serve dying mid-turn after ready: fatal error, then turn_end with an error marker", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    let crash!: () => void;
+    const spawn: SpawnServe = () => {
+      fake.open();
+      let res!: (c: number | string | null) => void;
+      const exited = new Promise<number | string | null>((r) => (res = r));
+      crash = () => void fake.close().then(() => res(1));
+      return {
+        pid: 77,
+        kill(sig) {
+          if (sig === "SIGTERM" || sig === "SIGKILL") void fake.close().then(() => res(sig));
+        },
+        exited,
+      };
+    };
+    const eng = new OpenCodeEngine({ env, spawn, stopGraceMs: 500 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    try {
+      await eng.start(spec);
+      await eng.send("go");
+      eng.handleEvent({ type: "session.status", properties: { sessionID: "ses_fake1", status: { type: "busy" } } });
+      crash();
+      await until(() => events.some((e) => e.type === "turn_end"), 2000, "turn_end after the crash");
+      assert.deepEqual(events.map((e) => e.type), ["turn_start", "error", "turn_end"]);
+      assert.equal(events[1]!.data.fatal, true);
+      assert.match(String(events[1]!.data.error), /opencode serve exited \(1\)/);
+      assert.match(String(events[2]!.data.error), /opencode serve exited/);
+    } finally {
+      await eng.stop();
+    }
+  });
+
+  it("a turn that ends within the send grace without opencode ever showing busy still ends", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500, sendGraceMs: 150 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    try {
+      await eng.start(spec);
+      await eng.send("fails at once");
+      // The only idle signal arrives inside the grace, so it is (rightly) ignored as stale.
+      eng.handleEvent({ type: "session.idle", properties: { sessionID: "ses_fake1" } });
+      await until(() => events.some((e) => e.type === "turn_end"), 2000, "turn_end after the grace");
+      assert.deepEqual(events.map((e) => e.type), ["turn_start", "turn_end"]);
+      // A turn opencode reports busy at grace expiry is not ended by the timer.
+      fake.status = { ses_fake1: { type: "busy" } };
+      await eng.send("long turn");
+      await sleep(400);
+      assert.deepEqual(events.map((e) => e.type), ["turn_start", "turn_end", "turn_start"]);
+    } finally {
+      await eng.stop();
+    }
+  });
+
+  it("send() failing while an idle transition is in flight leaves no phantom turn_start", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    fake.messageDelayMs = 200;
+    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    const S = "ses_fake1";
+    try {
+      await eng.start(spec);
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "busy" } } });
+      eng.handleEvent({ type: "session.idle", properties: { sessionID: S } });
+      fake.failPrompt = true;
+      await assert.rejects(eng.send("next"), /HTTP 500/);
+      await sleep(400);
+      assert.deepEqual(events.map((e) => e.type), ["turn_start", "turn_end"]);
+    } finally {
+      await eng.stop();
+    }
   });
 
   it("methods before start() throw a clear error; stop() before start() is a no-op", async () => {

@@ -15,11 +15,22 @@ export const OPENCODE_GOAL_MARKER = "New active goal";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** Identity of each message in a GET /session/<sid>/message list: info.id, else its position. */
+function messageKeys(list: unknown[]): string[] {
+  return list.map((m, i) => {
+    const id = isObj(m) && isObj(m.info) ? m.info.id : undefined;
+    return typeof id === "string" && id !== "" ? id : `#${i}`;
+  });
+}
+
 /**
- * POST <baseUrl>/session/<sid>/command {command:"goal", arguments, model} in the background
- * (it blocks until the goal's first turn ends), then poll GET /session/<sid>/message for the
- * plugin's "New active goal" text for up to timeoutMs (default 40 s). Resolves when seen; throws otherwise.
- * `pollMs` (default 1000) is exposed for tests.
+ * Read the session's messages once BEFORE posting (the baseline), then POST
+ * <baseUrl>/session/<sid>/command {command:"goal", arguments, model} in the background (it blocks
+ * until the goal's first turn ends), then poll GET /session/<sid>/message for the plugin's
+ * "New active goal" text for up to timeoutMs (default 40 s). Only messages that are not in the
+ * baseline count: an earlier goal's marker in the history never confirms a new goal. The marker
+ * is not matched against the objective (the plugin may rewrite flags out of the arguments).
+ * Resolves when seen; throws otherwise. `pollMs` (default 1000) is exposed for tests.
  */
 export async function setOpencodeGoal(o: {
   baseUrl: string;
@@ -35,6 +46,19 @@ export async function setOpencodeGoal(o: {
   const pollMs = o.pollMs ?? 1000;
   const body: Record<string, string> = { command: "goal", arguments: o.objective };
   if (o.model) body.model = o.model;
+
+  const listUrl = `${base}/session/${sid}/message`;
+  const baseline = await fetch(listUrl)
+    .then(async (r) => {
+      const text = await r.text();
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 300)}`);
+      const list = JSON.parse(text) as unknown;
+      if (!Array.isArray(list)) throw new Error(`not a message list: ${text.slice(0, 300)}`);
+      return new Set(messageKeys(list));
+    })
+    .catch((e: unknown) => {
+      throw new Error(`opencode goal: cannot read the session messages before posting: ${e instanceof Error ? e.message : String(e)}`);
+    });
 
   let postError: Error | undefined;
   const post = fetch(`${base}/session/${sid}/command`, {
@@ -57,10 +81,19 @@ export async function setOpencodeGoal(o: {
   for (;;) {
     if (postError) throw postError;
     try {
-      const r = await fetch(`${base}/session/${sid}/message`);
+      const r = await fetch(listUrl);
       if (r.ok) {
         last = await r.text();
-        if (last.includes(OPENCODE_GOAL_MARKER)) return;
+        let list: unknown;
+        try {
+          list = JSON.parse(last);
+        } catch {
+          list = undefined;
+        }
+        if (Array.isArray(list)) {
+          const keys = messageKeys(list);
+          if (list.some((m, i) => !baseline.has(keys[i]!) && JSON.stringify(m).includes(OPENCODE_GOAL_MARKER))) return;
+        }
       } else {
         last = `GET /message HTTP ${r.status}`;
       }
