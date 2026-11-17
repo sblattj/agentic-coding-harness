@@ -169,4 +169,80 @@ final class Box<T>: @unchecked Sendable {
         let logText = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
         #expect(logText.contains("fake ach web --port 9999 --no-open"))
     }
+
+    private func fakeAch(_ dir: URL, body: String) throws -> String {
+        let script = dir.appendingPathComponent("fake-ach-\(UUID().uuidString).sh").path
+        try "#!/bin/sh\n\(body)\n".write(toFile: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+        return script
+    }
+
+    @Test func startRefusesWhileAChildIsRunning() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ach-desk-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let proc = BackendProcess(logURL: dir.appendingPathComponent("p.log"))
+        let script = try fakeAch(dir, body: "exec sleep 30")
+        try proc.start(achPath: script, port: 1, environment: ["PATH": "/usr/bin:/bin"])
+        let first = proc.process!
+        defer { proc.stop(grace: 2) }
+        #expect(throws: BackendProcess.StartError.self) {
+            try proc.start(achPath: script, port: 1, environment: ["PATH": "/usr/bin:/bin"])
+        }
+        #expect(proc.process === first) // the original child is kept, not overwritten
+        #expect(first.isRunning)
+    }
+
+    @Test func probeTimeoutIsNotNotRunning() async throws {
+        let slow = try MockServer { _, _ in
+            Thread.sleep(forTimeInterval: 4)
+            return .json(200, "{}")
+        }
+        try await slow.start()
+        defer { slow.stop() }
+        let r = await BackendLauncher.probe(APIClient(config: ServerConfig(port: slow.port)))
+        #expect(r != .notRunning)
+        if case .occupied = r {} else { Issue.record("expected occupied for a timeout, got \(r)") }
+    }
+
+    @Test func bootTimeoutStopsTheChild() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ach-desk-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let proc = BackendProcess(logURL: dir.appendingPathComponent("p.log"))
+        let script = try fakeAch(dir, body: "exec sleep 30")
+        let probeServer = try MockServer(handler: desksHandler)
+        try await probeServer.start()
+        let free = probeServer.port
+        probeServer.stop()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        var s = AppSettings()
+        s.port = free
+        let l = BackendLauncher(isExecutable: { _ in true }, runCapture: { _, args in args.last == "command -v ach" ? script : nil })
+        let out = await BackendBoot.ensure(settings: s, launcher: l, process: proc, bundledAchPath: nil, waitSeconds: 1)
+        if case .failed(let m) = out { #expect(m.contains("did not answer")) } else { Issue.record("expected failure, got \(out)") }
+        #expect(!proc.isRunning)
+    }
+
+    @Test func captureTimesOutOnAHungCommand() {
+        let t0 = Date()
+        let out = BackendLauncher.capture("/bin/sleep", ["30"], 0.5)
+        #expect(out == nil)
+        #expect(Date().timeIntervalSince(t0) < 5)
+    }
+
+    @Test func startClosesItsLogHandle() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ach-desk-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let proc = BackendProcess(logURL: dir.appendingPathComponent("p.log"))
+        let script = try fakeAch(dir, body: "exit 0")
+        func openFDs() -> Int { (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0 }
+        let before = openFDs()
+        for _ in 0..<20 {
+            try proc.start(achPath: script, port: 1, environment: ["PATH": "/usr/bin:/bin"])
+            proc.process?.waitUntilExit()
+        }
+        #expect(openFDs() - before < 10) // 20 leaked handles would add ~20
+    }
 }

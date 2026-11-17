@@ -29,6 +29,7 @@ public enum BackendBoot {
             return .reused(v)
         case .occupied(let status, let detail):
             let hint = status == 401 ? " The token in Settings does not match the server's." : status == 404 ? " That ach web has no /api/desks (older ach?)." : ""
+            if status == 0 { return .failed("Port \(settings.port) is open but did not answer in time (\(detail)). Not starting a second ach web; retry in a moment.") }
             return .failed("Port \(settings.port) answers HTTP \(status) but is not the ach desks API.\(hint) \(detail)")
         case .notRunning:
             break
@@ -58,6 +59,7 @@ public enum BackendBoot {
             if case .serving(let v) = await BackendLauncher.probe(client) { return .started(location: loc, view: v) }
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
+        process.stop() // do not leave a half-booted child running (a retry would orphan it)
         return .failed("ach web did not answer /api/desks within \(Int(waitSeconds)) s; see \(process.logURL.path)")
     }
 }

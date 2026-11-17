@@ -444,8 +444,12 @@ public struct NewLaneBody: Encodable, Equatable, Sendable {
         self.budgetUsd = budgetUsd
     }
 
-    /// Desk/lane name rule from types.ts DeskSpec.name: /^[A-Z][A-Z0-9_-]{0,31}$/
+    /// Lane name rule from src/desks/roster.ts validName(lane): /^[a-z0-9][a-z0-9_-]{0,47}$/i (case-insensitive,
+    /// may start with a digit, up to 48 chars). "human" is reserved (the sender id for the user), any case.
     public static func isValidName(_ s: String) -> Bool {
-        s.range(of: "^[A-Z][A-Z0-9_-]{0,31}$", options: .regularExpression) != nil
+        guard s.range(of: "^[a-z0-9][a-z0-9_-]{0,47}$", options: [.regularExpression, .caseInsensitive]) != nil else { return false }
+        // NSRegularExpression's $ also matches before a trailing newline; JS /$/ does not.
+        if s.hasSuffix("\n") { return false }
+        return s.lowercased() != "human"
     }
 }

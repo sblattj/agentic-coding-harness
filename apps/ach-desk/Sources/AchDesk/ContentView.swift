@@ -77,7 +77,7 @@ struct BackendBanner: View {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(msg).font(.callout).textSelection(.enabled)
                 Spacer()
-                Button("Retry") { model.connect() }
+                Button("Retry") { model.connect() }.disabled(model.booting)
             }
             .padding(10)
             .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
