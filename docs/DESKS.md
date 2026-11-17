@@ -210,12 +210,13 @@ ach lane reject <Ln> [--reason R]
 
 Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else `human`.
 
-- `desk up` refuses when any desk of the stack is alive. `--port-base` overrides the layout (a test stack beside the live one). `--tmux-session` picks the tmux session that gets the `desks` window and the lane windows.
-- `desk down` stops every lane, then every desk (feed, pane, host), and leaves an empty roster with no processes.
+- `desk up` refuses when any desk of the stack is alive. `--port-base` overrides the layout (a test stack beside the live one). `--tmux-session` picks the tmux session that gets the `desks` window and the lane windows. When the hosts start but the panes cannot be opened, `desk up` still succeeds and says so (`note` in the `RosterView`); `ach desk attach` opens them.
+- `desk down` stops every lane, then every desk (feed, pane, host), and leaves an empty roster with no processes. A lane whose stop fails does not stop the rest: its host is stopped anyway, the desks go down, and `desk down` then reports the failed lanes as an error.
+- Stops never touch what is no longer ours: `/stop` goes to a port only while its `/health` answers for the entry's run, and a recorded pid is signalled only while its command line still runs that desk's `desk host --spec <specs/name.json>`.
 - `desk send` and `desk answer` send as `human`.
-- `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions.
+- `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions. An agent name ach does not know (the list `GET /api/desks/engines` shows) is refused before the running host is stopped. When the new engine fails to start, the desk is restarted on its previous agent on the same port (with a new run id) and the start error is returned.
 - `lane stop` refuses desk names. A busy lane gets up to 15 s to finish its turn, plus about 2 s for the goal verdict, so a lane that just sent DONE is judged before it dies; `--now` skips the wait (emergency stops; `desk down` always stops at once). It closes the pane, stops the host and removes the roster entry.
-- `ach lane status <name>` also answers for a lane that already ended: the roster has forgotten it, so the row is rebuilt from `lanes.log` with `state: "stopped"` and `goalState` (the final goal state, taken from the lane's last `goal` event so a verdict reported while the host was stopping counts). Without a name only live lanes are listed.
+- `ach lane status <name>` also answers for a lane that already ended: the roster has forgotten it, so the row is rebuilt from `lanes.log` with `state: "stopped"` and `goalState` (the final goal state, taken from the lane's last `goal` event so a verdict reported while the host was stopping counts). A lane whose host crashed gets the same row: the roster prune writes its stop line (`by: "prune"`). Without a name only live lanes are listed.
 - `--json` prints the `RosterView` (stack, `portBase`, rows with state, queue depth, goal status and cost, pending lanes, open decisions). Without it, a table.
 
 ## MCP tools
@@ -315,13 +316,13 @@ ach stats --by desk         # per desk and per lane, keyed <stack>/<name>; other
 ach desk roster --json      # costUsd and treeCostUsd per row
 ```
 
-Lane cost rolls up under the launching desk. Unknown is not zero: when a desk's usage could not be priced (a model with no price, such as `ferry/super-flash`), `costUsd` is `null` in `ach desk costs` / `/api/desks/costs` and prints as `-`, and any tree total (`treeCostUsd`) that contains an unknown part is `null` too, never a partial sum. The host meter marks such runs with `totals.costUnpriced` in the run record (older desk-host records with tokens and a 0 cost and no `costSource` are read the same way). `ach desk costs` also lists lanes that already stopped, because their spend happened: a lane whose launcher is a live desk stays nested under it, and a lane launched by a human or whose launcher is gone is a top-level row. A per-lane budget (`--budget-usd`, `lanes.budgetUsd`) uses the existing [budget alerts](BUDGET-ALERTS.md).
+Lane cost rolls up under the launching desk. A desk's row covers every run of that desk name in the stack (an engine switch, or an earlier `desk up`, starts a new run): its own cost and tokens are the sum over those runs, and lanes launched by any of them stay nested under it. Unknown is not zero: when a desk's usage could not be priced (a model with no price, such as `ferry/super-flash`), `costUsd` is `null` in `ach desk costs` / `/api/desks/costs` and prints as `-`, and any tree total (`treeCostUsd`) that contains an unknown part is `null` too, never a partial sum. The host meter marks such runs with `totals.costUnpriced` in the run record (older desk-host records with tokens and a 0 cost and no `costSource` are read the same way). `ach desk costs` also lists lanes that already stopped, because their spend happened: a lane whose launcher is a live desk stays nested under it, and a lane launched by a human or whose launcher is gone is a top-level row. A per-lane budget (`--budget-usd`, `lanes.budgetUsd`) uses the existing [budget alerts](BUDGET-ALERTS.md).
 
 ## Troubleshooting
 
 - **Port busy.** Another stack (or a stray process) holds a port. Pick another `portBase` (`ach desk up --port-base 4900`) to run beside it, or find and stop the owner. Lanes pick the next free port in their range.
 - **`desk up` refuses.** A desk of that stack is still alive. Run `ach desk roster`, then `ach desk down`.
-- **Stale roster entries.** `ach desk roster` prunes entries whose host is dead. After a crash, `ach desk down` clears the rest.
+- **Stale roster entries.** `ach desk roster` prunes entries whose host is dead: no `/health` answer and no recorded pid still running that host. A pruned lane gets a stop line in `lanes.log` and loses `specs/<name>.pid`. A host that is alive but does not answer stays listed as `dead` (it may be slow); after a crash, `ach desk down` clears the rest.
 - **Engine not found.** The agent CLI is not on PATH. Check `GET /api/desks/engines` or `ach doctor`, then fix the install or set `agent` to another engine.
 - **A desk has the wrong tools.** Compare the host's `GET /mcp` with its `mcps` in the layout; only those plus the `ach` desk tools should be enabled.
 - **Messages not arriving.** Read `messages.jsonl` and `events/<runId>.jsonl`, and `logs/<name>.log` for the host.
