@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
   OpenCodeEngine,
@@ -285,6 +285,50 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     } finally {
       await eng.stop();
     }
+  });
+
+  it("start: a serve that dies on \"database is locked\" is re-booted, and no engine error event is emitted", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup({ model: "ferry/super-flash" });
+    spec.enginePort = port;
+    const calls: SpawnCall[] = [];
+    const normal = fakeSpawn(fake, calls);
+    let spawns = 0;
+    // First boot: the real failure seen live when two desks start at once (opencode's shared SQLite).
+    const lockedOnce: SpawnServe = (o) => {
+      spawns++;
+      if (spawns > 1) return normal(o);
+      mkdirSync(dirname(o.logFile), { recursive: true });
+      writeFileSync(o.logFile, "Error: Unexpected error\n\ndatabase is locked\n");
+      return { pid: 999, kill() {}, exited: Promise.resolve(1) };
+    };
+    const eng = new OpenCodeEngine({ env, spawn: lockedOnce, stopGraceMs: 500, lockRetryDelayMs: 10 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    try {
+      const r = await eng.start(spec);
+      assert.equal(r.sessionId, "ses_fake1");
+      assert.equal(spawns, 2, "one failed boot, one good boot");
+      assert.deepEqual(events.filter((e) => e.type === "error"), []);
+    } finally {
+      await eng.stop();
+    }
+  });
+
+  it("start: a serve that dies for another reason is not retried", async () => {
+    const { env, spec } = setup();
+    spec.enginePort = 1; // never probed: the process exits first
+    let spawns = 0;
+    const dies: SpawnServe = (o) => {
+      spawns++;
+      mkdirSync(dirname(o.logFile), { recursive: true });
+      writeFileSync(o.logFile, "Error: bad config\n");
+      return { pid: 999, kill() {}, exited: Promise.resolve(1) };
+    };
+    const eng = new OpenCodeEngine({ env, spawn: dies, stopGraceMs: 500, lockRetryDelayMs: 10 });
+    await assert.rejects(eng.start(spec), /exited \(1\) before ready[\s\S]*bad config/);
+    assert.equal(spawns, 1);
   });
 
   it("note and send: noReply message vs prompt_async with the split model; state() follows /session/status", async () => {

@@ -41,6 +41,8 @@ export interface OpenCodeEngineOptions {
   goals?: OpenCodeGoalsBridge;
   /** Ready wait for `GET /session` 200. Default 30 s. */
   readyTimeoutMs?: number;
+  /** Base delay before re-booting a serve that died on "database is locked". Default 400 ms. */
+  lockRetryDelayMs?: number;
   /** TERM -> KILL grace in stop(). Default 5 s. */
   stopGraceMs?: number;
   /** Goal confirmation timeout handed to setOpencodeGoal. Default 40 s. */
@@ -48,6 +50,8 @@ export interface OpenCodeEngineOptions {
 }
 
 /** Keys under `mcp` that are config, not server names (opencode config schema). */
+/** Re-boots after an opencode serve dies on its shared SQLite lock (see OpenCodeEngine.boot). */
+const LOCK_RETRIES = 4;
 const MCP_RESERVED = new Set(["timeout", "servers"]);
 
 /** Remove // and /* *\/ comments and trailing commas outside strings (opencode configs are JSONC). */
@@ -284,6 +288,7 @@ export class OpenCodeEngine implements Engine {
   private readonly spawnServe: SpawnServe;
   private readonly goals: OpenCodeGoalsBridge;
   private readonly readyTimeoutMs: number;
+  private readonly lockRetryDelayMs: number;
   private readonly stopGraceMs: number;
   private readonly goalTimeoutMs: number;
 
@@ -317,6 +322,7 @@ export class OpenCodeEngine implements Engine {
     this.spawnServe = o.spawn ?? defaultSpawnServe;
     this.goals = o.goals ?? { setOpencodeGoal, readOpencodeGoal };
     this.readyTimeoutMs = o.readyTimeoutMs ?? 30_000;
+    this.lockRetryDelayMs = o.lockRetryDelayMs ?? 400;
     this.stopGraceMs = o.stopGraceMs ?? 5_000;
     this.goalTimeoutMs = o.goalTimeoutMs ?? 40_000;
   }
@@ -379,7 +385,24 @@ export class OpenCodeEngine implements Engine {
     return { sessionId: this.sessionId, engineUrl: this.baseUrl, childPid: proc?.pid };
   }
 
+  /**
+   * Boot, retrying a serve that exits with "database is locked": every opencode serve shares one
+   * SQLite database, and two serves started in the same instant (desk up starts desks in parallel)
+   * can collide on it. Up to LOCK_RETRIES re-boots with a growing, jittered delay.
+   */
   private async boot(spec: HostSpec, config: Record<string, unknown>): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.bootOnce(spec, config);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (attempt >= LOCK_RETRIES || !/exited .* before ready/.test(msg) || !/database is locked/i.test(msg)) throw err;
+        await sleep(this.lockRetryDelayMs * (attempt + 1) + Math.floor(Math.random() * this.lockRetryDelayMs));
+      }
+    }
+  }
+
+  private async bootOnce(spec: HostSpec, config: Record<string, unknown>): Promise<void> {
     if (await portIsOpen(this.port)) {
       throw new Error(`desks: opencode engine port ${this.port} is already in use (a stale serve?)`);
     }
@@ -401,10 +424,12 @@ export class OpenCodeEngine implements Engine {
     this.proc = proc;
     let exitedWith: number | string | null | undefined;
     let exited = false;
+    // An exit before ready is reported by the throw below (and may be retried), not as an engine error event.
+    let booting = true;
     void proc.exited.then((c) => {
       exited = true;
       exitedWith = c;
-      if (this.proc === proc && !this.stopping) this.emit({ type: "error", data: { error: `opencode serve exited (${String(c)}); log ${this.logFile}` } });
+      if (this.proc === proc && !this.stopping && !booting) this.emit({ type: "error", data: { error: `opencode serve exited (${String(c)}); log ${this.logFile}` } });
     });
     const deadline = Date.now() + this.readyTimeoutMs;
     for (;;) {
@@ -415,7 +440,10 @@ export class OpenCodeEngine implements Engine {
       try {
         const r = await fetch(`${this.baseUrl}/session`, { signal: AbortSignal.timeout(2000) });
         await r.body?.cancel();
-        if (r.status === 200) return;
+        if (r.status === 200) {
+          booting = false;
+          return;
+        }
       } catch {
         // not up yet
       }
