@@ -568,13 +568,13 @@ function checkModel(agent: AgentName, model: string | undefined): DoctorCheck {
 
 // ------------------------------------------------------------------ mcp
 
-interface McpServerDecl {
+export interface McpServerDecl {
   name: string;
   command?: string;
   remote?: boolean;
 }
 
-interface McpScan {
+export interface McpScan {
   files: string[];
   problems: string[];
   servers: Array<McpServerDecl & { file: string }>;
@@ -611,7 +611,8 @@ export function scanCodexToml(src: string): McpServerDecl[] {
   return out;
 }
 
-async function scanMcp(agent: AgentName, env: NodeJS.ProcessEnv, cwd: string): Promise<McpScan> {
+/** Exported for the desks Web API (GET /api/desks/mcps, #205): MCP server names the agent's own config declares. */
+export async function scanMcp(agent: AgentName, env: NodeJS.ProcessEnv, cwd: string): Promise<McpScan> {
   const home = homeOf(env);
   const scan: McpScan = { files: [], problems: [], servers: [] };
   const jsonSource = async (file: string, key: string): Promise<void> => {
@@ -792,7 +793,7 @@ export interface KiroIdeDoctorOptions {
 const KIRO_IDE_LAUNCH_HINT =
   "launch Kiro with --remote-debugging-port=9222 --user-data-dir=~/.local/state/ach-kiro-ide/profile, or run `ach run --agent kiro-ide` which launches it";
 
-function kiroIdeDefaultBin(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | undefined {
+export function kiroIdeDefaultBin(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | undefined {
   if (platform === "darwin") return "/Applications/Kiro.app/Contents/MacOS/Kiro";
   if (platform === "win32") return path.join(env.LOCALAPPDATA ?? "", "Programs", "Kiro", "Kiro.exe"); // UNVERIFIED path
   return resolveOnPath("kiro", env.PATH); // UNVERIFIED on linux
