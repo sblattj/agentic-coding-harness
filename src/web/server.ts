@@ -12,6 +12,7 @@
 // Live per-run text is NOT taken from the hub topic: hub broadcasts carry
 // raw AgentEvents, which the dashboard cannot render. Instead each run
 // socket runs its own transcript tailer that forwards eventToText output.
+import { handleDesksApi } from "./desks-api.ts";
 import { open as openFile, readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
@@ -162,6 +163,7 @@ const embeddedLoaders: Record<string, () => Promise<string>> = {
   "grid.html": () => import("./grid.html", { with: { type: "text" } }).then(text),
   "compare.html": () => import("./compare.html", { with: { type: "text" } }).then(text),
   "trio.html": () => import("./trio.html", { with: { type: "text" } }).then(text),
+  "desks.html": () => import("./desks.html", { with: { type: "text" } }).then(text),
   "term-pane.html": () => import("./term-pane.html", { with: { type: "text" } }).then(text),
   "feed.js": () => import("./feed.js", { with: { type: "text" } }).then(text),
   "vendor/xterm/xterm.js": () =>
@@ -603,6 +605,17 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
 
         if (get && pathname === "/compare") {
           const page = await readAsset("compare.html");
+          if (page === null) return notFound(res);
+          return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
+        }
+
+        // #204/#205: desks Web API (src/web/desks-api.ts owns every /api/desks route).
+        if (pathname === "/api/desks" || pathname.startsWith("/api/desks/")) {
+          if (await handleDesksApi(req, res, url, { stateDir: opts.stateDir, ...(opts.token !== undefined ? { token: opts.token } : {}) })) return;
+        }
+
+        if (get && pathname === "/desks") {
+          const page = await readAsset("desks.html");
           if (page === null) return notFound(res);
           return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page);
         }

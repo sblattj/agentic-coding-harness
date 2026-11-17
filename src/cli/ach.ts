@@ -126,6 +126,7 @@ import {
 } from "./time-window.ts";
 import { cmdReport } from "./report.ts";
 import { runContextRows } from "./context-stats.ts";
+import { cmdDesk, cmdLane } from "./desk.ts";
 import { scanRunRecords, skippedRunRecordsWarning } from "../core/registry.ts";
 import { cmdDash } from "./dash.ts";
 import { statsExtras } from "./usage-render.ts";
@@ -2089,7 +2090,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc", "config", "attach",
+  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane",
 ]);
 
 /**
@@ -2184,6 +2185,10 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdServe(rest);
     case "web":
       return cmdWeb(rest);
+    case "desk":
+      return cmdDesk(rest);
+    case "lane":
+      return cmdLane(rest);
     case "mcp":
       return cmdMcp(rest);
     case "quota":

@@ -100,6 +100,18 @@ export interface RunRecord {
   hermetic?: HermeticRunInfo;
   /** Set by `--isolate` (#75): the run executed in its own git worktree + branch. */
   worktree?: WorktreeRunInfo;
+  // --- desks and lanes (#204) ---
+  /** Lanes and per-turn child runs: runId of the run that launched this one (a desk, or a desk's own run). */
+  parentRunId?: string;
+  /** Set on every desk/lane run (and the driver engine's per-turn child runs). */
+  desk?: RunDeskInfo;
+}
+
+/** Desk membership of a run (#204). */
+export interface RunDeskInfo {
+  stack: string;
+  name: string;
+  kind: "desk" | "lane" | "turn";
 }
 
 /** Shape of src/core/latency.ts LatencyMetrics; null = not measurable from the log. */
@@ -201,6 +213,8 @@ export const RunRecordSchema = z.object({
   metering: z.enum(["tap", "none"]).optional(),
   command: z.array(z.string()).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  parentRunId: z.string().min(1).optional(),
+  desk: z.object({ stack: z.string().min(1), name: z.string().min(1), kind: z.enum(["desk", "lane", "turn"]) }).optional(),
   corrections: z.array(RunCorrectionSchema).optional(),
   alerts: z
     .array(

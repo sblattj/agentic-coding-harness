@@ -1053,6 +1053,10 @@ export interface RunSpec {
   variant?: string;
   model?: string;
   resume?: string;
+  /** #204: persisted to RunRecord.parentRunId (desk engine per-turn runs). */
+  parentRunId?: string;
+  /** #204: persisted to RunRecord.desk. */
+  desk?: { stack: string; name: string; kind: "desk" | "lane" | "turn" };
   budget?: RunBudget;
   /**
    * Top-level alias for budget.wallMs (whole-run wall-clock cap, ms). Explicit
