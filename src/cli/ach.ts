@@ -148,6 +148,7 @@ import { cmdQuota } from "./quota.ts";
 import { cmdQueue, QUEUE_USAGE } from "./queue.ts";
 import { cmdArchive, statsMachineRecords, statsScanOptions, warehouseStateRecords } from "./archive.ts";
 import { cmdGc } from "./gc.ts";
+import { cmdDesk, cmdLane } from "./claude-peers.ts";
 import { cmdAttach } from "./attach.ts";
 import { randomUUID } from "node:crypto";
 import { ClaudeInteractiveAdapter } from "../interactive/claude-tui.ts";
@@ -378,6 +379,14 @@ usage:
                 (snapshot transcripts + RunRecords into <stateDir>/warehouse,
                  sha256-deduped, never deletes; see docs/ARCHIVE.md;
                  --dir is an alias of --state-dir here)
+  ach desk roster [--json] | ach desk send <to> <text...> [--from <name>]
+                (live Claude sessions by name; post to a session's inbox socket,
+                 queued until its turn ends; see docs/DESKS-CLAUDE-NATIVE.md)
+  ach lane new <name> (--goal <text> | --goal-file <path>) [--cwd D] [--model M]
+               [--report-to <name>] [--after <name>] [--no-bypass] [--json]
+  ach lane status [<name>] [--json] | ach lane stop <name>
+                (goal lanes as Claude background sessions; --after arms a detached
+                 waiter that launches once <name> exits; tokens from the transcript)
   ach gc [--dry-run] [--before <date|duration>] [--keep-summaries]
          [--transcripts-ttl <dur|never>] [--runs-ttl <dur|never>] [--state-dir <stateDir>] [--json]
                 (retention: delete old <stateDir>/raw transcripts (default 30d)
@@ -2089,7 +2098,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc", "config", "attach",
+  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane",
 ]);
 
 /**
@@ -2170,6 +2179,10 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdArchive(rest);
     case "gc":
       return cmdGc(rest);
+    case "desk":
+      return cmdDesk(rest);
+    case "lane":
+      return cmdLane(rest);
     case "emit":
       return cmdEmit(rest);
     case "regrade":
