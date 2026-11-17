@@ -101,12 +101,14 @@ interface Harness {
   calls: Call[];
   st: { view: RosterView; throwFor?: Record<string, Error> };
   subs: Array<{ url: string; since: number; emit: (e: HostEvent) => void; unsubscribed: boolean }>;
+  attachUrls: string[];
 }
 
 async function harness(stateDir: string, token?: string): Promise<Harness> {
   const calls: Call[] = [];
   const st: Harness['st'] = { view: viewOf([row('ORCH')]) };
   const subs: Harness['subs'] = [];
+  const attachUrls: string[] = [];
   const deps: DesksApiDeps = {
     service: fakeService(calls, st),
     hostSubscribe: (url, since, onEvent) => {
@@ -117,7 +119,14 @@ async function harness(stateDir: string, token?: string): Promise<Harness> {
       };
     },
     hostLastSeq: async () => 7,
-    engines: async () => [{ agent: 'claude', found: true, path: '/bin/claude', auth: 'verified' }],
+    hostAttach: async (url) => {
+      attachUrls.push(url);
+      return ['opencode', 'attach', url];
+    },
+    engines: async (sd) => {
+      assert.equal(sd, stateDir, 'engines probe uses the server state dir');
+      return [{ agent: 'claude', found: true, path: '/bin/claude', auth: 'verified' }];
+    },
     mcps: async (sd, stack) => [`${stack}:${sd === stateDir ? 'ok' : 'bad'}`],
   };
   const server = createServer((req, res) => {
@@ -127,7 +136,7 @@ async function harness(stateDir: string, token?: string): Promise<Harness> {
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, st, subs };
+  return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, st, subs, attachUrls };
 }
 
 async function closeHarness(h: Harness): Promise<void> {
@@ -362,6 +371,21 @@ describe('desks web api: routes', () => {
     assert.deepEqual([c.arg.name, c.arg.since], ['ORCH', 3]);
   });
 
+  it('GET /:name/attach -> {argv} from the host at the roster url; unknown or dead is 404', async () => {
+    h.st.view = viewOf([row('ORCH', { url: 'http://127.0.0.1:59999' }), row('GONE', { state: 'dead' })]);
+    const r = await call(h, 'GET', '/api/desks/ORCH/attach');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json, { argv: ['opencode', 'attach', 'http://127.0.0.1:59999'] });
+    assert.deepEqual(h.attachUrls, ['http://127.0.0.1:59999']);
+    const unknown = await call(h, 'GET', '/api/desks/NOPE/attach');
+    assert.equal(unknown.status, 404);
+    assert.match(unknown.json.error, /unknown desk or lane NOPE/);
+    assert.equal((await call(h, 'GET', '/api/desks/GONE/attach')).status, 404);
+    assert.equal(h.attachUrls.length, 1, 'no host call for unknown or dead names');
+    assert.equal((await call(h, 'POST', '/api/desks/ORCH/attach')).status, 405);
+    h.st.view = viewOf([row('ORCH')]);
+  });
+
   it('GET /costs, /engines, /mcps', async () => {
     const costs = await call(h, 'GET', '/api/desks/costs');
     assert.equal(costs.status, 200);
@@ -587,6 +611,7 @@ describe('desks page via ach web', () => {
     for (const route of ['/stream', '/send', '/decisions/', '/lanes', '/pending/', '/costs', '/engines', '/mcps', '/events?since=', '/engine', '/up', '/down']) {
       assert.ok(scripts[0]!.includes(route), `page never calls ${route}`);
     }
+    assert.ok(scripts[0]!.includes('data.active'), 'the live feed uses feed data.active');
     assert.ok(scripts[0]!.includes('"token="'), 'the page forwards ?token= like the other pages');
   });
 

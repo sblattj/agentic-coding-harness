@@ -304,7 +304,7 @@ table.costs td.num, table.costs th.num { text-align: right; }
   function chatOf(row) {
     var c = chats[row.name];
     if (!c || c.runId !== row.runId) {
-      c = chats[row.name] = { runId: row.runId, lastSeq: 0, events: [], nodes: [], loading: false, loaded: false };
+      c = chats[row.name] = { runId: row.runId, lastSeq: 0, events: [], nodes: [], loading: false, loaded: false, pending: [] };
     }
     return c;
   }
@@ -312,13 +312,22 @@ table.costs td.num, table.costs th.num { text-align: right; }
     var c = chatOf(row);
     if (c.loaded || c.loading) return;
     c.loading = true;
+    // Live events that arrive before the history are held in c.pending and replayed after it,
+    // so the seq high-water mark never drops the history.
+    var drain = function () {
+      var held = c.pending;
+      c.pending = [];
+      for (var j = 0; j < held.length; j++) addEvent(held[j], false);
+    };
     api("GET", "/" + encodeURIComponent(row.name) + "/events?since=0").then(function (r) {
       c.loading = false;
       c.loaded = true;
       var evs = (r.events || []).slice(-MAX_EVENTS);
       for (var i = 0; i < evs.length; i++) addEvent(evs[i], true);
       renderAllChatNodes(row.name);
-    }).catch(function (e) { c.loading = false; showErr(e); });
+      renderFeeds();
+      drain();
+    }).catch(function (e) { c.loading = false; c.loaded = true; showErr(e); drain(); });
   }
   function eventNode(name, ev) {
     var d = ev.data || {};
@@ -358,12 +367,19 @@ table.costs td.num, table.costs th.num { text-align: right; }
     var row = rowByName(ev.name);
     var c = row ? chatOf(row) : (chats[ev.name] || (chats[ev.name] = { runId: ev.runId, lastSeq: 0, events: [], nodes: [], loaded: true }));
     if (c.runId !== ev.runId) return;
+    if (!c.loaded) { c.pending.push(ev); return; }
     if (ev.seq <= c.lastSeq) return;
     c.lastSeq = ev.seq;
     c.events.push(ev);
     if (c.events.length > MAX_EVENTS) c.events.splice(0, c.events.length - MAX_EVENTS);
     if (ev.type === "text" && row && row.feedPid && typeof (ev.data || {}).text === "string") {
-      feeds[ev.name] = { text: ev.data.text, at: ev.at };
+      feeds[ev.name] = { text: ev.data.text, at: ev.at, active: feeds[ev.name] ? feeds[ev.name].active : undefined };
+      if (!quiet) renderFeeds();
+    }
+    // Feed events carry data.active: true when a call starts, false on waiting / call ended.
+    if (ev.type === "feed" && ev.data && typeof ev.data.active === "boolean") {
+      var fd = feeds[ev.name] || (feeds[ev.name] = { text: "", at: ev.at });
+      fd.active = ev.data.active;
       if (!quiet) renderFeeds();
     }
     if (quiet) return;
@@ -777,7 +793,10 @@ table.costs td.num, table.costs th.num { text-align: right; }
       var f = feeds[n];
       var wrap = el("div");
       wrap.setAttribute("data-feed", n);
-      wrap.appendChild(el("div", "when", n + (f ? " · " + fmtTime(f.at) : " · waiting")));
+      var live = !!f && f.active === true;
+      var when = el("div", "when", n + " · " + (live ? "live" : "waiting") + (f && f.text ? " · " + fmtTime(f.at) : ""));
+      when.setAttribute("data-active", live ? "true" : "false");
+      wrap.appendChild(when);
       wrap.appendChild(el("div", "feedtext", f ? f.text : ""));
       body.appendChild(wrap);
     });

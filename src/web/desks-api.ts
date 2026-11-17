@@ -10,7 +10,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, watc
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import * as realService from "../desks/service.ts";
-import { hostHealth, hostSubscribe } from "../desks/host-client.ts";
+import { hostAttach, hostHealth, hostSubscribe } from "../desks/host-client.ts";
 import { deskPaths, readDecisions, readRoster } from "../desks/roster.ts";
 import { loadLayout } from "../desks/config.ts";
 import { AGENTS, type AgentName } from "../core/types.ts";
@@ -55,7 +55,9 @@ export interface DesksApiDeps {
   hostSubscribe: (url: string, since: number, onEvent: (e: HostEvent) => void) => () => void;
   /** The host's current last seq, so a stream subscription starts at "now" instead of replaying history. */
   hostLastSeq: (url: string) => Promise<number>;
-  engines: () => Promise<DeskEngineInfo[]>;
+  /** GET /api/desks/:name/attach: the argv a terminal runs to show that session (host GET /attach). */
+  hostAttach: (url: string) => Promise<string[]>;
+  engines: (stateDir: string) => Promise<DeskEngineInfo[]>;
   mcps: (stateDir: string, stack: string) => Promise<string[]>;
 }
 
@@ -99,10 +101,10 @@ export async function probeEngines(env: NodeJS.ProcessEnv = process.env, stateDi
   });
 }
 
-function cachedEngines(): Promise<DeskEngineInfo[]> {
+function cachedEngines(stateDir: string): Promise<DeskEngineInfo[]> {
   const now = Date.now();
   if (enginesCache === undefined || now - enginesCache.at > ENGINES_TTL_MS) {
-    const value = probeEngines();
+    const value = probeEngines(process.env, stateDir);
     enginesCache = { at: now, value };
     value.catch(() => {
       if (enginesCache?.value === value) enginesCache = undefined;
@@ -173,6 +175,7 @@ function safeRoster(stateDir: string, stack: string): ReturnType<typeof readRost
 export const defaultDesksApiDeps: DesksApiDeps = {
   service: realService,
   hostSubscribe,
+  hostAttach,
   hostLastSeq: async (url) => (await hostHealth(url, 2_000))?.lastSeq ?? 0,
   engines: cachedEngines,
   mcps: (stateDir, stack) => listDeskMcps(stateDir, stack),
@@ -400,7 +403,7 @@ export async function handleDesksApi(
         }
         case "engines": {
           want("GET");
-          return done(res, 200, { engines: await deps.engines() });
+          return done(res, 200, { engines: await deps.engines(opts.stateDir) });
         }
         case "mcps": {
           want("GET");
@@ -434,6 +437,14 @@ export async function handleDesksApi(
       const agent = reqStr(body, "agent");
       const model = optStr(body, "model");
       return done(res, 200, await svc.deskSwitchEngine({ ...so, name: a!, agent, ...(model !== undefined ? { model } : {}) }));
+    }
+    if (n === 2 && b === "attach") {
+      want("GET");
+      const view = await svc.deskRoster({ ...so, prune: false });
+      const entry = view.rows.find((r) => r.name === a);
+      if (entry === undefined) throw new HttpError(404, `unknown desk or lane ${a} (known: ${view.rows.map((r) => r.name).join(", ") || "none"})`);
+      if (entry.state === "dead") throw new HttpError(404, `${a} is dead`);
+      return done(res, 200, { argv: await deps.hostAttach(entry.url) });
     }
     if (n === 2 && b === "events") {
       want("GET");
