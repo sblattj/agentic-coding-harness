@@ -428,7 +428,7 @@ export interface DeskCostRow {
  *   POST /api/desks/:name/engine {agent, model?} -> RosterEntry   (restart that desk on another engine; roster + history kept)
  *   GET  /api/desks/:name/events?since=<seq> -> {events: HostEvent[]}
  *   GET  /api/desks/:name/attach            -> {argv: string[]}   (the host's GET /attach; 404 for an unknown or dead name)
- *   GET  /api/desks/costs                  -> {rows: DeskCostRow[]}
+ *   GET  /api/desks/costs                   -> {rows: DeskCostRow[]}
  *   GET  /api/desks/engines                 -> {engines: {agent: string, found: boolean, path?: string, auth?: string}[]}
  *   GET  /api/desks/mcps                    -> {names: string[]}   MCP names available to desks
  */
