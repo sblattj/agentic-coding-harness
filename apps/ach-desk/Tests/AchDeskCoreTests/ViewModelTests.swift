@@ -172,4 +172,16 @@ import Testing
         #expect(store.liveCallDesks == ["LISTENER"])
         store.apply(.unknown("whatever"))
     }
+
+    @Test func refreshAllLoadsListenerEventsSoHudAndLiveCallWorkAtLaunch() async throws {
+        let server = try MockServer(handler: desksHandler)
+        try await server.start()
+        defer { server.stop() }
+        let store = DeskStore(client: APIClient(config: ServerConfig(port: server.port)), clock: { Fixtures.noon })
+        await store.refreshAll()
+        #expect(server.requests.contains { $0.path == "/api/desks/LISTENER/events" })
+        #expect(store.listenerText == "Talking point A")
+        #expect(store.liveCallDesks == ["LISTENER"])
+        #expect(store.engines.count == 3 && store.mcpNames.count == 3 && store.messages.count == 2)
+    }
 }

@@ -94,8 +94,8 @@ failed connects in a row the app also polls every 2 s until the stream is back.
 - **No embedded terminal.** The Web API has no attach route, so the app shows
   `ach desk chat <NAME>` (from the `ach desk` CLI) with a Copy button. Run it in your terminal.
 - **Live-call indicator is a heuristic:** the desk has a `feedPid`, its newest `feed` event is under
-  10 minutes old, and either `data.active` is true or the feed note does not say ended / stopped /
-  waiting / idle / no call. The feed note wording is not fixed by the contract yet.
+  10 minutes old, and either `data.active` is true or the feed note contains none of: ended, exit,
+  stopped, waiting, inactive, not active, idle, closed, error, failed. The feed note wording is not fixed by the contract yet.
 - **"Cost today"** sums `costUsd` of lanes that started since local midnight; the contract has no
   dated cost series.
 - **Notifications** need the bundled `.app` (UNUserNotificationCenter requires a bundle id). Under
