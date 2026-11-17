@@ -42,7 +42,7 @@ import {
   updateRoster,
   validName,
 } from "./roster.ts";
-import { paneCommand } from "./term/tmux.ts";
+import { fmtEscape, paneCommand } from "./term/tmux.ts";
 import { terminalDriver } from "./term/index.ts";
 import { DESKS_API_VERSION } from "./types.ts";
 import type {
@@ -1053,11 +1053,16 @@ async function installDesk(stateDir: string, stack: string, old: RosterEntry, s:
   if (old.terminal && old.terminal.kind !== "none" && old.terminal.id !== "") {
     const argv = await attachArgv(entry, { stateDir, stack });
     if (old.terminal.kind === "tmux") {
-      try {
-        await tmuxRaw(t?.tmuxSocket, ["respawn-pane", "-k", "-t", old.terminal.id, "-c", entry.cwd, paneCommand(argv)]);
-        return entry;
-      } catch {
-        /* pane gone: reopen below */
+      // Respawn in place only while the stored pane id is still the pane we opened (its @ach_run tag
+      // matches): after a tmux restart the same %N can be a user's pane, which -k would kill.
+      const tmuxDrv = await driverFor(t, "tmux");
+      if (tmuxDrv !== null && (await tmuxDrv.alive(old.terminal.id))) {
+        try {
+          await tmuxRaw(t?.tmuxSocket, ["respawn-pane", "-k", "-t", old.terminal.id, "-c", fmtEscape(entry.cwd), paneCommand(argv)]);
+          return entry;
+        } catch {
+          /* pane gone: reopen below */
+        }
       }
     }
     const drv = await driverFor(t, old.terminal.kind);
