@@ -334,6 +334,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
         outputTokens: num(d.outputTokens),
         cacheReadTokens: num(d.cacheReadTokens),
         cacheWriteTokens: num(d.cacheWriteTokens),
+        ...(d.reasoningTokens !== undefined ? { reasoningTokens: num(d.reasoningTokens) } : {}),
         costUsd: typeof d.costUsd === "number" ? d.costUsd : null,
         messageId: typeof d.messageId === "string" ? d.messageId : undefined,
         at: Date.now(),
@@ -344,7 +345,8 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
         if (!budgetAlerted && meter?.overBudget() === true) {
           budgetAlerted = true;
           record("error", { error: "budget exceeded", budgetUsd: spec.budgetUsd ?? null });
-          if (spec.kind === "lane") void stop();
+          // A lane has no human to read the alert: stop it, recorded as an error (a budget stop is a failure, not a plain abort).
+          if (spec.kind === "lane") void stop("error");
         }
       } catch (err) {
         record("error", { error: `metering: ${errText(err)}` });

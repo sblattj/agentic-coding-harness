@@ -475,6 +475,7 @@ describe('desk host: lanes, budget, failures', () => {
     const file = join(deskPaths(s.spec.stateDir, 'test').events, 'run_test_1.jsonl');
     const evs = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as HostEvent);
     assert.equal(evs.filter((e) => e.type === 'error' && e.data.error === 'budget exceeded').length, 1);
+    assert.deepEqual(s.meter.finished, ['error'], 'a budget auto-stop is a failure, not a plain abort');
   });
 
   it('desk over budget: alert once, keeps running', async () => {

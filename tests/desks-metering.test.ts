@@ -127,6 +127,17 @@ describe("host meter: token records and ach stats", () => {
     assert.ok(Math.abs(totals.costUsd! - expected) < 1e-9, `costUsd ${totals.costUsd} vs ${expected}`);
   });
 
+  it("reasoningTokens ride the raw line (informational, never added to outputTokens)", async () => {
+    const state = mkState();
+    const m = createHostMeter(mkSpec(state));
+    m.begin({ sessionId: "ses_r", pid: 1 });
+    m.usage(sample({ messageId: "r1", inputTokens: 1000, outputTokens: 100, reasoningTokens: 40 }));
+    m.usage(sample({ messageId: "r1", inputTokens: 1000, outputTokens: 100, reasoningTokens: 70 }));
+    const recs = await readAllRecords();
+    assert.equal(recs.reduce((a, r) => a + (r.reasoningTokens ?? 0), 0), 70, "cumulative re-report writes deltas");
+    assert.equal(recs.reduce((a, r) => a + r.outputTokens, 0), 100);
+  });
+
   it("recorded usage (driver turn runs wrote their own records) counts toward totals but writes no raw line", async () => {
     const state = mkState();
     const m = createHostMeter(mkSpec(state, { agent: "claude", engine: "driver" }));

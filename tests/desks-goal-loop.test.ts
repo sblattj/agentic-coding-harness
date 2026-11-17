@@ -130,4 +130,38 @@ describe("startGoalLoop", () => {
     const f2 = await startGoalLoop({ objective: "o", runTurn: s2.runTurn }).done;
     assert.equal(f2.state, "achieved");
   });
+  it("stop mid-turn whose turn then throws records stopped with the stop reason, not blocked", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const h = startGoalLoop({
+      objective: "o",
+      runTurn: async () => {
+        await gate;
+        throw new Error("turn ended aborted");
+      },
+    });
+    h.stop("engine stopped");
+    release();
+    const f = await h.done;
+    assert.equal(f.state, "stopped");
+    assert.equal(f.reason, "engine stopped");
+  });
+
+  it("passes each turn a timeout derived from the remaining max-minutes budget", async () => {
+    let t = 0;
+    const seen: (number | undefined)[] = [];
+    const replies = ["GOAL: CONTINUE", "GOAL: ACHIEVED — ok"];
+    let n = 0;
+    await startGoalLoop({
+      objective: "o",
+      maxMinutes: 10,
+      now: () => t,
+      runTurn: async (_text, ctx) => {
+        seen.push(ctx?.timeoutMs);
+        t += 4 * 60_000;
+        return replies[n++] as string;
+      },
+    }).done;
+    assert.deepEqual(seen, [600_000, 360_000]);
+  });
 });

@@ -311,7 +311,10 @@ async function startHost(stateDir: string, stack: string, spec: HostSpec): Promi
 }
 
 /** POST /stop, wait for every pid to exit (10 s), then SIGTERM, then SIGKILL. */
-async function stopPids(url: string, pids: number[], feedPid?: number): Promise<void> {
+async function stopPids(url: string, pids: number[], _rosterFeedPid?: number): Promise<void> {
+  // The feed restarts on its own, so the roster's feedPid goes stale: ask the live host (/health) now,
+  // before /stop. A host that does not answer has no trustworthy feed pid, so none is SIGKILLed.
+  const feedPid = (await hostHealth(url, 1000))?.feedPid;
   try {
     await hostStop(url);
   } catch {
@@ -323,6 +326,13 @@ async function stopPids(url: string, pids: number[], feedPid?: number): Promise<
   if (await waitUntil(all, 3000)) return;
   for (const p of pids) kill(p, "SIGKILL");
   kill(feedPid, "SIGKILL");
+  if (feedPid !== undefined && feedPid > 0) {
+    try {
+      process.kill(-feedPid, "SIGKILL"); // the feed leads its own process group
+    } catch {
+      /* gone */
+    }
+  }
   await waitUntil(all, 2000);
 }
 

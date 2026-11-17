@@ -3,8 +3,8 @@ import type { GoalStatus } from "../types.ts";
 
 export interface GoalLoopOptions {
   objective: string;
-  /** Runs one agent turn with `text`, resolves with the turn's final assistant text. */
-  runTurn: (text: string) => Promise<string>;
+  /** Runs one agent turn with `text` (ctx.timeoutMs = what is left of the max-minutes budget), resolves with the turn's final assistant text. */
+  runTurn: (text: string, ctx?: { timeoutMs: number }) => Promise<string>;
   /** Caps: default maxTurns 30, maxMinutes from a leading "--max-minutes N" in the objective, else 45. */
   maxTurns?: number;
   maxMinutes?: number;
@@ -127,8 +127,14 @@ export function startGoalLoop(o: GoalLoopOptions): GoalLoopHandle {
     for (;;) {
       let reply: string;
       try {
-        reply = await o.runTurn(prompt);
+        const left = Math.max(1000, maxMinutes * 60_000 - (now() - startedAt));
+        reply = await o.runTurn(prompt, { timeoutMs: left });
       } catch (e) {
+        // A stop aborts the in-flight turn, which then throws: that is a stop, not a block.
+        if (stopRequested) {
+          emit({ state: "stopped", reason: stopReason ?? "stopped" });
+          return current;
+        }
         emit({ state: "blocked", reason: e instanceof Error ? e.message : String(e) });
         return current;
       }

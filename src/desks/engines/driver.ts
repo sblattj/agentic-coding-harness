@@ -26,7 +26,7 @@
 // permissionMode "dontAsk" (claude bypassPermissions, gemini yolo, codex
 // never): a headless desk turn has nobody to answer a permission prompt.
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { ClaudeCodeAdapter } from "../../adapters/claude.ts";
 import { createDriver, defaultAdapters, type Driver } from "../../core/driver.ts";
@@ -157,6 +157,8 @@ export class DriverEngine implements Engine {
   #stopped = false;
   #goal: GoalLoopHandle | null = null;
   #goalObjective = "";
+  /** Bumped per setGoal: a loop that is no longer current must not speak through onStatus. */
+  #goalGen = 0;
   /** Every turn's run id, oldest first (tests, host diagnostics). */
   readonly turnRunIds: string[] = [];
 
@@ -183,7 +185,9 @@ export class DriverEngine implements Engine {
     const dir = path.join(spec.stateDir, "desks", spec.stack, "mcp");
     mkdirSync(dir, { recursive: true });
     this.#mcpConfigPath = path.join(dir, `${spec.name}.json`);
-    writeFileSync(this.#mcpConfigPath, `${JSON.stringify(deskMcpConfig(spec, env), null, 2)}\n`);
+    // The config can carry env tokens for the named MCP servers: owner-only, even over an older wider file.
+    writeFileSync(this.#mcpConfigPath, `${JSON.stringify(deskMcpConfig(spec, env), null, 2)}\n`, { mode: 0o600 });
+    chmodSync(this.#mcpConfigPath, 0o600);
     this.#spec = spec;
     this.#driver = createDriver({
       adapters,
@@ -215,16 +219,20 @@ export class DriverEngine implements Engine {
   async setGoal(objective: string): Promise<void> {
     this.#requireStarted("setGoal");
     this.#goal?.stop("replaced by a new goal");
+    const gen = ++this.#goalGen;
     const start = this.#deps.startGoalLoop ?? realStartGoalLoop;
     this.#goalObjective = objective;
     this.#goal = start({
       objective,
-      runTurn: async (t) => {
-        const r = await this.#enqueueTurn(t);
+      runTurn: async (t, ctx) => {
+        const r = await this.#enqueueTurn(t, ctx?.timeoutMs);
         if (r.error !== undefined && r.finalText === "") throw new Error(r.error);
         return r.finalText;
       },
-      onStatus: (s) => this.#emit({ type: "goal", data: { goal: s } }),
+      onStatus: (s) => {
+        if (gen !== this.#goalGen) return;
+        this.#emit({ type: "goal", data: { goal: s } });
+      },
     });
   }
 
@@ -302,15 +310,15 @@ export class DriverEngine implements Engine {
   }
 
   /** Serializes turns (send() and the goal loop share one session). Busy is set synchronously. */
-  #enqueueTurn(text: string): Promise<DriverTurnResult> {
+  #enqueueTurn(text: string, timeoutMs?: number): Promise<DriverTurnResult> {
     if (this.#stopped) return Promise.reject(new Error("desks: DriverEngine stopped"));
     this.#pending += 1;
-    const turn = this.#chain.then(() => this.#runTurn(text));
+    const turn = this.#chain.then(() => this.#runTurn(text, timeoutMs));
     this.#chain = turn.catch(() => undefined);
     return turn;
   }
 
-  async #runTurn(text: string): Promise<DriverTurnResult> {
+  async #runTurn(text: string, goalTimeoutMs?: number): Promise<DriverTurnResult> {
     const spec = this.#spec as HostSpec;
     const driver = this.#driver as Driver;
     const runId = randomUUID();
@@ -327,6 +335,8 @@ export class DriverEngine implements Engine {
       ? ["--strict-mcp-config", ...(this.#role !== "" ? ["--append-system-prompt", this.#role] : [])]
       : undefined;
     const permissionMode = this.#deps.permissionMode === undefined ? "dontAsk" : this.#deps.permissionMode;
+    const caps = [this.#deps.turnTimeoutMs, goalTimeoutMs].filter((n): n is number => n !== undefined);
+    const turnTimeoutMs = caps.length > 0 ? Math.min(...caps) : undefined;
     const runSpec: RunSpec = {
       prompt,
       runId,
@@ -338,7 +348,7 @@ export class DriverEngine implements Engine {
       desk: { stack: spec.stack, name: spec.name, kind: "turn" },
       sandbox: { mcpConfig: this.#mcpConfigPath, ...(permissionMode !== null ? { permissionMode } : {}) },
       ...(extraArgs ? { extraArgs } : {}),
-      ...(this.#deps.turnTimeoutMs !== undefined ? { timeoutMs: this.#deps.turnTimeoutMs } : {}),
+      ...(turnTimeoutMs !== undefined ? { timeoutMs: turnTimeoutMs } : {}),
     };
     this.#currentRunId = runId;
     this.#currentText = [];

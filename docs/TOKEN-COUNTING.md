@@ -230,7 +230,7 @@ across providers without normalizing first.
 slice repeated in `reasoning_output_tokens`); Gemini reports `thoughts` separately from
 `output_tokens`; OpenCode keeps `reasoning` separate. `sumTokens` treats `reasoningTokens` as
 informational — never add it to `outputTokens` for codex (already inside), and cost math uses
-each provider's own billed categories.
+each provider's own billed categories. The desk host meter writes opencode's reasoning count to the raw line's `reasoningTokens` (informational, as a delta per step) and does not add it to `outputTokens` or to the priced total, matching `normalizeOpencode`.
 
 **Trap 5 — per-step input re-sends context.** Every step re-sends the growing conversation, so a
 multi-step run legitimately bills far more input than the final context size suggests. Not a bug;
