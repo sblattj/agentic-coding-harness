@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { validName } from "./roster.ts";
+import { reservedName, STACK_NAME_RE, validName } from "./roster.ts";
 import type { Layout } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -84,7 +84,7 @@ const lanesSchema = z.object({
 
 const layoutSchema = z.object({
   portBase: z.number().int().default(4800),
-  stack: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, "must be a simple name").optional(),
+  stack: z.string().regex(STACK_NAME_RE, "must be a simple name").optional(),
   agent: z.string().optional(),
   model: z.string().optional(),
   cwd: z.string().optional(),
@@ -121,6 +121,7 @@ export function parseLayout(text: string, source: string): Layout {
 
   const seen = new Set<string>();
   p.desks.forEach((d, i) => {
+    if (reservedName(d.name)) fail(source, `desks[${i}].name`, `"${d.name}" is reserved (the human's identity)`);
     if (!validName(d.name, "desk")) fail(source, `desks[${i}].name`, `invalid desk name "${d.name}" (want /^[A-Z][A-Z0-9_-]{0,31}$/)`);
     if (seen.has(d.name)) fail(source, `desks[${i}].name`, `duplicate "${d.name}"`);
     seen.add(d.name);

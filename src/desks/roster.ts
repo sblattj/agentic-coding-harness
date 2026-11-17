@@ -18,8 +18,24 @@ export interface DeskPaths {
   layout: string;
 }
 
+/** A stack name is one path segment: starts with a letter or digit, then letters, digits, `_`, `.`, `-`. */
+export const STACK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+export function validStackName(stack: string): boolean {
+  return STACK_NAME_RE.test(stack);
+}
+
+/** Throws `desks: invalid stack name` unless validStackName. */
+export function assertStackName(stack: string): string {
+  if (typeof stack !== "string" || !validStackName(stack)) {
+    throw new Error(`desks: invalid stack name ${JSON.stringify(stack)} (want ${STACK_NAME_RE})`);
+  }
+  return stack;
+}
+
 /** Frozen in wave 0 (the orchestrator wrote it): every seat derives stack file paths from here. */
 export function deskPaths(stateDir: string, stack: string): DeskPaths {
+  assertStackName(stack); // defense in depth: a stack never climbs out of <stateDir>/desks
   const root = join(stateDir, "desks", stack);
   return {
     root,
@@ -219,7 +235,13 @@ export function nextPendingLaneId(stateDir: string, stack: string): string {
   return `L${max + 1}`;
 }
 
-/** Validates a desk/lane name: /^[A-Z][A-Z0-9_-]{0,31}$/ for desks; lanes also allow lower-case: /^[a-z0-9][a-z0-9_-]{0,47}$/i. */
+/** "human" (any case) is the user's sender and approver identity, never a desk or lane. */
+export function reservedName(name: string): boolean {
+  return name.toLowerCase() === "human";
+}
+
+/** Validates a desk/lane name: /^[A-Z][A-Z0-9_-]{0,31}$/ for desks; lanes also allow lower-case: /^[a-z0-9][a-z0-9_-]{0,47}$/i. Reserved names fail. */
 export function validName(name: string, kind: "desk" | "lane"): boolean {
+  if (reservedName(name)) return false;
   return kind === "desk" ? /^[A-Z][A-Z0-9_-]{0,31}$/.test(name) : /^[a-z0-9][a-z0-9_-]{0,47}$/i.test(name);
 }

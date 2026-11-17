@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import * as realService from "../desks/service.ts";
 import { hostAttach, hostHealth, hostSubscribe } from "../desks/host-client.ts";
-import { deskPaths, readDecisions, readRoster } from "../desks/roster.ts";
+import { deskPaths, readDecisions, readRoster, validStackName } from "../desks/roster.ts";
 import { loadLayout } from "../desks/config.ts";
 import { AGENTS, type AgentName } from "../core/types.ts";
 import { kiroIdeDefaultBin, resolveOnPath, runDoctor, scanMcp, type DoctorCheck } from "../cli/doctor.ts";
@@ -278,7 +278,7 @@ function numParam(url: URL, k: string): number | undefined {
 const SERVER_FAILURE =
   /not implemented|layout file not found|invalid layout|cannot parse layout|corrupt (layout|roster)|roles\/common\.md not found|role file .* not found|invalid role name|the layout has no desks|did not become idle|timed out after|no spec or layout entry|^desk host |spawnHost:|ACH_SELF_ARGV/i;
 const BAD_INPUT =
-  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid lane name|cannot send to yourself/i;
+  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid (lane|stack|desk or lane) name|invalid run id|cannot send to yourself/i;
 const MISSING_RESOURCE =
   /\bunknown (desk|lane|decision|pending)\b|\bno pending lane\b|\bno decision\b|\bno such\b|does not exist|\b(desk|lane|decision|pending)\b[^\n]* not found/i;
 
@@ -299,11 +299,15 @@ function authorized(req: IncomingMessage, url: URL, token: string | undefined): 
 }
 
 function decodeSeg(s: string): string {
+  let d: string;
   try {
-    return decodeURIComponent(s);
+    d = decodeURIComponent(s);
   } catch {
     throw new HttpError(400, `bad path segment ${JSON.stringify(s)}`);
   }
+  // A segment names a desk, lane, decision or pending id; `..%2F..%2Fx` must not become a path.
+  if (/[/\\]/.test(d) || d.startsWith(".")) throw new HttpError(400, `bad path segment ${JSON.stringify(s)}`);
+  return d;
 }
 
 const TERMS: readonly TerminalKind[] = ["tmux", "ghostty", "none"];
@@ -326,15 +330,18 @@ export async function handleDesksApi(
   }
   const svc = deps.service;
   const stackParam = url.searchParams.get("stack");
+  if (stackParam && !validStackName(stackParam)) {
+    sendJson(res, 400, { error: `desks: invalid stack name ${JSON.stringify(stackParam)}` });
+    return true;
+  }
   const so = { stateDir: opts.stateDir, ...(stackParam ? { stack: stackParam } : {}) };
   const method = req.method ?? "GET";
-  const segs = pathname.slice(WEB_API_PREFIX.length).split("/").filter((s) => s !== "").map(decodeSeg);
-
   const want = (m: "GET" | "POST"): void => {
     if (method !== m) throw new HttpError(405, `${method} not allowed here; use ${m}`);
   };
 
   try {
+    const segs = pathname.slice(WEB_API_PREFIX.length).split("/").filter((s) => s !== "").map(decodeSeg);
     const [a, b, c] = segs;
     const n = segs.length;
     if (n === 0) {

@@ -25,6 +25,7 @@ import {
   appendDecisionEvent,
   appendMessage,
   appendPendingLane,
+  assertStackName,
   deskPaths,
   isEntryAlive,
   nextDecisionId,
@@ -35,6 +36,7 @@ import {
   readPendingLanes,
   readRoster,
   removeEntry,
+  reservedName,
   updateRoster,
   validName,
 } from "./roster.ts";
@@ -51,9 +53,11 @@ import type {
   HostHealth,
   HostSpec,
   LaneRequest,
+  LaneReservation,
   Layout,
   PaneSlot,
   PendingLane,
+  Roster,
   RosterEntry,
   GoalStatus,
   RosterRow,
@@ -102,6 +106,10 @@ export const LANE_STOP_GOAL_SETTLE_MS = 2_000;
 export const DECISIONS_DESK = "DECISIONS";
 /** How long a deskSwitchEngine marker shields its entry from roster pruning. */
 const SWITCH_GRACE_MS = 120_000;
+/** A lane-name reservation (roster.starting) or an "approving" pending lane older than this is stale (crashed starter). */
+const LANE_RESERVE_MS = HOST_START_TIMEOUT_MS + 15_000;
+/** Shape of a runId that may be joined into events/<runId>.jsonl. */
+const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -758,6 +766,7 @@ function readEventsFile(file: string, since: number): HostEvent[] {
 /** Host events of one desk/lane. */
 export async function deskEvents(o: StackOpts & { name: string; since?: number }): Promise<HostEvent[]> {
   const { stateDir, stack } = ctx(o);
+  assertDeskOrLaneName(o.name);
   const since = o.since ?? 0;
   const p = deskPaths(stateDir, stack);
   const e = readRoster(stateDir, stack).entries[o.name];
@@ -769,17 +778,18 @@ export async function deskEvents(o: StackOpts & { name: string; since?: number }
         /* fall back to the file */
       }
     }
-    return readEventsFile(join(p.events, `${e.runId}.jsonl`), since);
+    return readEventsFile(join(p.events, `${assertRunId(e.runId)}.jsonl`), since);
   }
   // Not in the roster (stopped): the last spec names its run.
   const specFile = join(p.specs, `${o.name}.json`);
   if (existsSync(specFile)) {
+    let runId: unknown;
     try {
-      const spec = JSON.parse(readFileSync(specFile, "utf8")) as HostSpec;
-      return readEventsFile(join(p.events, `${spec.runId}.jsonl`), since);
+      runId = (JSON.parse(readFileSync(specFile, "utf8")) as HostSpec).runId;
     } catch {
-      /* corrupt spec */
+      runId = undefined; // corrupt spec
     }
+    if (runId !== undefined) return readEventsFile(join(p.events, `${assertRunId(runId)}.jsonl`), since);
   }
   throw new Error(`desks: unknown desk or lane "${o.name}" in stack "${stack}"`);
 }
@@ -791,6 +801,7 @@ export async function deskEvents(o: StackOpts & { name: string; since?: number }
 /** Restart one desk on another engine/agent; keeps its roster slot, message history and decisions. */
 export async function deskSwitchEngine(o: StackOpts & { name: string; agent: string; model?: string }): Promise<RosterEntry> {
   const { stateDir, stack } = ctx(o);
+  assertDeskOrLaneName(o.name); // before the marker path is built from it
   // While the old host is down and the new one not yet in the roster, a concurrent
   // deskRoster() (MCP desk_roster, a web poll) must not prune the entry and kill its pane.
   const marker = switchingMarker(stateDir, stack, o.name);
@@ -916,10 +927,70 @@ function laneGoal(layout: Layout, goal: string): string {
 /** LaneRequest plus the optional silent brief (types.ts gains `brief?` on feat/desks-and-lanes 278a00d). */
 type LaneReq = LaneRequest & { brief?: string };
 
-async function startLane(stateDir: string, stack: string, req: LaneReq): Promise<RosterEntry> {
+/** Reservations in roster.starting that still hold their name (fresh and owned by a live pid). */
+function liveReservations(r: Roster, now = Date.now()): Record<string, LaneReservation> {
+  const out: Record<string, LaneReservation> = {};
+  for (const [name, v] of Object.entries(r.starting ?? {})) {
+    if (v && typeof v.at === "number" && now - v.at < LANE_RESERVE_MS && pidAlive(v.pid)) out[name] = v;
+  }
+  return out;
+}
+
+/** An "approving" record whose approver never finished counts as pending again. */
+function effectiveState(p: PendingLane, now = Date.now()): PendingLane["state"] {
+  return p.state === "approving" && now - (p.decidedAt ?? 0) >= LANE_RESERVE_MS ? "pending" : p.state;
+}
+
+/**
+ * Why `name` cannot be a new lane, or null. Compares ignoring case (macOS disks are case-insensitive,
+ * so `orchestrator` and `ORCHESTRATOR` would share specs/logs/pid files): roster entries, live
+ * reservations, layout desks, and pending or approving lanes other than `skipPendingId`.
+ */
+function laneNameTaken(stateDir: string, stack: string, r: Roster, layout: Layout, name: string, skipPendingId?: string): string | null {
+  const low = name.toLowerCase();
+  const inUse = `desks: name "${name}" is already in use in stack "${stack}"`;
+  for (const n of Object.keys(r.entries)) if (n.toLowerCase() === low) return n === name ? inUse : `${inUse} (as "${n}")`;
+  for (const n of Object.keys(liveReservations(r))) if (n.toLowerCase() === low) return `${inUse} (a lane of that name is being started)`;
+  for (const d of layout.desks) if (d.name.toLowerCase() === low) return `${inUse} (desk "${d.name}")`;
+  for (const p of readPendingLanes(stateDir, stack)) {
+    if (p.id === skipPendingId || p.request.name.toLowerCase() !== low) continue;
+    const st = effectiveState(p);
+    if (st === "pending" || st === "approving") return `desks: lane "${name}" is already pending approval (${p.id})`;
+  }
+  return null;
+}
+
+/** Drop `name` from roster.starting if `token` still holds it (and stale reservations with it). */
+function dropReservation(r: Roster, name: string, token: string): boolean {
+  const mine = r.starting?.[name]?.token === token;
+  const live = liveReservations(r);
+  if (mine) delete live[name];
+  if (Object.keys(live).length > 0) r.starting = live;
+  else delete r.starting;
+  return mine;
+}
+
+async function startLane(stateDir: string, stack: string, req: LaneReq, skipPendingId?: string): Promise<RosterEntry> {
   const layout = stackLayout(stateDir, stack);
+  // Reserve the name under the roster lock, so two concurrent starts cannot both pass the check and
+  // leave a host that no roster entry (and so no `desk down`) knows about.
+  const token = randomUUID();
+  await updateRoster(stateDir, stack, (r) => {
+    const why = laneNameTaken(stateDir, stack, r, layout, req.name, skipPendingId);
+    if (why) throw new Error(why);
+    r.starting = { ...liveReservations(r), [req.name]: { token, pid: process.pid, at: Date.now() } };
+  });
+  try {
+    return await startReservedLane(stateDir, stack, req, layout, token);
+  } finally {
+    await updateRoster(stateDir, stack, (r) => {
+      dropReservation(r, req.name, token);
+    });
+  }
+}
+
+async function startReservedLane(stateDir: string, stack: string, req: LaneReq, layout: Layout, token: string): Promise<RosterEntry> {
   const roster = readRoster(stateDir, stack);
-  if (roster.entries[req.name]) throw new Error(`desks: name "${req.name}" is already in use in stack "${stack}"`);
   const launcher = roster.entries[req.launchedBy];
   const agent = req.agent ?? layout.lanes.agent ?? layout.agent ?? "opencode";
   const engine = engineKindFor(agent);
@@ -931,6 +1002,11 @@ async function startLane(stateDir: string, stack: string, req: LaneReq): Promise
   const tried = new Set<number>();
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
+    // Refresh the reservation per attempt, so a slow retry never outlives it.
+    await updateRoster(stateDir, stack, (r) => {
+      const v = r.starting?.[req.name];
+      if (v?.token === token) v.at = Date.now();
+    });
     const port = await freeLanePort(layout, Object.values(readRoster(stateDir, stack).entries), tried);
     tried.add(port);
     const servers = pickServers(layout, mcps);
@@ -969,7 +1045,15 @@ async function startLane(stateDir: string, stack: string, req: LaneReq): Promise
     }
     writeSpawnPid(stateDir, stack, spec.name, s.spawnPid);
     const entry = entryFrom(s, {});
-    await putEntry(stateDir, stack, entry);
+    let mine = false;
+    await updateRoster(stateDir, stack, (r) => {
+      mine = dropReservation(r, req.name, token);
+      if (mine) r.entries[entry.name] = entry; // the entry replaces the reservation in one write
+    });
+    if (!mine) {
+      await stopPids(entry.url, [s.health.pid, s.spawnPid], s.health.feedPid);
+      throw new Error(`desks: lane "${req.name}" lost its name reservation while its host started; stopped that host`);
+    }
     appendLanesLog(stateDir, stack, { event: "start", name: req.name, by: req.launchedBy, goal, runId: spec.runId, port });
     const t = readStackTerminal(stateDir, stack);
     const drv = await driverFor(t);
@@ -990,13 +1074,13 @@ async function startLane(stateDir: string, stack: string, req: LaneReq): Promise
 /** Start a lane; with lanes.approval="decisions" and a desk launcher (not DECISIONS, not human) returns {pending}. */
 export async function laneNew(o: StackOpts & LaneRequest & { brief?: string }): Promise<RosterEntry | { pending: PendingLane }> {
   const { stateDir, stack } = ctx(o);
+  if (typeof o.name === "string" && reservedName(o.name)) throw new Error(`desks: invalid lane name "${o.name}": "human" is reserved (the human's identity)`);
   if (!validName(o.name, "lane")) throw new Error(`desks: invalid lane name "${o.name}" (want /^[a-z0-9][a-z0-9_-]{0,47}$/i)`);
   if (typeof o.goal !== "string" || o.goal.trim() === "") throw new Error("desks: lane goal must not be empty");
   const launchedBy = o.launchedBy || "human";
-  const roster = readRoster(stateDir, stack);
-  if (roster.entries[o.name]) throw new Error(`desks: name "${o.name}" is already in use in stack "${stack}"`);
-  const pendingSame = readPendingLanes(stateDir, stack).find((p) => p.state === "pending" && p.request.name === o.name);
-  if (pendingSame) throw new Error(`desks: lane "${o.name}" is already pending approval (${pendingSame.id})`);
+  const layout = stackLayout(stateDir, stack);
+  const taken = laneNameTaken(stateDir, stack, readRoster(stateDir, stack), layout, o.name);
+  if (taken) throw new Error(taken);
   const req: LaneReq = {
     name: o.name,
     goal: o.goal,
@@ -1008,11 +1092,16 @@ export async function laneNew(o: StackOpts & LaneRequest & { brief?: string }): 
     ...(o.budgetUsd !== undefined ? { budgetUsd: o.budgetUsd } : {}),
     launchedBy,
   };
-  const layout = stackLayout(stateDir, stack);
   const dec = decisionsName(stateDir, stack);
   if (layout.lanes.approval === "decisions" && launchedBy !== "human" && launchedBy !== dec) {
-    const pending: PendingLane = { id: nextPendingLaneId(stateDir, stack), request: req, requestedAt: Date.now(), state: "pending" };
-    appendPendingLane(stateDir, stack, pending);
+    let pending!: PendingLane;
+    // Check, number and append under the roster lock: two requests never share a name or an id.
+    await updateRoster(stateDir, stack, (r) => {
+      const why = laneNameTaken(stateDir, stack, r, layout, o.name);
+      if (why) throw new Error(why);
+      pending = { id: nextPendingLaneId(stateDir, stack), request: req, requestedAt: Date.now(), state: "pending" };
+      appendPendingLane(stateDir, stack, pending);
+    });
     await tryDeliver({
       stack,
       stateDir,
@@ -1028,14 +1117,28 @@ export async function laneNew(o: StackOpts & LaneRequest & { brief?: string }): 
 function findPending(stateDir: string, stack: string, id: string): PendingLane {
   const p = readPendingLanes(stateDir, stack).find((x) => x.id === id);
   if (!p) throw new Error(`desks: no pending lane ${id} in stack "${stack}"`);
-  if (p.state !== "pending") throw new Error(`desks: lane request ${id} is already ${p.state}`);
-  return p;
+  const st = effectiveState(p);
+  if (st !== "pending") throw new Error(`desks: lane request ${id} is already ${st}`);
+  if (p.state === "pending") return p;
+  const { decidedBy: _by, decidedAt: _at, ...rest } = p; // a stale "approving": back to plain pending
+  return { ...rest, state: "pending" };
 }
 
 export async function laneApprove(o: StackOpts & { id: string; by: Sender }): Promise<RosterEntry> {
   const { stateDir, stack } = ctx(o);
-  const p = findPending(stateDir, stack, o.id);
-  const entry = await startLane(stateDir, stack, p.request);
+  // Claim the request under the roster lock: a second approve sees "already approving".
+  let p!: PendingLane;
+  await updateRoster(stateDir, stack, () => {
+    p = findPending(stateDir, stack, o.id);
+    appendPendingLane(stateDir, stack, { ...p, state: "approving", decidedBy: o.by, decidedAt: Date.now() });
+  });
+  let entry: RosterEntry;
+  try {
+    entry = await startLane(stateDir, stack, p.request, p.id);
+  } catch (e) {
+    appendPendingLane(stateDir, stack, p); // back to pending, so it can be retried or rejected
+    throw e;
+  }
   appendPendingLane(stateDir, stack, { ...p, state: "approved", decidedBy: o.by, decidedAt: Date.now() });
   await tryDeliver({ stack, stateDir, from: o.by, to: p.request.launchedBy, text: `Lane request ${p.id} (${p.request.name}) approved; the lane is running.` });
   return entry;
@@ -1316,15 +1419,26 @@ export async function deskCosts(o: StackOpts = {}): Promise<DeskCostRow[]> {
 
 /** The stack name to use: explicit, else $ACH_DESK_STACK, else <stateDir>/desks/active-stack, else "default". */
 export function resolveStack(o: StackOpts = {}): string {
-  if (o.stack) return o.stack;
+  if (o.stack) return assertStackName(o.stack);
   const env = process.env.ACH_DESK_STACK;
-  if (env) return env;
+  if (env) return assertStackName(env);
   const f = activeStackFile(o.stateDir ?? defaultStateDir());
+  let s = "";
   try {
-    const s = readFileSync(f, "utf8").trim();
-    if (s) return s;
+    s = readFileSync(f, "utf8").trim();
   } catch {
     /* none */
   }
-  return "default";
+  return s ? assertStackName(s) : "default";
+}
+
+/** Desk and lane names become file names (specs/<name>.json, ...): refuse anything else before a path is built. */
+function assertDeskOrLaneName(name: string): void {
+  // The lane shape is a superset of the desk shape.
+  if (typeof name !== "string" || !validName(name, "lane")) throw new Error(`desks: invalid desk or lane name ${JSON.stringify(name)}`);
+}
+
+function assertRunId(runId: unknown): string {
+  if (typeof runId !== "string" || !RUN_ID_RE.test(runId)) throw new Error(`desks: invalid run id ${JSON.stringify(runId)}`);
+  return runId;
 }

@@ -127,7 +127,7 @@ lanes:
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `name` | string | required | Unique, `/^[A-Z][A-Z0-9_-]{0,31}$/`. |
+| `name` | string | required | Unique, `/^[A-Z][A-Z0-9_-]{0,31}$/`. `HUMAN` is reserved. |
 | `role` | string | required | Role prompt: `<rolesDir>/<role>.md`, then built-in `roles/`. |
 | `agent` | string | `layout.agent` | Agent CLI for this desk. |
 | `model` | string | `layout.model` | Model for this desk. |
@@ -182,6 +182,13 @@ Under `<stateDir>/desks/<stack>/`:
 | `lanes.log` | one JSON line per lane start and stop |
 
 The stack name is `--stack`, else `$ACH_DESK_STACK`, else `<stateDir>/desks/active-stack`, else `default`.
+
+Names become file names, so they are checked before any path is built:
+
+- A stack name, from any of those sources, `?stack=` or the layout's `stack`, must match `/^[A-Za-z0-9][A-Za-z0-9_.-]*$/` (one path segment); anything else is refused with `invalid stack name` (400 in the web API).
+- A lane name must match `/^[a-z0-9][a-z0-9_-]{0,47}$/i`. `human` in any case is reserved (no desk or lane may use it): it is the user's sender and approver identity.
+- A new lane name may not equal, ignoring case, a roster entry, a layout desk, a lane being started, or a pending or approving lane request (macOS disks are case-insensitive, so `orchestrator` and `ORCHESTRATOR` would share `specs/` and `logs/` files).
+- Two concurrent starts of one lane name cannot both win: the name is reserved in `roster.json` under `starting` (with a timestamp and pid) while its host starts, and the roster entry replaces it in one write. A reservation older than the host start timeout plus 15 s, or whose pid is gone, is stale and ignored. `lane approve` marks the request `approving` first, so a second approve of the same id is refused (`lane request ... is already approving`); a failed start puts it back to `pending`.
 
 ## CLI
 
@@ -294,7 +301,7 @@ Errors are `{error: string}` with a status picked from the service message:
 
 | Status | Message shapes (src/desks/*.ts) |
 |---|---|
-| 400 | `... must not be empty`, `must be an array` / `a non-empty string`, `every decision option needs a label`, `invalid lane name`, `cannot send to yourself`; bad JSON or body fields (HttpError) |
+| 400 | `... must not be empty`, `must be an array` / `a non-empty string`, `every decision option needs a label`, `invalid lane name`, `invalid stack name`, `invalid desk or lane name`, `invalid run id`, `cannot send to yourself`; bad JSON or body fields, or a path segment holding `/`, `\` or a leading `.` (HttpError) |
 | 404 | `unknown desk or lane`, `unknown desk`, `unknown lane`, `no pending lane <id>`, `no decision <id>` |
 | 409 | `stack ... is already up`, `port(s) ... already in use`, `port ... still busy`, `name ... is already in use`, `lane ... is already pending approval`, `lane request ... is already <state>`, `decision ... is closed`, `<name> is not running (dead)`, wrong kind (`is a lane` / `is a desk`), `no free lane port` |
 | 500 | config or server failure: `layout file not found`, `invalid layout`, `cannot parse layout`, `corrupt layout`, `corrupt roster`, `roles/common.md not found`, `role file ... not found`, `invalid role name`, `the layout has no desks`, `did not become idle`, `no spec or layout entry`, `timed out ... roster lock`, `desk host ...` upstream failure, `not implemented`; a non-Error throw |
