@@ -124,3 +124,63 @@ describe("ach stats --by desk (CLI)", () => {
     assert.match(res.stderr, /expected one of:.*\bdesk\b/);
   });
 });
+
+// Driver-engine desk turns: the raw NDJSON usage lines carry sessionId null and
+// only ach_chain.run, so the agent+session index misses them (they landed under "(none)").
+describe("ach stats --by desk: driver NDJSON lines without a sessionId", () => {
+  const CLI = new URL("../src/cli/ach.ts", import.meta.url).pathname;
+  let stateDir: string;
+  let home: string;
+  const ts = Date.now() - 3_600_000;
+
+  const chain = (runId: string, seq: number) => ({ v: 1, run: runId, seq, prev: "0".repeat(64), hash: "1".repeat(64) });
+  const stepLine = (runId: string, sessionId: string) =>
+    JSON.stringify({ ach_chain: chain(runId, 0), type: "step", agent: "claude", sessionId, model: "claude-haiku-5-5", data: { sessionId }, timestamp: ts }) + "\n";
+  const usageLine = (runId: string, seq: number, input: number) =>
+    JSON.stringify({
+      ach_chain: chain(runId, seq),
+      type: "usage",
+      agent: "claude",
+      sessionId: null,
+      usage: { agent: "claude", model: "claude-haiku-5-5", inputTokens: input, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.0076 },
+      timestamp: ts,
+    }) + "\n";
+
+  before(() => {
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ach-desk-drv-state-"));
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "ach-desk-drv-home-"));
+    fs.mkdirSync(path.join(stateDir, "raw"), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, "runs"), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "raw", "claude-s-drv.jsonl"), stepLine("run-turn", "s-drv") + usageLine("run-turn", 1, 300) + usageLine("run-turn", 2, 200));
+    writeRunRecord(stateDir, { runId: "run-desk", agent: "claude", startedAt: ts, cwd: "/tmp/desk-cwd", branch: "feat/x", pr: 7, desk: { stack: "p6800", name: "LISTENER", kind: "desk" } });
+    writeRunRecord(stateDir, { runId: "run-turn", agent: "claude", sessionId: "s-drv", startedAt: ts, parentRunId: "run-desk", cwd: "/tmp/turn-cwd", branch: "feat/x", pr: 7, desk: { stack: "p6800", name: "LISTENER", kind: "turn" } });
+  });
+  after(() => {
+    for (const d of [stateDir, home]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  const stats = (...by: string[]) => {
+    const p = spawnSync(process.execPath, ["--import", "tsx", CLI, "stats", "--json", "--state-only", "--by", by.join(",")], {
+      env: { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: stateDir, HOME: home, AGENTIC_CODING_HARNESS_PROJECT_ALIASES: "", AGENTIC_CODING_HARNESS_TZ: "UTC" },
+      encoding: "utf8",
+    });
+    assert.equal(p.status, 0, p.stderr);
+    return JSON.parse(p.stdout);
+  };
+
+  it("puts the usage under <stack>/<name>, not (none)", () => {
+    const out = stats("desk");
+    assert.deepEqual(Object.keys(out.byDesk), ["p6800/LISTENER"]);
+    assert.equal(out.byDesk["p6800/LISTENER"].inputTokens, 500);
+    assert.equal(out.byDesk["(none)"], undefined);
+    // claude-haiku-5-5 is not in the price table: stats keeps the reported cost, as the run record now does.
+    assert.equal(Math.round(out.byDesk["p6800/LISTENER"].costUsd * 1e6) / 1e6, 0.0152);
+  });
+
+  it("branch and pr dimensions resolve for the same driver lines", () => {
+    const out = stats("branch,pr");
+    assert.equal(out.byBranch["feat/x"].inputTokens, 500);
+    assert.equal(out.byBranch["(none)"], undefined);
+    assert.equal(out.byPr["7"].inputTokens, 500);
+  });
+});

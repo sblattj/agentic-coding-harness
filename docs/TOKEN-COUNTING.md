@@ -278,7 +278,13 @@ cost_usd = ( inputTokens                   × price.input
   or per-token fields (auto-scaled ×1e6); `resolveAlias` strips provider prefixes, date stamps,
   and `-latest/-preview` so `anthropic/claude-sonnet-4-20250514` matches `claude-sonnet-4`.
 - Unknown model → `NaN` + warning surfaced in `RunResult.warnings` — cost is never silently 0
-  (exception: credit-metered kiro records, below).
+  (exception: credit-metered kiro records, below). When the CLI itself stated a finite `costUsd`
+  for that usage event (claude on a model missing from the price table), the driver adds that
+  reported figure to the run total and labels the source `reported`, so the RunRecord total and
+  `ach stats` (which already prefers the reported cost) agree. The warning is still emitted.
+- `ach stats` attributes driver NDJSON usage lines to a run by the `ach_chain.run` id they carry
+  (`StatRecord.runId`), because those lines often have `sessionId: null`. The desk, cwd, branch
+  and pr dimensions look up by run id first, then fall back to agent+session.
 - **Reported beats computed (by default):** the transcript tap prefers `costUSD` when the row
   carries it; the driver accumulates computed cost otherwise. `ach stats` makes this a choice
   (below) instead of a silent blend.

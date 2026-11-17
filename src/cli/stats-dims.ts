@@ -411,17 +411,37 @@ export function deskLabel(d: unknown): string | undefined {
   return typeof stack === "string" && stack && typeof name === "string" && name ? `${stack}/${name}` : undefined;
 }
 
+type DeskRun = { runId: string; agent: string; sessionId?: string | null; parentRunId?: string; desk?: { stack: string; name: string; kind: string } };
+
+/** Desk label of each run id (turn runs resolved through parentRunId); runs without one are absent. */
+export function deskByRunId(runs: DeskRun[]): (runId: string | null | undefined) => string | undefined {
+  const labels = deskLabelOf(runs);
+  const out = new Map<string, string>();
+  for (const run of runs) {
+    const label = labels(run);
+    if (label) out.set(run.runId, label);
+  }
+  return (runId) => (runId ? out.get(runId) : undefined);
+}
+
 /**
- * Index the desk label of a run by agent+session (session alone as fallback).
- * A driver-engine per-turn child run (desk.kind "turn") maps to the desk its
- * parentRunId chain leads to; with no resolvable parent it keeps its own desk info.
+ * Resolve any run-record attribute by run id. Driver NDJSON usage lines carry
+ * no sessionId, so the agent+session indexes miss them; the run id they carry
+ * (`ach_chain.run`, StatRecord.runId) always matches.
  */
-export function deskIndex(
-  runs: { runId: string; agent: string; sessionId?: string | null; parentRunId?: string; desk?: { stack: string; name: string; kind: string } }[],
-): (agent: string, sessionId: string | null | undefined) => string | undefined {
+export function runIdIndex<R extends { runId: string }, T>(runs: R[], pick: (run: R) => T | undefined): (runId: string | null | undefined) => T | undefined {
+  const out = new Map<string, T>();
+  for (const run of runs) {
+    const v = pick(run);
+    if (v !== undefined) out.set(run.runId, v);
+  }
+  return (runId) => (runId ? out.get(runId) : undefined);
+}
+
+function deskLabelOf(runs: DeskRun[]): (run: DeskRun) => string | undefined {
   const byId = new Map(runs.map((r) => [r.runId, r]));
-  const labelOf = (run: (typeof runs)[number]): string | undefined => {
-    let cur: (typeof runs)[number] | undefined = run;
+  return (run) => {
+    let cur: DeskRun | undefined = run;
     for (let hops = 0; cur && hops < 8; hops++) {
       if (cur.desk && cur.desk.kind !== "turn") return deskLabel(cur.desk);
       cur = cur.parentRunId ? byId.get(cur.parentRunId) : undefined;
@@ -429,6 +449,17 @@ export function deskIndex(
     }
     return deskLabel(run.desk);
   };
+}
+
+/**
+ * Index the desk label of a run by agent+session (session alone as fallback).
+ * A driver-engine per-turn child run (desk.kind "turn") maps to the desk its
+ * parentRunId chain leads to; with no resolvable parent it keeps its own desk info.
+ */
+export function deskIndex(
+  runs: DeskRun[],
+): (agent: string, sessionId: string | null | undefined) => string | undefined {
+  const labelOf = deskLabelOf(runs);
   const exact = new Map<string, string>();
   const bySession = new Map<string, string>();
   for (const run of runs) {
