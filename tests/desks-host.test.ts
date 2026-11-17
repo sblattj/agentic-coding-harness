@@ -112,6 +112,7 @@ class FakeMeter implements HostMeter {
   heartbeats: HostState[] = [];
   finished: string[] = [];
   over = false;
+  lost = 0;
   begin(o: { sessionId?: string; pid: number }): void {
     this.begins.push(o);
   }
@@ -128,7 +129,7 @@ class FakeMeter implements HostMeter {
     this.finished.push(status);
   }
   totals() {
-    return { costUsd: null, inputTokens: 0, outputTokens: 0 };
+    return { costUsd: null, inputTokens: 0, outputTokens: 0, ...(this.lost > 0 ? { tokenRecordFailures: this.lost } : {}) };
   }
 }
 
@@ -489,6 +490,29 @@ describe('desk host: lanes, budget, failures', () => {
     const evs = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as HostEvent);
     assert.equal(evs.filter((e) => e.type === 'error' && e.data.error === 'budget exceeded').length, 1);
     assert.deepEqual(s.meter.finished, ['error'], 'a budget auto-stop is a failure, not a plain abort');
+  });
+
+  it('lost token records: one error event per new loss, host keeps running', async () => {
+    const s = await start({});
+    try {
+      await hostSend(s.t, 'human', 'a');
+      s.engine.finishTurn();
+      await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle');
+      assert.equal((await hostEvents(s.t)).filter((e) => e.type === 'error').length, 0, 'no loss, no error');
+      s.meter.lost = 2;
+      await hostSend(s.t, 'human', 'b');
+      s.engine.finishTurn();
+      await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle again');
+      await hostSend(s.t, 'human', 'c');
+      s.engine.finishTurn();
+      await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle a third time');
+      const errs = (await hostEvents(s.t)).filter((e) => e.type === 'error');
+      assert.equal(errs.length, 1, 'an unchanged count is not reported again');
+      assert.equal(errs[0]?.data.error, 'metering: token record write failed');
+      assert.equal(errs[0]?.data.tokenRecordFailures, 2);
+    } finally {
+      await stopAndWait(s);
+    }
   });
 
   it('desk over budget: alert once, keeps running', async () => {

@@ -280,6 +280,21 @@ describe("desk costs: unknown stays a dash", () => {
     assert.match(r.stdout(), /ORCH\s+desk\s+1,200\s+30\s+-\n/);
     assert.doesNotMatch(r.stdout(), /\$0\.0000/);
   });
+
+  it("shows lost token records in LOST and warns that totals undercount", async () => {
+    const rows = [{ name: "ORCH", kind: "desk", runId: "r", costUsd: 0.25, inputTokens: 10, outputTokens: 2, tokenRecordFailures: 3, lanes: [] }];
+    const r = rig({ deskCosts: rows });
+    assert.equal(await cmdDesk(["costs"], r.deps), 0);
+    assert.match(r.stdout(), /COST\s+LOST\n/);
+    assert.match(r.stdout(), /ORCH\s+desk\s+10\s+2\s+\$0\.2500\s+3\n/);
+    assert.match(r.stdout(), /warning: 3 token record\(s\) could not be written/);
+  });
+
+  it("prints no warning when nothing was lost", async () => {
+    const r = rig({ deskCosts: [{ name: "A", kind: "desk", runId: "r", costUsd: 0, inputTokens: 0, outputTokens: 0, lanes: [] }] });
+    assert.equal(await cmdDesk(["costs"], r.deps), 0);
+    assert.doesNotMatch(r.stdout(), /warning/);
+  });
 });
 
 describe("--json prints exactly the service return value", () => {
@@ -436,6 +451,21 @@ describe("desk chat REPL", () => {
       { from: "human", to: "W", text: "second" },
     ]);
     assert.equal(r.subscribed[0]?.stopped, true);
+  });
+  it("chat sends as $ACH_DESK_NAME inside a desk session, as human outside one", async () => {
+    const a = rig({ deskRoster: view([row({ name: "W", url: "http://127.0.0.1:4805" })]) }, { env: { ACH_DESK_NAME: "ORCH" } });
+    const da = cmdDesk(["chat", "W"], a.deps);
+    await new Promise((res) => setTimeout(res, 50));
+    a.stdin.end("hi\n");
+    assert.equal(await da, 0);
+    assert.deepEqual(a.calls.filter((c) => c.fn === "deskSend").map((c) => c.args), [{ from: "ORCH", to: "W", text: "hi" }]);
+  });
+  it("chat --from a different sender is refused inside a desk session (same guard as send), nothing is sent", async () => {
+    const r = rig({ deskRoster: view([row({ name: "W", url: "http://127.0.0.1:4805" })]) }, { env: { ACH_DESK_NAME: "ORCH" } });
+    r.stdin.end("hi\n");
+    assert.equal(await cmdDesk(["chat", "W", "--from", "human"], r.deps), 2);
+    assert.match(r.stderr(), /refused: this session is ORCH/);
+    assert.equal(r.calls.filter((c) => c.fn === "deskSend").length, 0);
   });
   it("an unknown or dead target exits 1 with the known names", async () => {
     const r = rig({ deskRoster: view([row({ name: "A" })]) });

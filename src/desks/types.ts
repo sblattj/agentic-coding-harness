@@ -437,6 +437,8 @@ export interface DeskCostRow {
   costUsd: number | null;
   inputTokens: number;
   outputTokens: number;
+  /** Token records the host could not write (present only when > 0): the totals undercount. */
+  tokenRecordFailures?: number;
   lanes: DeskCostRow[];
 }
 

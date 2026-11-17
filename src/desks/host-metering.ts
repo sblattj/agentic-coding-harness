@@ -52,7 +52,8 @@ export interface HostMeter {
   /** Budget check: true when spec.budgetUsd is set and the run's cost crossed it (an alert is recorded once). */
   overBudget(): boolean;
   finish(status: "success" | "error" | "aborted"): void;
-  totals(): { costUsd: number | null; inputTokens: number; outputTokens: number };
+  /** costUsd is null when any message that used tokens could not be priced (unknown is never a partial sum). tokenRecordFailures counts raw token lines that could not be written (present only when > 0). */
+  totals(): { costUsd: number | null; inputTokens: number; outputTokens: number; tokenRecordFailures?: number };
 }
 
 /** Optional injection points (tests); production passes nothing. */
@@ -100,6 +101,7 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
   let dirty = false;
   let budgetCrossed = false;
   let notified = false;
+  let tokenRecordFailures = 0;
 
   const runAlerts: RunAlerts | null =
     spec.budgetUsd !== undefined && spec.budgetUsd > 0
@@ -124,6 +126,7 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
     let cacheWriteTokens = 0;
     let cost = 0;
     let anyCost = false;
+    let anyUnpriced = false;
     let anyReported = false;
     let anyComputed = false;
     for (const m of messages.values()) {
@@ -137,14 +140,29 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
         anyCost = true;
         if (m.reported !== null) anyReported = true;
         else anyComputed = true;
+      } else if (m.inputTokens + m.outputTokens + m.cacheReadTokens + m.cacheWriteTokens > 0) {
+        anyUnpriced = true;
       }
     }
-    return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd: anyCost ? cost : null, anyReported, anyComputed };
+    // Unknown is not zero: one unpriced message with tokens makes the whole total unknown (null),
+    // never a partial sum. knownCostUsd is that partial sum, used only for the budget check (a lower bound).
+    return {
+      inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+      costUsd: anyCost && !anyUnpriced ? cost : null,
+      knownCostUsd: anyCost ? cost : null,
+      anyUnpriced,
+      anyReported, anyComputed,
+    };
   };
 
   const totals = () => {
     const s = sums();
-    return { costUsd: s.costUsd, inputTokens: s.inputTokens, outputTokens: s.outputTokens };
+    return {
+      costUsd: s.costUsd,
+      inputTokens: s.inputTokens,
+      outputTokens: s.outputTokens,
+      ...(tokenRecordFailures > 0 ? { tokenRecordFailures } : {}),
+    };
   };
 
   const writeTotals = (): void => {
@@ -158,6 +176,7 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
         // RunRecord.totals.costUsd is a required number; null (nothing priceable) is written as 0
         // exactly like a driver run with no priced usage. totals() still returns null.
         costUsd: s.costUsd ?? 0,
+        // costUsd 0 here means "unknown" whenever costUnpriced is set, including a mixed run (readers print null).
         ...(s.costUsd === null && s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheWriteTokens > 0 ? { costUnpriced: true } : {}),
         ...(s.anyReported !== s.anyComputed ? { costSource: s.anyReported ? ("reported" as const) : ("computed" as const) } : {}),
       },
@@ -177,7 +196,7 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
 
   const checkBudget = (): void => {
     if (spec.budgetUsd === undefined || spec.budgetUsd <= 0) return;
-    const cost = sums().costUsd;
+    const cost = sums().knownCostUsd;
     if (cost === null) return;
     if (cost >= spec.budgetUsd) budgetCrossed = true;
     if (runAlerts === null) return;
@@ -198,6 +217,16 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
       } catch {
         // best effort
       }
+    }
+  };
+
+  const markTokenRecordFailures = (): void => {
+    if (!begun) return;
+    try {
+      const cur = readRunRecord(stateDir, runId);
+      patchRunRecord(stateDir, runId, { metadata: { ...(cur?.metadata ?? {}), tokenRecordFailures }, updatedAt: now() });
+    } catch {
+      // the run record may be unwritable too; the warning and totals() count remain
     }
   };
 
@@ -279,7 +308,12 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
           fs.mkdirSync(path.dirname(f), { recursive: true });
           fs.appendFileSync(f, JSON.stringify(line) + "\n");
         } catch (err) {
+          // A desk host must keep running, so this never throws. The loss is made visible instead:
+          // a warning, a count in totals(), and metadata.tokenRecordFailures on the run record
+          // (stats built from raw token lines undercount by that many lines).
+          tokenRecordFailures++;
           warn(`desk metering: could not append token record (${err instanceof Error ? err.message : String(err)})`);
+          markTokenRecordFailures();
         }
       }
       dirty = true;

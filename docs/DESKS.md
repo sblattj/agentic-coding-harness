@@ -210,7 +210,7 @@ ach desk close <Dn> [--reason R] [--from NAME]
 ach desk engine <name> <agent> [--model M]
 ach desk costs [--json]
 ach desk host --spec <file>              internal: the per-desk host process
-ach desk chat <name>                     attach REPL for engines without a native TUI
+ach desk chat <name> [--from NAME]       attach REPL for engines without a native TUI
 
 ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N] [--brief TEXT] [--from NAME]
 ach lane status [name] [--json]
@@ -224,7 +224,7 @@ Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else 
 - `desk up` refuses when any desk of the stack is alive. `--port-base` overrides the layout (a test stack beside the live one). `--tmux-session` picks the tmux session that gets the `desks` window and the lane windows. When the hosts start but the panes cannot be opened, `desk up` still succeeds and says so (`note` in the `RosterView`); `ach desk attach` opens them.
 - `desk down` stops every lane, then every desk (feed, pane, host), and leaves an empty roster with no processes. A lane whose stop fails does not stop the rest: its host is stopped anyway, the desks go down, and `desk down` then reports the failed lanes as an error.
 - Stops never touch what is no longer ours: `/stop` goes to a port only while its `/health` answers for the entry's run, and a recorded pid is signalled only while its command line still runs that desk's `desk host --spec <specs/name.json>`.
-- `desk send` and `desk answer` send as `--from`, else `$ACH_DESK_NAME`, else `human`. Inside a desk or lane session (`$ACH_DESK_NAME` set) a `--from` that differs is refused.
+- `desk send`, `desk answer` and `desk chat` send as `--from`, else `$ACH_DESK_NAME`, else `human`. Inside a desk or lane session (`$ACH_DESK_NAME` set) a `--from` that differs is refused.
 - `-h` or `--help` is help only as the first argument after the subcommand; inside message text it is sent like any other word.
 - Only the human or the stack's decisions desk (the desk with role `decisions`) may `lane approve` or `lane reject`, from the CLI, MCP tools and web API alike (the web API answers 403 otherwise).
 - `desk events --follow` and `desk chat` look the host up again on every reconnect, so they keep streaming across an engine switch (new host token and run; the new run's events start at seq 1).
@@ -278,7 +278,7 @@ Switch a running desk with `ach desk engine <name> <agent>`. A missing engine fa
 
 `--term` picks the driver; the default is tmux. The pane ids are stored in the roster as `{kind, id}`.
 
-**Moving a running stack.** Hosts, sessions, the roster and feeds do not depend on panes. `ach desk attach --term tmux` closes the old panes and reopens them on the same sessions; history is intact and feeds never stop. `ach desk down` closes every pane it opened and touches no other window. tmux pane ids (`%N`) restart with every tmux server, so each pane ach opens is tagged with the pane option `@ach_run` (the token is also kept under `<tmpdir>/ach-desks-tmux`), and closing kills a pane only when its tag still matches; a reused id, or a pane from before tagging, is left alone. Ghostty closing signals the recorded pid only when its command line still matches what ach launched.
+**Moving a running stack.** Hosts, sessions, the roster and feeds do not depend on panes. `ach desk attach --term tmux` closes the old panes and reopens them on the same sessions; history is intact and feeds never stop. `ach desk down` closes every pane it opened and touches no other window. tmux pane ids (`%N`) restart with every tmux server, so each pane ach opens is tagged with the pane option `@ach_run` (the token is also kept under `<tmpdir>/ach-desks-tmux`), and closing kills a pane only when its tag still matches; a reused id, or a pane from before tagging, is left alone. Ghostty closing signals the recorded pid only when its command line still matches what ach launched and its start time fits that open's pidfile (a reused pid starts after the pidfile was written, so the same executable and script is not enough).
 
 ## Web
 
@@ -342,7 +342,7 @@ ach stats --by desk         # per desk and per lane, keyed <stack>/<name>; other
 ach desk roster --json      # costUsd and treeCostUsd per row
 ```
 
-Lane cost rolls up under the launching desk. A desk's row covers every run of that desk name in the stack (an engine switch, or an earlier `desk up`, starts a new run): its own cost and tokens are the sum over those runs, and lanes launched by any of them stay nested under it. Unknown is not zero: when a desk's usage could not be priced (a model with no price, such as `ferry/super-flash`), `costUsd` is `null` in `ach desk costs` / `/api/desks/costs` and prints as `-`, and any tree total (`treeCostUsd`) that contains an unknown part is `null` too, never a partial sum. The host meter marks such runs with `totals.costUnpriced` in the run record (older desk-host records with tokens and a 0 cost and no `costSource` are read the same way). `ach desk costs` also lists lanes that already stopped, because their spend happened: a lane whose launcher is a live desk stays nested under it, and a lane launched by a human or whose launcher is gone is a top-level row. A per-lane budget (`--budget-usd`, `lanes.budgetUsd`) uses the existing [budget alerts](BUDGET-ALERTS.md).
+Lane cost rolls up under the launching desk. A desk's row covers every run of that desk name in the stack (an engine switch, or an earlier `desk up`, starts a new run): its own cost and tokens are the sum over those runs, and lanes launched by any of them stay nested under it. Unknown is not zero: when a desk's usage could not be priced (a model with no price, such as `ferry/super-flash`), `costUsd` is `null` in `ach desk costs` / `/api/desks/costs` and prints as `-`, and any tree total (`treeCostUsd`) that contains an unknown part is `null` too, never a partial sum. The host meter marks such runs with `totals.costUnpriced` in the run record (older desk-host records with tokens and a 0 cost and no `costSource` are read the same way). `ach desk costs` also lists lanes that already stopped, because their spend happened: a lane whose launcher is a live desk stays nested under it, and a lane launched by a human or whose launcher is gone is a top-level row. A per-lane budget (`--budget-usd`, `lanes.budgetUsd`) uses the existing [budget alerts](BUDGET-ALERTS.md). If the host cannot write a raw token record (a disk error), it keeps running but records an `error` event, counts the loss in the run record (`metadata.tokenRecordFailures`), and `ach desk costs` shows it in the `LOST` column (`tokenRecordFailures` in JSON) with a warning that the totals undercount.
 
 ## Troubleshooting
 

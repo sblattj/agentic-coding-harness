@@ -268,6 +268,22 @@ describe('desk costs across an engine switch', () => {
     const rows = await deskCosts({ stateDir: sd, stack: 't' });
     assert.equal(rows[0]!.costUsd, null);
   });
+  it('lost token records from the run records are summed onto the desk row', async () => {
+    const sd = tmpDir();
+    await putEntry(sd, 't', entry('DEC', { kind: 'desk', role: 'decisions', runId: 'r-new', port: 2 }));
+    writeRunRecord(sd, rec('r-old', 'DEC', 'desk', 1, { startedAt: 1, metadata: { tokenRecordFailures: 2 } }));
+    writeRunRecord(sd, rec('r-new', 'DEC', 'desk', 0.5, { startedAt: 2, metadata: { tokenRecordFailures: 1 } }));
+    const rows = await deskCosts({ stateDir: sd, stack: 't' });
+    assert.equal(rows[0]!.tokenRecordFailures, 3);
+  });
+
+  it('a desk with no lost records has no tokenRecordFailures field', async () => {
+    const sd = tmpDir();
+    await putEntry(sd, 't', entry('DEC', { kind: 'desk', role: 'decisions', runId: 'r-new', port: 2 }));
+    writeRunRecord(sd, rec('r-new', 'DEC', 'desk', 0.5, { startedAt: 2 }));
+    const rows = await deskCosts({ stateDir: sd, stack: 't' });
+    assert.equal('tokenRecordFailures' in rows[0]!, false);
+  });
 });
 
 describe('stops check identity', () => {

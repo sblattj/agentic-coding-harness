@@ -1539,6 +1539,12 @@ function recordCost(rec: RunRecord): number | null {
   return t.costUsd;
 }
 
+/** Token records the desk host failed to write for this run (RunRecord.metadata.tokenRecordFailures). */
+function lostRecords(rec: RunRecord | undefined): number {
+  const n = rec?.metadata?.tokenRecordFailures;
+  return typeof n === "number" && n > 0 ? n : 0;
+}
+
 /** Cost per desk and per lane tree, from the run registry. */
 export async function deskCosts(o: StackOpts = {}): Promise<DeskCostRow[]> {
   const { stateDir, stack } = ctx(o);
@@ -1584,6 +1590,7 @@ export async function deskCosts(o: StackOpts = {}): Promise<DeskCostRow[]> {
       costUsd: rec ? recordCost(rec) : null,
       inputTokens: rec?.totals?.inputTokens ?? 0,
       outputTokens: rec?.totals?.outputTokens ?? 0,
+      ...(lostRecords(rec) > 0 ? { tokenRecordFailures: lostRecords(rec) } : {}),
       lanes,
     };
   };
@@ -1607,6 +1614,9 @@ export async function deskCosts(o: StackOpts = {}): Promise<DeskCostRow[]> {
       costUsd: parts.some((x) => x.costUsd === null) ? null : parts.reduce((sum, x) => sum + (x.costUsd as number), 0),
       inputTokens: parts.reduce((sum, x) => sum + x.inputTokens, 0),
       outputTokens: parts.reduce((sum, x) => sum + x.outputTokens, 0),
+      ...(parts.some((x) => (x.tokenRecordFailures ?? 0) > 0)
+        ? { tokenRecordFailures: parts.reduce((sum, x) => sum + (x.tokenRecordFailures ?? 0), 0) }
+        : {}),
       lanes: parts.flatMap((x) => x.lanes),
     };
   };

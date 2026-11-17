@@ -353,8 +353,8 @@ async function deskEventsCmd(c: Ctx, name: string, since: number | undefined, fo
   stop();
 }
 
-/** `ach desk chat <name>`: backlog, live stream, and stdin lines sent as "human". */
-async function deskChatCmd(c: Ctx, name: string): Promise<void> {
+/** `ach desk chat <name>`: backlog, live stream, and stdin lines sent as `from` (the same sender guard as `desk send`). */
+async function deskChatCmd(c: Ctx, name: string, from: string): Promise<void> {
   const url = await entryUrl(c, name);
   const backlog = await c.d.host.hostEvents(url, 0);
   const shown: string[] = [];
@@ -373,7 +373,7 @@ async function deskChatCmd(c: Ctx, name: string): Promise<void> {
   const rl = createInterface({ input: c.d.stdin, terminal: false });
   const send = async (text: string): Promise<void> => {
     try {
-      await c.d.service.deskSend(compact({ stack: c.stack, from: "human", to: name, text }));
+      await c.d.service.deskSend(compact({ stack: c.stack, from, to: name, text }));
     } catch (e) {
       c.d.stderr(`ach desk chat: send failed: ${e instanceof Error ? e.message : String(e)}\n`);
     }
@@ -510,19 +510,30 @@ async function runDesk(sub: string, args: string[], d: DeskDeps): Promise<void> 
         emitJson(c, rows);
         return;
       }
-      const t: string[][] = [["NAME", "KIND", "INPUT", "OUTPUT", "COST"]];
+      const t: string[][] = [["NAME", "KIND", "INPUT", "OUTPUT", "COST", "LOST"]];
+      let lost = 0;
       const walk = (r: (typeof rows)[number], depth: number): void => {
-        t.push([`${"  ".repeat(depth)}${r.name}`, r.kind, fmtInt(r.inputTokens), fmtInt(r.outputTokens), r.costUsd === null ? "-" : fmtUsd(r.costUsd)]);
+        lost += r.tokenRecordFailures ?? 0;
+        t.push([
+          `${"  ".repeat(depth)}${r.name}`,
+          r.kind,
+          fmtInt(r.inputTokens),
+          fmtInt(r.outputTokens),
+          r.costUsd === null ? "-" : fmtUsd(r.costUsd),
+          r.tokenRecordFailures ? fmtInt(r.tokenRecordFailures) : "",
+        ]);
         r.lanes.forEach((l) => walk(l, depth + 1));
       };
       rows.forEach((r) => walk(r, 0));
       d.stdout(rows.length === 0 ? "no costs yet\n" : pad(t));
+      if (lost > 0) d.stdout(`warning: ${lost} token record(s) could not be written; these totals undercount\n`);
       return;
     }
     case "chat": {
-      const p = o({});
+      const p = o({ from: { type: "string" } });
       need(p.positionals.length === 1, "usage: ach desk chat <name>");
-      await deskChatCmd(ctxOf(p), p.positionals[0] as string);
+      const from = fromName(p.values.from, d.env); // before any I/O: a refused sender never opens the REPL
+      await deskChatCmd(ctxOf(p), p.positionals[0] as string, from);
       return;
     }
     default:
