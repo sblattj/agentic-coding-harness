@@ -509,6 +509,16 @@ ${QUEUE_USAGE}
   ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
               (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
                framing tolerated; same tools and gateway flags as \`ach serve\`)
+  ach desk up [--layout F] [--port-base N] [--term tmux|ghostty|none] [--tmux-session S] [--tmux-socket S] [--stack S] [--json]
+  ach desk down | attach [--term ...] | roster [--json] [--no-prune] | decisions [--state S] [--json] | costs [--json]
+  ach desk send <to> <text...> [--from NAME] | inbox [name] [--limit N] [--since <ms|10m>] [--json]
+  ach desk events <name> [--since SEQ] [--json] [--follow] | chat <name> | engine <name> <agent> [--model M]
+  ach desk answer <Dn> <text...> [--from NAME] | close <Dn> [--reason R]
+              (desks and lanes: one detached host process each, see docs/DESKS.md; every desk
+               subcommand takes --stack S, --from defaults to $ACH_DESK_NAME else "human";
+               "ach desk host --spec <file>" is internal)
+  ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N] [--brief TEXT]
+  ach lane status [name] [--json] | stop <name> | approve <Ln> | reject <Ln> [--reason R]
 ${CONFIG_USAGE}
 
 env:
