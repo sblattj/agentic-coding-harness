@@ -28,6 +28,8 @@ export const UNKNOWN_PROJECT = "unknown";
 export const NO_BRANCH = "(no branch)";
 /** `--by pr` bucket for runs with no recorded PR (#48). */
 export const NO_PR = "none";
+/** `--by desk` bucket for records that belong to no desk or lane (#204). */
+export const NO_DESK = "(none)";
 
 /** A stats row plus the optional fields the extra dimensions read. */
 export interface DimRecord extends AggregatableRecord {
@@ -42,6 +44,8 @@ export interface DimRecord extends AggregatableRecord {
   branch?: string | null;
   /** PR number recorded on the run (#48); absent = `none`. */
   pr?: number | null;
+  /** Desk/lane the record belongs to, `<stack>/<name>` (#204); absent = `(none)`. */
+  desk?: string | null;
 }
 
 /** Per-model row: cost is null when any contribution could not be priced. */
@@ -72,6 +76,8 @@ export interface DimOptions {
   byBranch?: boolean;
   /** Build the byPr rollup (#48). */
   byPr?: boolean;
+  /** Build the byDesk rollup (#204). */
+  byDesk?: boolean;
   /** absolute path -> friendly project name. */
   projectAliases?: Record<string, string>;
 }
@@ -84,6 +90,7 @@ export interface DimAggregates {
   byProject?: Record<string, RatioBucket>;
   byBranch?: Record<string, RatioBucket>;
   byPr?: Record<string, RatioBucket>;
+  byDesk?: Record<string, RatioBucket>;
 }
 
 // ---------------------------------------------------------------- per-model
@@ -397,6 +404,45 @@ export function branchIndex(runs: { agent: string; sessionId?: string | null; br
   };
 }
 
+/** `<stack>/<name>` of a desk descriptor, or undefined when it is not one. */
+export function deskLabel(d: unknown): string | undefined {
+  if (!d || typeof d !== "object") return undefined;
+  const { stack, name } = d as { stack?: unknown; name?: unknown };
+  return typeof stack === "string" && stack && typeof name === "string" && name ? `${stack}/${name}` : undefined;
+}
+
+/**
+ * Index the desk label of a run by agent+session (session alone as fallback).
+ * A driver-engine per-turn child run (desk.kind "turn") maps to the desk its
+ * parentRunId chain leads to; with no resolvable parent it keeps its own desk info.
+ */
+export function deskIndex(
+  runs: { runId: string; agent: string; sessionId?: string | null; parentRunId?: string; desk?: { stack: string; name: string; kind: string } }[],
+): (agent: string, sessionId: string | null | undefined) => string | undefined {
+  const byId = new Map(runs.map((r) => [r.runId, r]));
+  const labelOf = (run: (typeof runs)[number]): string | undefined => {
+    let cur: (typeof runs)[number] | undefined = run;
+    for (let hops = 0; cur && hops < 8; hops++) {
+      if (cur.desk && cur.desk.kind !== "turn") return deskLabel(cur.desk);
+      cur = cur.parentRunId ? byId.get(cur.parentRunId) : undefined;
+      if (cur?.desk && cur.desk.kind !== "turn") return deskLabel(cur.desk);
+    }
+    return deskLabel(run.desk);
+  };
+  const exact = new Map<string, string>();
+  const bySession = new Map<string, string>();
+  for (const run of runs) {
+    const label = labelOf(run);
+    if (!run.sessionId || !label) continue;
+    exact.set(`${run.agent}\u0000${run.sessionId}`, label);
+    bySession.set(run.sessionId, label);
+  }
+  return (agent, sessionId) => {
+    if (!sessionId) return undefined;
+    return exact.get(`${agent}\u0000${sessionId}`) ?? bySession.get(sessionId);
+  };
+}
+
 // ---------------------------------------------------------------- aggregate
 
 function addRatio(b: RatioBucket, r: DimRecord): void {
@@ -416,6 +462,7 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
   const byProject: Record<string, RatioBucket> = {};
   const byBranch: Record<string, RatioBucket> = {};
   const byPr: Record<string, RatioBucket> = {};
+  const byDesk: Record<string, RatioBucket> = {};
   for (const r of records) {
     const day = opts.timeZone ? bucketKey(r.ts, "day", opts.timeZone) : r.ts ? r.ts.slice(0, 10) : "unknown";
     for (const c of contributions(r, opts.pricer, opts.costMode)) {
@@ -429,10 +476,11 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
     }
     if (opts.byBranch) addRatio((byBranch[r.branch || NO_BRANCH] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
     if (opts.byPr) addRatio((byPr[r.pr ? String(r.pr) : NO_PR] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
+    if (opts.byDesk) addRatio((byDesk[r.desk || NO_DESK] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
   }
   for (const b of Object.values(byModel)) finishModel(b);
   for (const cells of Object.values(byModelDay)) for (const b of Object.values(cells)) finishModel(b);
-  for (const b of [...Object.values(byProject), ...Object.values(byBranch), ...Object.values(byPr)]) {
+  for (const b of [...Object.values(byProject), ...Object.values(byBranch), ...Object.values(byPr), ...Object.values(byDesk)]) {
     if (b.costUsd !== null) b.costUsd = Math.round(b.costUsd * 1e6) / 1e6;
     b.cacheHitRatio = cacheHitRatio(b);
   }
@@ -447,6 +495,7 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
   if (opts.byProject) out.byProject = byProject;
   if (opts.byBranch) out.byBranch = byBranch;
   if (opts.byPr) out.byPr = byPr;
+  if (opts.byDesk) out.byDesk = byDesk;
   return out;
 }
 
@@ -456,8 +505,8 @@ function isUnattributedKey(k: string): boolean {
 
 // ---------------------------------------------------------------- CLI glue
 
-export type ByDim = "model" | "project" | "branch" | "pr";
-export const BY_DIMS: readonly ByDim[] = ["model", "project", "branch", "pr"];
+export type ByDim = "model" | "project" | "branch" | "pr" | "desk";
+export const BY_DIMS: readonly ByDim[] = ["model", "project", "branch", "pr", "desk"];
 
 /** --by values (repeatable and/or comma-joined) -> the set of extra dimensions. */
 export function parseByDims(values: string[] | undefined): Set<ByDim> {
@@ -492,7 +541,7 @@ export function statsLine(label: string, b: Omit<UsageBucket, "costUsd"> & { cos
 }
 
 /** Text sections for the extra dimensions. byModel prints only with --by model. */
-export function renderDimsText(dims: DimAggregates, show: { model: boolean; project: boolean; branch?: boolean; pr?: boolean }): string[] {
+export function renderDimsText(dims: DimAggregates, show: { model: boolean; project: boolean; branch?: boolean; pr?: boolean; desk?: boolean }): string[] {
   const lines: string[] = [];
   const sorted = <T>(m: Record<string, T>) => Object.entries(m).sort(([a], [b]) => a.localeCompare(b));
   if (show.model) {
@@ -518,6 +567,12 @@ export function renderDimsText(dims: DimAggregates, show: { model: boolean; proj
     // Numeric order (482 before 1000); the `none` bucket last.
     const byNum = Object.entries(dims.byPr).sort(([a], [b]) => (a === NO_PR ? 1 : b === NO_PR ? -1 : Number(a) - Number(b)));
     for (const [k, b] of byNum) lines.push(statsLine(k === NO_PR ? k : `#${k}`, b));
+  }
+  if (show.desk && dims.byDesk) {
+    lines.push("-- by desk");
+    // `(none)` last.
+    const byName = Object.entries(dims.byDesk).sort(([a], [b]) => (a === NO_DESK ? 1 : b === NO_DESK ? -1 : a.localeCompare(b)));
+    for (const [k, b] of byName) lines.push(statsLine(k, b));
   }
   return lines;
 }

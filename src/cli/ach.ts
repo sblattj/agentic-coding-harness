@@ -92,6 +92,8 @@ import {
   baseCacheRatios,
   cwdIndex,
   branchIndex,
+  deskIndex,
+  deskLabel,
   prIndex,
   loadProjectAliases,
   parseByDims,
@@ -347,13 +349,14 @@ usage:
                  ageDays, stale, source; a snapshot older than
                  AGENTIC_CODING_HARNESS_PRICING_STALE_DAYS (default 180, 0 = silent)
                  prints a one-line [notice] on stderr)
-            [--by model|project|branch|pr]... [--merge-models] [--model-alias FROM=TO]...
+            [--by model|project|branch|pr|desk]... [--merge-models] [--model-alias FROM=TO]...
             [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
                 (--by takes time granularities and dimensions together, e.g.
                  --by week,model; --by model: agent/model rows + model x day table;
                  --by branch: per-git-branch rollup (branch recorded at run start;
                  unattributed rows land in '(no branch)'); --by pr: per-PR rollup (PR recorded
-                 at run time via ach run --pr, env or branch name; no network; no PR = 'none'); --by project: repo-root rollup, aliases also via
+                 at run time via ach run --pr, env or branch name; no network; no PR = 'none'); --by desk: per desk/lane rollup
+                 as <stack>/<name> (desk host records and driver turn runs; others '(none)'); --by project: repo-root rollup, aliases also via
                  AGENTIC_CODING_HARNESS_PROJECT_ALIASES; every row shows
                  cacheHit = cacheRead/(input+cacheRead+cacheWrite))
             [--blocks] [--budget-usd N]
@@ -1593,6 +1596,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   const runCwd = cwdIndex(registryScan.records);
   const runBranch = branchIndex(registryScan.records);
   const runPr = prIndex(registryScan.records);
+  const runDesk = deskIndex(registryScan.records);
   const originIndex = statsOriginIndex(registryScan.records);
   let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript"; origin?: StatsOrigin })[] = stateRecords.map((r) => ({
     source: "state",
@@ -1600,6 +1604,8 @@ async function cmdStats(rest: string[]): Promise<number> {
     cwd: runCwd(r.agent, r.sessionId),
     branch: runBranch(r.agent, r.sessionId),
     pr: runPr(r.agent, r.sessionId),
+    // #204: the desk host stamps extra.desk on its own records; driver-engine turn runs map via the registry.
+    desk: deskLabel(r.extra?.desk) ?? runDesk(r.agent, r.sessionId),
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,
@@ -1746,6 +1752,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     byProject: showProject,
     byBranch: dimsBy.has("branch"),
     byPr: dimsBy.has("pr"),
+    byDesk: dimsBy.has("desk"),
     projectAliases,
   });
   if (dims.unpricedModels.length > 0) {
@@ -1834,6 +1841,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
           ...(dims.byBranch ? { byBranch: dims.byBranch } : {}),
           ...(dims.byPr ? { byPr: dims.byPr } : {}),
+          ...(dims.byDesk ? { byDesk: dims.byDesk } : {}),
           // #142: codex token-accounting scope and completeness.
           ...(codexAccountingJson !== undefined ? { codexAccounting: codexAccountingJson } : {}),
           // #21: per-run context-window pressure from the run registry.
@@ -1882,7 +1890,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for (const m of Object.values(timeMaps)) {
       for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, view(b), prov.byDay[d] ?? prov.byWeek?.[d] ?? prov.byMonth?.[d]) + "\n");
     }
-    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject, branch: dimsBy.has("branch"), pr: dimsBy.has("pr") })) {
+    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject, branch: dimsBy.has("branch"), pr: dimsBy.has("pr"), desk: dimsBy.has("desk") })) {
       process.stdout.write(l + "\n");
     }
     if (outcomes !== undefined) {

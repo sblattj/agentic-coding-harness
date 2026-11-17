@@ -288,7 +288,7 @@ GET  /api/desks/mcps                    -> {names: string[]}
 Every desk and lane is an ach run, so everything is metered.
 
 ```bash
-ach stats --by desk         # per desk and per lane tree
+ach stats --by desk         # per desk and per lane, keyed <stack>/<name>; other records land in (none)
 ach desk roster --json      # costUsd and treeCostUsd per row
 ```
 
