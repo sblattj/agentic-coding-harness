@@ -9,6 +9,7 @@ ach Web API under `/api/desks` served by `ach web`; it never reads state files o
 cd apps/ach-desk
 swift build                 # debug build
 swift test                  # unit + mock-server tests (no GUI, no real ach)
+ACH_DESK_LIVE_PORT=8399 swift test --filter LiveServerTests  # opt-in: decode every endpoint from a real `ach web` with a stack up
 swift run AchDesk           # runs unbundled: works, but notifications are disabled (see Limitations)
 zsh scripts/bundle.sh       # -> build/ach Desk.app (release, ad-hoc signed)
 zsh scripts/bundle.sh --with-ach /path/to/ach   # also copy an ach binary into Contents/Resources
