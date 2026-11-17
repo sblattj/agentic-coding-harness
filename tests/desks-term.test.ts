@@ -363,6 +363,7 @@ describe("GhosttyDriver (generated AppleScript only)", () => {
       settleMs: 0,
       kill: (pid, sig) => void kills.push([pid, sig]),
       commandOf: () => "/bin/echo hi",
+      startOf: () => Date.now() - 1000,
       osascript: async (s) => {
         scripts.push(s);
         if (s.includes("exists")) return "true\n";
@@ -383,6 +384,7 @@ describe("GhosttyDriver (generated AppleScript only)", () => {
       settleMs: 0,
       kill: (pid, sig) => void kills.push([pid, sig]),
       commandOf: () => "/bin/echo hi",
+      startOf: () => Date.now() - 1000,
       osascript: async (s) => {
         scripts.push(s);
         return "";
@@ -422,6 +424,7 @@ describe("GhosttyDriver (generated AppleScript only)", () => {
       settleMs: 0,
       kill: (pid) => void kills.push(pid),
       commandOf: () => "/usr/local/bin/echo hi there",
+      startOf: () => Date.now() - 1000,
       osascript: async () => "T-10",
     });
     const id = await d.open({ ...base, mode: "window" });
