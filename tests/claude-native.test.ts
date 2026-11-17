@@ -48,11 +48,11 @@ function fake() {
     exec: async (file, args) => {
       calls.push([file, ...args]);
       if (args[0] === "agents") {
-        // the supported roster: name/kind/status by pid, no socket path
+        // the supported roster, in its real shape: "background" not "bg", "busy" where the file says "shell", no socket
         const rows = [...alive].map((pid) => {
           try { return JSON.parse(readFileSync(path.join(home, "sessions", `${pid}.json`), "utf8")); }
           catch { return null; }
-        }).filter(Boolean).map((r) => ({ pid: r.pid, sessionId: r.sessionId, name: r.name, kind: r.kind, status: r.status }));
+        }).filter(Boolean).map((r) => ({ pid: r.pid, sessionId: r.sessionId, name: r.name, kind: r.kind === "bg" ? "background" : r.kind, status: r.status === "shell" ? "busy" : r.status }));
         return { code: 0, stdout: JSON.stringify(rows), stderr: "" };
       }
       if (args[0] === "stop") {
@@ -200,6 +200,34 @@ describe("launchAfter", () => {
     assert.equal(rec.pid, 50);
     assert.equal(rec.after, "ORCHESTRATOR");
     assert.ok(log.some((l) => /is gone/.test(l)));
+  });
+
+  it("launches when the predecessor exits into an exit handoff still running a watch loop (the incident)", async () => {
+    const f = fake();
+    f.add({ pid: 40, sessionId: "orch", name: "ORCHESTRATOR", kind: "interactive", status: "busy" }, { transcript: true });
+    let polls = 0;
+    const realSleep = f.deps.sleep;
+    f.deps.sleep = async (ms) => {
+      if (++polls === 1) {
+        f.alive.delete(40);
+        f.add({ pid: 42, sessionId: "ho", name: "ORCHESTRATOR", kind: "bg", status: "shell", jobId: "hojob" });
+        mkdirSync(path.join(f.home, "jobs", "hojob"), { recursive: true });
+        writeFileSync(path.join(f.home, "jobs", "hojob", "adopt.json"), JSON.stringify({ origin: "exit", shells: [{ pid: 900 }] }));
+        f.alive.add(900);
+      }
+      await realSleep(ms);
+    };
+    f.setOnBg(() => ({ pid: 51, sessionId: "succ-2", name: "ORCHESTRATOR-3", kind: "bg", status: "busy", jobId: "succ2" }));
+    const log: string[] = [];
+    const lanes = path.join(f.home, "lanes");
+    const o = { name: "ORCHESTRATOR-3", goal: "take over", cwd: "/tmp", model: "opus", bypass: true, disallowedTools: [] };
+    const rec = await launchAfter(f.deps, "ORCHESTRATOR", o, lanes, 60_000, (s) => log.push(s));
+    assert.equal(rec.pid, 51);
+    assert.ok(log.some((l) => /exit handoff job hojob \(pid 42\) still runs shell pid\(s\) 900/.test(l)), log.join("\n"));
+    assert.ok(f.alive.has(42) && f.alive.has(900), "the handoff and its watch loop are left alone");
+    // reusing the same name is refused, and the error names the shells to move
+    await assert.rejects(launchAfter(f.deps, "ORCHESTRATOR", { ...o, name: "ORCHESTRATOR" }, lanes, 60_000, () => {}),
+      /already live \(pid 42\): exit handoff job hojob .* shell pid\(s\) 900; stop or move those shells/);
   });
 
   it("gives up after the timeout", async () => {

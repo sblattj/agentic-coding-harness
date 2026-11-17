@@ -50,7 +50,7 @@ export async function cmdDesk(rest: string[], deps: PeerDeps = defaultDeps(), ou
     const [to, ...words] = a.positionals;
     if (!to || words.length === 0) throw new HarnessError(DESK_USAGE, "USAGE");
     const t = await sendTo(deps, to, a.values.from!, words.join(" "));
-    out(`sent to ${to} (pid ${t.pid}); it lands when the current turn ends`);
+    out(`posted to ${to}'s inbox (pid ${t.pid}): it starts a turn if idle, else waits for the current one to end. A receiver not launched with crossSessionInbound "accept" may hold it for its user.`);
     return 0;
   }
   throw new HarnessError(DESK_USAGE, "USAGE");
@@ -88,7 +88,10 @@ export async function cmdLane(rest: string[], deps: PeerDeps = defaultDeps(), ou
       mkdirSync(lanesDir(), { recursive: true });
       const log = path.join(lanesDir(), `${name}.after.log`);
       const fd = openSync(log, "a");
-      const self = [...process.execArgv, process.argv[1]!, "lane", "new", ...args.filter((x, i) => x !== "--after" && args[i - 1] !== "--after"), "--wait-for", v.after];
+      // rebuild the args from resolved values: no --after, absolute paths, so the detached child resolves nothing twice
+      const self = [...process.execArgv, path.resolve(process.argv[1]!), "lane", "new", name, "--goal", goal, "--cwd", o.cwd,
+        "--model", o.model, "--after-timeout", v["after-timeout"]!, "--wait-for", v.after,
+        ...(o.reportTo ? ["--report-to", o.reportTo] : []), ...(o.bypass ? [] : ["--no-bypass"])];
       const child = spawn(process.execPath, self, { detached: true, stdio: ["ignore", fd, fd], cwd: o.cwd });
       child.unref();
       closeSync(fd);

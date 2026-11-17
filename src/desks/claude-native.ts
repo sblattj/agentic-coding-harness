@@ -105,6 +105,18 @@ function findTranscript(claudeHome: string, sessionId: string): string | null {
   return null;
 }
 
+function normalizeKind(k: string | null): string {
+  if (k === null) return "unknown";
+  return k === "background" ? "bg" : k;
+}
+
+/** Holders that are exit handoffs still running adopted shells, for error messages. */
+export function describeHandoffs(ss: PeerSession[]): string {
+  return ss.filter((s) => s.handoff && s.handoff.liveShellPids.length > 0)
+    .map((s) => `exit handoff job ${s.jobId ?? s.sessionId.slice(0, 8)} (pid ${s.pid}) still runs shell pid(s) ${s.handoff!.liveShellPids.join(", ")}`)
+    .join("; ");
+}
+
 /**
  * Claude's exit handoff: when a session exits with background shells still running, Claude moves it into a bg job
  * that keeps the session's name and adopts those shells (jobs/<id>/adopt.json). It looks like an empty spare
@@ -150,12 +162,15 @@ export async function listSessions(deps: PeerDeps): Promise<PeerSession[]> {
     const sessionId = String(row.sessionId ?? f.sessionId ?? "");
     if (!sessionId) continue;
     const str = (k: string) => (typeof (row[k] ?? f[k]) === "string" ? String(row[k] ?? f[k]) : null);
+    // kind and status come from the session file first: the roster says "background" where the file says "bg",
+    // and reports "busy" for a session whose file says "shell" (the spare signature lives only in the file).
+    const fileFirst = (k: string) => (typeof f[k] === "string" ? String(f[k]) : str(k));
     out.push({
       pid,
       sessionId,
       name: str("name"),
-      kind: str("kind") ?? "unknown",
-      status: str("status") ?? "unknown",
+      kind: normalizeKind(fileFirst("kind")),
+      status: fileFirst("status") ?? "unknown",
       cwd: str("cwd"),
       jobId: typeof f.jobId === "string" ? f.jobId : null,
       socket: typeof f.messagingSocketPath === "string" ? f.messagingSocketPath : null,
@@ -243,7 +258,8 @@ export async function launchLane(deps: PeerDeps, o: LaunchOptions, lanesDir: str
   const before = holders(await listSessions(deps), o.name);
   for (const s of before.spares) await stopSession(deps, s);
   if (before.live.length > 0) {
-    throw new HarnessError(`a Claude session named '${o.name}' is already live (pid ${before.live.map((s) => s.pid).join(", ")}); stop it or pick another name`, "PEER_DUPLICATE");
+    const ho = describeHandoffs(before.live);
+    throw new HarnessError(`a Claude session named '${o.name}' is already live (pid ${before.live.map((s) => s.pid).join(", ")})${ho ? `: ${ho}; stop or move those shells, then retry` : "; stop it or pick another name"}`, "PEER_DUPLICATE");
   }
   const r = await deps.exec("claude", launchArgs(o), { cwd: o.cwd, timeoutMs: 90_000 });
   if (r.code !== 0) throw new HarnessError(`claude --bg failed (${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 400)}`, "PEER_LAUNCH");
@@ -278,6 +294,12 @@ export async function launchAfter(
   for (;;) {
     const h = holders(await listSessions(deps), target);
     if (h.live.length === 0) break;
+    // The predecessor's conversation is over once only exit handoffs hold its name; they carry its leftover
+    // bg shells, not the session itself. Launch, and say what is still running.
+    if (h.live.every((s) => s.handoff !== null)) {
+      log(`'${target}' exited into an exit handoff: ${describeHandoffs(h.live) || "no live shells"}`);
+      break;
+    }
     if (deps.now() >= deadline) throw new HarnessError(`'${target}' still live after ${Math.round(timeoutMs / 60_000)} min`, "PEER_AFTER");
     await deps.sleep(5000);
   }
