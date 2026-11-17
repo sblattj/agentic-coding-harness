@@ -16,6 +16,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, 
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { listRunRecords, type RunRecord } from "../core/registry.ts";
+import { AGENTS, isKnownAgent } from "../core/types.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { loadLayout, deskPort, roleFiles } from "./config.ts";
 import { engineKindFor } from "./engines/index.ts";
@@ -185,11 +186,21 @@ export function portFree(port: number): Promise<boolean> {
   });
 }
 
-function logTail(file: string, lines = 15): string {
+/** Last lines of a log, reading only bytes from `fromByte` on (the host appends; older runs' lines are not this start's). */
+function logTail(file: string, lines = 15, fromByte = 0): string {
   try {
-    return readFileSync(file, "utf8").trim().split("\n").slice(-lines).join("\n");
+    const text = readFileSync(file).subarray(fromByte).toString("utf8").trim();
+    return text === "" ? "(no output)" : text.split("\n").slice(-lines).join("\n");
   } catch {
     return "(no log)";
+  }
+}
+
+function fileSize(file: string): number {
+  try {
+    return statSync(file).size;
+  } catch {
+    return 0;
   }
 }
 
@@ -293,6 +304,7 @@ async function startHost(stateDir: string, stack: string, spec: HostSpec): Promi
   const specFile = join(p.specs, `${spec.name}.json`);
   writeFileSync(specFile, `${JSON.stringify(spec, null, 2)}\n`);
   const logFile = join(p.logs, `${spec.name}.log`);
+  const logStart = fileSize(logFile);
   const spawnPid = spawnHost(specFile, logFile);
   const url = `http://127.0.0.1:${spec.port}`;
   const deadline = Date.now() + HOST_START_TIMEOUT_MS;
@@ -310,31 +322,62 @@ async function startHost(stateDir: string, stack: string, spec: HostSpec): Promi
   }
   // failed: make sure nothing is left behind
   if (last !== null && last.runId === spec.runId) {
-    await stopPids(url, [last.pid, spawnPid], last.feedPid);
+    await stopPids(url, [last.pid, spawnPid], { runId: spec.runId, specFile }, last.feedPid);
   } else {
     kill(spawnPid, "SIGKILL");
   }
   const why = last === null || last.runId !== spec.runId ? "no health answer" : `state ${last.state}`;
-  throw new Error(`desks: host ${spec.name} did not become idle on port ${spec.port} (${why}); log ${logFile}:\n${logTail(logFile)}`);
+  throw new Error(`desks: host ${spec.name} did not become idle on port ${spec.port} (${why}); log ${logFile}:\n${logTail(logFile, 15, logStart)}`);
 }
 
-/** POST /stop, wait for every pid to exit (10 s), then SIGTERM, then SIGKILL. */
-async function stopPids(url: string, pids: number[], _rosterFeedPid?: number): Promise<void> {
-  // The feed restarts on its own, so the roster's feedPid goes stale: ask the live host (/health) now,
-  // before /stop. A host that does not answer has no trustworthy feed pid, so none is SIGKILLed.
-  const feedPid = (await hostHealth(url, 1000))?.feedPid;
-  try {
-    await hostStop(url);
-  } catch {
-    /* dead or unreachable: fall through to signals */
+/** Which run a stop is for: the host must still answer for runId, a pid must still run this spec. */
+interface HostIdent {
+  runId: string;
+  specFile: string;
+}
+
+/** True when pid is alive and its command line is `... desk host --spec <specFile>` (ours, not a reused pid). */
+function isOurHostPid(pid: number, specFile: string): Promise<boolean> {
+  if (!pidAlive(pid)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    execFile("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 }, (err, stdout) => {
+      resolve(!err && stdout.includes("desk host") && stdout.includes(specFile));
+    });
+  });
+}
+
+/**
+ * POST /stop (only when /health still answers for ident.runId), wait for our pids to exit (10 s),
+ * then SIGTERM, then SIGKILL. A pid is ours when /health named it for this run or its command line
+ * still runs ident.specFile; after a crash the port or a pid may belong to something else, which is
+ * never stopped or signalled.
+ */
+async function stopPids(url: string, pids: number[], ident: HostIdent, _rosterFeedPid?: number): Promise<void> {
+  const h = await hostHealth(url, 1500);
+  const vouched = h !== null && h.runId === ident.runId;
+  // The feed restarts on its own, so the roster's feedPid goes stale: only the live host's /health
+  // for this run names a feed pid we may kill. Otherwise no feed pid is trusted.
+  const feedPid = vouched ? h?.feedPid : undefined;
+  const ours: number[] = [];
+  for (const p of new Set(pids)) {
+    if (!pidAlive(p)) continue;
+    if ((vouched && p === h?.pid) ||(await isOurHostPid(p, ident.specFile))) ours.push(p);
   }
-  const all = () => pids.every((p) => !pidAlive(p));
+  if (vouched) {
+    try {
+      await hostStop(url);
+    } catch {
+      /* exiting or unreachable: fall through to signals */
+    }
+  }
+  const all = () => ours.every((p) => !pidAlive(p));
   if (await waitUntil(all, HOST_STOP_TIMEOUT_MS)) return;
-  for (const p of pids) kill(p, "SIGTERM");
+  for (const p of ours) kill(p, "SIGTERM");
   if (await waitUntil(all, 3000)) return;
-  for (const p of pids) kill(p, "SIGKILL");
-  kill(feedPid, "SIGKILL");
+  for (const p of ours) kill(p, "SIGKILL");
+  // reached only while one of our host pids refuses to exit
   if (feedPid !== undefined && feedPid > 0) {
+    kill(feedPid, "SIGKILL");
     try {
       process.kill(-feedPid, "SIGKILL"); // the feed leads its own process group
     } catch {
@@ -362,8 +405,12 @@ function writeSpawnPid(stateDir: string, stack: string, name: string, pid: numbe
   writeFileSync(f, `${pid}\n`);
 }
 
+function specFileOf(stateDir: string, stack: string, name: string): string {
+  return join(deskPaths(stateDir, stack).specs, `${name}.json`);
+}
+
 async function stopEntry(stateDir: string, stack: string, e: RosterEntry): Promise<void> {
-  await stopPids(e.url, entryPids(stateDir, stack, e), e.feedPid);
+  await stopPids(e.url, entryPids(stateDir, stack, e), { runId: e.runId, specFile: specFileOf(stateDir, stack, e.name) }, e.feedPid);
   rmSync(join(deskPaths(stateDir, stack).specs, `${e.name}.pid`), { force: true });
 }
 
@@ -576,7 +623,9 @@ export async function deskUp(o: UpOpts = {}): Promise<RosterView> {
   const ok = results.filter((r): r is PromiseFulfilledResult<Started> => r.status === "fulfilled").map((r) => r.value);
   const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
   if (failed.length > 0) {
-    await Promise.all(ok.map((s) => stopPids(`http://127.0.0.1:${s.spec.port}`, [s.health.pid, s.spawnPid], s.health.feedPid)));
+    await Promise.all(
+      ok.map((s) => stopPids(`http://127.0.0.1:${s.spec.port}`, [s.health.pid, s.spawnPid], { runId: s.spec.runId, specFile: specFileOf(stateDir, stack, s.spec.name) }, s.health.feedPid)),
+    );
     throw new Error(failed.map((f) => errText(f.reason)).join("\n"));
   }
   for (const s of ok) {
@@ -591,14 +640,22 @@ export async function deskUp(o: UpOpts = {}): Promise<RosterView> {
   const term: TerminalKind = o.term ?? "tmux";
   const t: StackTerminal = { kind: term, ...(o.tmuxSession ? { tmuxSession: o.tmuxSession } : {}), ...(o.tmuxSocket ? { tmuxSocket: o.tmuxSocket } : {}) };
   writeStackTerminal(stateDir, stack, t);
+  let note: string | undefined;
   if (term !== "none") {
     const entries = Object.values(readRoster(stateDir, stack).entries);
-    const refs = await openLayout(t, layout, entries);
-    await updateRoster(stateDir, stack, (r) => {
-      for (const [name, ref] of Object.entries(refs)) if (r.entries[name]) r.entries[name]!.terminal = ref;
-    });
+    try {
+      const refs = await openLayout(t, layout, entries);
+      await updateRoster(stateDir, stack, (r) => {
+        for (const [name, ref] of Object.entries(refs)) if (r.entries[name]) r.entries[name]!.terminal = ref;
+      });
+    } catch (e) {
+      // The hosts are up and recorded: a pane failure must not leave a stack that refuses `desk up` and has no panes.
+      note = `desks: stack "${stack}" is up but its ${term} panes could not be opened (${errText(e)}); run \`ach desk attach\` to open them`;
+      process.stderr.write(`${note}\n`);
+    }
   }
-  return deskRoster({ stack, stateDir });
+  const view = await deskRoster({ stack, stateDir });
+  return note !== undefined ? { ...view, note } : view;
 }
 
 /** Stop every lane, then every desk (feed, pane, host). Leaves an empty roster and no processes. */
@@ -607,9 +664,22 @@ export async function deskDown(o: StackOpts = {}): Promise<{ stopped: string[] }
   const t = readStackTerminal(stateDir, stack);
   const stopped: string[] = [];
   const entries = Object.values(readRoster(stateDir, stack).entries);
+  const errors: string[] = [];
   for (const l of entries.filter((e) => e.kind === "lane")) {
-    await laneStop({ stack, stateDir, name: l.name, by: "human", now: true });
-    stopped.push(l.name);
+    try {
+      await laneStop({ stack, stateDir, name: l.name, by: "human", now: true });
+      stopped.push(l.name);
+    } catch (e) {
+      if (/unknown lane/.test(errText(e))) continue; // a concurrent prune or lane stop already removed it
+      errors.push(`${l.name}: ${errText(e)}`);
+      // Stop it from the snapshot anyway: the roster is wiped below, so nothing may be left running.
+      try {
+        await closePane(t, l.terminal);
+        await stopEntry(stateDir, stack, l);
+      } catch (e2) {
+        errors.push(`${l.name}: ${errText(e2)}`);
+      }
+    }
   }
   const desks = entries.filter((e) => e.kind === "desk");
   await Promise.all(
@@ -629,6 +699,7 @@ export async function deskDown(o: StackOpts = {}): Promise<{ stopped: string[] }
   } catch {
     /* no active-stack */
   }
+  if (errors.length > 0) throw new Error(`desks: stack "${stack}" is down, but stopping these lanes failed:\n${errors.join("\n")}`);
   return { stopped };
 }
 
@@ -733,13 +804,40 @@ export async function deskRoster(o: StackOpts & { me?: string; prune?: boolean }
   if (o.prune !== false) {
     const entries = Object.values(roster.entries);
     const flags = await Promise.all(entries.map((e) => isEntryAlive(e)));
-    const dead = entries.filter((e, i) => !flags[i] && !isSwitching(stateDir, stack, e.name));
+    const unhealthy = entries.filter((e, i) => !flags[i] && !isSwitching(stateDir, stack, e.name));
+    // No /health answer is not proof of death (a slow host misses one probe): prune only when no
+    // recorded pid is still our host process. A wedged host stays listed as dead until `desk down`.
+    const hostGone = await Promise.all(
+      unhealthy.map(async (e) => {
+        const specFile = specFileOf(stateDir, stack, e.name);
+        for (const pid of entryPids(stateDir, stack, e)) if (await isOurHostPid(pid, specFile)) return false;
+        return true;
+      }),
+    );
+    const dead = unhealthy.filter((_, i) => hostGone[i]);
     if (dead.length > 0) {
       const t = readStackTerminal(stateDir, stack);
       for (const d of dead) await closePane(t, d.terminal);
+      const removed: RosterEntry[] = [];
       roster = await updateRoster(stateDir, stack, (r) => {
-        for (const d of dead) if (r.entries[d.name]?.runId === d.runId) delete r.entries[d.name];
+        for (const d of dead) {
+          if (r.entries[d.name]?.runId !== d.runId) continue;
+          delete r.entries[d.name];
+          removed.push(d);
+        }
       });
+      // Only the caller whose update removed an entry records its end (concurrent rosters never double-log).
+      for (const d of removed) {
+        rmSync(join(deskPaths(stateDir, stack).specs, `${d.name}.pid`), { force: true });
+        if (d.kind === "lane") {
+          const goalState = lastGoalState(stateDir, stack, d.runId) ?? "dead";
+          try {
+            appendLanesLog(stateDir, stack, { event: "stop", name: d.name, by: "prune", goalState, runId: d.runId, entry: d });
+          } catch {
+            /* a roster read never fails on the log */
+          }
+        }
+      }
     }
   }
   const entries = Object.values(roster.entries);
@@ -859,6 +957,8 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
   if (!old) throw new Error(`desks: unknown desk "${o.name}" in stack "${stack}"`);
   if (old.kind !== "desk") throw new Error(`desks: ${o.name} is a lane; only desks switch engines`);
   if (typeof o.agent !== "string" || o.agent.trim() === "") throw new Error("desks: agent must be a non-empty string");
+  // engineKindFor maps any name to the driver engine: refuse a typo here, before the running host is stopped.
+  if (!isKnownAgent(o.agent)) throw new Error(`desks: unknown agent "${o.agent}"; known: ${AGENTS.join(", ")}`);
   const layout = stackLayout(stateDir, stack);
   const specFile = join(deskPaths(stateDir, stack).specs, `${o.name}.json`);
   let base: HostSpec | null = null;
@@ -885,12 +985,44 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
   if (engine === "opencode") spec.enginePort = old.port + 500;
   else delete spec.enginePort;
 
+  // The config to come back to when the new engine does not start: the old spec (or the old agent
+  // from the layout) on the same port with a fresh runId (a reused runId would restart the events
+  // seq and the run record; deskCosts groups a desk's runs by name, so its spend is kept).
+  const restore: HostSpec = base
+    ? { ...base, runId: randomUUID(), port: old.port }
+    : deskHostSpec(stateDir, stack, layout, d!, old.port, old.agent, old.model);
+
   await stopEntry(stateDir, stack, old);
-  if (!(await waitPortFree(old.port, 5000))) {
-    throw new Error(`desks: port ${old.port} still busy after stopping ${o.name}`);
+  let s: Started;
+  try {
+    if (!(await waitPortFree(old.port, 5000))) {
+      throw new Error(`desks: port ${old.port} still busy after stopping ${o.name}`);
+    }
+    s = await startHost(stateDir, stack, spec);
+  } catch (e) {
+    // Keep the desk: restart the old config, then surface the original error.
+    writeFileSync(switchingMarker(stateDir, stack, o.name), `${process.pid}\n`); // fresh grace for the restart
+    let restored: Started;
+    try {
+      await waitPortFree(old.port, 5000);
+      restored = await startHost(stateDir, stack, restore);
+    } catch (e2) {
+      throw new Error(`${errText(e)}\ndesks: restoring ${o.name} on ${old.agent} also failed: ${errText(e2)}`);
+    }
+    let paneNote = "";
+    try {
+      await installDesk(stateDir, stack, old, restored);
+    } catch (e3) {
+      paneNote = ` (pane not reopened: ${errText(e3)}; run \`ach desk attach\`)`;
+    }
+    throw new Error(`${errText(e)}\ndesks: ${o.name} was restored on its previous agent ${old.agent}${paneNote}`);
   }
-  const s = await startHost(stateDir, stack, spec);
-  writeSpawnPid(stateDir, stack, spec.name, s.spawnPid);
+  return installDesk(stateDir, stack, old, s);
+}
+
+/** Record a restarted desk in the roster in place of `old`, keeping its pane slot. */
+async function installDesk(stateDir: string, stack: string, old: RosterEntry, s: Started): Promise<RosterEntry> {
+  writeSpawnPid(stateDir, stack, s.spec.name, s.spawnPid);
   const entry = entryFrom(s, { ...(old.terminal ? { terminal: old.terminal } : {}), ...(old.pane !== undefined ? { pane: old.pane } : {}) });
   await putEntry(stateDir, stack, entry);
 
@@ -1081,7 +1213,7 @@ async function startReservedLane(stateDir: string, stack: string, req: LaneReq, 
       if (mine) r.entries[entry.name] = entry; // the entry replaces the reservation in one write
     });
     if (!mine) {
-      await stopPids(entry.url, [s.health.pid, s.spawnPid], s.health.feedPid);
+      await stopPids(entry.url, [s.health.pid, s.spawnPid], { runId: spec.runId, specFile: specFileOf(stateDir, stack, spec.name) }, s.health.feedPid);
       throw new Error(`desks: lane "${req.name}" lost its name reservation while its host started; stopped that host`);
     }
     appendLanesLog(stateDir, stack, { event: "start", name: req.name, by: req.launchedBy, goal, runId: spec.runId, port });
@@ -1429,10 +1561,33 @@ export async function deskCosts(o: StackOpts = {}): Promise<DeskCostRow[]> {
     };
   };
 
+  /**
+   * A desk's row covers every run of that desk name in the stack (an engine switch or an earlier
+   * `desk up` starts a new run): own cost and tokens are summed over them (any unpriced or missing
+   * record makes the cost null), and lanes launched by any of them nest here. runId stays the live run.
+   */
+  const deskRow = (e: RosterEntry, seen: Set<string>): DeskCostRow => {
+    const earlier = records
+      .filter((r) => r.desk?.kind === "desk" && r.desk.name === e.name && r.runId !== e.runId)
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .map((r) => r.runId);
+    for (const id of earlier) seen.add(id);
+    const parts = [row(e.runId, e.name, "desk", undefined, seen), ...earlier.map((id) => row(id, e.name, "desk", undefined, seen))];
+    const first = parts[0]!;
+    if (parts.length === 1) return first;
+    return {
+      ...first,
+      costUsd: parts.some((x) => x.costUsd === null) ? null : parts.reduce((sum, x) => sum + (x.costUsd as number), 0),
+      inputTokens: parts.reduce((sum, x) => sum + x.inputTokens, 0),
+      outputTokens: parts.reduce((sum, x) => sum + x.outputTokens, 0),
+      lanes: parts.flatMap((x) => x.lanes),
+    };
+  };
+
   const seen = new Set<string>();
   const out: DeskCostRow[] = [];
   // Desks first, then lanes whose launcher is not a live roster entry (human-launched or orphaned).
-  for (const e of live.filter((x) => x.kind === "desk").sort((a, b) => a.port - b.port)) out.push(row(e.runId, e.name, "desk", undefined, seen));
+  for (const e of live.filter((x) => x.kind === "desk").sort((a, b) => a.port - b.port)) out.push(deskRow(e, seen));
   for (const e of live.filter((x) => x.kind === "lane").sort((a, b) => a.port - b.port)) {
     if (seen.has(e.runId)) continue;
     if (e.parentRunId && liveIds.has(e.parentRunId)) continue; // nested above

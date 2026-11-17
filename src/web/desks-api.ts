@@ -283,7 +283,7 @@ const SERVER_FAILURE =
   /not implemented|layout file not found|invalid layout|cannot parse layout|corrupt (layout|roster)|roles\/common\.md not found|role file .* not found|invalid role name|the layout has no desks|did not become idle|timed out after|no spec or layout entry|^desk host |spawnHost:|ACH_SELF_ARGV/i;
 const FORBIDDEN = /only the human or the decisions desk/i;
 const BAD_INPUT =
-  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid (lane|stack|desk or lane) name|invalid run id|cannot send to yourself/i;
+  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid (lane|stack|desk or lane) name|invalid run id|cannot send to yourself|unknown agent/i;
 const MISSING_RESOURCE =
   /\bunknown (desk|lane|decision|pending)\b|\bno pending lane\b|\bno decision\b|\bno such\b|does not exist|\b(desk|lane|decision|pending)\b[^\n]* not found/i;
 

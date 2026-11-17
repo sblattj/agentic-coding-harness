@@ -412,6 +412,8 @@ export interface RosterView {
   stack: string;
   portBase: number;
   me?: string;
+  /** Set by deskUp when the stack is up but its panes could not be opened (see `ach desk attach`). */
+  note?: string;
   rows: RosterRow[];
   pendingLanes: PendingLane[];
   openDecisions: Decision[];
