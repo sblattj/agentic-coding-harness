@@ -93,6 +93,9 @@ import {
   cwdIndex,
   branchIndex,
   deskIndex,
+  deskByRunId,
+  runIdIndex,
+  branchLabel,
   deskLabel,
   prIndex,
   loadProjectAliases,
@@ -1607,15 +1610,20 @@ async function cmdStats(rest: string[]): Promise<number> {
   const runBranch = branchIndex(registryScan.records);
   const runPr = prIndex(registryScan.records);
   const runDesk = deskIndex(registryScan.records);
+  // Driver NDJSON usage lines carry no sessionId: look those up by run id first.
+  const cwdByRun = runIdIndex(registryScan.records, (r) => r.cwd ?? undefined);
+  const branchByRun = runIdIndex(registryScan.records, (r) => branchLabel(r));
+  const prByRun = runIdIndex(registryScan.records, (r) => r.pr ?? undefined);
+  const deskByRun = deskByRunId(registryScan.records);
   const originIndex = statsOriginIndex(registryScan.records);
   let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript"; origin?: StatsOrigin })[] = stateRecords.map((r) => ({
     source: "state",
     extra: r.extra,
-    cwd: runCwd(r.agent, r.sessionId),
-    branch: runBranch(r.agent, r.sessionId),
-    pr: runPr(r.agent, r.sessionId),
+    cwd: cwdByRun(r.runId) ?? runCwd(r.agent, r.sessionId),
+    branch: branchByRun(r.runId) ?? runBranch(r.agent, r.sessionId),
+    pr: prByRun(r.runId) ?? runPr(r.agent, r.sessionId),
     // #204: the desk host stamps extra.desk on its own records; driver-engine turn runs map via the registry.
-    desk: deskLabel(r.extra?.desk) ?? runDesk(r.agent, r.sessionId),
+    desk: deskLabel(r.extra?.desk) ?? deskByRun(r.runId) ?? runDesk(r.agent, r.sessionId),
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,

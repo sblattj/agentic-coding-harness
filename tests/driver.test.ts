@@ -1185,6 +1185,30 @@ describe('RunRecord totals.costSource (issue #28)', () => {
     assert.equal(t.provenance?.costUsd, 'computed'); // a blend is labelled computed
     assert.ok(t.costUsd > 0.3);
   });
+
+  it('keeps a CLI-reported costUsd when the model is missing from the price table', async () => {
+    const unknown = (costUsd: number): CanonicalTokenRecord => ({
+      model: 'no-such-model-9-9',
+      inputTokens: 1000,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd,
+    });
+    const regDir = tmpStateDir();
+    const driver = createDriver({ adapters: { mock: new MockAdapter() }, stateDir: tmpStateDir(), registry: { stateDir: regDir } });
+    const result = await driver.run('mock', { prompt: 'cost', scriptedEvents: [ev.preNormalized(unknown(0.0076)), ev.preNormalized(unknown(0.0024))] } as RunSpec);
+    const t = listRunRecords(regDir)[0]!.totals!;
+    assert.equal(Math.round(t.costUsd * 1e6) / 1e6, 0.01, 'totals.costUsd is the reported sum');
+    assert.equal(Math.round(result.totalCost * 1e6) / 1e6, 0.01);
+    assert.equal(t.costSource, 'reported');
+    assert.ok(result.warnings.some((w) => /unknown model "no-such-model-9-9"/.test(w)), 'the unknown-model warning still drains');
+  });
+
+  it('still contributes 0 for an unknown model with no reported cost', async () => {
+    const t = await runWith([{ model: 'no-such-model-9-9', inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 }]);
+    assert.equal(t.costUsd, 0);
+  });
 });
 
 describe('kiro v3 engine store (#121)', () => {
