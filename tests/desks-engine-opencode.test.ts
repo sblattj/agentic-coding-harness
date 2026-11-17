@@ -385,7 +385,8 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
         costUsd: null,
         providerID: "ferry",
         modelID: "super-flash",
-        messageId: "msg_a",
+        messageId: "prt_sf",
+        model: "ferry/super-flash",
       });
       assert.equal(events.find((e) => e.type === "error")!.data.error, "Aborted");
     } finally {
@@ -406,6 +407,12 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       eng.handleEvent({ type: "message.updated", properties: { sessionID: "ses_fake1", info: { id: "m1", role: "assistant", sessionID: "ses_fake1" } } });
       eng.handleEvent({ type: "message.part.updated", properties: { sessionID: "ses_fake1", part: { id: "s1", messageID: "m1", sessionID: "ses_fake1", type: "step-finish", cost: 0.0123, tokens: { input: 1, output: 2 } } } });
       assert.equal(events.find((e) => e.type === "usage")!.data.costUsd, 0.0123);
+      // A second step of the SAME message is a separate delta: its usage event needs its own id,
+      // or the host meter would replace the first step's tokens instead of adding to them.
+      eng.handleEvent({ type: "message.part.updated", properties: { sessionID: "ses_fake1", part: { id: "s2", messageID: "m1", sessionID: "ses_fake1", type: "step-finish", cost: 0, tokens: { input: 5, output: 7 } } } });
+      const usage = events.filter((e) => e.type === "usage");
+      assert.equal(usage.length, 2);
+      assert.deepEqual(usage.map((e) => e.data.messageId), ["s1", "s2"]);
     } finally {
       await eng.stop();
     }

@@ -642,7 +642,10 @@ export class OpenCodeEngine implements Engine {
           costUsd: cost,
           providerID: msgInfo?.providerID ?? this.modelProvider(),
           modelID: msgInfo?.modelID ?? this.modelId(),
-          messageId: p.messageID,
+          // One usage event per STEP (a per-step delta). The host meter treats a repeated
+          // messageId as a cumulative re-report, so the id must be unique per step: the part id.
+          messageId: key,
+          ...(msgInfo?.providerID && msgInfo.modelID ? { model: `${msgInfo.providerID}/${msgInfo.modelID}` } : {}),
         },
       });
     }
