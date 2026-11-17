@@ -181,7 +181,6 @@ export function registerDeskTools(
         ...(agent ? { agent } : {}),
         ...(model ? { model } : {}),
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
-        // `brief` is not part of LaneRequest (types.ts is frozen); carried through as an extra field.
         ...(brief ? { brief } : {}),
       } as Parameters<DeskToolService["laneNew"]>[0]);
       if ("pending" in r) {

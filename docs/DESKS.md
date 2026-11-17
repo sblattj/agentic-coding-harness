@@ -182,24 +182,29 @@ The stack name is `--stack`, else `$ACH_DESK_STACK`, else `<stateDir>/desks/acti
 ## CLI
 
 ```
-ach desk up [--layout F] [--port-base N] [--term tmux|ghostty|none] [--tmux-session S] [--stack S]
+ach desk up [--layout F] [--port-base N] [--term tmux|ghostty|none] [--tmux-session S] [--tmux-socket S] [--json]
 ach desk down
-ach desk attach [--term tmux|ghostty|none] [--tmux-session S]
-ach desk send <to> <text>
-ach desk roster [--json]
-ach desk inbox [name] [--json]
-ach desk answer <Dn> <text>
-ach desk decisions [--json]
+ach desk attach [--term tmux|ghostty|none] [--tmux-session S] [--tmux-socket S]
+ach desk send <to> <text...> [--from NAME]      text "-" reads stdin
+ach desk roster [--json] [--no-prune]
+ach desk inbox [name] [--limit N] [--since <ms|10m|2h|1d>] [--json]
+ach desk events <name> [--since SEQ] [--json] [--follow]
+ach desk answer <Dn> <text...> [--from NAME]
+ach desk decisions [--state open|answered|closed] [--json]
+ach desk close <Dn> [--reason R] [--from NAME]
 ach desk engine <name> <agent> [--model M]
+ach desk costs [--json]
 ach desk host --spec <file>              internal: the per-desk host process
 ach desk chat <name>                     attach REPL for engines without a native TUI
 
-ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N]
+ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N] [--brief TEXT] [--from NAME]
 ach lane status [name] [--json]
-ach lane stop <name>
-ach lane approve <Ln>
+ach lane stop <name> [--from NAME]
+ach lane approve <Ln> [--from NAME]
 ach lane reject <Ln> [--reason R]
 ```
+
+Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else `human`.
 
 - `desk up` refuses when any desk of the stack is alive. `--port-base` overrides the layout (a test stack beside the live one). `--tmux-session` picks the tmux session that gets the `desks` window and the lane windows.
 - `desk down` stops every lane, then every desk (feed, pane, host), and leaves an empty roster with no processes.

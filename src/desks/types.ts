@@ -217,6 +217,8 @@ export interface LaneRequest {
   agent?: string;
   model?: string;
   budgetUsd?: number;
+  /** Silent context the lane sees before its goal (HostSpec.brief). */
+  brief?: string;
   launchedBy: Sender;
 }
 

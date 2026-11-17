@@ -540,7 +540,6 @@ async function runLane(sub: string, args: string[], d: DeskDeps): Promise<void> 
         mcps: mcpsRaw === undefined ? undefined : mcpsRaw.split(",").map((s) => s.trim()).filter((s) => s !== ""),
         cwd: p.values.cwd as string | undefined, agent: p.values.agent as string | undefined, model: p.values.model as string | undefined,
         budgetUsd: budget, launchedBy: fromName(p.values.from, d.env),
-        // LaneRequest has no `brief` yet (CONTRACT CHANGE REQUEST); forwarded so the service can pick it up.
         brief: p.values.brief as string | undefined,
       }));
       if (c.json) emitJson(c, r);
