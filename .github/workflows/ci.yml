@@ -98,3 +98,26 @@ jobs:
 
       - name: Test
         run: pytest -v
+
+  # bundle.sh builds and ad-hoc signs "ach Desk.app"; nothing else runs it, so
+  # a Package.swift or bundle.sh break would otherwise go unnoticed.
+  ach-desk:
+    name: ach-desk (macos)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/ach-desk
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Swift test
+        run: swift test
+
+      - name: Bundle the app
+        run: zsh scripts/bundle.sh
+
+      - name: Assert the app bundle exists
+        run: |
+          test -x "build/ach Desk.app/Contents/MacOS/AchDesk"
+          test -f "build/ach Desk.app/Contents/Info.plist"
