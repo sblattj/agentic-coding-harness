@@ -193,6 +193,16 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
 
   return {
     begin(o) {
+      if (begun) {
+        // The host calls begin twice: once before engine.start ({pid}) and once
+        // when the session exists ({sessionId, pid}). The second call only fills
+        // in the session; it never resets startedAt or totals.
+        if (o.sessionId !== undefined && o.sessionId !== sessionId) {
+          sessionId = o.sessionId;
+          patchRunRecord(stateDir, runId, { sessionId: o.sessionId, pid: o.pid, updatedAt: now() });
+        }
+        return;
+      }
       sessionId = o.sessionId;
       begun = true;
       const t = now();

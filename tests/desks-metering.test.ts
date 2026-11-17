@@ -87,6 +87,24 @@ describe("host meter: begin", () => {
     assert.deepEqual(rec.desk, { stack: "default", name: "LANE-A", kind: "lane" });
     assert.equal(typeof rec.startedAt, "number");
   });
+
+  it("a second begin (host: pid first, then sessionId) only fills the session, never resets startedAt", () => {
+    const state = mkState();
+    let t = 1000;
+    const spec = mkSpec(state);
+    const m = createHostMeter(spec, { now: () => t });
+    m.begin({ pid: 7 });
+    const first = readRunRecord(state, spec.runId);
+    assert.ok(first);
+    assert.equal(first.sessionId, undefined);
+    t = 5000;
+    m.begin({ sessionId: "ses_late", pid: 7 });
+    const second = readRunRecord(state, spec.runId);
+    assert.ok(second);
+    assert.equal(second.sessionId, "ses_late");
+    assert.equal(second.startedAt, first.startedAt);
+    assert.equal(second.updatedAt, 5000);
+  });
 });
 
 describe("host meter: token records and ach stats", () => {
