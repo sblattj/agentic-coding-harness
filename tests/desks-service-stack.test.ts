@@ -19,9 +19,12 @@ import {
   deskSwitchEngine,
   deskUp,
   laneNew,
+  decisionAnswer,
+  decisionOpen,
+  laneApprove,
   resolveStack,
 } from '../src/desks/service.ts';
-import type { RosterEntry } from '../src/desks/types.ts';
+import type { PendingLane, RosterEntry } from '../src/desks/types.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 process.env.ACH_SELF_ARGV = JSON.stringify([join(ROOT, 'node_modules', '.bin', 'tsx'), join(ROOT, 'src', 'cli', 'ach.ts')]);
@@ -34,6 +37,7 @@ const PORT_BASE = 5800;
 const tmux = (...args: string[]): string => execFileSync('tmux', ['-L', SOCK, ...args], { encoding: 'utf8', timeout: 10_000 });
 
 const sd = mkdtempSync(join(tmpdir(), 'ach-desks-svc-stack-'));
+process.env.AGENTIC_CODING_HARNESS_STATE_DIR = sd;
 let socketPath = '';
 after(() => {
   try {
@@ -93,7 +97,7 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
         'lanes:',
         '  defaultMcps: []',
         '  ports: [10, 19]',
-        '  approval: none',
+        '  approval: decisions',
         '',
       ].join('\n'),
     );
@@ -141,7 +145,20 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
 
       // --- lane -------------------------------------------------------------
       const orch = readRoster(sd, stack).entries.ORCHESTRATOR!;
-      const lane = (await laneNew({ stateDir: sd, stack, name: 'audit-x', goal: 'list call sites', launchedBy: 'ORCHESTRATOR' })) as RosterEntry;
+      const msgIn = (name: string, re: RegExp, from?: string) =>
+        waitFor(async () => {
+          const evs = await deskEvents({ stateDir: sd, stack, name });
+          return evs.some((e) => {
+            const mm = e.data.message as { text?: string; from?: string } | undefined;
+            return e.type === 'message_in' && re.test(mm?.text ?? '') && (from === undefined || mm?.from === from);
+          });
+        }, `${name} message_in ${re}`);
+      const pend = await laneNew({ stateDir: sd, stack, name: 'audit-x', goal: 'list call sites', launchedBy: 'ORCHESTRATOR', brief: 'ctx' });
+      assert.ok('pending' in pend, 'approval: decisions -> pending');
+      assert.equal((pend as { pending: PendingLane }).pending.id, 'L1');
+      await msgIn('DECISIONS', /^Lane request L1: audit-x/, 'ORCHESTRATOR');
+      const lane = await laneApprove({ stateDir: sd, stack, id: 'L1', by: 'DECISIONS' });
+      await msgIn('ORCHESTRATOR', /Lane request L1 \(audit-x\) approved/, 'DECISIONS');
       assert.equal(lane.kind, 'lane');
       assert.equal(lane.port, 5810);
       assert.equal(lane.parentRunId, orch.runId);
@@ -150,8 +167,19 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
       assert.equal(lr?.state, 'idle');
       assert.equal(lr?.terminal?.kind, 'tmux');
 
+      // --- decisions relays ---------------------------------------------------
+      const dq = await decisionOpen({ stateDir: sd, stack, question: 'Write to the tracker?', options: [{ label: 'no', recommended: true, reason: 'draft first' }], askedBy: 'audit-x', openedBy: 'ORCHESTRATOR' });
+      assert.equal(dq.id, 'D1');
+      await msgIn('DECISIONS', /^Decision D1 opened \(asked by audit-x\)/, 'ORCHESTRATOR');
+      const ans = await decisionAnswer({ stateDir: sd, stack, id: 'D1', text: 'no, draft to a file', by: 'human' });
+      assert.equal(ans.state, 'answered');
+      await msgIn('audit-x', /^Answer to D1 .*no, draft to a file/, 'human');
+      await msgIn('DECISIONS', /^Answer to D1 .*no, draft to a file/, 'human');
+
       // --- switch engine ----------------------------------------------------
       const oldDec = readRoster(sd, stack).entries.DECISIONS!;
+      const inboxBefore = (await deskInbox({ stateDir: sd, stack, name: 'DECISIONS' })).map((x) => x.id);
+      assert.ok(inboxBefore.length >= 4 && inboxBefore[0] === m.id, 'DECISIONS inbox has the send + relays');
       const sw = await deskSwitchEngine({ stateDir: sd, stack, name: 'DECISIONS', agent: 'claude', model: 'claude-sonnet-5-5' });
       assert.equal(sw.agent, 'claude');
       assert.equal(sw.engine, 'driver');
@@ -160,7 +188,7 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
       assert.notEqual(sw.runId, oldDec.runId, 'new run');
       assert.equal(sw.terminal?.id, oldDec.terminal?.id, 'same pane slot (respawned)');
       assert.equal(desksPanes().length, 3, 'pane count unchanged');
-      assert.deepEqual((await deskInbox({ stateDir: sd, stack, name: 'DECISIONS' })).map((x) => x.id), [m.id], 'history kept');
+      assert.deepEqual((await deskInbox({ stateDir: sd, stack, name: 'DECISIONS' })).map((x) => x.id), inboxBefore, 'history kept');
       const row = (await deskRoster({ stateDir: sd, stack })).rows.find((r) => r.name === 'DECISIONS');
       assert.equal(row?.state, 'idle');
       assert.equal(row?.runId, sw.runId);

@@ -33,8 +33,10 @@ const ROOT = resolve(import.meta.dirname, '..');
 process.env.ACH_SELF_ARGV = JSON.stringify([join(ROOT, 'node_modules', '.bin', 'tsx'), join(ROOT, 'src', 'cli', 'ach.ts')]);
 process.env.ACH_DESK_FAKE_ENGINE = '1';
 delete process.env.ACH_DESK_STACK;
+const ENV_STATE = mkdtempSync(join(tmpdir(), 'ach-desks-svc-env-'));
+process.env.AGENTIC_CODING_HARNESS_STATE_DIR = ENV_STATE;
 
-const tmpRoots: string[] = [];
+const tmpRoots: string[] = [ENV_STATE];
 after(() => {
   for (const d of tmpRoots) rmSync(d, { recursive: true, force: true });
 });
@@ -126,6 +128,18 @@ describe('deskSend refusals', () => {
     const v = await deskRoster({ stateDir: sd, stack: 't' });
     assert.equal(v.rows.length, 0);
     assert.deepEqual(readRoster(sd, 't').entries, {});
+  });
+
+  it('a dead entry with a fresh .switching marker (engine switch in flight) survives prune', async () => {
+    const sd = tmpDir();
+    await putEntry(sd, 't', entry('SWITCHING'));
+    await putEntry(sd, 't', entry('GONE', { port: 2 }));
+    mkdirSync(deskPaths(sd, 't').specs, { recursive: true });
+    writeFileSync(join(deskPaths(sd, 't').specs, 'SWITCHING.switching'), '1\n');
+    const v = await deskRoster({ stateDir: sd, stack: 't' });
+    assert.deepEqual(v.rows.map((r) => [r.name, r.state]), [['SWITCHING', 'dead']]);
+    rmSync(join(deskPaths(sd, 't').specs, 'SWITCHING.switching'));
+    assert.equal((await deskRoster({ stateDir: sd, stack: 't' })).rows.length, 0, 'pruned once the marker is gone');
   });
 });
 

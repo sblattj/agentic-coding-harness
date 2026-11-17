@@ -12,7 +12,7 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { listRunRecords, type RunRecord } from "../core/registry.ts";
@@ -93,6 +93,8 @@ export const HOST_START_TIMEOUT_MS = 60_000;
 export const HOST_STOP_TIMEOUT_MS = 10_000;
 /** Name of the DECISIONS desk when the layout has no desk with role "decisions". */
 export const DECISIONS_DESK = "DECISIONS";
+/** How long a deskSwitchEngine marker shields its entry from roster pruning. */
+const SWITCH_GRACE_MS = 120_000;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -652,7 +654,7 @@ export async function deskRoster(o: StackOpts & { me?: string; prune?: boolean }
   if (o.prune !== false) {
     const entries = Object.values(roster.entries);
     const flags = await Promise.all(entries.map((e) => isEntryAlive(e)));
-    const dead = entries.filter((_, i) => !flags[i]);
+    const dead = entries.filter((e, i) => !flags[i] && !isSwitching(stateDir, stack, e.name));
     if (dead.length > 0) {
       const t = readStackTerminal(stateDir, stack);
       for (const d of dead) await closePane(t, d.terminal);
@@ -740,6 +742,34 @@ export async function deskEvents(o: StackOpts & { name: string; since?: number }
 
 /** Restart one desk on another engine/agent; keeps its roster slot, message history and decisions. */
 export async function deskSwitchEngine(o: StackOpts & { name: string; agent: string; model?: string }): Promise<RosterEntry> {
+  const { stateDir, stack } = ctx(o);
+  // While the old host is down and the new one not yet in the roster, a concurrent
+  // deskRoster() (MCP desk_roster, a web poll) must not prune the entry and kill its pane.
+  const marker = switchingMarker(stateDir, stack, o.name);
+  mkdirSync(dirname(marker), { recursive: true });
+  writeFileSync(marker, `${process.pid}\n`);
+  try {
+    return await switchEngine({ ...o, stack, stateDir });
+  } finally {
+    rmSync(marker, { force: true });
+  }
+}
+
+/** specs/<name>.switching: present while deskSwitchEngine restarts that desk. */
+function switchingMarker(stateDir: string, stack: string, name: string): string {
+  return join(deskPaths(stateDir, stack).specs, `${name}.switching`);
+}
+
+/** A fresh (< 2 min) switching marker protects an entry from pruning. */
+function isSwitching(stateDir: string, stack: string, name: string): boolean {
+  try {
+    return Date.now() - statSync(switchingMarker(stateDir, stack, name)).mtimeMs < SWITCH_GRACE_MS;
+  } catch {
+    return false;
+  }
+}
+
+async function switchEngine(o: StackOpts & { name: string; agent: string; model?: string }): Promise<RosterEntry> {
   const { stateDir, stack } = ctx(o);
   const old = readRoster(stateDir, stack).entries[o.name];
   if (!old) throw new Error(`desks: unknown desk "${o.name}" in stack "${stack}"`);
