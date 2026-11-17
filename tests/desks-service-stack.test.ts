@@ -121,6 +121,7 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
         ['DECISIONS', 'idle', 5802],
         ['LISTENER', 'idle', 5803],
       ]);
+      assert.deepEqual(v.rows.map((r) => [r.name, r.pane]), [['ORCHESTRATOR', 'left'], ['DECISIONS', 'right-top'], ['LISTENER', 'right-bottom']], 'roster rows carry the layout pane');
       assert.notEqual(hostPids(), '', 'hosts are running (control for the empty check below)');
       const panes = desksPanes();
       assert.equal(panes.length, 3, 'desks window has 3 panes');
@@ -187,6 +188,7 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
       assert.equal(sw.port, oldDec.port, 'same port');
       assert.notEqual(sw.runId, oldDec.runId, 'new run');
       assert.equal(sw.terminal?.id, oldDec.terminal?.id, 'same pane slot (respawned)');
+      assert.equal(sw.pane, 'right-top', 'engine switch keeps the layout pane in the roster');
       assert.equal(desksPanes().length, 3, 'pane count unchanged');
       assert.deepEqual((await deskInbox({ stateDir: sd, stack, name: 'DECISIONS' })).map((x) => x.id), inboxBefore, 'history kept');
       const row = (await deskRoster({ stateDir: sd, stack })).rows.find((r) => r.name === 'DECISIONS');

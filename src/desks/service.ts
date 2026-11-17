@@ -503,7 +503,8 @@ export async function deskUp(o: UpOpts = {}): Promise<RosterView> {
   }
   for (const s of ok) {
     writeSpawnPid(stateDir, stack, s.spec.name, s.spawnPid);
-    await putEntry(stateDir, stack, entryFrom(s, {}));
+    const pane = layout.desks.find((d) => d.name === s.spec.name)?.pane;
+    await putEntry(stateDir, stack, entryFrom(s, pane !== undefined ? { pane } : {}));
   }
 
   mkdirSync(dirname(activeStackFile(stateDir)), { recursive: true });
@@ -807,7 +808,7 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
   }
   const s = await startHost(stateDir, stack, spec);
   writeSpawnPid(stateDir, stack, spec.name, s.spawnPid);
-  const entry = entryFrom(s, { ...(old.terminal ? { terminal: old.terminal } : {}) });
+  const entry = entryFrom(s, { ...(old.terminal ? { terminal: old.terminal } : {}), ...(old.pane !== undefined ? { pane: old.pane } : {}) });
   await putEntry(stateDir, stack, entry);
 
   // Pane: keep the slot.
