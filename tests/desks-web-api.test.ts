@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, get as httpGet, type IncomingMessage, type Server } from 'node:http';
+import { createServer, get as httpGet, request as httpRequest, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -290,7 +290,7 @@ describe('desks web api: routes', () => {
     assert.equal((await call(h, 'POST', '/api/desks/send', '{not json')).status, 400);
     assert.equal((await call(h, 'POST', '/api/desks/send', JSON.stringify({ text: 'x' }))).status, 400);
     assert.equal((await call(h, 'POST', '/api/desks/send', JSON.stringify([1]))).status, 400);
-    h.st.throwFor = { deskSend: new Error('desks: ORCH is dead') };
+    h.st.throwFor = { deskSend: new Error('desks: ORCH is not running (dead) in stack "s"; live: A') };
     const refused = await call(h, 'POST', '/api/desks/send', JSON.stringify({ to: 'ORCH', text: 'x' }));
     h.st.throwFor = undefined;
     assert.equal(refused.status, 409);
@@ -376,7 +376,7 @@ describe('desks web api: routes', () => {
     assert.deepEqual([c.arg.name, c.arg.since], ['ORCH', 3]);
   });
 
-  it('GET /:name/attach -> {argv} from the host at the roster url; unknown or dead is 404', async () => {
+  it('GET /:name/attach -> {argv} from the host at the roster url; unknown is 404, dead is 409', async () => {
     h.st.view = viewOf([row('ORCH', { url: 'http://127.0.0.1:59999' }), row('GONE', { state: 'dead' })]);
     const r = await call(h, 'GET', '/api/desks/ORCH/attach');
     assert.equal(r.status, 200);
@@ -385,7 +385,9 @@ describe('desks web api: routes', () => {
     const unknown = await call(h, 'GET', '/api/desks/NOPE/attach');
     assert.equal(unknown.status, 404);
     assert.match(unknown.json.error, /unknown desk or lane NOPE/);
-    assert.equal((await call(h, 'GET', '/api/desks/GONE/attach')).status, 404);
+    const dead = await call(h, 'GET', '/api/desks/GONE/attach');
+    assert.equal(dead.status, 409, 'a dead desk is a conflict (DESKS.md: not running (dead))');
+    assert.match(dead.json.error, /GONE is not running \(dead\)/);
     assert.equal(h.attachUrls.length, 1, 'no host call for unknown or dead names');
     assert.equal((await call(h, 'POST', '/api/desks/ORCH/attach')).status, 405);
     h.st.view = viewOf([row('ORCH')]);
@@ -413,6 +415,31 @@ describe('desks web api: routes', () => {
     assert.equal(ni.status, 500);
   });
 
+  it('a body over the cap gets a real 413 response, not a reset socket', async () => {
+    const port = Number(new URL(h.base).port);
+    const r = await new Promise<{ status?: number; body: string; err?: string }>((resolve) => {
+      let done = false;
+      const fin = (v: { status?: number; body: string; err?: string }): void => {
+        if (!done) {
+          done = true;
+          resolve(v);
+        }
+      };
+      const req = httpRequest({ host: '127.0.0.1', port, path: '/api/desks/send', method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => fin({ status: res.statusCode, body }));
+      });
+      req.on('error', (e) => fin({ body: '', err: String(e) }));
+      const chunk = Buffer.alloc(256 * 1024, 97);
+      for (let i = 0; i < 6; i++) req.write(chunk); // 1.5 MiB, cap is 1 MiB
+      req.end();
+    });
+    assert.equal(r.status, 413, `expected a 413 response, got ${r.status ?? r.err}`);
+    assert.match(JSON.parse(r.body).error, /body over/);
+    assert.equal((await call(h, 'GET', '/api/desks')).status, 200, 'the server still serves after an oversized body');
+  });
+
   it('returns false for paths outside /api/desks', async () => {
     const res = await fetch(h.base + '/api/desksx');
     assert.equal(res.status, 418);
@@ -424,7 +451,8 @@ describe('desks web api: routes', () => {
     assert.equal(statusForError(new Error('lane foo not found')), 404);
     assert.equal(statusForError(new Error('no such decision D4')), 404);
     assert.equal(statusForError(new Error('desks: stack default is already up (ORCH alive)')), 409);
-    assert.equal(statusForError(new Error('refusing self-send')), 409);
+    assert.equal(statusForError(new Error('refusing self-send')), 500, 'an unmatched message is a server bug, not a conflict');
+    assert.equal(statusForError(new Error('something nobody wrote a rule for')), 500);
     assert.equal(statusForError(new Error('desks: deskUp not implemented yet')), 500);
     assert.equal(statusForError('boom'), 500);
   });
@@ -469,6 +497,23 @@ describe('desks web api: routes', () => {
       ['desks: no free lane port in 4810..4819', 409],
     ];
     for (const [msg, want] of cases) assert.equal(statusForError(new Error(msg)), want, msg);
+  });
+
+  it('desks.html resyncs every loaded chat from its lastSeq after the stream (re)opens', () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const src = /function resyncTargets[\s\S]*?\n  }\n/.exec(html)?.[0];
+    assert.ok(src, 'resyncTargets found in the page script');
+    const ctx = createContext({});
+    runInContext(`${src}; this.resyncTargets = resyncTargets;`, ctx);
+    const out = (ctx as any).resyncTargets({
+      A: { loaded: true, loading: false, lastSeq: 12 },
+      B: { loaded: true, loading: false, lastSeq: 0 },
+      C: { loaded: false, loading: true, lastSeq: 0 },
+    }) as Array<{ name: string; since: number }>;
+    assert.deepEqual([...out].map((t) => `${t.name}:${t.since}`), ['A:12', 'B:0'], 'loading chats are skipped (their history fetch replays pending events)');
+    // the handlers call it: onopen and the first roster frame after it
+    assert.match(html, /es\.onopen = function \(\) \{[\s\S]*?resyncChats\(\);[\s\S]*?resyncOnSnapshot = true/);
+    assert.match(html, /f\.kind === "roster"\) \{[\s\S]*?if \(resyncOnSnapshot\)/);
   });
 
   it('desks.html places each desk by its roster pane, falling back to port order', () => {
