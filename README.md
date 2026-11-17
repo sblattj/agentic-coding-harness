@@ -1102,7 +1102,7 @@ The PTY relay is `POST /api/pty` (spawn) / `GET /api/pty` (list) / `POST /api/pt
 `ach run` process; `GET /api/live`, `GET /api/live/<runId>` and `POST /api/live/<runId>/continue`
 list live interactive runs, report `--then` state and release a `--pause-between` step.
 Agents in a new-session pane are spawned with their non-interactive flags so the pane does not die on a trust prompt.
-`--token` gates every websocket and PTY route. All assets are vendored under `/vendor/` — no CDN.
+`--token` gates every websocket and every `/api/pty` route. Every request (WebSocket upgrades too) must carry a loopback `Host` with the bound port and, if it has an `Origin`, a same-origin one; `/api` writes with a body must be JSON. All assets are vendored under `/vendor/` — no CDN.
 PTY attach is local-only by construction: runs arriving from an external feed (`--source`) are
 refused with `409` and their tiles show no LIVE button, since there is no local process to attach to.
 

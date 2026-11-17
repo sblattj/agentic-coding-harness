@@ -11,15 +11,15 @@
 //   lanes.log      one JSON line per lane start/stop.
 
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { listRunRecords, type RunRecord } from "../core/registry.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { loadLayout, deskPort, roleFiles } from "./config.ts";
 import { engineKindFor } from "./engines/index.ts";
-import { hostAttach, hostEvents, hostHealth, hostRecord, hostSend, hostStop } from "./host-client.ts";
+import { hostAttach, hostEvents, hostHealth, hostRecord, hostSend, hostStop, hostTarget, type HostTarget } from "./host-client.ts";
 import { spawnHost } from "./host.ts";
 import {
   appendDecisionEvent,
@@ -32,6 +32,7 @@ import {
   putEntry,
   readDecisions,
   readMessages,
+  readHostToken,
   readPendingLanes,
   readRoster,
   removeEntry,
@@ -270,7 +271,11 @@ async function startHost(stateDir: string, stack: string, spec: HostSpec): Promi
   const p = deskPaths(stateDir, stack);
   mkdirSync(p.specs, { recursive: true });
   const specFile = join(p.specs, `${spec.name}.json`);
-  writeFileSync(specFile, `${JSON.stringify(spec, null, 2)}\n`);
+  // A fresh bearer token per host start (a switch spreads the old spec; never reuse its token).
+  // It lives only in this file, so the file is 0600 (mode applies on create; chmod covers a rewrite).
+  spec.token = randomBytes(32).toString("hex");
+  writeFileSync(specFile, `${JSON.stringify(spec, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(specFile, 0o600);
   const logFile = join(p.logs, `${spec.name}.log`);
   const spawnPid = spawnHost(specFile, logFile);
   const url = `http://127.0.0.1:${spec.port}`;
@@ -289,7 +294,7 @@ async function startHost(stateDir: string, stack: string, spec: HostSpec): Promi
   }
   // failed: make sure nothing is left behind
   if (last !== null && last.runId === spec.runId) {
-    await stopPids(url, [last.pid, spawnPid], last.feedPid);
+    await stopPids(hostTarget(url, spec.token), [last.pid, spawnPid], last.feedPid);
   } else {
     kill(spawnPid, "SIGKILL");
   }
@@ -298,9 +303,9 @@ async function startHost(stateDir: string, stack: string, spec: HostSpec): Promi
 }
 
 /** POST /stop, wait for every pid to exit (10 s), then SIGTERM, then SIGKILL. */
-async function stopPids(url: string, pids: number[], feedPid?: number): Promise<void> {
+async function stopPids(target: HostTarget, pids: number[], feedPid?: number): Promise<void> {
   try {
-    await hostStop(url);
+    await hostStop(target);
   } catch {
     /* dead or unreachable: fall through to signals */
   }
@@ -331,8 +336,23 @@ function writeSpawnPid(stateDir: string, stack: string, name: string, pid: numbe
   writeFileSync(f, `${pid}\n`);
 }
 
+/** The entry's host with its bearer token (read from specs/<name>.json for this run). */
+function entryTarget(stateDir: string, stack: string, e: Pick<RosterEntry, "name" | "url" | "runId">): HostTarget {
+  return hostTarget(e.url, readHostToken(stateDir, stack, e.name, e.runId));
+}
+
+/**
+ * The host of desk/lane `name` as a HostTarget (url plus its bearer token), for callers outside
+ * this module that talk to a host directly (`ach desk chat`, `events --follow`). The token is
+ * never part of the roster or any API answer.
+ */
+export function deskHostTarget(o: StackOpts & { name: string; url: string; runId?: string }): HostTarget {
+  const { stateDir, stack } = ctx(o);
+  return hostTarget(o.url, readHostToken(stateDir, stack, o.name, o.runId));
+}
+
 async function stopEntry(stateDir: string, stack: string, e: RosterEntry): Promise<void> {
-  await stopPids(e.url, entryPids(stateDir, stack, e), e.feedPid);
+  await stopPids(entryTarget(stateDir, stack, e), entryPids(stateDir, stack, e), e.feedPid);
   rmSync(join(deskPaths(stateDir, stack).specs, `${e.name}.pid`), { force: true });
 }
 
@@ -426,9 +446,11 @@ async function closePane(t: StackTerminal | null, ref: TerminalRef | undefined):
   }
 }
 
-async function attachArgv(e: RosterEntry): Promise<string[]> {
+type StackDir = { stateDir: string; stack: string };
+
+async function attachArgv(e: RosterEntry, sd: StackDir): Promise<string[]> {
   try {
-    return await hostAttach(e.url);
+    return await hostAttach(entryTarget(sd.stateDir, sd.stack, e));
   } catch {
     return ["echo", `desk ${e.name}: host not reachable at ${e.url}`];
   }
@@ -441,7 +463,7 @@ function slotOf(d: DeskSpec, i: number): PaneSlot | "extra" {
 }
 
 /** Opens the `desks` window (desk panes by slot) and one window per lane. Returns name -> ref. */
-async function openLayout(t: StackTerminal, layout: Layout, entries: RosterEntry[]): Promise<Record<string, TerminalRef>> {
+async function openLayout(t: StackTerminal, layout: Layout, entries: RosterEntry[], sd: StackDir): Promise<Record<string, TerminalRef>> {
   const out: Record<string, TerminalRef> = {};
   const drv = await driverFor(t);
   if (!drv) return out;
@@ -461,7 +483,7 @@ async function openLayout(t: StackTerminal, layout: Layout, entries: RosterEntry
   let first: string | undefined;
   for (const { slot, e } of desks) {
     const entry = e as RosterEntry;
-    const argv = await attachArgv(entry);
+    const argv = await attachArgv(entry, sd);
     const base = { name: entry.name, cwd: entry.cwd, argv };
     let id: string;
     if (first === undefined) {
@@ -482,13 +504,13 @@ async function openLayout(t: StackTerminal, layout: Layout, entries: RosterEntry
     out[entry.name] = { kind: drv.kind, id };
   }
   for (const e of entries.filter((x) => x.kind === "lane")) {
-    out[e.name] = { kind: drv.kind, id: await openLaneWindow(drv, first, e) };
+    out[e.name] = { kind: drv.kind, id: await openLaneWindow(drv, first, e, sd) };
   }
   return out;
 }
 
-async function openLaneWindow(drv: TerminalDriver, anyPane: string | undefined, e: RosterEntry): Promise<string> {
-  const argv = await attachArgv(e);
+async function openLaneWindow(drv: TerminalDriver, anyPane: string | undefined, e: RosterEntry, sd: StackDir): Promise<string> {
+  const argv = await attachArgv(e, sd);
   if (anyPane !== undefined && (await drv.alive(anyPane))) {
     return drv.open({ mode: "tab", name: e.name, cwd: e.cwd, argv, of: anyPane });
   }
@@ -562,7 +584,7 @@ export async function deskUp(o: UpOpts = {}): Promise<RosterView> {
   writeStackTerminal(stateDir, stack, t);
   if (term !== "none") {
     const entries = Object.values(readRoster(stateDir, stack).entries);
-    const refs = await openLayout(t, layout, entries);
+    const refs = await openLayout(t, layout, entries, { stateDir, stack });
     await updateRoster(stateDir, stack, (r) => {
       for (const [name, ref] of Object.entries(refs)) if (r.entries[name]) r.entries[name]!.terminal = ref;
     });
@@ -615,7 +637,7 @@ export async function deskAttach(o: StackOpts & { term?: TerminalKind; tmuxSessi
     ...((o.tmuxSocket ?? (sameKind ? old?.tmuxSocket : undefined)) ? { tmuxSocket: o.tmuxSocket ?? old?.tmuxSocket } : {}),
   };
   writeStackTerminal(stateDir, stack, t);
-  const refs = kind === "none" ? {} : await openLayout(t, stackLayout(stateDir, stack), entries);
+  const refs = kind === "none" ? {} : await openLayout(t, stackLayout(stateDir, stack), entries, { stateDir, stack });
   await updateRoster(stateDir, stack, (r) => {
     for (const e of Object.values(r.entries)) {
       const ref = refs[e.name];
@@ -643,13 +665,13 @@ export async function deskSend(o: StackOpts & { from: Sender; to: string; text: 
   const known = live.length > 0 ? live.join(", ") : "(none)";
   if (!target) throw new Error(`desks: unknown desk or lane "${o.to}" in stack "${stack}"; live: ${known}`);
   if (!live.includes(o.to)) throw new Error(`desks: ${o.to} is not running (dead) in stack "${stack}"; live: ${known}`);
-  const r = await hostSend(target.url, o.from, o.text);
+  const r = await hostSend(entryTarget(stateDir, stack, target), o.from, o.text);
   const message: DeskMessage = { id: r.id, from: o.from, to: o.to, text: o.text, at: Date.now(), delivered: r.delivered };
   appendMessage(stateDir, stack, message);
   const sender = roster.entries[o.from];
   if (sender && live.includes(o.from)) {
     try {
-      await hostRecord(sender.url, "message_out", { message });
+      await hostRecord(entryTarget(stateDir, stack, sender), "message_out", { message });
     } catch {
       /* the sender's transcript is best effort */
     }
@@ -764,7 +786,7 @@ export async function deskEvents(o: StackOpts & { name: string; since?: number }
   if (e) {
     if (await isEntryAlive(e)) {
       try {
-        return await hostEvents(e.url, since);
+        return await hostEvents(entryTarget(stateDir, stack, e), since);
       } catch {
         /* fall back to the file */
       }
@@ -861,7 +883,7 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
   // Pane: keep the slot.
   const t = readStackTerminal(stateDir, stack);
   if (old.terminal && old.terminal.kind !== "none" && old.terminal.id !== "") {
-    const argv = await attachArgv(entry);
+    const argv = await attachArgv(entry, { stateDir, stack });
     if (old.terminal.kind === "tmux") {
       try {
         await tmuxRaw(t?.tmuxSocket, ["respawn-pane", "-k", "-t", old.terminal.id, "-c", entry.cwd, paneCommand(argv)]);
@@ -874,7 +896,7 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
     if (drv) {
       await closePane(t, old.terminal);
       const others = Object.values(readRoster(stateDir, stack).entries).filter((e) => e.name !== entry.name);
-      const id = await openLaneWindow(drv, anyDeskPane(others, drv.kind), entry);
+      const id = await openLaneWindow(drv, anyDeskPane(others, drv.kind), entry, { stateDir, stack });
       entry.terminal = { kind: drv.kind, id };
       await putEntry(stateDir, stack, entry);
     }
@@ -975,7 +997,7 @@ async function startLane(stateDir: string, stack: string, req: LaneReq): Promise
     const drv = await driverFor(t);
     if (drv) {
       try {
-        const id = await openLaneWindow(drv, anyDeskPane(Object.values(readRoster(stateDir, stack).entries), drv.kind), entry);
+        const id = await openLaneWindow(drv, anyDeskPane(Object.values(readRoster(stateDir, stack).entries), drv.kind), entry, { stateDir, stack });
         entry.terminal = { kind: drv.kind, id };
         await putEntry(stateDir, stack, entry);
       } catch {

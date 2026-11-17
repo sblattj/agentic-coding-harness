@@ -411,4 +411,19 @@ describe("desk events --follow", () => {
     assert.match(r.stdout(), /text\s+old\n[^\n]*status\s+busy\n/);
     assert.equal(r.subscribed[0]?.stopped, true);
   });
+  it("subscribes with the host's bearer token from service.deskHostTarget", async () => {
+    const ac = new AbortController();
+    const r = rig({ deskRoster: view([row({ name: "W", url: "http://127.0.0.1:4805", runId: "r9" })]) }, { abort: ac.signal });
+    const asked: unknown[] = [];
+    (r.deps.service as unknown as Record<string, unknown>).deskHostTarget = (o: { url: string }) => {
+      asked.push(o);
+      return { url: o.url, token: "tk" };
+    };
+    const done = cmdDesk(["events", "W", "--follow"], r.deps);
+    await new Promise((res) => setTimeout(res, 50));
+    ac.abort();
+    assert.equal(await done, 0);
+    assert.deepEqual(r.subscribed[0]?.url, { url: "http://127.0.0.1:4805", token: "tk" });
+    assert.deepEqual(asked, [{ name: "W", url: "http://127.0.0.1:4805", runId: "r9" }]);
+  });
 });

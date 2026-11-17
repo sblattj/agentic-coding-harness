@@ -14,6 +14,7 @@ import type { Decision, DeskMessage, HostEvent, RosterRow, RosterView, TerminalK
 import type { HostSpec } from "../desks/types.ts";
 import type * as ServiceModule from "../desks/service.ts";
 import type * as HostClientModule from "../desks/host-client.ts";
+import type { HostTarget } from "../desks/host-client.ts";
 import { fmtInt, fmtUsd } from "./lib.ts";
 
 /** `ach desk host --spec <file>`: the per-desk host process (src/desks/host.ts). */
@@ -304,12 +305,15 @@ const need = (cond: boolean, msg: string): void => {
 };
 
 /** The entry a chat/follow attaches to: its live row, or a clear error. */
-async function entryUrl(c: Ctx, name: string): Promise<string> {
+/** The live host of `name`: its url plus the bearer token from its spec (the host refuses calls without it). */
+async function entryUrl(c: Ctx, name: string): Promise<HostTarget> {
   const view = await c.d.service.deskRoster(compact({ stack: c.stack, prune: false }));
   const row = view.rows.find((r) => r.name === name);
   if (row === undefined) throw new Error(`unknown desk or lane '${name}' (known: ${view.rows.map((r) => r.name).join(", ") || "none"})`);
   if (row.state === "dead") throw new Error(`'${name}' is dead (its host is not running)`);
-  return row.url;
+  // Injected test services may not provide deskHostTarget; then the bare url is used.
+  if (typeof c.d.service.deskHostTarget !== "function") return row.url;
+  return c.d.service.deskHostTarget(compact({ stack: c.stack, name, url: row.url, runId: row.runId }));
 }
 
 function untilAbort(c: Ctx, extra?: (finish: () => void) => void): Promise<void> {

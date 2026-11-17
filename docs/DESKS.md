@@ -62,7 +62,9 @@ Host API (JSON, 127.0.0.1 only):
 | `GET /attach` | the argv a terminal pane runs to show the session |
 | `POST /stop` | stop feed and engine, then exit |
 
-Identity comes from the environment (`ACH_DESK_NAME`, `ACH_DESK_STACK`), never from tool arguments, so a session cannot send as someone else. Self-send is refused. Every message is a `message_in` event in the target's run and a `message_out` event in the sender's, so replay shows the conversation.
+Every route except `GET /health` needs `Authorization: Bearer <token>` (401 without it). The token is 32 random bytes generated each time the host starts, written only to `specs/<name>.json` (mode 0600); it is never in `roster.json`, the roster view or any API answer. The CLI, the MCP tools and `ach web` read it from the spec file. Every route also checks `Host` (only `127.0.0.1:<port>` or `localhost:<port>`, else 421) and `Origin` (absent or the same origin, else 403), and every non-GET route needs `Content-Type: application/json` (415), so a web page in your browser cannot reach a host by a simple cross-site POST or by DNS rebinding.
+
+Identity comes from the environment (`ACH_DESK_NAME`, `ACH_DESK_STACK`), never from tool arguments, so a desk's MCP tools cannot send as someone else. That is not a hard boundary: the token stops HTTP callers that cannot read the spec file, but any process running as the same OS user can read `specs/<name>.json` and call a host with any `from`. Self-send is refused. Every message is a `message_in` event in the target's run and a `message_out` event in the sender's, so replay shows the conversation.
 
 ### Message rules
 
@@ -172,7 +174,7 @@ Under `<stateDir>/desks/<stack>/`:
 | `messages.jsonl` | one `DeskMessage` per line |
 | `decisions.jsonl` | `open`, `answer` and `close` events, folded into the current decision list |
 | `pending-lanes.jsonl` | lane approval requests: request, approve, reject |
-| `specs/<name>.json` | the host spec handed to `ach desk host` |
+| `specs/<name>.json` | the host spec handed to `ach desk host`, including the host's bearer token (mode 0600) |
 | `events/<runId>.jsonl` | the run's desk transcript |
 | `logs/<name>.log` | host stdout and stderr |
 | `layout.json` | the resolved layout `desk up` used |
@@ -266,6 +268,8 @@ Switch a running desk with `ach desk engine <name> <agent>`. A missing engine fa
 ## Web
 
 `ach web` serves a Desks view at `/desks`: the desk layout, a lane strip (goal, status, plan progress, cost), a message timeline, decision cards you answer with one click, and cost per desk and lane tree. It uses the Web API below.
+
+`ach web` refuses cross-site requests on every route and WebSocket upgrade: on a loopback bind the `Host` must be `127.0.0.1`, `localhost` or `[::1]` with the bound port (421), a present `Origin` must match the `Host` (403), and a non-GET `/api/*` request with a body must be `application/json` (415). A POST with no body (kill, continue) passes.
 
 ### Web API
 

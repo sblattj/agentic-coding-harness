@@ -10,8 +10,8 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, watc
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import * as realService from "../desks/service.ts";
-import { hostAttach, hostHealth, hostSubscribe } from "../desks/host-client.ts";
-import { deskPaths, readDecisions, readRoster } from "../desks/roster.ts";
+import { hostAttach, hostHealth, hostSubscribe, hostTarget, type HostTarget } from "../desks/host-client.ts";
+import { deskPaths, readDecisions, readHostToken, readRoster } from "../desks/roster.ts";
 import { loadLayout } from "../desks/config.ts";
 import { AGENTS, type AgentName } from "../core/types.ts";
 import { kiroIdeDefaultBin, resolveOnPath, runDoctor, scanMcp, type DoctorCheck } from "../cli/doctor.ts";
@@ -52,11 +52,12 @@ export type DesksService = Pick<
 
 export interface DesksApiDeps {
   service: DesksService;
-  hostSubscribe: (url: string, since: number, onEvent: (e: HostEvent) => void) => () => void;
+  /** `target` carries the host's bearer token (hostTarget); a bare url when the spec has none. */
+  hostSubscribe: (target: HostTarget, since: number, onEvent: (e: HostEvent) => void) => () => void;
   /** The host's current last seq, so a stream subscription starts at "now" instead of replaying history. */
   hostLastSeq: (url: string) => Promise<number>;
   /** GET /api/desks/:name/attach: the argv a terminal runs to show that session (host GET /attach). */
-  hostAttach: (url: string) => Promise<string[]>;
+  hostAttach: (target: HostTarget) => Promise<string[]>;
   engines: (stateDir: string) => Promise<DeskEngineInfo[]>;
   mcps: (stateDir: string, stack: string) => Promise<string[]>;
 }
@@ -456,7 +457,7 @@ export async function handleDesksApi(
       const entry = view.rows.find((r) => r.name === a);
       if (entry === undefined) throw new HttpError(404, `unknown desk or lane ${a} (known: ${view.rows.map((r) => r.name).join(", ") || "none"})`);
       if (entry.state === "dead") throw new HttpError(404, `${a} is dead`);
-      return done(res, 200, { argv: await deps.hostAttach(entry.url) });
+      return done(res, 200, { argv: await deps.hostAttach(hostTarget(entry.url, readHostToken(opts.stateDir, view.stack, entry.name, entry.runId))) });
     }
     if (n === 2 && b === "events") {
       want("GET");
@@ -600,7 +601,8 @@ async function openStream(req: IncomingMessage, res: ServerResponse, stateDir: s
           since = 0;
         }
         if (closed || !subs.has(key) || subs.get(key) !== null) return;
-        subs.set(key, deps.hostSubscribe(row.url, since, (event) => send({ kind: "event", event })));
+        const target = hostTarget(row.url, readHostToken(stateDir, stack, row.name, row.runId));
+        subs.set(key, deps.hostSubscribe(target, since, (event) => send({ kind: "event", event })));
       })();
     }
   };

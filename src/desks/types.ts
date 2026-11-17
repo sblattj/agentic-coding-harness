@@ -265,6 +265,12 @@ export interface HostSpec {
   goal?: string;
   feed?: FeedSpec;
   budgetUsd?: number;
+  /**
+   * Bearer token for the Host HTTP API (32 random bytes, hex), set by service.ts startHost.
+   * Lives only in this spec file (mode 0600); never copied to the roster or any API answer.
+   * A host whose spec has none refuses every route but GET /health.
+   */
+  token?: string;
 }
 
 export type HostState = "starting" | "idle" | "busy" | "stopping" | "error";
@@ -319,8 +325,12 @@ export interface HostHealth {
 }
 
 /**
- * Host HTTP API (JSON bodies, 127.0.0.1 only):
- *   GET  /health                      -> HostHealth
+ * Host HTTP API (JSON bodies, 127.0.0.1 only). Every route but GET /health needs
+ * `authorization: Bearer <HostSpec.token>` (else 401); every route refuses a Host header
+ * other than 127.0.0.1:<port> or localhost:<port> (421) and an Origin other than
+ * http://127.0.0.1:<port> or http://localhost:<port> (403); POSTs must be
+ * application/json (415).
+ *   GET  /health                     -> HostHealth
  *   POST /send   {from, text}         -> {id, delivered}   queues when busy; never blocks on the turn
  *   POST /note   {text}               -> {}                silent context, no turn
  *   POST /record {type, data}         -> {seq}             append an out-of-band event (message_out)

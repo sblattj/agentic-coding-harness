@@ -223,3 +223,19 @@ export function nextPendingLaneId(stateDir: string, stack: string): string {
 export function validName(name: string, kind: "desk" | "lane"): boolean {
   return kind === "desk" ? /^[A-Z][A-Z0-9_-]{0,31}$/.test(name) : /^[a-z0-9][a-z0-9_-]{0,47}$/i.test(name);
 }
+
+/**
+ * The bearer token of the host for desk/lane `name`, read from specs/<name>.json (mode 0600;
+ * the only place it lives). With `runId`, only a spec for that run counts, so a stale entry
+ * never pairs with a newer host's token. undefined when there is no spec, no token, or the
+ * spec is for another run (the host then answers 401, fail closed).
+ */
+export function readHostToken(stateDir: string, stack: string, name: string, runId?: string): string | undefined {
+  try {
+    const spec = JSON.parse(readFileSync(join(deskPaths(stateDir, stack).specs, `${name}.json`), "utf8")) as { token?: unknown; runId?: unknown };
+    if (runId !== undefined && spec.runId !== runId) return undefined;
+    return typeof spec.token === "string" && spec.token !== "" ? spec.token : undefined;
+  } catch {
+    return undefined;
+  }
+}

@@ -24,6 +24,9 @@ import { deskPaths } from '../src/desks/roster.ts';
 import type { Engine, EngineEvent, FeedSpec, GoalStatus, HostEvent, HostSpec, HostState } from '../src/desks/types.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
+/** Every test host runs with this bearer token (the HostSpec field startHost fills in). */
+const TOKEN = 'f'.repeat(64);
+const AUTH = { authorization: `Bearer ${TOKEN}` };
 const tmpRoots: string[] = [];
 after(() => {
   for (const d of tmpRoots) rmSync(d, { recursive: true, force: true });
@@ -143,12 +146,15 @@ function baseSpec(stateDir: string, over: Partial<HostSpec> = {}): HostSpec {
     port: 0,
     cwd: stateDir,
     runId: 'run_test_1',
+    token: TOKEN,
     ...over,
   };
 }
 
 interface Started {
   url: string;
+  /** url + bearer token, what host-client calls take. */
+  t: { url: string; token: string };
   done: Promise<number>;
   engine: FakeEngine;
   meter: FakeMeter;
@@ -179,11 +185,11 @@ async function start(over: Partial<HostSpec> = {}, tweak: (e: FakeEngine, m: Fak
   };
   const done = runHost(spec, deps);
   await waitFor(async () => (url !== '' ? (await hostHealth(url))?.state === 'idle' : false), 'host idle');
-  return { url, done, engine, meter, spec, get feedDeliver() { return feedDeliver; }, feedStopped: () => feedStopped } as Started;
+  return { url, t: { url, token: TOKEN }, done, engine, meter, spec, get feedDeliver() { return feedDeliver; }, feedStopped: () => feedStopped } as Started;
 }
 
 async function stopAndWait(s: Started): Promise<number> {
-  await hostStop(s.url);
+  await hostStop(s.t);
   return s.done;
 }
 
@@ -191,11 +197,11 @@ describe('desk host: message queue', () => {
   it('delivers now when idle, queues while busy, drains after turn_end', async () => {
     const s = await start();
     try {
-      const a = await hostSend(s.url, 'human', 'first');
+      const a = await hostSend(s.t, 'human', 'first');
       assert.equal(a.delivered, 'now');
       assert.match(a.id, /^m_[0-9a-z]+_[0-9a-z]+$/);
       assert.deepEqual(s.engine.sent, ['first'], 'human message has no header');
-      const b = await hostSend(s.url, 'BRAVO', 'second');
+      const b = await hostSend(s.t, 'BRAVO', 'second');
       assert.equal(b.delivered, 'queued');
       assert.equal((await hostHealth(s.url))?.queueDepth, 1);
       assert.equal((await hostHealth(s.url))?.state, 'busy');
@@ -211,8 +217,8 @@ describe('desk host: message queue', () => {
   it('merges several queued messages into one turn', async () => {
     const s = await start();
     try {
-      await hostSend(s.url, 'human', 'go');
-      const q = await Promise.all([hostSend(s.url, 'BRAVO', 'one'), hostSend(s.url, 'CHARLIE', 'two'), hostSend(s.url, 'human', 'three')]);
+      await hostSend(s.t, 'human', 'go');
+      const q = await Promise.all([hostSend(s.t, 'BRAVO', 'one'), hostSend(s.t, 'CHARLIE', 'two'), hostSend(s.t, 'human', 'three')]);
       assert.deepEqual(q.map((x) => x.delivered), ['queued', 'queued', 'queued']);
       assert.equal((await hostHealth(s.url))?.queueDepth, 3);
       s.engine.finishTurn();
@@ -231,7 +237,7 @@ describe('desk host: message queue', () => {
   it('two concurrent sends to an idle desk: one now, one queued', async () => {
     const s = await start();
     try {
-      const r = await Promise.all([hostSend(s.url, 'human', 'a'), hostSend(s.url, 'human', 'b')]);
+      const r = await Promise.all([hostSend(s.t, 'human', 'a'), hostSend(s.t, 'human', 'b')]);
       assert.deepEqual(r.map((x) => x.delivered).sort(), ['now', 'queued']);
       assert.equal(s.engine.sent.length, 1);
     } finally {
@@ -242,12 +248,12 @@ describe('desk host: message queue', () => {
   it('refuses empty text with 400', async () => {
     const s = await start();
     try {
-      await assert.rejects(hostSend(s.url, 'human', ''), (e: Error) => /HTTP 400/.test(e.message) && e.message.includes(`${s.url}/send`));
-      await assert.rejects(hostSend(s.url, 'human', '   '), /HTTP 400/);
+      await assert.rejects(hostSend(s.t, 'human', ''), (e: Error) => /HTTP 400/.test(e.message) && e.message.includes(`${s.url}/send`));
+      await assert.rejects(hostSend(s.t, 'human', '   '), /HTTP 400/);
       assert.equal(s.engine.sent.length, 0);
-      const bad = await fetch(`${s.url}/send`, { method: 'POST', body: '{not json' });
+      const bad = await fetch(`${s.url}/send`, { method: 'POST', headers: { ...AUTH, 'content-type': 'application/json' }, body: '{not json' });
       assert.equal(bad.status, 400);
-      const nf = await fetch(`${s.url}/nope`);
+      const nf = await fetch(`${s.url}/nope`, { headers: AUTH });
       assert.equal(nf.status, 404);
     } finally {
       await stopAndWait(s);
@@ -257,8 +263,8 @@ describe('desk host: message queue', () => {
   it('records message_in with the full DeskMessage', async () => {
     const s = await start();
     try {
-      const r = await hostSend(s.url, 'BRAVO', 'hello');
-      const evs = await hostEvents(s.url, 0);
+      const r = await hostSend(s.t, 'BRAVO', 'hello');
+      const evs = await hostEvents(s.t, 0);
       const mi = evs.find((e) => e.type === 'message_in');
       assert.ok(mi);
       assert.deepEqual({ ...(mi.data.message as object), at: 0 }, { id: r.id, from: 'BRAVO', to: 'ALPHA', text: 'hello', at: 0, delivered: 'now' });
@@ -272,10 +278,10 @@ describe('desk host: events', () => {
   it('seq is monotonic, the file is complete, since filters', async () => {
     const s = await start();
     try {
-      await hostSend(s.url, 'human', 'x');
+      await hostSend(s.t, 'human', 'x');
       s.engine.finishTurn('reply x');
       await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle');
-      const all = await hostEvents(s.url);
+      const all = await hostEvents(s.t);
       assert.ok(all.length >= 6);
       all.forEach((e, i) => {
         assert.equal(e.seq, i + 1);
@@ -287,7 +293,7 @@ describe('desk host: events', () => {
       const file = join(deskPaths(s.spec.stateDir, 'test').events, 'run_test_1.jsonl');
       const lines = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as HostEvent);
       assert.deepEqual(lines.map((e) => e.seq), all.map((e) => e.seq));
-      const tail = await hostEvents(s.url, 3);
+      const tail = await hostEvents(s.t, 3);
       assert.deepEqual(tail.map((e) => e.seq), all.filter((e) => e.seq > 3).map((e) => e.seq));
       const h = await hostHealth(s.url);
       assert.equal(h?.lastSeq, all.at(-1)?.seq);
@@ -305,14 +311,14 @@ describe('desk host: events', () => {
   it('since older than the memory window reads the complete file', async () => {
     const s = await start({}, () => {}, { eventMemoryCap: 5 });
     try {
-      await hostSend(s.url, 'human', 'x');
+      await hostSend(s.t, 'human', 'x');
       s.engine.finishTurn();
       await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle');
       const last = (await hostHealth(s.url))?.lastSeq ?? 0;
       assert.ok(last > 5);
-      const all = await hostEvents(s.url, 0);
+      const all = await hostEvents(s.t, 0);
       assert.deepEqual(all.map((e) => e.seq), Array.from({ length: last }, (_, i) => i + 1));
-      const recent = await hostEvents(s.url, last - 2);
+      const recent = await hostEvents(s.t, last - 2);
       assert.deepEqual(recent.map((e) => e.seq), [last - 1, last]);
     } finally {
       await stopAndWait(s);
@@ -324,14 +330,14 @@ describe('desk host: events', () => {
     const got: HostEvent[] = [];
     let unsub = (): void => {};
     try {
-      await hostSend(s.url, 'human', 'early');
+      await hostSend(s.t, 'human', 'early');
       s.engine.finishTurn();
       await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle');
-      const before = await hostEvents(s.url);
-      unsub = hostSubscribe(s.url, 2, (e) => got.push(e));
+      const before = await hostEvents(s.t);
+      unsub = hostSubscribe(s.t, 2, (e) => got.push(e));
       await waitFor(() => got.length === before.length - 2, 'backlog');
       assert.deepEqual(got.map((e) => e.seq), before.filter((e) => e.seq > 2).map((e) => e.seq));
-      await hostSend(s.url, 'BRAVO', 'live one');
+      await hostSend(s.t, 'BRAVO', 'live one');
       await waitFor(() => got.some((e) => e.type === 'message_in' && (e.data.message as { text: string }).text === 'live one'), 'live message_in');
       s.engine.finishTurn('live reply');
       await waitFor(() => got.some((e) => e.type === 'text' && e.data.text === 'live reply'), 'live text');
@@ -347,7 +353,7 @@ describe('desk host: events', () => {
   it('SSE stream is closed by stop so the server can exit', async () => {
     const s = await start();
     const got: HostEvent[] = [];
-    const unsub = hostSubscribe(s.url, 0, (e) => got.push(e));
+    const unsub = hostSubscribe(s.t, 0, (e) => got.push(e));
     try {
       await waitFor(() => got.length > 0, 'first event');
       assert.equal(await stopAndWait(s), 0);
@@ -387,13 +393,13 @@ describe('desk host: other routes', () => {
   it('/record allows message_out and feed, refuses others', async () => {
     const s = await start();
     try {
-      const seq = await hostRecord(s.url, 'message_out', { message: { to: 'BRAVO', text: 'hi' } });
+      const seq = await hostRecord(s.t, 'message_out', { message: { to: 'BRAVO', text: 'hi' } });
       assert.equal(typeof seq, 'number');
-      const seq2 = await hostRecord(s.url, 'feed', { note: 'n' });
+      const seq2 = await hostRecord(s.t, 'feed', { note: 'n' });
       assert.equal(seq2, seq + 1);
-      await assert.rejects(hostRecord(s.url, 'text', { text: 'forged' }), /HTTP 400/);
-      await assert.rejects(hostRecord(s.url, 'turn_end', {}), /HTTP 400/);
-      const evs = await hostEvents(s.url, seq - 1);
+      await assert.rejects(hostRecord(s.t, 'text', { text: 'forged' }), /HTTP 400/);
+      await assert.rejects(hostRecord(s.t, 'turn_end', {}), /HTTP 400/);
+      const evs = await hostEvents(s.t, seq - 1);
       assert.deepEqual(evs.map((e) => e.type), ['message_out', 'feed']);
     } finally {
       await stopAndWait(s);
@@ -403,20 +409,20 @@ describe('desk host: other routes', () => {
   it('/goal get and set, /note, /attach, /mcp', async () => {
     const s = await start();
     try {
-      assert.equal((await hostGoal(s.url)).state, 'none');
-      await hostSetGoal(s.url, 'ship it');
+      assert.equal((await hostGoal(s.t)).state, 'none');
+      await hostSetGoal(s.t, 'ship it');
       assert.deepEqual(s.engine.goals, ['ship it']);
-      const g = await hostGoal(s.url);
+      const g = await hostGoal(s.t);
       assert.equal(g.state, 'active');
       assert.equal(g.objective, 'ship it');
       assert.equal((await hostHealth(s.url))?.goal?.state, 'active');
-      assert.ok((await hostEvents(s.url)).some((e) => e.type === 'goal'), 'goal event recorded');
-      await assert.rejects(hostSetGoal(s.url, ''), /HTTP 400/);
-      await hostNote(s.url, 'silent context');
+      assert.ok((await hostEvents(s.t)).some((e) => e.type === 'goal'), 'goal event recorded');
+      await assert.rejects(hostSetGoal(s.t, ''), /HTTP 400/);
+      await hostNote(s.t, 'silent context');
       assert.deepEqual(s.engine.notes, ['silent context']);
       assert.equal(s.engine.sent.length, 0, 'note starts no turn');
-      assert.deepEqual(await hostAttach(s.url), ['fake-attach', '--session', 'sess-1']);
-      assert.deepEqual(await hostMcp(s.url), { desks: 'connected', whosaid: 'connected' });
+      assert.deepEqual(await hostAttach(s.t), ['fake-attach', '--session', 'sess-1']);
+      assert.deepEqual(await hostMcp(s.t), { desks: 'connected', whosaid: 'connected' });
     } finally {
       await stopAndWait(s);
     }
@@ -428,7 +434,7 @@ describe('desk host: other routes', () => {
       assert.ok(s.feedDeliver);
       await s.feedDeliver('utterance batch');
       assert.deepEqual(s.engine.sent, ['utterance batch']);
-      const mi = (await hostEvents(s.url)).find((e) => e.type === 'message_in');
+      const mi = (await hostEvents(s.t)).find((e) => e.type === 'message_in');
       assert.equal((mi?.data.message as { from: string }).from, 'feed');
     } finally {
       await stopAndWait(s);
@@ -437,7 +443,7 @@ describe('desk host: other routes', () => {
 
   it('/stop responds, stops engine, finishes meter, closes server, resolves 0', async () => {
     const s = await start();
-    await hostStop(s.url);
+    await hostStop(s.t);
     assert.equal(await s.done, 0);
     assert.equal(s.engine.stopped, true);
     assert.deepEqual(s.meter.finished, ['aborted']);
@@ -459,7 +465,7 @@ describe('desk host: lanes, budget, failures', () => {
       await waitFor(() => s.engine.goals.length === 1, 'goal set');
       assert.deepEqual(s.engine.notes, ['you are a lane']);
       assert.deepEqual(s.engine.goals, ['fix #1']);
-      await waitFor(async () => (await hostEvents(s.url)).some((e) => e.type === 'goal'), 'goal event');
+      await waitFor(async () => (await hostEvents(s.t)).some((e) => e.type === 'goal'), 'goal event');
     } finally {
       await stopAndWait(s);
     }
@@ -468,7 +474,7 @@ describe('desk host: lanes, budget, failures', () => {
   it('lane over budget: error event, host stops itself', async () => {
     const s = await start({ kind: 'lane', name: 'lane-b', budgetUsd: 0.001 });
     s.meter.over = true;
-    await hostSend(s.url, 'human', 'spend');
+    await hostSend(s.t, 'human', 'spend');
     s.engine.finishTurn();
     assert.equal(await s.done, 0);
     assert.equal(s.engine.stopped, true);
@@ -481,13 +487,13 @@ describe('desk host: lanes, budget, failures', () => {
     const s = await start({ budgetUsd: 0.001 });
     try {
       s.meter.over = true;
-      await hostSend(s.url, 'human', 'a');
+      await hostSend(s.t, 'human', 'a');
       s.engine.finishTurn();
       await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle');
-      await hostSend(s.url, 'human', 'b');
+      await hostSend(s.t, 'human', 'b');
       s.engine.finishTurn();
       await waitFor(async () => (await hostHealth(s.url))?.state === 'idle', 'idle again');
-      const errs = (await hostEvents(s.url)).filter((e) => e.type === 'error');
+      const errs = (await hostEvents(s.t)).filter((e) => e.type === 'error');
       assert.equal(errs.length, 1);
       assert.equal(errs[0]?.data.error, 'budget exceeded');
     } finally {
@@ -579,10 +585,11 @@ describe('desk host: real child process via spawnHost', () => {
       assert.equal(h.name, 'ECHO');
       assert.equal(h.version, 'desks-api/1');
       assert.equal(h.sessionId, 'echo-run_echo_1');
-      const r = await hostSend(url, 'BRAVO', 'ping');
+      const t = { url, token: TOKEN };
+      const r = await hostSend(t, 'BRAVO', 'ping');
       assert.equal(r.delivered, 'now');
-      await waitFor(async () => (await hostEvents(url)).some((e) => e.type === 'text' && e.data.text === 'echo: [desk-msg from BRAVO] ping'), 'echo reply');
-      if (how === 'stop') await hostStop(url);
+      await waitFor(async () => (await hostEvents(t)).some((e) => e.type === 'text' && e.data.text === 'echo: [desk-msg from BRAVO] ping'), 'echo reply');
+      if (how === 'stop') await hostStop(t);
       else process.kill(hostPid, 'SIGTERM');
       await waitFor(() => !pidAlive(hostPid) && !pidAlive(pid), 'host process exit', 15_000);
       assert.equal(await hostHealth(url, 1000), null);

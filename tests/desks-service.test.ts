@@ -2,7 +2,7 @@
 // fake-engine hosts (ACH_DESK_FAKE_ENGINE=1, ports 5900..). No terminal (term none).
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -278,7 +278,14 @@ describe('lanes: approval path on real fake-engine hosts', () => {
       const h = await hostHealth(e.url, 2000);
       assert.equal(h?.state, 'idle');
       assert.equal(h?.goal?.objective, '--max-minutes 5 check access');
-      const evs = await hostEvents(e.url);
+      // the host token: random per start, only in the 0600 spec, never in the roster or the entry
+      assert.match(spec.token ?? '', /^[0-9a-f]{64}$/, 'startHost writes a 32-byte hex token');
+      assert.equal(statSync(join(deskPaths(sd, stack).specs, 'probe-d1.json')).mode & 0o777, 0o600, 'spec file is 0600');
+      assert.ok(!readFileSync(deskPaths(sd, stack).roster, 'utf8').includes(spec.token!), 'roster.json never holds the token');
+      assert.ok(!JSON.stringify(e).includes(spec.token!), 'the RosterEntry never holds the token');
+      assert.ok(!JSON.stringify(await deskRoster({ stateDir: sd, stack, prune: false })).includes(spec.token!), 'the roster view never holds the token');
+      await assert.rejects(hostEvents(e.url), /HTTP 401/, 'the lane host refuses a call without its token');
+      const evs = await hostEvents({ url: e.url, token: spec.token! });
       assert.ok(evs.some((x) => x.type === 'goal'), 'goal event recorded');
       const st = await laneStatus({ stateDir: sd, stack });
       assert.deepEqual(st.map((x) => [x.name, x.state, x.goalStatus?.state]), [['probe-d1', 'idle', 'active']]);
