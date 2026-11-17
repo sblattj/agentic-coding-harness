@@ -431,8 +431,9 @@ export async function handleDesksApi(
     }
     if (n === 3 && a === "lanes" && c === "stop") {
       want("POST");
-      await jsonBody(req);
-      await svc.laneStop({ ...so, name: b!, by: "human" });
+      const body = await jsonBody(req);
+      if (body.now !== undefined && typeof body.now !== "boolean") throw new HttpError(400, "now must be a boolean");
+      await svc.laneStop({ ...so, name: b!, by: "human", ...(body.now === true ? { now: true } : {}) });
       return done(res, 200, {});
     }
     if (n === 3 && a === "pending" && (c === "approve" || c === "reject")) {

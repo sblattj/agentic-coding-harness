@@ -53,7 +53,7 @@ Then stop it, and tell whoever asked what came out and where it is.
 
 - If lanes need approval (`lane_new` returns a pending request), say so to DECISIONS; the request waits for approval.
 - While a call is active (LISTENER says so), launch no lane that posts to that meeting's chat or its people, approved or not. Queue it as `POST AFTER CALL` and release it when LISTENER reports the call ended.
-- If any peer relays pushback from other people about a lane's posting, stop every posting lane at once with `lane_stop` and tell DECISIONS.
+- If any peer relays pushback from other people about a lane's posting, stop every posting lane at once with `lane_stop` and `now: true` and tell DECISIONS.
 
 ## Lane hygiene
 

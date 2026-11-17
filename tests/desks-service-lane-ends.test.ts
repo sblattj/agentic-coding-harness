@@ -91,6 +91,87 @@ describe('laneStop final goal state', () => {
   });
 });
 
+/** A host that is busy until `busyMs` after creation; when it goes idle it writes a goal-achieved event (the plugin's verdict). busyMs null = busy forever. */
+async function busyHost(sd: string, stack: string, runId: string, name: string, busyMs: number | null): Promise<{ server: Server; url: string; stops: number[] }> {
+  const eventsFile = join(deskPaths(sd, stack).events, `${runId}.jsonl`);
+  mkdirSync(deskPaths(sd, stack).events, { recursive: true });
+  const ev = (seq: number, type: string, data: Record<string, unknown>) => JSON.stringify({ seq, at: Date.now(), runId, name, type, data }) + '\n';
+  const goal = (state: string) => ({ objective: 'o', state, source: 'opencode-plugin', updatedAt: 1 });
+  appendFileSync(eventsFile, ev(1, 'goal', { goal: goal('active') }));
+  const t0 = Date.now();
+  let wrote = false;
+  const stops: number[] = [];
+  const isBusy = () => busyMs === null || Date.now() - t0 < busyMs;
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/health') {
+      const busy = isBusy();
+      if (!busy && !wrote) {
+        wrote = true;
+        appendFileSync(eventsFile, ev(2, 'goal', { goal: goal('achieved') }));
+      }
+      res.end(JSON.stringify({ version: 1, name, kind: 'lane', engine: 'opencode', agent: 'opencode', runId, pid: 9_999_999, state: busy ? 'busy' : 'idle', queueDepth: 0, lastSeq: 1, goal: goal(wrote ? 'achieved' : 'active') }));
+    } else if (req.url === '/stop') {
+      stops.push(Date.now() - t0);
+      res.end('{}');
+    } else res.end('{}');
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const addr = server.address();
+  if (addr === null || typeof addr === 'string') throw new Error('no port');
+  return { server, url: `http://127.0.0.1:${addr.port}`, stops };
+}
+
+function stopLogEntry(sd: string, stack: string): Record<string, unknown> {
+  const log = readFileSync(deskPaths(sd, stack).lanesLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  return log.find((l) => l.event === 'stop');
+}
+
+describe('laneStop waits for a busy lane to finish its turn', () => {
+  it('a lane that goes idle after 1 s and judges its goal achieved is stopped after, with goalState achieved', async () => {
+    const sd = tmpDir();
+    const { server, url, stops } = await busyHost(sd, 'p', 'run-LANE1', 'LANE1', 1000);
+    try {
+      await putEntry(sd, 'p', entry('LANE1', { url, launchedBy: 'human' }));
+      await laneStop({ stateDir: sd, stack: 'p', name: 'LANE1', by: 'ORCHESTRATOR', graceMs: 5000 });
+    } finally {
+      server.close();
+    }
+    assert.equal(stops.length, 1);
+    assert.ok(stops[0]! >= 900, `stopped at ${stops[0]} ms, before the lane went idle`);
+    assert.equal(stopLogEntry(sd, 'p').goalState, 'achieved');
+  });
+
+  it('now: true stops at once, well under the grace', async () => {
+    const sd = tmpDir();
+    const { server, url, stops } = await busyHost(sd, 'p', 'run-LANE1', 'LANE1', null);
+    const t = Date.now();
+    try {
+      await putEntry(sd, 'p', entry('LANE1', { url, launchedBy: 'human' }));
+      await laneStop({ stateDir: sd, stack: 'p', name: 'LANE1', by: 'ORCHESTRATOR', now: true, graceMs: 5000 });
+    } finally {
+      server.close();
+    }
+    assert.equal(stops.length, 1);
+    assert.ok(Date.now() - t < 1500, `took ${Date.now() - t} ms`);
+    assert.equal(stopLogEntry(sd, 'p').goalState, 'active');
+  });
+
+  it('a lane busy forever is stopped after the grace', async () => {
+    const sd = tmpDir();
+    const { server, url, stops } = await busyHost(sd, 'p', 'run-LANE1', 'LANE1', null);
+    try {
+      await putEntry(sd, 'p', entry('LANE1', { url, launchedBy: 'human' }));
+      await laneStop({ stateDir: sd, stack: 'p', name: 'LANE1', by: 'ORCHESTRATOR', graceMs: 600, settleMs: 100 });
+    } finally {
+      server.close();
+    }
+    assert.equal(stops.length, 1);
+    assert.ok(stops[0]! >= 550 && stops[0]! < 3000, `stopped at ${stops[0]} ms`);
+    assert.equal(stopLogEntry(sd, 'p').goalState, 'active');
+  });
+});
+
 describe('laneStatus after stop', () => {
   it('returns a stopped row with the final goal state; unknown names still throw; no name lists live lanes only', async () => {
     const sd = tmpDir();

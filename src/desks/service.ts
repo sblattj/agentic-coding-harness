@@ -94,6 +94,10 @@ export interface StackTerminal {
 export const HOST_START_TIMEOUT_MS = 45_000;
 /** How long a stopping host may take to exit before SIGTERM, then SIGKILL. */
 export const HOST_STOP_TIMEOUT_MS = 10_000;
+/** How long laneStop waits for a busy lane to finish its turn before stopping it anyway. */
+export const LANE_STOP_GRACE_MS = 15_000;
+/** After a busy lane goes idle, how long laneStop waits for the goal plugin's final verdict. */
+export const LANE_STOP_GOAL_SETTLE_MS = 2_000;
 /** Name of the DECISIONS desk when the layout has no desk with role "decisions". */
 export const DECISIONS_DESK = "DECISIONS";
 /** How long a deskSwitchEngine marker shields its entry from roster pruning. */
@@ -573,7 +577,7 @@ export async function deskDown(o: StackOpts = {}): Promise<{ stopped: string[] }
   const stopped: string[] = [];
   const entries = Object.values(readRoster(stateDir, stack).entries);
   for (const l of entries.filter((e) => e.kind === "lane")) {
-    await laneStop({ stack, stateDir, name: l.name, by: "human" });
+    await laneStop({ stack, stateDir, name: l.name, by: "human", now: true });
     stopped.push(l.name);
   }
   const desks = entries.filter((e) => e.kind === "desk");
@@ -1052,13 +1056,41 @@ export async function laneReject(o: StackOpts & { id: string; by: Sender; reason
   return next;
 }
 
-/** Refuses desk names. Closes the pane, stops the host, appends to lanes.log, removes from the roster. */
-export async function laneStop(o: StackOpts & { name: string; by?: Sender }): Promise<{ stopped: string }> {
+/**
+ * Refuses desk names. Closes the pane, stops the host, appends to lanes.log, removes from the roster.
+ * A busy lane is first given `graceMs` (default LANE_STOP_GRACE_MS) to finish its turn, then
+ * `settleMs` (default LANE_STOP_GOAL_SETTLE_MS) for the goal verdict to land, so a lane that just
+ * sent DONE is not killed before its goal is judged. `now: true` skips both waits.
+ */
+export async function laneStop(o: StackOpts & { name: string; by?: Sender; now?: boolean; graceMs?: number; settleMs?: number }): Promise<{ stopped: string }> {
   const { stateDir, stack } = ctx(o);
   const e = readRoster(stateDir, stack).entries[o.name];
   if (!e) throw new Error(`desks: unknown lane "${o.name}" in stack "${stack}"`);
   if (e.kind !== "lane") throw new Error(`desks: ${o.name} is a desk, not a lane; lane_stop refuses desk names`);
-  const h = await hostHealth(e.url, 1500);
+  let h = await hostHealth(e.url, 1500);
+  if (o.now !== true && h !== null && h.runId === e.runId && h.state === "busy") {
+    const graceMs = o.graceMs ?? LANE_STOP_GRACE_MS;
+    const deadline = Date.now() + graceMs;
+    let idle = false;
+    while (Date.now() < deadline) {
+      await sleep(Math.min(250, Math.max(10, deadline - Date.now())));
+      const n = await hostHealth(e.url, 1500);
+      if (n === null || n.runId !== e.runId) break;
+      h = n;
+      if (n.state !== "busy") {
+        idle = true;
+        break;
+      }
+    }
+    if (idle) {
+      const isFinal = () => {
+        const g = lastGoalState(stateDir, stack, e.runId);
+        return g !== null && g !== "active" && g !== "none";
+      };
+      await waitUntil(isFinal, o.settleMs ?? LANE_STOP_GOAL_SETTLE_MS);
+      h = (await hostHealth(e.url, 1500)) ?? h;
+    }
+  }
   const preStop = h !== null && h.runId === e.runId ? h.goal?.state ?? "none" : "dead";
   await closePane(readStackTerminal(stateDir, stack), e.terminal);
   await stopEntry(stateDir, stack, e);

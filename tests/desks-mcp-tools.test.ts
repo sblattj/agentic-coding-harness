@@ -169,6 +169,9 @@ describe("desk MCP tools: identity and argument mapping", () => {
     assert.equal(t.calls[0]!.o.name, undefined);
     assert.equal(t.calls[1]!.o.name, "x");
     assert.deepEqual(t.calls[2], { fn: "laneStop", o: { stateDir: "/tmp/state-x", stack: "s1", name: "x", by: "ORCHESTRATOR" } });
+    await t.ok("lane_stop", { name: "y", now: true });
+    assert.deepEqual(t.calls[3], { fn: "laneStop", o: { stateDir: "/tmp/state-x", stack: "s1", name: "y", by: "ORCHESTRATOR", now: true } });
+    assert.match((await t.call("lane_stop", { name: "y", now: "yes" })).error!.message, /now must be a boolean/);
   });
 
   it("decision_open: askedBy defaults to me, openedBy is me, options pass through", async () => {

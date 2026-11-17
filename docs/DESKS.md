@@ -203,7 +203,7 @@ ach desk chat <name>                     attach REPL for engines without a nativ
 
 ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N] [--brief TEXT] [--from NAME]
 ach lane status [name] [--json]
-ach lane stop <name> [--from NAME]
+ach lane stop <name> [--now] [--from NAME]
 ach lane approve <Ln> [--from NAME]
 ach lane reject <Ln> [--reason R]
 ```
@@ -214,7 +214,7 @@ Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else 
 - `desk down` stops every lane, then every desk (feed, pane, host), and leaves an empty roster with no processes.
 - `desk send` and `desk answer` send as `human`.
 - `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions.
-- `lane stop` refuses desk names. It closes the pane, stops the host and removes the roster entry.
+- `lane stop` refuses desk names. A busy lane gets up to 15 s to finish its turn, plus about 2 s for the goal verdict, so a lane that just sent DONE is judged before it dies; `--now` skips the wait (emergency stops; `desk down` always stops at once). It closes the pane, stops the host and removes the roster entry.
 - `ach lane status <name>` also answers for a lane that already ended: the roster has forgotten it, so the row is rebuilt from `lanes.log` with `state: "stopped"` and `goalState` (the final goal state, taken from the lane's last `goal` event so a verdict reported while the host was stopping counts). Without a name only live lanes are listed.
 - `--json` prints the `RosterView` (stack, `portBase`, rows with state, queue depth, goal status and cost, pending lanes, open decisions). Without it, a table.
 
@@ -229,7 +229,7 @@ Registered on `ach mcp` for every desk and lane session (identity from `ACH_DESK
 | `desk_inbox` | `limit?, since_minutes?` | recent messages to or from the caller |
 | `lane_new` | `name, goal, mcps?, cwd?, agent?, model?, budget_usd?, brief?` | start a lane, or `{pending}` when approval applies |
 | `lane_status` | `name?` | goal state, verified plan actions, evidence |
-| `lane_stop` | `name` | refuses desk names |
+| `lane_stop` | `name, now?` | refuses desk names; waits up to 15 s for a busy lane to finish its turn and for its goal verdict, unless `now: true` |
 | `lane_approve` | `id` | approve a pending lane (DECISIONS or human only) |
 | `lane_reject` | `id, reason?` | reject a pending lane (DECISIONS or human only) |
 | `decision_open` | `question, options, asked_by?` (alias `askedBy`; default the caller) | add a question for the human |
@@ -281,7 +281,7 @@ POST /api/desks/send {to, text}         -> DeskMessage   (from "human")
 POST /api/desks/up {layoutFile?, term?} -> RosterView   (term defaults to "none": no terminal panes)
 POST /api/desks/down                    -> {stopped: string[]}
 POST /api/desks/lanes {name, goal, mcps?, cwd?, agent?, model?, budgetUsd?} -> RosterEntry | {pending: PendingLane}
-POST /api/desks/lanes/:name/stop        -> {}
+POST /api/desks/lanes/:name/stop        {now?: true} -> {}   (body optional; now skips the busy-lane grace wait)
 POST /api/desks/pending/:id/approve     -> RosterEntry ; /reject {reason?} -> PendingLane
 POST /api/desks/:name/engine {agent, model?} -> RosterEntry
 GET  /api/desks/:name/events?since=<seq> -> {events: HostEvent[]}

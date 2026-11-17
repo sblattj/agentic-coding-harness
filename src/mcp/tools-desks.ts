@@ -209,13 +209,20 @@ export function registerDeskTools(
 
   server.registerTool({
     name: "lane_stop",
-    description: "Stop a lane (refuses desk names). Check the lane's evidence first.",
+    description:
+      "Stop a lane (refuses desk names). Check the lane's evidence first. A busy lane is given up to 15 s to finish its turn (so its goal gets judged) unless now is true.",
     inputSchema: {
       type: "object",
-      properties: { name: { type: "string", description: "Lane name" } },
+      properties: {
+        name: { type: "string", description: "Lane name" },
+        now: { type: "boolean", description: "Stop at once without waiting for a busy lane to finish its turn (emergency stops only)" },
+      },
       required: ["name"],
     },
-    handler: async (args) => svc.laneStop({ ...base, name: str(args, "name") as string, by: me }),
+    handler: async (args) => {
+      if (args.now !== undefined && typeof args.now !== "boolean") throw new Error("now must be a boolean");
+      return svc.laneStop({ ...base, name: str(args, "name") as string, by: me, ...(args.now === true ? { now: true } : {}) });
+    },
   });
 
   server.registerTool({

@@ -337,6 +337,10 @@ describe('desks web api: routes', () => {
     const c = lastCall(h, 'laneStop');
     assert.equal(c.arg.name, 'fix-1');
     assert.equal(c.arg.by, 'human');
+    assert.equal(c.arg.now, undefined);
+    await call(h, 'POST', '/api/desks/lanes/fix-1/stop', JSON.stringify({ now: true }));
+    assert.equal(lastCall(h, 'laneStop').arg.now, true);
+    assert.equal((await call(h, 'POST', '/api/desks/lanes/fix-1/stop', JSON.stringify({ now: 'yes' }))).status, 400);
   });
 
   it('POST /pending/:id/approve and /reject, decided by human', async () => {
