@@ -1,11 +1,11 @@
 // Ghostty TerminalDriver via AppleScript (#204, guide 8). Everything is addressed by terminal id.
 // Never `close window` / `close tab` (they closed the user's own windows in the prototype).
 // close = kill the pane's process, then `send key "enter"` (Ghostty's own "press any key to close").
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { OpenRequest, TerminalDriver } from "../types.ts";
 import { shellQuote } from "./tmux.ts";
 
@@ -15,6 +15,8 @@ export interface GhosttyDriverOptions {
   osascript?: OsascriptRunner;
   /** Test seam for process kill (default process.kill). */
   kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Test seam: the command line of a pid (default `ps -o command= -p <pid>`), undefined when it is gone. */
+  commandOf?: (pid: number) => string | undefined;
   /** Delay between killing the process and sending Enter, ms (default 200). */
   settleMs?: number;
   /** Directory for pidfiles (default <tmpdir>/ach-desks-ghostty). */
@@ -35,10 +37,36 @@ export function sidecarFor(id: string, dir: string = defaultDir()): string {
   return join(dir, `terminal-${safeId(id)}.ref`);
 }
 
+/** Strings the launched process's command line must contain: argv[0]'s basename, plus argv[1] when it is a path. */
+export function needlesFor(argv: string[]): string[] {
+  const out = [basename(argv[0] ?? "")];
+  if (argv[1] && argv[1].includes("/") && !argv[1].startsWith("-")) out.push(basename(argv[1]));
+  return out.filter((n) => n !== "");
+}
+
+function psCommand(pid: number): string | undefined {
+  try {
+    return execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The needles recorded in a terminal's sidecar (line 2, JSON), or undefined for an older sidecar. */
+function needlesOf(id: string, dir: string): string[] | undefined {
+  try {
+    const line = readFileSync(sidecarFor(id, dir), "utf8").split("\n")[1];
+    const v: unknown = line ? JSON.parse(line) : undefined;
+    return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The pidfile of the process running in terminal `id`, or undefined if unknown. */
 export function pidfileFor(id: string, dir: string = defaultDir()): string | undefined {
   try {
-    const p = readFileSync(sidecarFor(id, dir), "utf8").trim();
+    const p = (readFileSync(sidecarFor(id, dir), "utf8").split("\n")[0] ?? "").trim();
     return p || undefined;
   } catch {
     return undefined;
@@ -116,6 +144,7 @@ export class GhosttyDriver implements TerminalDriver {
   readonly kind = "ghostty" as const;
   private readonly osa: OsascriptRunner;
   private readonly kill: (pid: number, signal: NodeJS.Signals) => void;
+  private readonly commandOf: (pid: number) => string | undefined;
   private readonly settleMs: number;
   private readonly dir: string;
   private readonly pidfiles = new Map<string, string>();
@@ -123,6 +152,7 @@ export class GhosttyDriver implements TerminalDriver {
   constructor(opts: GhosttyDriverOptions = {}) {
     this.osa = opts.osascript ?? runOsascript;
     this.kill = opts.kill ?? ((pid, sig) => process.kill(pid, sig));
+    this.commandOf = opts.commandOf ?? psCommand;
     this.settleMs = opts.settleMs ?? 200;
     this.dir = opts.dir ?? defaultDir();
   }
@@ -133,12 +163,13 @@ export class GhosttyDriver implements TerminalDriver {
     const out = (await this.osa(openScript(req, surfaceCommand(req.argv, pidfile)))).trim();
     if (!out) throw new Error("ghostty: open returned no terminal id");
     this.pidfiles.set(out, pidfile);
-    writeFileSync(sidecarFor(out, this.dir), `${pidfile}\n`);
+    writeFileSync(sidecarFor(out, this.dir), `${pidfile}\n${JSON.stringify(needlesFor(req.argv))}\n`);
     return out;
   }
 
   async close(id: string): Promise<void> {
     const pidfile = this.pidfiles.get(id) ?? pidfileFor(id, this.dir);
+    const needles = needlesOf(id, this.dir);
     if (pidfile) {
       let pid = NaN;
       try {
@@ -146,7 +177,14 @@ export class GhosttyDriver implements TerminalDriver {
       } catch {
         /* never written, or already cleaned */
       }
-      if (Number.isInteger(pid) && pid > 1) {
+      // The pidfile can be days old: only signal a pid whose command line is still what we launched
+      // (a reused pid would be an unrelated process). Otherwise skip the kill; the pidfile is removed below.
+      const cmd = Number.isInteger(pid) && pid > 1 ? this.commandOf(pid) : undefined;
+      const ours = cmd !== undefined && (cmd.includes(pidfile) || (needles !== undefined && needles.length > 0 && needles.every((n) => cmd.includes(n))));
+      if (Number.isInteger(pid) && pid > 1 && !ours && cmd !== undefined) {
+        process.stderr.write(`desks: ghostty pid ${pid} is not the process we launched; not signaling it\n`);
+      }
+      if (ours) {
         try {
           this.kill(pid, "SIGTERM");
         } catch {
