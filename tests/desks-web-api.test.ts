@@ -440,6 +440,22 @@ describe('desks web api: routes', () => {
     assert.equal((await call(h, 'GET', '/api/desks')).status, 200, 'the server still serves after an oversized body');
   });
 
+  it('a bad ?stack= or a path-shaped name segment is 400 and never reaches the service', async () => {
+    const before = h.calls.length;
+    for (const path of ['/api/desks?stack=..%2F..%2Fx', '/api/desks/messages?stack=../x', '/api/desks/mcps?stack=.hidden', '/api/desks/stream?stack=a%2Fb']) {
+      const r = await call(h, 'GET', path);
+      assert.equal(r.status, 400, path);
+      assert.match(r.json.error, /invalid stack name/, path);
+    }
+    for (const path of ['/api/desks/..%2F..%2Fx/events', '/api/desks/a%5Cb/events', '/api/desks/.x/events']) {
+      const r = await call(h, 'GET', path);
+      assert.equal(r.status, 400, path);
+    }
+    const sw = await call(h, 'POST', '/api/desks/..%2Fx/engine', JSON.stringify({ agent: 'claude' }));
+    assert.equal(sw.status, 400);
+    assert.equal(h.calls.length, before, 'no service call');
+  });
+
   it('returns false for paths outside /api/desks', async () => {
     const res = await fetch(h.base + '/api/desksx');
     assert.equal(res.status, 418);
@@ -454,6 +470,10 @@ describe('desks web api: routes', () => {
     assert.equal(statusForError(new Error('desks: stack default is already up (ORCH alive)')), 409);
     assert.equal(statusForError(new Error('refusing self-send')), 500, 'an unmatched message is a server bug, not a conflict');
     assert.equal(statusForError(new Error('something nobody wrote a rule for')), 500);
+    assert.equal(statusForError(new Error('desks: invalid stack name "../x"')), 400);
+    assert.equal(statusForError(new Error('desks: invalid desk or lane name "../x"')), 400);
+    assert.equal(statusForError(new Error('desks: invalid run id "../x"')), 400);
+    assert.equal(statusForError(new Error('desks: lane request L1 is already approving')), 409);
     assert.equal(statusForError(new Error('desks: deskUp not implemented yet')), 500);
     assert.equal(statusForError('boom'), 500);
   });

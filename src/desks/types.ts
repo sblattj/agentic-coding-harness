@@ -163,6 +163,15 @@ export interface Roster {
   portBase: number;
   layoutFile?: string;
   entries: Record<string, RosterEntry>;
+  /** Lane names a laneNew/laneApprove holds while its host starts (keyed by name). Readers of `entries` ignore it. */
+  starting?: Record<string, LaneReservation>;
+}
+
+/** A name held under the roster lock between the "taken" check and putEntry; stale after LANE_RESERVE_MS or when pid is gone. */
+export interface LaneReservation {
+  token: string;
+  pid: number;
+  at: number;
 }
 
 /** Who sent a message. "human" = typed by the user (CLI, web, app, or the pane itself). */
@@ -228,7 +237,7 @@ export interface PendingLane {
   id: string; // "L1", ...
   request: LaneRequest;
   requestedAt: number;
-  state: "pending" | "approved" | "rejected";
+  state: "pending" | "approving" | "approved" | "rejected"; // "approving": a laneApprove is starting it (decidedAt = when)
   decidedBy?: Sender;
   decidedAt?: number;
   reason?: string;
