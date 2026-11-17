@@ -1169,6 +1169,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
+- [Desks and lanes (`ach desk`, `ach lane`)](docs/DESKS.md): long-lived role agents plus goal-driven lanes that message each other, with per-desk cost.
 - [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — adapter pattern (headless / ACP / tmux lanes),
   token taps, canonical token record, ATIF, OTel transport, state manifests, data-flow diagram.
