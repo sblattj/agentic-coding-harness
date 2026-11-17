@@ -49,6 +49,12 @@ interface Rec {
   body: unknown;
 }
 
+const allFakes: FakeOpencode[] = [];
+after(async () => {
+  // a failed test must not leave a listener that keeps the runner alive
+  for (const f of allFakes) if (f.server.listening) await f.close();
+});
+
 class FakeOpencode {
   server: Server;
   port = 0;
@@ -59,8 +65,11 @@ class FakeOpencode {
   sse: ServerResponse[] = [];
   sessionId = "ses_fake1";
 
+  messageDelayMs = 0;
+
   constructor() {
     this.server = createServer((req, res) => void this.handle(req, res));
+    allFakes.push(this);
   }
   /** Reserve a free port (listen on :0, then close): the engine refuses a port that is already listening, so the fake spawn opens it. */
   async listen(): Promise<number> {
@@ -101,7 +110,10 @@ class FakeOpencode {
     if (req.method === "POST" && url.pathname === "/session") return json(200, { id: sid, title: (body as { title?: string }).title });
     if (req.method === "GET" && url.pathname === "/session/status") return json(200, this.status);
     if (req.method === "POST" && url.pathname === `/session/${sid}/message`) return json(200, { info: { id: "msg_note", role: "user" }, parts: [] });
-    if (req.method === "GET" && url.pathname === `/session/${sid}/message`) return json(200, this.messages);
+    if (req.method === "GET" && url.pathname === `/session/${sid}/message`) {
+      if (this.messageDelayMs > 0) await sleep(this.messageDelayMs);
+      return json(200, this.messages);
+    }
     if (req.method === "POST" && url.pathname === `/session/${sid}/prompt_async`) {
       res.writeHead(204);
       return void res.end();
@@ -352,7 +364,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       fake.messages = [
         { info: { id: "msg_u", role: "user" }, parts: [{ id: "prt_u", type: "text", text: "[desk-msg from TEST] hi" }] },
         {
-          info: { id: "msg_a", role: "assistant", providerID: "ferry", modelID: "super-flash" },
+          info: { id: "msg_a", role: "assistant", providerID: "ferry", modelID: "super-flash", time: { created: 1, completed: 9 } },
           parts: [toolDone, textPart, { id: "prt_t2", messageID: "msg_a", type: "text", text: "missed by stream" }, stepFinish],
         },
       ];
@@ -422,6 +434,63 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     }
   });
 
+  it("several idle signals per turn yield ONE turn_end; a turn started during the transition is not ended by leftovers", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    fake.messageDelayMs = 80;
+    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    const S = "ses_fake1";
+    try {
+      await eng.start(spec);
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "busy" } } });
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "idle" } } });
+      eng.handleEvent({ type: "session.idle", properties: { sessionID: S } });
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "idle" } } });
+      // the host sends the next queued message while the first transition is still reconciling
+      await eng.send("next");
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "busy" } } });
+      await sleep(400);
+      assert.deepEqual(events.map((e) => e.type), ["turn_start", "turn_end", "turn_start"]);
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "idle" } } });
+      eng.handleEvent({ type: "session.idle", properties: { sessionID: S } });
+      await until(() => events.length === 4, 2000, "second turn_end");
+      await sleep(200);
+      assert.deepEqual(events.map((e) => e.type), ["turn_start", "turn_end", "turn_start", "turn_end"]);
+    } finally {
+      await eng.stop();
+    }
+  });
+
+  it("reconcile does not emit a text part of an unfinished message", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    const S = "ses_fake1";
+    try {
+      await eng.start(spec);
+      fake.messages = [{ info: { id: "m1", role: "assistant" }, parts: [{ id: "p1", type: "text", text: "PAR" }] }];
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "busy" } } });
+      eng.handleEvent({ type: "session.idle", properties: { sessionID: S } });
+      await until(() => events.some((e) => e.type === "turn_end"), 2000, "turn_end");
+      assert.equal(events.filter((e) => e.type === "text").length, 0);
+      fake.messages = [{ info: { id: "m1", role: "assistant", time: { completed: 5 } }, parts: [{ id: "p1", type: "text", text: "PARTIAL DONE" }] }];
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "busy" } } });
+      eng.handleEvent({ type: "session.idle", properties: { sessionID: S } });
+      await until(() => events.filter((e) => e.type === "turn_end").length === 2, 2000, "turn_end 2");
+      assert.deepEqual(events.filter((e) => e.type === "text").map((e) => e.data.text), ["PARTIAL DONE"]);
+    } finally {
+      await eng.stop();
+    }
+  });
+
   it("start restarts once with leaked MCPs force-disabled, then fails if they still leak", async () => {
     const fake = new FakeOpencode();
     const port = await fake.listen();
@@ -472,7 +541,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
 
   it("start fails fast with the log tail when serve exits before ready", async () => {
     const { env, spec, stateDir } = setup();
-    spec.enginePort = 5649;
+    spec.enginePort = await new FakeOpencode().listen();
     const logDir = join(stateDir, "desks", "t1", "logs");
     const spawn: SpawnServe = (o) => {
       mkdirSync(logDir, { recursive: true });
@@ -633,12 +702,11 @@ describe("OpenCodeEngine live (real opencode serve, ferry/super-flash)", { skip:
 
       await eng.send("[desk-msg from TEST] reply with the single word PONG");
       assert.equal(await eng.state(), "busy", "busy right after send");
-      const end = Date.now() + 90_000;
-      while ((await eng.state()) !== "idle") {
-        if (Date.now() > end) throw new Error("turn did not finish within 90 s");
-        await sleep(1000);
-      }
-      await until(() => events.some((e) => e.type === "turn_end"), 10_000, "turn_end event");
+      // Wait on the EVENT STREAM only (no state() polling, which would reconcile by itself).
+      await until(() => events.some((e) => e.type === "turn_end"), 90_000, "turn_end from the event stream");
+      console.log(`live: stream events received -> ${eng.streamEventCount}`);
+      assert.ok(eng.streamEventCount > 0, "GET /event delivered bus events");
+      assert.equal(await eng.state(), "idle");
       const texts = events.filter((e) => e.type === "text").map((e) => String(e.data.text));
       const usage = events.filter((e) => e.type === "usage");
       console.log(`live: event types -> ${JSON.stringify(events.map((e) => e.type))}`);

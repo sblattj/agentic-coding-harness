@@ -219,7 +219,7 @@ export const defaultSpawnServe: SpawnServe = ({ bin, args, cwd, env, logFile }) 
   }
   const exited = new Promise<number | string | null>((res) => {
     child.once("exit", (code, sig) => res(code ?? sig));
-    child.once("error", () => res("spawn-error"));
+    child.once("error", (err) => res(`spawn error: ${err.message}`));
   });
   child.unref();
   return {
@@ -308,7 +308,8 @@ export class OpenCodeEngine implements Engine {
   private emittedText = new Set<string>();
   private emittedTool = new Set<string>();
   private emittedUsage = new Set<string>();
-  private reconcileChain: Promise<void> = Promise.resolve();
+  /** Bus events received on the GET /event stream (diagnostics: proves the stream, not polling, delivered). */
+  streamEventCount = 0;
 
   constructor(o: OpenCodeEngineOptions = {}) {
     this.env = o.env ?? process.env;
@@ -440,7 +441,7 @@ export class OpenCodeEngine implements Engine {
     // Latch busy before the call: prompt_async returns before /session/status flips.
     this.pendingTurn = true;
     this.pendingSince = Date.now();
-    this.setBusy(true);
+    this.markBusy();
     try {
       await this.http("POST", `/session/${this.sessionId}/prompt_async`, { ...this.modelBody(), parts: [{ type: "text", text }] });
     } catch (err) {
@@ -462,7 +463,7 @@ export class OpenCodeEngine implements Engine {
     const engineBusy = mine !== undefined && mine.type !== "idle";
     if (engineBusy) {
       this.pendingTurn = false;
-      this.setBusy(true);
+      this.markBusy();
       return "busy";
     }
     // Grace: a just-accepted prompt_async that has not flipped status yet still counts as busy (<= 15 s).
@@ -567,23 +568,44 @@ export class OpenCodeEngine implements Engine {
     this.emit({ type: b ? "turn_start" : "turn_end", data: { sessionId: this.sessionId } });
   }
 
-  /** busy -> idle: reconcile against the message list first (missed text/tool/usage), then turn_end. */
+  /** A busy signal (send(), stream, status poll). During an in-flight idle transition it becomes turn_end + turn_start. */
+  private markBusy(): void {
+    if (this.idleInFlight) {
+      this.busyAfterIdle = true;
+      return;
+    }
+    this.setBusy(true);
+  }
+
+  /**
+   * busy -> idle: reconcile against the message list first (missed text/tool/usage), then turn_end.
+   * At most ONE transition is in flight: opencode sends several idle signals per turn, and a queued
+   * leftover must never end the NEXT turn.
+   */
   private onIdle(): void {
-    if (!this.busy) return;
-    this.reconcileChain = this.reconcileChain
-      .then(() => this.reconcile())
+    if (!this.busy || this.idleInFlight) return;
+    this.busyAfterIdle = false;
+    this.idleInFlight = this.reconcile()
       .catch(() => undefined)
       .then(() => {
-        if (!this.pendingTurn) this.setBusy(false);
+        this.idleInFlight = undefined;
+        this.setBusy(false);
+        if (this.busyAfterIdle) {
+          this.busyAfterIdle = false;
+          this.setBusy(true);
+        }
       });
   }
+  private idleInFlight?: Promise<void>;
+  private busyAfterIdle = false;
 
   private async reconcile(): Promise<void> {
     if (!this.sessionId || !this.proc) return;
     const msgs = (await this.http("GET", `/session/${this.sessionId}/message`, undefined, 5000)) as Array<{ info?: OcInfo; parts?: OcPart[] }> | null;
     for (const m of msgs ?? []) {
       if (m.info?.id && m.info.role) this.roles.set(m.info.id, m.info.role);
-      for (const p of m.parts ?? []) this.handlePart({ ...p, messageID: p.messageID ?? m.info?.id }, m.info, true);
+      const done = m.info?.time?.completed !== undefined;
+      for (const p of m.parts ?? []) this.handlePart({ ...p, messageID: p.messageID ?? m.info?.id }, m.info, done);
     }
   }
 
@@ -647,7 +669,7 @@ export class OpenCodeEngine implements Engine {
         else if (t) {
           // The turn send() started is now visible on the engine: drop the latch.
           this.pendingTurn = false;
-          this.setBusy(true);
+          this.markBusy();
         }
         break;
       }
@@ -656,6 +678,8 @@ export class OpenCodeEngine implements Engine {
         break;
       case "session.error": {
         const err = props.error as { name?: string; data?: { message?: string } } | undefined;
+        // stop() aborts a running turn on purpose: that abort is not an error.
+        if (this.stopping && err?.name === "MessageAbortedError") break;
         this.emit({ type: "error", data: { error: err?.data?.message ?? err?.name ?? "opencode session error", name: err?.name } });
         break;
       }
@@ -707,7 +731,9 @@ export class OpenCodeEngine implements Engine {
               buf = buf.slice(nl + 1);
               if (!line.startsWith("data:")) continue;
               try {
-                this.handleEvent(JSON.parse(line.slice(5)) as { type?: string; properties?: Record<string, unknown> });
+                const ev = JSON.parse(line.slice(5)) as { type?: string; properties?: Record<string, unknown> };
+                this.streamEventCount++;
+                this.handleEvent(ev);
               } catch {
                 // malformed line: skip
               }
