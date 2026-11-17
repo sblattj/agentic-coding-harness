@@ -1,3 +1,955 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>ach desks</title></head>
-<body><p>ach desks view: not built yet (#205).</p></body></html>
+<!--
+  ach desks (#205). One static page over the Desks Web API (/api/desks*, contract in
+  src/desks/types.ts): desk grid with a chat per desk, lane strip, message timeline,
+  decision cards, live feed pin, pending lanes and costs. Live updates come from the
+  /api/desks/stream SSE. Reads ?token=<token>&stack=<stack>. No frameworks, no
+  external requests; all agent/message text is inserted as textContent.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>ach desks</title>
+<link rel="icon" href="data:,">
+<style>
+* { box-sizing: border-box; margin: 0; }
+:root {
+  --bg: #0a0d14; --panel: #0e1219; --panel2: #141a26;
+  --line: #1d2433; --line2: #2b3549;
+  --fg: #dce3f2; --dim: #8a94ac; --faint: #5a6478;
+  --cyan: #67d5f5; --teal: #5eead4; --blue: #7aa2f7;
+  --purple: #bb9af7; --green: #a5d97a; --amber: #e6c07b; --red: #ff7590;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+body {
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  background: radial-gradient(1100px 500px at 30% -10%, #101728 0%, var(--bg) 55%);
+  color: var(--fg); font: 13px/1.45 var(--sans);
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+input, textarea, select {
+  font: 12px var(--mono); color: var(--fg); background: var(--panel2);
+  border: 1px solid var(--line2); border-radius: 6px; padding: 5px 7px;
+}
+textarea { resize: vertical; }
+:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; border-radius: 4px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+.btn {
+  font: 600 11px var(--mono); letter-spacing: .04em; padding: 3px 9px;
+  border: 1px solid var(--line2); border-radius: 6px; color: var(--cyan); white-space: nowrap;
+}
+.btn:hover { border-color: var(--cyan); background: color-mix(in oklab, var(--cyan) 10%, transparent); }
+.btn.warn { color: var(--red); }
+.btn.warn:hover { border-color: var(--red); background: color-mix(in oklab, var(--red) 10%, transparent); }
+.btn.rec { color: var(--green); border-color: color-mix(in oklab, var(--green) 50%, var(--line2)); }
+.btn:disabled { opacity: .45; cursor: default; }
+
+/* ===== header ===== */
+header {
+  display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 6px 14px; flex: none;
+  background: color-mix(in oklab, var(--panel) 88%, transparent);
+  border-bottom: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.mark { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; white-space: nowrap; }
+.mark small { color: var(--faint); font-weight: 500; font-size: 11px; letter-spacing: .08em; }
+.pagenav { display: flex; gap: 2px; white-space: nowrap; }
+.pagenav a {
+  color: var(--dim); text-decoration: none; font: 600 11px var(--mono); letter-spacing: .06em;
+  padding: 3px 9px; border: 1px solid transparent; border-radius: 6px;
+}
+.pagenav a:hover { color: var(--fg); border-color: var(--line2); }
+.pagenav a.active { color: var(--cyan); border-color: var(--line2); }
+.stackmeta { font: 12px var(--mono); color: var(--dim); white-space: nowrap; }
+.pulse { display: flex; align-items: center; gap: 7px; margin-left: auto; font: 11.5px var(--mono); color: var(--dim); white-space: nowrap; }
+.pulse i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.pulse.on { color: var(--green); }
+.pulse.on i { background: var(--green); animation: ping 1.6s ease-out infinite; }
+@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(165, 217, 122, .55); } 70%, 100% { box-shadow: 0 0 0 6px rgba(165, 217, 122, 0); } }
+.tcost { font: 11px var(--mono); color: var(--faint); white-space: nowrap; }
+.tcost b { color: var(--fg); }
+#err { font: 11px var(--mono); color: var(--red); max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ===== layout ===== */
+#app { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; }
+#mainCol { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+#side { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+section.panel { border-bottom: 1px solid var(--line); padding: 8px 10px; }
+section.panel > h2 {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+}
+section.panel > h2 .count { color: var(--amber); }
+.empty { color: var(--faint); font: 11.5px var(--mono); padding: 4px 0; }
+
+/* ===== desk grid ===== */
+#desk-grid {
+  flex: 1; min-height: 0; display: grid; gap: 8px; padding: 8px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  grid-auto-rows: minmax(220px, 1fr);
+  grid-template-areas: "left rt" "left rb";
+}
+#desk-grid.noDesks { display: flex; align-items: center; justify-content: center; }
+.desk { min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.desk.slot-left { grid-area: left; }
+.desk.slot-right-top { grid-area: rt; }
+.desk.slot-right-bottom { grid-area: rb; }
+.desk.slot-extra { grid-column: 1 / -1; }
+.desk.flash { border-color: var(--cyan); }
+.dhead { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-bottom: 1px solid var(--line); background: var(--panel2); font: 12px var(--mono); }
+.dhead b { font-weight: 700; }
+.dhead .role, .dhead .agent { color: var(--faint); font-size: 11px; }
+.dhead .sp { flex: 1; }
+.badge { font: 600 10px var(--mono); letter-spacing: .06em; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--line2); color: var(--dim); text-transform: uppercase; }
+.badge.s-idle { color: var(--teal); }
+.badge.s-busy { color: var(--amber); border-color: color-mix(in oklab, var(--amber) 50%, var(--line2)); }
+.badge.s-starting, .badge.s-stopping { color: var(--blue); }
+.badge.s-error, .badge.s-dead { color: var(--red); }
+.badge.s-active { color: var(--amber); }
+.badge.s-achieved { color: var(--green); }
+.badge.s-blocked, .badge.s-stopped { color: var(--red); }
+.qd, .cost { color: var(--dim); font-size: 11px; }
+.chat { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 9px; display: flex; flex-direction: column; gap: 4px; font: 12px/1.45 var(--mono); }
+.ev { white-space: pre-wrap; word-break: break-word; }
+.ev.text { color: var(--fg); }
+.ev.min, .ev.mout { padding: 3px 7px; border-radius: 6px; background: color-mix(in oklab, var(--blue) 9%, transparent); border-left: 2px solid var(--blue); }
+.ev.mout { background: color-mix(in oklab, var(--purple) 9%, transparent); border-left-color: var(--purple); }
+.ev .who { color: var(--dim); font-size: 10.5px; display: block; }
+.ev.tool { color: var(--faint); font-size: 11px; }
+.ev.err { color: var(--red); }
+.ev.hl { outline: 1px solid var(--cyan); }
+.send { display: flex; gap: 6px; padding: 6px; border-top: 1px solid var(--line); }
+.send input { flex: 1; min-width: 0; }
+.dfoot { display: flex; gap: 6px; align-items: center; padding: 0 6px 6px; font: 11px var(--mono); color: var(--faint); }
+.dfoot select { padding: 2px 4px; font-size: 11px; }
+
+/* ===== lane strip ===== */
+#lane-strip { flex: none; border-top: 1px solid var(--line); padding: 8px; max-height: 45vh; overflow-y: auto; }
+#lane-strip > .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+#lane-cards { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.lane { flex: none; width: 270px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; font: 11.5px var(--mono); }
+.lane:hover { border-color: var(--line2); }
+.lane .top { display: flex; align-items: center; gap: 6px; }
+.lane .top b { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane .goal { color: var(--dim); max-height: 3em; overflow: hidden; }
+.lane .meta { display: flex; gap: 10px; color: var(--faint); }
+.budget { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.budget i { display: block; height: 100%; background: var(--teal); }
+.budget.over i { background: var(--red); }
+.lane .acts { display: flex; gap: 6px; }
+.lane .steer { display: flex; gap: 4px; }
+.lane .steer input { flex: 1; min-width: 0; }
+#new-lane-form { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; padding: 8px; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel); }
+#new-lane-form[hidden] { display: none; }
+#new-lane-form label { display: flex; flex-direction: column; gap: 2px; font: 10.5px var(--mono); color: var(--faint); }
+#new-lane-form .wide { grid-column: 1 / -1; }
+#nl-mcps { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 11px var(--mono); color: var(--dim); }
+#nl-mcps label { flex-direction: row; align-items: center; gap: 4px; color: var(--dim); }
+
+/* ===== side panels ===== */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; font: 12px var(--mono); }
+.card .q { white-space: pre-wrap; margin-bottom: 5px; }
+.card .by { color: var(--faint); font-size: 10.5px; margin-bottom: 5px; }
+.card .opts { display: flex; flex-direction: column; gap: 4px; margin-bottom: 5px; }
+.card .opts .btn { text-align: left; white-space: normal; }
+.card .reason { display: block; color: var(--faint); font-weight: 400; font-size: 10.5px; }
+.card .free { display: flex; gap: 4px; }
+.card .free input { flex: 1; min-width: 0; }
+.card .acts { display: flex; gap: 6px; margin-top: 4px; }
+#feed-panel .feedtext { white-space: pre-wrap; font: 12px/1.45 var(--mono); max-height: 30vh; overflow-y: auto; }
+#feed-panel .when { color: var(--faint); font: 10.5px var(--mono); }
+#timeline-filter { width: 100%; margin-bottom: 6px; }
+#timeline-list { display: flex; flex-direction: column; gap: 3px; max-height: 40vh; overflow-y: auto; }
+.tl { cursor: pointer; padding: 3px 5px; border-radius: 5px; font: 11.5px var(--mono); }
+.tl:hover { background: var(--panel2); }
+.tl .hd { color: var(--dim); font-size: 10.5px; }
+.tl .hd b { color: var(--cyan); font-weight: 600; }
+.tl .tx { white-space: pre-wrap; word-break: break-word; max-height: 4.4em; overflow: hidden; }
+table.costs { width: 100%; border-collapse: collapse; font: 11.5px var(--mono); }
+table.costs th { text-align: left; color: var(--faint); font-weight: 600; font-size: 10.5px; padding: 2px 4px; border-bottom: 1px solid var(--line); }
+table.costs td { padding: 2px 4px; border-bottom: 1px solid var(--line); }
+table.costs td.num, table.costs th.num { text-align: right; }
+
+/* ===== lane modal ===== */
+#lane-modal { position: fixed; inset: 0; background: rgba(4, 6, 10, .72); display: flex; align-items: stretch; justify-content: center; padding: 28px; z-index: 10; }
+#lane-modal[hidden] { display: none; }
+#lane-modal .desk { width: min(1100px, 100%); }
+</style>
+</head>
+<body>
+<header>
+  <div class="mark">ach <small>DESKS</small></div>
+  <nav class="pagenav" id="pagenav" aria-label="pages">
+    <a href="/">runs</a>
+    <a href="/grid">grid</a>
+    <a href="/compare">compare</a>
+    <a class="active" href="/desks">desks</a>
+  </nav>
+  <span class="stackmeta" id="stackmeta">stack &hellip;</span>
+  <button class="btn" id="btn-up" type="button" title="start the layout (no terminal panes)">up</button>
+  <button class="btn warn" id="btn-down" type="button" title="stop every lane and desk">down</button>
+  <span id="err" role="status"></span>
+  <div class="pulse" id="pulse"><i></i><span id="pulseTxt">connecting</span></div>
+  <div class="tcost">&Sigma; <b id="totalCost">&ndash;</b></div>
+</header>
+<div id="app">
+  <div id="mainCol">
+    <div id="desk-grid" class="noDesks"><div class="empty">no desks running</div></div>
+    <div id="lane-strip">
+      <div class="bar">lanes <span class="count" id="laneCount"></span><button class="btn" id="btn-new-lane" type="button">+ new lane</button></div>
+      <form id="new-lane-form" hidden autocomplete="off">
+        <label>name<input name="name" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="fix-login"></label>
+        <label>engine<select name="agent" id="nl-agent"><option value="">layout default</option></select></label>
+        <label class="wide">goal<textarea name="goal" rows="3" required placeholder="objective for the lane"></textarea></label>
+        <label>cwd<input name="cwd" placeholder="layout default"></label>
+        <label>budget USD<input name="budgetUsd" type="number" min="0" step="0.5" placeholder="layout default"></label>
+        <label>model<input name="model" placeholder="engine default"></label>
+        <div class="wide"><div class="empty" style="padding:0 0 2px">mcps</div><div id="nl-mcps"></div></div>
+        <div class="wide" style="display:flex;gap:6px"><button class="btn" type="submit">start lane</button><button class="btn warn" type="button" id="nl-cancel">cancel</button></div>
+      </form>
+      <div id="lane-cards"><div class="empty">no lanes</div></div>
+    </div>
+  </div>
+  <aside id="side">
+    <section class="panel" id="feed-panel" hidden><h2>live feed</h2><div id="feed-body"></div></section>
+    <section class="panel" id="decisions"><h2>decisions <span class="count" id="decCount"></span></h2><div id="decision-cards"><div class="empty">no open decisions</div></div></section>
+    <section class="panel" id="pending"><h2>pending lanes <span class="count" id="pendCount"></span></h2><div id="pending-cards"><div class="empty">none</div></div></section>
+    <section class="panel" id="timeline"><h2>messages</h2>
+      <select id="timeline-filter" aria-label="filter by desk"><option value="">all desks</option></select>
+      <div id="timeline-list"><div class="empty">no messages</div></div>
+    </section>
+    <section class="panel" id="costs"><h2>costs</h2><div id="costs-body"><div class="empty">&ndash;</div></div></section>
+  </aside>
+</div>
+<div id="lane-modal" hidden></div>
+
+<script>
+"use strict";
+(function () {
+  /* ===== helpers ===== */
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = String(text);
+    return n;
+  }
+  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+  var QS = new URLSearchParams(location.search);
+  var TOKEN = QS.get("token") || "";
+  var STACK = QS.get("stack") || "";
+  function q(path) {
+    var p = [];
+    if (TOKEN) p.push("token=" + encodeURIComponent(TOKEN));
+    if (STACK) p.push("stack=" + encodeURIComponent(STACK));
+    if (!p.length) return path;
+    return path + (path.indexOf("?") >= 0 ? "&" : "?") + p.join("&");
+  }
+  (function () {
+    var qs = TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "";
+    var links = document.querySelectorAll("#pagenav a");
+    for (var i = 0; i < links.length; i++) links[i].href += qs;
+  })();
+  function api(method, path, body) {
+    var init = { method: method, headers: {} };
+    if (body !== undefined) { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(body); }
+    return fetch(q("/api/desks" + path), init).then(function (r) {
+      return r.text().then(function (t) {
+        var v = null;
+        try { v = t ? JSON.parse(t) : {}; } catch (e) { v = { error: t }; }
+        if (!r.ok) throw new Error((v && v.error) || ("HTTP " + r.status));
+        return v;
+      });
+    });
+  }
+  var errTimer = null;
+  function showErr(e) {
+    var m = e && e.message ? e.message : String(e);
+    $("err").textContent = m;
+    $("err").title = m;
+    if (errTimer) clearTimeout(errTimer);
+    errTimer = setTimeout(function () { $("err").textContent = ""; }, 8000);
+  }
+  function fmtCost(v) { return v == null ? "n/a" : "$" + (v < 10 ? v.toFixed(3) : v.toFixed(2)); }
+  function fmtTime(ms) { var d = new Date(ms); return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+  function fmtElapsed(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    s = s % 60;
+    return (h ? h + "h" : "") + (h || m ? m + "m" : "") + s + "s";
+  }
+  function debounce(fn, ms) {
+    var t = null;
+    return function () { if (t) clearTimeout(t); t = setTimeout(function () { t = null; fn(); }, ms); };
+  }
+
+  /* ===== state ===== */
+  var view = null;                 // RosterView
+  var chats = {};                  // name -> {runId, lastSeq, events: [], nodes: [DOM chat containers]}
+  var messages = [];               // DeskMessage[]
+  var messageIds = {};
+  var decisions = {};              // id -> Decision (open ones shown)
+  var feeds = {};                  // desk name -> {text, at}
+  var engines = [];
+  var mcpNames = [];
+  var modalLane = null;
+  var MAX_EVENTS = 300;
+
+  /* ===== chats (one per desk/lane) ===== */
+  function chatOf(row) {
+    var c = chats[row.name];
+    if (!c || c.runId !== row.runId) {
+      c = chats[row.name] = { runId: row.runId, lastSeq: 0, events: [], nodes: [], loading: false, loaded: false, pending: [] };
+    }
+    return c;
+  }
+  function loadHistory(row) {
+    var c = chatOf(row);
+    if (c.loaded || c.loading) return;
+    c.loading = true;
+    // Live events that arrive before the history are held in c.pending and replayed after it,
+    // so the seq high-water mark never drops the history.
+    var drain = function () {
+      var held = c.pending;
+      c.pending = [];
+      for (var j = 0; j < held.length; j++) addEvent(held[j], false);
+    };
+    api("GET", "/" + encodeURIComponent(row.name) + "/events?since=0").then(function (r) {
+      c.loading = false;
+      c.loaded = true;
+      var evs = (r.events || []).slice(-MAX_EVENTS);
+      for (var i = 0; i < evs.length; i++) addEvent(evs[i], true);
+      renderAllChatNodes(row.name);
+      renderFeeds();
+      drain();
+    }).catch(function (e) { c.loading = false; c.loaded = true; showErr(e); drain(); });
+  }
+  function eventNode(name, ev) {
+    var d = ev.data || {};
+    var n = null;
+    if (ev.type === "text" && typeof d.text === "string") n = el("div", "ev text", d.text);
+    else if ((ev.type === "message_in" || ev.type === "message_out") && d.message) {
+      var m = d.message;
+      n = el("div", "ev " + (ev.type === "message_in" ? "min" : "mout"));
+      n.appendChild(el("span", "who", (m.from || "?") + " → " + (m.to || name) + "  " + fmtTime(m.at || ev.at)));
+      n.appendChild(document.createTextNode(m.text || ""));
+      if (m.id) n.setAttribute("data-mid", m.id);
+    } else if (ev.type === "tool") n = el("div", "ev tool", "→ " + (d.tool || "tool") + (d.summary ? " " + d.summary : ""));
+    else if (ev.type === "error") n = el("div", "ev err", "error: " + (d.error || JSON.stringify(d)));
+    else if (ev.type === "feed" && d.note) n = el("div", "ev tool", "feed: " + d.note);
+    if (n) n.setAttribute("data-seq", String(ev.seq));
+    return n;
+  }
+  function renderChatInto(name, box) {
+    clear(box);
+    var c = chats[name];
+    if (!c) return;
+    for (var i = 0; i < c.events.length; i++) {
+      var n = eventNode(name, c.events[i]);
+      if (n) box.appendChild(n);
+    }
+    box.scrollTop = box.scrollHeight;
+  }
+  function renderAllChatNodes(name) {
+    var c = chats[name];
+    if (!c) return;
+    c.nodes = c.nodes.filter(function (b) { return document.body.contains(b); });
+    for (var i = 0; i < c.nodes.length; i++) renderChatInto(name, c.nodes[i]);
+  }
+  var refetchRoster = debounce(function () { fetchRoster(); }, 1500);
+  var refetchCosts = debounce(function () { fetchCosts(); }, 2500);
+  function addEvent(ev, quiet) {
+    var row = rowByName(ev.name);
+    var c = row ? chatOf(row) : (chats[ev.name] || (chats[ev.name] = { runId: ev.runId, lastSeq: 0, events: [], nodes: [], loaded: true }));
+    if (c.runId !== ev.runId) return;
+    if (!c.loaded) { c.pending.push(ev); return; }
+    if (ev.seq <= c.lastSeq) return;
+    c.lastSeq = ev.seq;
+    c.events.push(ev);
+    if (c.events.length > MAX_EVENTS) c.events.splice(0, c.events.length - MAX_EVENTS);
+    if (ev.type === "text" && row && row.feedPid && typeof (ev.data || {}).text === "string") {
+      feeds[ev.name] = { text: ev.data.text, at: ev.at, active: feeds[ev.name] ? feeds[ev.name].active : undefined };
+      if (!quiet) renderFeeds();
+    }
+    // Feed events carry data.active: true when a call starts, false on waiting / call ended.
+    if (ev.type === "feed" && ev.data && typeof ev.data.active === "boolean") {
+      var fd = feeds[ev.name] || (feeds[ev.name] = { text: "", at: ev.at });
+      fd.active = ev.data.active;
+      if (!quiet) renderFeeds();
+    }
+    if (quiet) return;
+    if (ev.type === "status" && row && ev.data && ev.data.state) { row.state = ev.data.state; renderDesks(); renderLanes(); }
+    if (ev.type === "goal" && row && ev.data && ev.data.goal) { row.goalStatus = ev.data.goal; renderLanes(); }
+    if (ev.type === "usage" || ev.type === "turn_end" || ev.type === "status") { refetchRoster(); refetchCosts(); }
+    var n = eventNode(ev.name, ev);
+    if (!n) return;
+    c.nodes = c.nodes.filter(function (b) { return document.body.contains(b); });
+    for (var i = 0; i < c.nodes.length; i++) {
+      var box = c.nodes[i];
+      var atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.appendChild(i === 0 ? n : n.cloneNode(true));
+      while (box.childElementCount > MAX_EVENTS) box.removeChild(box.firstChild);
+      if (atBottom) box.scrollTop = box.scrollHeight;
+    }
+  }
+  function rowByName(name) {
+    if (!view) return null;
+    for (var i = 0; i < view.rows.length; i++) if (view.rows[i].name === name) return view.rows[i];
+    return null;
+  }
+
+  /* ===== a desk/lane card with chat + input ===== */
+  function deskCard(row, slot) {
+    var card = el("div", "desk" + (slot ? " slot-" + slot : ""));
+    card.setAttribute("data-desk", row.name);
+    card.id = "desk-" + row.name;
+    var h = el("div", "dhead");
+    h.appendChild(el("b", null, row.name));
+    h.appendChild(el("span", "role", row.role));
+    h.appendChild(el("span", "agent", row.agent + (row.model ? " · " + row.model : "")));
+    h.appendChild(el("span", "sp"));
+    if (row.queueDepth) h.appendChild(el("span", "qd", "q " + row.queueDepth));
+    h.appendChild(el("span", "cost", fmtCost(row.kind === "desk" && row.treeCostUsd != null ? row.treeCostUsd : row.costUsd)));
+    h.appendChild(el("span", "badge s-" + row.state, row.state));
+    card.appendChild(h);
+    var box = el("div", "chat");
+    box.setAttribute("data-chat", row.name);
+    card.appendChild(box);
+    var c = chatOf(row);
+    c.nodes.push(box);
+    renderChatInto(row.name, box);
+    loadHistory(row);
+    var f = el("form", "send");
+    var inp = el("input");
+    inp.placeholder = "message " + row.name;
+    inp.setAttribute("aria-label", "message " + row.name);
+    f.appendChild(inp);
+    var b = el("button", "btn", "send");
+    b.type = "submit";
+    f.appendChild(b);
+    f.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var text = inp.value.trim();
+      if (!text) return;
+      b.disabled = true;
+      api("POST", "/send", { to: row.name, text: text }).then(function (m) {
+        inp.value = "";
+        addMessage(m);
+      }).catch(showErr).then(function () { b.disabled = false; });
+    });
+    card.appendChild(f);
+    if (row.kind === "desk") card.appendChild(engineFoot(row));
+    return card;
+  }
+  function engineFoot(row) {
+    var foot = el("div", "dfoot");
+    foot.appendChild(el("span", null, "engine"));
+    var sel = el("select");
+    sel.setAttribute("aria-label", "engine for " + row.name);
+    var opts = engines.length ? engines : [{ agent: row.agent, found: true }];
+    var seen = false;
+    for (var i = 0; i < opts.length; i++) {
+      var o = el("option", null, opts[i].agent + (opts[i].found ? "" : " (not found)"));
+      o.value = opts[i].agent;
+      if (!opts[i].found) o.disabled = true;
+      if (opts[i].agent === row.agent) { o.selected = true; seen = true; }
+      sel.appendChild(o);
+    }
+    if (!seen) { var cur = el("option", null, row.agent); cur.value = row.agent; cur.selected = true; sel.insertBefore(cur, sel.firstChild); }
+    sel.addEventListener("change", function () {
+      var agent = sel.value;
+      if (agent === row.agent) return;
+      if (!confirm("Restart " + row.name + " on " + agent + "? History and roster slot are kept.")) { sel.value = row.agent; return; }
+      sel.disabled = true;
+      api("POST", "/" + encodeURIComponent(row.name) + "/engine", { agent: agent }).then(function () { fetchRoster(); }).catch(function (e) { sel.value = row.agent; showErr(e); }).then(function () { sel.disabled = false; });
+    });
+    foot.appendChild(sel);
+    return foot;
+  }
+
+  /* ===== desk grid ===== */
+  var SLOTS = ["left", "right-top", "right-bottom"];
+  function renderDesks() {
+    var grid = $("desk-grid");
+    var desks = view ? view.rows.filter(function (r) { return r.kind === "desk"; }) : [];
+    // Desk i of the layout listens on portBase + 1 + i, so port order is layout order -> pane slot.
+    desks.sort(function (a, b) { return a.port - b.port; });
+    // Re-rendering must not eat what the user is typing.
+    var typed = {}, focused = null;
+    var inputs = grid.querySelectorAll(".desk .send input");
+    for (var k = 0; k < inputs.length; k++) {
+      var nm = inputs[k].closest(".desk").getAttribute("data-desk");
+      typed[nm] = inputs[k].value;
+      if (document.activeElement === inputs[k]) focused = nm;
+    }
+    clear(grid);
+    if (!desks.length) {
+      grid.className = "noDesks";
+      grid.appendChild(el("div", "empty", "no desks running (press up)"));
+      return;
+    }
+    grid.className = "";
+    for (var i = 0; i < desks.length; i++) {
+      var card = deskCard(desks[i], SLOTS[i] || "extra");
+      var inp = card.querySelector(".send input");
+      if (typed[desks[i].name]) inp.value = typed[desks[i].name];
+      grid.appendChild(card);
+      if (focused === desks[i].name) inp.focus();
+    }
+    var filt = $("timeline-filter"), cur = filt.value;
+    while (filt.options.length > 1) filt.remove(1);
+    for (var j = 0; j < view.rows.length; j++) {
+      var o = el("option", null, view.rows[j].name);
+      o.value = view.rows[j].name;
+      filt.appendChild(o);
+    }
+    filt.appendChild(new Option("human", "human"));
+    filt.value = cur;
+  }
+
+  /* ===== lane strip ===== */
+  function laneStatus(row) {
+    if (row.state === "dead" || row.state === "error") return row.state;
+    if (row.goalStatus && row.goalStatus.state && row.goalStatus.state !== "none") return row.goalStatus.state;
+    return row.state;
+  }
+  function renderLanes() {
+    var box = $("lane-cards");
+    var lanes = view ? view.rows.filter(function (r) { return r.kind === "lane"; }) : [];
+    $("laneCount").textContent = lanes.length ? String(lanes.length) : "";
+    var steering = {}, focused = null;
+    var forms = box.querySelectorAll(".lane form.steer");
+    for (var k = 0; k < forms.length; k++) {
+      if (forms[k].hidden) continue;
+      var nm = forms[k].closest(".lane").getAttribute("data-lane");
+      steering[nm] = forms[k].querySelector("input").value;
+      if (document.activeElement === forms[k].querySelector("input")) focused = nm;
+    }
+    clear(box);
+    if (!lanes.length) { box.appendChild(el("div", "empty", "no lanes")); return; }
+    lanes.sort(function (a, b) { return a.startedAt - b.startedAt; });
+    for (var i = 0; i < lanes.length; i++) {
+      var card = laneCard(lanes[i]);
+      box.appendChild(card);
+      if (Object.prototype.hasOwnProperty.call(steering, lanes[i].name)) {
+        var f = card.querySelector("form.steer");
+        f.hidden = false;
+        f.querySelector("input").value = steering[lanes[i].name];
+        if (focused === lanes[i].name) f.querySelector("input").focus();
+      }
+    }
+  }
+  function laneCard(row) {
+    var card = el("div", "lane");
+    card.setAttribute("data-lane", row.name);
+    var top = el("div", "top");
+    top.appendChild(el("b", null, row.name));
+    var st = laneStatus(row);
+    top.appendChild(el("span", "badge s-" + st, st));
+    card.appendChild(top);
+    card.appendChild(el("div", "goal", (row.goalStatus && row.goalStatus.objective) || row.goal || ""));
+    var meta = el("div", "meta");
+    var plan = row.goalStatus && row.goalStatus.plan;
+    meta.appendChild(el("span", null, "plan " + (plan ? plan.verified + "/" + plan.total : "–")));
+    var el2 = el("span", "elapsed", fmtElapsed(Date.now() - row.startedAt));
+    el2.setAttribute("data-started", String(row.startedAt));
+    meta.appendChild(el2);
+    meta.appendChild(el("span", null, fmtCost(row.costUsd)));
+    if (row.launchedBy) meta.appendChild(el("span", null, "by " + row.launchedBy));
+    card.appendChild(meta);
+    if (row.budgetUsd) {
+      var bar = el("div", "budget");
+      var frac = row.costUsd == null ? 0 : row.costUsd / row.budgetUsd;
+      if (frac >= 1) bar.className += " over";
+      var fill = el("i");
+      fill.style.width = Math.min(100, Math.round(frac * 100)) + "%";
+      bar.appendChild(fill);
+      bar.title = fmtCost(row.costUsd) + " of " + fmtCost(row.budgetUsd);
+      card.appendChild(bar);
+    }
+    var acts = el("div", "acts");
+    var stop = el("button", "btn warn", "stop");
+    stop.type = "button";
+    stop.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (!confirm("Stop lane " + row.name + "?")) return;
+      stop.disabled = true;
+      api("POST", "/lanes/" + encodeURIComponent(row.name) + "/stop", {}).then(function () { fetchRoster(); }).catch(function (er) { stop.disabled = false; showErr(er); });
+    });
+    var steerBtn = el("button", "btn", "steer");
+    steerBtn.type = "button";
+    acts.appendChild(stop);
+    acts.appendChild(steerBtn);
+    card.appendChild(acts);
+    var steer = el("form", "steer");
+    steer.hidden = true;
+    var si = el("input");
+    si.placeholder = "steer " + row.name;
+    steer.appendChild(si);
+    var sb = el("button", "btn", "send");
+    sb.type = "submit";
+    steer.appendChild(sb);
+    steer.addEventListener("click", function (e) { e.stopPropagation(); });
+    steer.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var text = si.value.trim();
+      if (!text) return;
+      api("POST", "/send", { to: row.name, text: text }).then(function (m) { si.value = ""; steer.hidden = true; addMessage(m); }).catch(showErr);
+    });
+    steerBtn.addEventListener("click", function (e) { e.stopPropagation(); steer.hidden = !steer.hidden; if (!steer.hidden) si.focus(); });
+    card.appendChild(steer);
+    card.addEventListener("click", function () { openLane(row.name); });
+    return card;
+  }
+  function openLane(name) {
+    modalLane = name;
+    renderModal();
+  }
+  function renderModal() {
+    var m = $("lane-modal");
+    var old = m.querySelector(".send input");
+    var keep = old ? old.value : "", hadFocus = old !== null && document.activeElement === old;
+    clear(m);
+    var row = modalLane ? rowByName(modalLane) : null;
+    if (!row) { m.hidden = true; modalLane = null; return; }
+    var card = deskCard(row, null);
+    var close = el("button", "btn", "close");
+    close.type = "button";
+    close.addEventListener("click", function () { modalLane = null; m.hidden = true; clear(m); });
+    card.firstChild.appendChild(close);
+    m.appendChild(card);
+    m.hidden = false;
+    var ni = card.querySelector(".send input");
+    ni.value = keep;
+    if (hadFocus) ni.focus();
+  }
+  $("lane-modal").addEventListener("click", function (e) { if (e.target === $("lane-modal")) { modalLane = null; $("lane-modal").hidden = true; } });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && modalLane) { modalLane = null; $("lane-modal").hidden = true; } });
+  setInterval(function () {
+    var els = document.querySelectorAll(".lane .elapsed");
+    for (var i = 0; i < els.length; i++) els[i].textContent = fmtElapsed(Date.now() - Number(els[i].getAttribute("data-started")));
+  }, 1000);
+
+  /* ===== new lane form ===== */
+  $("btn-new-lane").addEventListener("click", function () {
+    var f = $("new-lane-form");
+    f.hidden = !f.hidden;
+    if (!f.hidden) { loadEngines(); loadMcps(); f.elements.namedItem("name").focus(); }
+  });
+  $("nl-cancel").addEventListener("click", function () { $("new-lane-form").hidden = true; });
+  $("new-lane-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var f = $("new-lane-form");
+    var g = function (n) { return f.elements.namedItem(n).value.trim(); };
+    var body = { name: g("name"), goal: g("goal") };
+    if (g("cwd")) body.cwd = g("cwd");
+    if (g("agent")) body.agent = g("agent");
+    if (g("model")) body.model = g("model");
+    if (g("budgetUsd")) body.budgetUsd = Number(g("budgetUsd"));
+    var picked = [];
+    var boxes = $("nl-mcps").querySelectorAll("input[type=checkbox]");
+    for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) picked.push(boxes[i].value);
+    if (picked.length) body.mcps = picked;
+    var sub = f.querySelector("button[type=submit]");
+    sub.disabled = true;
+    api("POST", "/lanes", body).then(function (r) {
+      f.reset();
+      f.hidden = true;
+      if (r && r.pending) showErr(new Error("lane " + r.pending.request.name + " waits for approval (" + r.pending.id + ")"));
+      fetchRoster();
+    }).catch(showErr).then(function () { sub.disabled = false; });
+  });
+  function loadEngines() {
+    return api("GET", "/engines").then(function (r) {
+      engines = r.engines || [];
+      var sel = $("nl-agent"), cur = sel.value;
+      while (sel.options.length > 1) sel.remove(1);
+      var sorted = engines.slice().sort(function (a, b) { return (b.found ? 1 : 0) - (a.found ? 1 : 0); });
+      for (var i = 0; i < sorted.length; i++) {
+        var o = el("option", null, sorted[i].agent + (sorted[i].found ? (sorted[i].auth && sorted[i].auth !== "verified" ? " (auth " + sorted[i].auth + ")" : "") : " (not found)"));
+        o.value = sorted[i].agent;
+        if (!sorted[i].found) o.disabled = true;
+        sel.appendChild(o);
+      }
+      sel.value = cur;
+    }).catch(showErr);
+  }
+  function loadMcps() {
+    return api("GET", "/mcps").then(function (r) {
+      mcpNames = r.names || [];
+      var box = $("nl-mcps");
+      clear(box);
+      if (!mcpNames.length) { box.appendChild(el("span", "empty", "none configured (lane gets layout defaults)")); return; }
+      for (var i = 0; i < mcpNames.length; i++) {
+        var l = el("label");
+        var cb = el("input");
+        cb.type = "checkbox";
+        cb.value = mcpNames[i];
+        l.appendChild(cb);
+        l.appendChild(document.createTextNode(mcpNames[i]));
+        box.appendChild(l);
+      }
+    }).catch(showErr);
+  }
+
+  /* ===== decisions ===== */
+  function renderDecisions() {
+    var box = $("decision-cards");
+    var open = Object.keys(decisions).map(function (k) { return decisions[k]; }).filter(function (d) { return d.state === "open"; });
+    open.sort(function (a, b) { return Number(a.id.slice(1)) - Number(b.id.slice(1)); });
+    $("decCount").textContent = open.length ? String(open.length) : "";
+    document.title = (open.length ? "(" + open.length + ") " : "") + "ach desks";
+    clear(box);
+    if (!open.length) { box.appendChild(el("div", "empty", "no open decisions")); return; }
+    for (var i = 0; i < open.length; i++) box.appendChild(decisionCard(open[i]));
+  }
+  function answer(d, text, card) {
+    var btns = card.querySelectorAll("button, input");
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+    api("POST", "/decisions/" + encodeURIComponent(d.id) + "/answer", { text: text }).then(function (nd) {
+      decisions[nd.id || d.id] = nd && nd.id ? nd : Object.assign({}, d, { state: "answered" });
+      renderDecisions();
+    }).catch(function (e) {
+      for (var j = 0; j < btns.length; j++) btns[j].disabled = false;
+      showErr(e);
+    });
+  }
+  function decisionCard(d) {
+    var card = el("div", "card");
+    card.setAttribute("data-decision", d.id);
+    card.appendChild(el("div", "q", d.id + "  " + d.question));
+    card.appendChild(el("div", "by", "for " + d.askedBy + " · via " + d.openedBy + " · " + fmtTime(d.openedAt)));
+    var opts = el("div", "opts");
+    var list = (d.options || []).slice().sort(function (a, b) { return (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0); });
+    list.forEach(function (o) {
+      var b = el("button", "btn" + (o.recommended ? " rec" : ""), (o.recommended ? "★ " : "") + o.label);
+      b.type = "button";
+      if (o.reason) b.appendChild(el("span", "reason", o.reason));
+      b.addEventListener("click", function () { answer(d, o.label, card); });
+      opts.appendChild(b);
+    });
+    card.appendChild(opts);
+    var free = el("form", "free");
+    var inp = el("input");
+    inp.placeholder = "other answer";
+    free.appendChild(inp);
+    var sb = el("button", "btn", "answer");
+    sb.type = "submit";
+    free.appendChild(sb);
+    free.addEventListener("submit", function (e) { e.preventDefault(); if (inp.value.trim()) answer(d, inp.value.trim(), card); });
+    card.appendChild(free);
+    return card;
+  }
+
+  /* ===== pending lanes ===== */
+  function renderPending() {
+    var box = $("pending-cards");
+    var list = view ? (view.pendingLanes || []).filter(function (p) { return p.state === "pending"; }) : [];
+    $("pendCount").textContent = list.length ? String(list.length) : "";
+    clear(box);
+    if (!list.length) { box.appendChild(el("div", "empty", "none")); return; }
+    list.forEach(function (p) {
+      var card = el("div", "card");
+      card.setAttribute("data-pending", p.id);
+      card.appendChild(el("div", "q", p.id + "  " + p.request.name));
+      card.appendChild(el("div", "by", "from " + p.request.launchedBy + " · " + fmtTime(p.requestedAt) + (p.request.agent ? " · " + p.request.agent : "") + (p.request.budgetUsd ? " · budget " + fmtCost(p.request.budgetUsd) : "")));
+      card.appendChild(el("div", "q", p.request.goal));
+      var acts = el("div", "acts");
+      var ok = el("button", "btn rec", "approve");
+      ok.type = "button";
+      ok.addEventListener("click", function () {
+        ok.disabled = true;
+        api("POST", "/pending/" + encodeURIComponent(p.id) + "/approve", {}).then(fetchRoster).catch(function (e) { ok.disabled = false; showErr(e); });
+      });
+      var no = el("button", "btn warn", "reject");
+      no.type = "button";
+      var reason = el("input");
+      reason.placeholder = "reason (optional)";
+      no.addEventListener("click", function () {
+        no.disabled = true;
+        var body = reason.value.trim() ? { reason: reason.value.trim() } : {};
+        api("POST", "/pending/" + encodeURIComponent(p.id) + "/reject", body).then(fetchRoster).catch(function (e) { no.disabled = false; showErr(e); });
+      });
+      acts.appendChild(ok);
+      acts.appendChild(no);
+      acts.appendChild(reason);
+      card.appendChild(acts);
+      box.appendChild(card);
+    });
+  }
+
+  /* ===== live feed ===== */
+  function renderFeeds() {
+    var panel = $("feed-panel"), body = $("feed-body");
+    var names = view ? view.rows.filter(function (r) { return r.feedPid; }).map(function (r) { return r.name; }) : [];
+    panel.hidden = names.length === 0;
+    clear(body);
+    names.forEach(function (n) {
+      var f = feeds[n];
+      var wrap = el("div");
+      wrap.setAttribute("data-feed", n);
+      var live = !!f && f.active === true;
+      var when = el("div", "when", n + " · " + (live ? "live" : "waiting") + (f && f.text ? " · " + fmtTime(f.at) : ""));
+      when.setAttribute("data-active", live ? "true" : "false");
+      wrap.appendChild(when);
+      wrap.appendChild(el("div", "feedtext", f ? f.text : ""));
+      body.appendChild(wrap);
+    });
+  }
+
+  /* ===== timeline ===== */
+  function addMessage(m) {
+    if (!m || !m.id || messageIds[m.id]) return;
+    messageIds[m.id] = true;
+    messages.push(m);
+    messages.sort(function (a, b) { return a.at - b.at; });
+    if (messages.length > 1000) messages.splice(0, messages.length - 1000);
+    renderTimeline();
+  }
+  function renderTimeline() {
+    var box = $("timeline-list");
+    var f = $("timeline-filter").value;
+    var atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    clear(box);
+    var list = messages.filter(function (m) { return !f || m.from === f || m.to === f; });
+    if (!list.length) { box.appendChild(el("div", "empty", "no messages")); return; }
+    list.slice(-300).forEach(function (m) {
+      var r = el("div", "tl");
+      r.setAttribute("data-mid", m.id);
+      var hd = el("div", "hd");
+      hd.appendChild(el("b", null, m.from + " → " + m.to));
+      hd.appendChild(document.createTextNode("  " + fmtTime(m.at) + (m.delivered === "queued" ? "  queued" : "")));
+      r.appendChild(hd);
+      r.appendChild(el("div", "tx", m.text));
+      r.addEventListener("click", function () { jumpTo(m); });
+      box.appendChild(r);
+    });
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+  $("timeline-filter").addEventListener("change", renderTimeline);
+  function jumpTo(m) {
+    var targets = [m.to, m.from];
+    for (var i = 0; i < targets.length; i++) {
+      var row = rowByName(targets[i]);
+      if (!row) continue;
+      if (row.kind === "lane") openLane(row.name);
+      var boxes = document.querySelectorAll('.chat[data-chat="' + CSS.escape(row.name) + '"]');
+      for (var j = 0; j < boxes.length; j++) {
+        var hit = boxes[j].querySelector('[data-mid="' + CSS.escape(m.id) + '"]');
+        var card = boxes[j].closest(".desk");
+        if (card) { card.classList.add("flash"); setTimeout(function (c) { return function () { c.classList.remove("flash"); }; }(card), 1200); }
+        if (hit) {
+          hit.scrollIntoView({ block: "center" });
+          hit.classList.add("hl");
+          setTimeout(function (h) { return function () { h.classList.remove("hl"); }; }(hit), 1500);
+          return;
+        }
+        boxes[j].scrollTop = boxes[j].scrollHeight;
+      }
+      if (boxes.length) return;
+    }
+  }
+
+  /* ===== costs ===== */
+  function fetchCosts() {
+    return api("GET", "/costs").then(function (r) { renderCosts(r.rows || []); }).catch(function () { /* costs are best effort */ });
+  }
+  function renderCosts(rows) {
+    var box = $("costs-body");
+    clear(box);
+    if (!rows.length) { box.appendChild(el("div", "empty", "no runs")); $("totalCost").textContent = "–"; return; }
+    var t = el("table", "costs");
+    var hr = el("tr");
+    ["desk / lane", "cost", "in", "out"].forEach(function (h, i) { hr.appendChild(el("th", i ? "num" : null, h)); });
+    t.appendChild(hr);
+    var total = 0, any = false;
+    function add(r, depth) {
+      var tr = el("tr");
+      tr.appendChild(el("td", null, (depth ? "  ".repeat(depth) + "└ " : "") + r.name));
+      tr.appendChild(el("td", "num", fmtCost(r.costUsd)));
+      tr.appendChild(el("td", "num", String(r.inputTokens || 0)));
+      tr.appendChild(el("td", "num", String(r.outputTokens || 0)));
+      t.appendChild(tr);
+      if (r.costUsd != null) { total += r.costUsd; any = true; }
+      (r.lanes || []).forEach(function (l) { add(l, depth + 1); });
+    }
+    rows.forEach(function (r) { add(r, 0); });
+    box.appendChild(t);
+    $("totalCost").textContent = any ? fmtCost(total) : "n/a";
+  }
+
+  /* ===== roster ===== */
+  function applyView(v) {
+    view = v;
+    $("stackmeta").textContent = "stack " + v.stack + " · :" + v.portBase;
+    (v.openDecisions || []).forEach(function (d) { decisions[d.id] = d; });
+    var openIds = {};
+    (v.openDecisions || []).forEach(function (d) { openIds[d.id] = true; });
+    Object.keys(decisions).forEach(function (k) { if (decisions[k].state === "open" && !openIds[k]) delete decisions[k]; });
+    renderDesks();
+    renderLanes();
+    renderDecisions();
+    renderPending();
+    renderFeeds();
+    if (modalLane) renderModal();
+  }
+  function fetchRoster() {
+    return api("GET", "").then(applyView).catch(showErr);
+  }
+  function fetchMessages() {
+    var since = messages.length ? messages[messages.length - 1].at : 0;
+    return api("GET", "/messages?since=" + since + "&limit=500").then(function (r) { (r.messages || []).forEach(addMessage); }).catch(showErr);
+  }
+
+  /* ===== live stream ===== */
+  var es = null;
+  function connect() {
+    es = new EventSource(q("/api/desks/stream"));
+    es.onopen = function () {
+      $("pulse").className = "pulse on";
+      $("pulseTxt").textContent = "live";
+      fetchMessages();
+    };
+    es.onerror = function () {
+      $("pulse").className = "pulse";
+      $("pulseTxt").textContent = "reconnecting";
+    };
+    es.onmessage = function (e) {
+      var f;
+      try { f = JSON.parse(e.data); } catch (er) { return; }
+      if (f.kind === "roster") { applyView(f.view); refetchCosts(); }
+      else if (f.kind === "message") addMessage(f.message);
+      else if (f.kind === "decision") { decisions[f.decision.id] = f.decision; renderDecisions(); }
+      else if (f.kind === "event") addEvent(f.event, false);
+    };
+  }
+
+  /* ===== header actions ===== */
+  $("btn-up").addEventListener("click", function () {
+    var b = $("btn-up");
+    b.disabled = true;
+    api("POST", "/up", {}).then(applyView).catch(showErr).then(function () { b.disabled = false; });
+  });
+  $("btn-down").addEventListener("click", function () {
+    if (!confirm("Stop every lane and desk of this stack?")) return;
+    var b = $("btn-down");
+    b.disabled = true;
+    api("POST", "/down", {}).then(fetchRoster).catch(showErr).then(function () { b.disabled = false; });
+  });
+
+  loadEngines().then(function () { if (view) renderDesks(); });
+  fetchRoster().then(function () {
+    return api("GET", "/decisions?state=open").then(function (r) { (r.decisions || []).forEach(function (d) { decisions[d.id] = d; }); renderDecisions(); }).catch(function () {});
+  });
+  fetchMessages();
+  fetchCosts();
+  connect();
+})();
+</script>
+</body>
+</html>
