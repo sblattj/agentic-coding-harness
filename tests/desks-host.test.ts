@@ -437,9 +437,16 @@ describe('desk host: other routes', () => {
 
   it('/stop responds, stops engine, finishes meter, closes server, resolves 0', async () => {
     const s = await start();
+    let stopCalls = 0;
+    const origStop = s.engine.stop.bind(s.engine);
+    s.engine.stop = async () => {
+      stopCalls++;
+      await origStop();
+    };
     await hostStop(s.url);
     assert.equal(await s.done, 0);
     assert.equal(s.engine.stopped, true);
+    assert.equal(stopCalls, 1, 'a stop with no start in flight stops the engine once');
     assert.deepEqual(s.meter.finished, ['aborted']);
     assert.equal(await hostHealth(s.url, 1000), null, 'server closed');
   });
