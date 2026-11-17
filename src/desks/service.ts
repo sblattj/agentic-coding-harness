@@ -972,8 +972,13 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
     } catch (e2) {
       throw new Error(`${errText(e)}\ndesks: restoring ${o.name} on ${old.agent} also failed: ${errText(e2)}`);
     }
-    await installDesk(stateDir, stack, old, restored);
-    throw new Error(`${errText(e)}\ndesks: ${o.name} was restored on its previous agent ${old.agent}`);
+    let paneNote = "";
+    try {
+      await installDesk(stateDir, stack, old, restored);
+    } catch (e3) {
+      paneNote = ` (pane not reopened: ${errText(e3)}; run \`ach desk attach\`)`;
+    }
+    throw new Error(`${errText(e)}\ndesks: ${o.name} was restored on its previous agent ${old.agent}${paneNote}`);
   }
   return installDesk(stateDir, stack, old, s);
 }
