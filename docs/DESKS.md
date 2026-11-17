@@ -56,7 +56,7 @@ Host API (JSON, 127.0.0.1 only):
 | `POST /send {from, text}` | deliver or queue a message, returns at once |
 | `POST /note {text}` | silent context, no turn |
 | `POST /record {type, data}` | append an out-of-band event |
-| `GET /goal`, `POST /goal {objective}` | goal status; set a goal (returns once active, up to 40 s) |
+| `GET /goal`, `POST /goal {objective}` | goal status; set a goal (returns once active, up to 45 s) |
 | `GET /mcp` | engine-reported MCP status by name |
 | `GET /events?since=<seq>` | events; SSE with `Accept: text/event-stream` |
 | `GET /attach` | the argv a terminal pane runs to show the session |
@@ -141,14 +141,14 @@ lanes:
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `command` | string[] | required | argv; stdout is JSONL, one object per line, each with a string `type`. |
-| `fullContext` | string[] | none | argv printing the full context so far; sent as ONE message on the first heartbeat when active. |
-| `activeCheck` | string[] | none | argv printing JSON with a boolean `active`, checked on the first heartbeat. |
+| `fullContext` | string[] | none | argv printing the full context so far; sent as ONE message on the first heartbeat when active. Killed after 15 s. |
+| `activeCheck` | string[] | none | argv printing JSON with a boolean `active`, checked on the first heartbeat. Killed after 15 s (counted as not active, with an error event). |
 | `batchSeconds` | number | `10` | Batch window for non-immediate events. |
 | `immediate` | string[] | none | Event types that flush the batch and are delivered at once. |
 | `heartbeatType` | string | `alive` | Event type meaning the backlog is over. Everything before the first one is backlog. |
 | `endType` | string | `call_ended` | Event type that ends a session of the source; triggers the closing message. |
 
-If `activeCheck` says nothing is active, the desk gets one "waiting for the next call" note instead of context. Other feeds (CI events, review events, a chat watcher) use the same shape.
+If `activeCheck` says nothing is active, the desk gets one "waiting for the next call" note instead of context. Other feeds (CI events, review events, a chat watcher) use the same shape. The feed runs in its own process group, so stopping a desk also stops the children of a shell-wrapped feed, and stop kills any helper command still running. If a helper hangs, at most 1000 events wait behind it: the oldest are dropped, with a `feed` note.
 
 ### LanesSpec
 
@@ -159,7 +159,7 @@ If `activeCheck` says nothing is active, the desk gets one "waiting for the next
 | `approval` | `decisions` \| `none` | `none` | With `decisions`, `lane_new` from a desk other than DECISIONS (or the human) returns a pending request until `lane approve`. |
 | `defaultGoalFlags` | string | none | Prefixed to every lane objective, e.g. `--max-minutes 45`. |
 | `agent`, `model` | string | layout values | Defaults for lanes. |
-| `budgetUsd` | number | none | Default per-lane budget; feeds the existing [budget alerts](BUDGET-ALERTS.md). |
+| `budgetUsd` | number | none | Default per-lane budget; feeds the existing [budget alerts](BUDGET-ALERTS.md). A lane that crosses it is also stopped by its host and recorded with status `error` (a desk only alerts). |
 
 ## State files
 
@@ -315,7 +315,7 @@ ach stats --by desk         # per desk and per lane, keyed <stack>/<name>; other
 ach desk roster --json      # costUsd and treeCostUsd per row
 ```
 
-Lane cost rolls up under the launching desk. Unknown is not zero: when a desk's usage could not be priced (a model with no price, such as `ferry/super-flash`), `costUsd` is `null` in `ach desk costs` / `/api/desks/costs` and prints as `-`, and any tree total (`treeCostUsd`) that contains an unknown part is `null` too, never a partial sum. The host meter marks such runs with `totals.costUnpriced` in the run record (older desk-host records with tokens and a 0 cost and no `costSource` are read the same way). `ach desk costs` also lists lanes that already stopped, because their spend happened: a lane whose launcher is a live desk stays nested under it, and a lane launched by a human or whose launcher is gone is a top-level row. A per-lane budget (`--budget-usd`, `lanes.budgetUsd`) uses the existing [budget alerts](BUDGET-ALERTS.md).
+Lane cost rolls up under the launching desk. Unknown is not zero: when a desk's usage could not be priced (a model with no price, such as `ferry/super-flash`), `costUsd` is `null` in `ach desk costs` / `/api/desks/costs` and prints as `-`, and any tree total (`treeCostUsd`) that contains an unknown part is `null` too, never a partial sum. The host meter marks such runs with `totals.costUnpriced` in the run record (older desk-host records with tokens and a 0 cost and no `costSource` are read the same way). `ach desk costs` also lists lanes that already stopped, because their spend happened: a lane whose launcher is a live desk stays nested under it, and a lane launched by a human or whose launcher is gone is a top-level row. A per-lane budget (`--budget-usd`, `lanes.budgetUsd`) uses the existing [budget alerts](BUDGET-ALERTS.md); crossing it also stops the lane (recorded as `error`, with a `budget exceeded` error event), while a desk only alerts.
 
 ## Troubleshooting
 

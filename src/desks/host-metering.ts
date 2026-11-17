@@ -28,6 +28,8 @@ export interface UsageSample {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Thinking tokens when the engine reports them (opencode keeps them OUT of outputTokens). Informational: recorded, never priced or added to output. */
+  reasoningTokens?: number;
   /** Engine-reported cost; null/0 from an unpriced provider -> computed by the ach pricer when the model is known. */
   costUsd: number | null;
   /** Engine message id; a repeated id replaces (not adds to) the earlier sample. */
@@ -70,6 +72,7 @@ interface MessageState {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  reasoningTokens: number;
   /** Engine-reported cost when > 0, else null. */
   reported: number | null;
   /** Pricer cost when the engine reported none and the model is known, else null. */
@@ -244,6 +247,7 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
         outputTokens: s.outputTokens,
         cacheReadTokens: s.cacheReadTokens,
         cacheWriteTokens: s.cacheWriteTokens,
+        reasoningTokens: s.reasoningTokens ?? 0,
         reported,
         computed: reported === null ? priceTokens(model, s) : null,
       };
@@ -253,9 +257,10 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
         cacheReadTokens: d(next.cacheReadTokens, prev?.cacheReadTokens ?? 0),
         cacheWriteTokens: d(next.cacheWriteTokens, prev?.cacheWriteTokens ?? 0),
       };
+      const deltaReasoning = d(next.reasoningTokens, prev?.reasoningTokens ?? 0);
       messages.set(key, next);
       const deltaReported = reported === null ? null : d(reported, prev?.reported ?? 0);
-      const empty = delta.inputTokens + delta.outputTokens + delta.cacheReadTokens + delta.cacheWriteTokens === 0 && !(deltaReported && deltaReported > 0);
+      const empty = delta.inputTokens + delta.outputTokens + delta.cacheReadTokens + delta.cacheWriteTokens + deltaReasoning === 0 && !(deltaReported && deltaReported > 0);
       if (!empty && s.recorded !== true) {
         const line = {
           ts: s.at,
@@ -263,7 +268,7 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
           sessionId: sessionId ?? runId,
           ...(model !== undefined ? { model } : {}),
           ...delta,
-          reasoningTokens: 0,
+          reasoningTokens: deltaReasoning,
           // Only an engine-REPORTED cost goes on the line; stats prices unreported lines itself
           // (auto cost mode), so desk usage needs no special casing and nothing is double priced.
           ...(deltaReported !== null && deltaReported > 0 ? { costUsd: deltaReported } : {}),

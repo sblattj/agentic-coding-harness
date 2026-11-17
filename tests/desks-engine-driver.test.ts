@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -272,6 +272,51 @@ describe('DriverEngine (fake adapter through the real core driver)', () => {
     assert.equal((await engine.goalStatus()).state, 'achieved');
     await engine.stop();
     assert.equal(stopped, 'engine stopped');
+  });
+  it('a replaced goal: the old loop status no longer reaches the goal events after the new one starts', async () => {
+    const fake = new FakeAdapter();
+    const opts: GoalLoopOptions[] = [];
+    const startGoalLoop = (o: GoalLoopOptions): GoalLoopHandle => {
+      opts.push(o);
+      return { status: () => ({ objective: o.objective, state: 'active', source: 'ach-loop', updatedAt: 1 }), stop: () => undefined, done: new Promise(() => undefined) };
+    };
+    const engine = new DriverEngine({ adapters: { fake }, env: ENV, startGoalLoop });
+    await engine.start(hostSpec());
+    const goals: GoalStatus[] = [];
+    engine.onEvent((e: EngineEvent) => {
+      if (e.type === 'goal') goals.push((e.data as { goal: GoalStatus }).goal);
+    });
+    await engine.setGoal('OLD');
+    await engine.setGoal('NEW');
+    opts[1]!.onStatus!({ objective: 'NEW', state: 'active', source: 'ach-loop', updatedAt: 2 });
+    opts[0]!.onStatus!({ objective: 'OLD', state: 'stopped', source: 'ach-loop', updatedAt: 3, reason: 'replaced by a new goal' });
+    assert.deepEqual(goals.map((g) => `${g.objective}:${g.state}`), ['NEW:active']);
+    await engine.stop();
+  });
+
+  it('writes the MCP config owner-only (0600)', async () => {
+    const fake = new FakeAdapter();
+    const engine = new DriverEngine({ adapters: { fake }, env: ENV });
+    const spec = hostSpec();
+    await engine.start(spec);
+    const f = join(spec.stateDir, 'desks', spec.stack, 'mcp', `${spec.name}.json`);
+    assert.equal(statSync(f).mode & 0o777, 0o600);
+  });
+
+  it('a goal turn timeout from the loop caps the run (RunSpec.timeoutMs)', async () => {
+    const fake = new FakeAdapter();
+    let opts: GoalLoopOptions | undefined;
+    const startGoalLoop = (o: GoalLoopOptions): GoalLoopHandle => {
+      opts = o;
+      return { status: () => ({ objective: 'x', state: 'active', source: 'ach-loop', updatedAt: 1 }), stop: () => undefined, done: new Promise(() => undefined) };
+    };
+    const engine = new DriverEngine({ adapters: { fake }, env: ENV, startGoalLoop, turnTimeoutMs: 900_000 });
+    await engine.start(hostSpec());
+    await engine.setGoal('x');
+    await opts!.runTurn('a', { timeoutMs: 120_000 });
+    await opts!.runTurn('b', { timeoutMs: 2_000_000 });
+    assert.equal(fake.specs[0]!.timeoutMs, 120_000);
+    assert.equal(fake.specs[1]!.timeoutMs, 900_000, 'never above the engine-wide cap');
   });
 });
 

@@ -23,12 +23,18 @@ export function renderEvent(ev: Record<string, unknown>): string {
   return `${ev.type as string}: ${head ? head + " " : ""}${text ?? ""}`.trimEnd();
 }
 
-function run(argv: string[], cwd: string | undefined, env: NodeJS.ProcessEnv): Promise<string> {
+export const DEFAULT_HELPER_TIMEOUT_MS = 15_000;
+export const DEFAULT_MAX_PENDING_EVENTS = 1000;
+
+/** Runs a helper command (activeCheck / fullContext). Killed at timeoutMs; `live` tracks it so stop() can kill it. */
+function run(argv: string[], cwd: string | undefined, env: NodeJS.ProcessEnv, timeoutMs: number, live: Set<ChildProcess>): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(argv[0]!, argv.slice(1), { cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
-      if (err) reject(err);
+    const c = execFile(argv[0]!, argv.slice(1), { cwd, env, maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: "SIGKILL" }, (err, stdout) => {
+      live.delete(c);
+      if (err) reject((err as { killed?: boolean }).killed ? new Error(`timed out after ${timeoutMs}ms`) : err);
       else resolve(stdout);
     });
+    live.add(c);
   });
 }
 
@@ -53,6 +59,10 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     killAfterMs?: number;
     /** Minimum gap between "feed stderr:" notes (ms). Default 5000. */
     stderrGapMs?: number;
+    /** Wall-clock cap for one activeCheck / fullContext command (ms). Default 15000. */
+    helperTimeoutMs?: number;
+    /** Max feed events waiting for the helper-gated handler; beyond it the oldest are dropped with a note. Default 1000. */
+    maxPendingEvents?: number;
   } = {}): FeedHandle {
   const note = (s: string) => { try { opts.onNote?.(s); } catch { /* host callback */ } };
   const err = (s: string) => { try { opts.onError?.(s); } catch { /* host callback */ } };
@@ -65,7 +75,10 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
   const maxMs = opts.maxBackoffMs ?? 60000;
   const killAfter = opts.killAfterMs ?? 3000;
   const stderrGap = opts.stderrGapMs ?? 5000;
+  const helperTimeout = opts.helperTimeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS;
+  const maxPending = Math.max(1, opts.maxPendingEvents ?? DEFAULT_MAX_PENDING_EVENTS);
   const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+  const helpers = new Set<ChildProcess>();
 
   let stopped = false;
   let child: ChildProcess | undefined;
@@ -96,7 +109,10 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     let batch: string[] = [];
     let batchTimer: NodeJS.Timeout | undefined;
     let lastStderr = -Infinity;
-    let lineChain: Promise<void> = Promise.resolve();
+    // Events wait here for the serial handler (which can sit on a helper command); bounded, oldest dropped.
+    const pending: Record<string, unknown>[] = [];
+    let draining = false;
+    let dropped = 0;
 
     const flush = () => {
       if (batchTimer) { clearTimeout(batchTimer); batchTimer = undefined; }
@@ -110,7 +126,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
       active(true);
       if (spec.fullContext && spec.fullContext.length > 0) {
         try {
-          const out = await run(spec.fullContext, opts.cwd, env);
+          const out = await run(spec.fullContext, opts.cwd, env, helperTimeout, helpers);
           if (!stopped && e === epoch) enqueue(FULL_CONTEXT_PREFIX + out, e);
         } catch (x) {
           err(`feed full-context failed: ${x instanceof Error ? x.message : String(x)}`);
@@ -121,7 +137,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     const checkActive = async (): Promise<boolean> => {
       if (!spec.activeCheck || spec.activeCheck.length === 0) return backlog > 0;
       try {
-        const parsed = JSON.parse(await run(spec.activeCheck, opts.cwd, env)) as { active?: unknown };
+        const parsed = JSON.parse(await run(spec.activeCheck, opts.cwd, env, helperTimeout, helpers)) as { active?: unknown };
         return parsed.active === true;
       } catch (x) {
         err(`feed active-check failed: ${x instanceof Error ? x.message : String(x)}`);
@@ -170,13 +186,34 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
         err(`feed event without string type: ${line.slice(0, 200)}`);
         return;
       }
-      lineChain = lineChain.then(() => (stopped || e !== epoch ? undefined : onEvent(ev as Record<string, unknown>)))
-        .catch((x) => err(`feed event failed: ${x instanceof Error ? x.message : String(x)}`));
+      pending.push(ev as Record<string, unknown>);
+      if (pending.length > maxPending) {
+        const n = pending.length - maxPending;
+        pending.splice(0, n);
+        const first = dropped === 0;
+        dropped += n;
+        if (first) note(`feed backlog over ${maxPending} events: dropped ${n} oldest (further drops are counted, not logged)`);
+      }
+      void drain();
+    };
+
+    const drain = async (): Promise<void> => {
+      if (draining) return;
+      draining = true;
+      try {
+        while (pending.length > 0 && !stopped && e === epoch) {
+          const next = pending.shift()!;
+          try { await onEvent(next); } catch (x) { err(`feed event failed: ${x instanceof Error ? x.message : String(x)}`); }
+        }
+      } finally {
+        draining = false;
+      }
+      if (dropped > 0 && pending.length === 0) { note(`feed dropped ${dropped} oldest events in total while the handler was busy`); dropped = 0; }
     };
 
     let proc: ChildProcess;
     try {
-      proc = spawn(spec.command[0]!, spec.command.slice(1), { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+      proc = spawn(spec.command[0]!, spec.command.slice(1), { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     } catch (x) {
       err(`feed spawn failed: ${x instanceof Error ? x.message : String(x)}`);
       scheduleRestart();
@@ -233,15 +270,23 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
       stopped = true;
       if (restartTimer) { clearTimeout(restartTimer); restartTimer = undefined; }
     }
+    for (const h of helpers) { try { h.kill("SIGKILL"); } catch { /* gone */ } }
     const c = child;
+    // The feed leads its own process group (detached spawn): signal the group so a shell wrapper's children die too.
+    const sig = (s: NodeJS.Signals) => {
+      const pid = c?.pid;
+      if (pid === undefined) return;
+      try { process.kill(-pid, s); } catch { try { c?.kill(s); } catch { /* gone */ } }
+    };
     if (c && c.exitCode === null && c.signalCode === null) {
-      c.kill("SIGTERM");
-      const k = setTimeout(() => { try { c.kill("SIGKILL"); } catch { /* gone */ } }, killAfter);
+      sig("SIGTERM");
+      const k = setTimeout(() => sig("SIGKILL"), killAfter);
       await exited;
       clearTimeout(k);
     } else {
       await exited;
     }
+    sig("SIGKILL"); // stragglers that outlived the leader
   }
 
   spawnChild();

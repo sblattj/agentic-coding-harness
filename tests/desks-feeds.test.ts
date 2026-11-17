@@ -238,3 +238,50 @@ test("renderEvent: text/speaker/t when present, else compact JSON", () => {
   assert.equal(renderEvent({ type: "utterance", text: "hi" }), "utterance: hi");
   assert.equal(renderEvent({ type: "ci", status: "red" }), '{"type":"ci","status":"red"}');
 });
+
+const hangCmd = (pidFile?: string) => [
+  node, "-e",
+  `${pidFile ? `require('fs').appendFileSync(${JSON.stringify(pidFile)}, process.pid+'\\n');` : ""}setInterval(()=>{},1e6)`,
+];
+
+test("a hung activeCheck is killed at the helper timeout and later events still flow", async () => {
+  const h = harness({
+    command: feedCmd([alive, { delay: 100 }, alive, { delay: 100 }, ev("utterance", { text: "x" })]),
+    activeCheck: hangCmd(), batchSeconds: 0.05,
+  }, { helperTimeoutMs: 300 });
+  try {
+    await waitFor(() => h.errors.some((e) => /active-check failed/.test(e)), "active-check timeout error", 4000);
+  } finally { await h.handle.stop(); }
+});
+
+test("stop() kills an in-flight helper command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "feeds-"));
+  const pidFile = join(dir, "helper-pids");
+  const h = harness({ command: feedCmd([alive]), activeCheck: hangCmd(pidFile) }, { helperTimeoutMs: 60000 });
+  await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", "helper pid");
+  const helper = Number(readFileSync(pidFile, "utf8").trim().split("\n")[0]);
+  assert.ok(alivePid(helper));
+  await h.handle.stop();
+  await waitFor(() => !alivePid(helper), "helper dead after stop", 2000).catch(() => { try { process.kill(helper, "SIGKILL"); } catch { /* gone */ } throw new Error("helper survived stop()"); });
+});
+
+test("the pending event queue is bounded: oldest dropped with a note while a helper is stuck", async () => {
+  const lines = Array.from({ length: 60 }, (_, i) => ev("utterance", { text: `e${i}` }));
+  const h = harness({ command: feedCmd([alive, ...lines]), activeCheck: hangCmd() }, { helperTimeoutMs: 60000, maxPendingEvents: 10 });
+  try {
+    await waitFor(() => h.notes.some((n) => /dropped \d+ oldest/.test(n)), "drop note", 4000);
+  } finally { await h.handle.stop(); }
+});
+
+test("stop() kills grandchildren of a shell-wrapped feed (process group)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "feeds-"));
+  const pidFile = join(dir, "gc-pid");
+  const h = harness({ command: ["/bin/sh", "-c", `sleep 300 & echo $! > ${pidFile}; echo '{"type":"alive"}'; wait`] }, { killAfterMs: 300 });
+  await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", "grandchild pid");
+  const gc = Number(readFileSync(pidFile, "utf8").trim());
+  assert.ok(alivePid(gc));
+  await h.handle.stop();
+  const dead = await waitFor(() => !alivePid(gc), "grandchild dead", 2000).then(() => true, () => false);
+  if (!dead) { try { process.kill(gc, "SIGKILL"); } catch { /* gone */ } }
+  assert.ok(dead, "grandchild survived stop()");
+});
