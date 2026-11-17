@@ -393,6 +393,22 @@ describe('desks web api: routes', () => {
     h.st.view = viewOf([row('ORCH')]);
   });
 
+  it('GET /:name/attach calls the host with the bearer token from its spec (same run only)', async () => {
+    const specs = deskPaths(stateDir, STACK).specs;
+    mkdirSync(specs, { recursive: true });
+    writeFileSync(join(specs, 'TOK.json'), JSON.stringify({ name: 'TOK', runId: 'run-TOK', token: 'hosttoken' }));
+    h.st.view = viewOf([row('TOK', { url: 'http://127.0.0.1:59998' }), row('OLD', { url: 'http://127.0.0.1:59997' })]);
+    writeFileSync(join(specs, 'OLD.json'), JSON.stringify({ name: 'OLD', runId: 'run-newer', token: 'other' }));
+    const before = h.attachUrls.length;
+    assert.equal((await call(h, 'GET', '/api/desks/TOK/attach')).status, 200);
+    assert.deepEqual(h.attachUrls[before], { url: 'http://127.0.0.1:59998', token: 'hosttoken' });
+    assert.equal((await call(h, 'GET', '/api/desks/OLD/attach')).status, 200);
+    assert.equal(h.attachUrls[before + 1], 'http://127.0.0.1:59997', 'a spec for another run lends no token');
+    const view = await call(h, 'GET', '/api/desks');
+    assert.ok(!JSON.stringify(view.json).includes('hosttoken'), 'the roster answer never carries a host token');
+    h.st.view = viewOf([row('ORCH')]);
+  });
+
   it('GET /costs, /engines, /mcps', async () => {
     const costs = await call(h, 'GET', '/api/desks/costs');
     assert.equal(costs.status, 200);
@@ -751,7 +767,7 @@ describe('desks page via ach web', () => {
     const no = await fetch(`${base}/api/desks`);
     assert.equal(no.status, 401);
     await no.text();
-    const yes = await fetch(`${base}/api/desks/send?token=tok`, { method: 'POST', body: '{}' });
+    const yes = await fetch(`${base}/api/desks/send?token=tok`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
     assert.equal(yes.status, 400, 'authorized request reaches body validation');
     await yes.text();
   });

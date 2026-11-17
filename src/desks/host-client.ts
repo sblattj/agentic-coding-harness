@@ -7,15 +7,33 @@ export const HOST_SET_GOAL_TIMEOUT_MS = 50_000;
 const BACKOFF_START_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
+/**
+ * A host to call: its URL, plus the bearer token from its HostSpec (every route but
+ * GET /health needs it). A bare URL string sends no token.
+ */
+export type HostTarget = string | { url: string; token?: string };
+
+/** `{url, token}` when there is a token, else the bare url. */
+export function hostTarget(url: string, token: string | undefined): HostTarget {
+  return token !== undefined && token !== "" ? { url, token } : url;
+}
+
+const urlOf = (t: HostTarget): string => (typeof t === "string" ? t : t.url);
+const tokenOf = (t: HostTarget): string | undefined => (typeof t === "string" ? undefined : t.token);
 const join = (base: string, path: string): string => `${base.replace(/\/+$/, "")}${path}`;
 
-async function call<T>(base: string, method: "GET" | "POST", path: string, body?: unknown, timeoutMs = HOST_CLIENT_TIMEOUT_MS): Promise<T> {
-  const url = join(base, path);
+function headersFor(target: HostTarget, extra: Record<string, string>): Record<string, string> {
+  const token = tokenOf(target);
+  return token !== undefined && token !== "" ? { ...extra, authorization: `Bearer ${token}` } : extra;
+}
+
+async function call<T>(target: HostTarget, method: "GET" | "POST", path: string, body?: unknown, timeoutMs = HOST_CLIENT_TIMEOUT_MS): Promise<T> {
+  const url = join(urlOf(target), path);
   let res: Response;
   try {
     res = await fetch(url, {
       method,
-      headers: body !== undefined ? { "content-type": "application/json" } : undefined,
+      headers: headersFor(target, body !== undefined ? { "content-type": "application/json" } : {}),
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -33,34 +51,34 @@ async function call<T>(base: string, method: "GET" | "POST", path: string, body?
 }
 
 /** null on connection failure, timeout, or a non-2xx answer. */
-export async function hostHealth(url: string, timeoutMs = HOST_CLIENT_TIMEOUT_MS): Promise<HostHealth | null> {
+export async function hostHealth(target: HostTarget, timeoutMs = HOST_CLIENT_TIMEOUT_MS): Promise<HostHealth | null> {
   try {
-    return await call<HostHealth>(url, "GET", "/health", undefined, timeoutMs);
+    return await call<HostHealth>(target, "GET", "/health", undefined, timeoutMs);
   } catch {
     return null;
   }
 }
-export async function hostSend(url: string, from: Sender, text: string): Promise<Pick<DeskMessage, "id" | "delivered">> {
-  return call(url, "POST", "/send", { from, text });
+export async function hostSend(target: HostTarget, from: Sender, text: string): Promise<Pick<DeskMessage, "id" | "delivered">> {
+  return call(target, "POST", "/send", { from, text });
 }
-export async function hostNote(url: string, text: string): Promise<void> {
-  await call(url, "POST", "/note", { text });
+export async function hostNote(target: HostTarget, text: string): Promise<void> {
+  await call(target, "POST", "/note", { text });
 }
-export async function hostRecord(url: string, type: HostEventType, data: Record<string, unknown>): Promise<number> {
-  const r = await call<{ seq: number }>(url, "POST", "/record", { type, data });
+export async function hostRecord(target: HostTarget, type: HostEventType, data: Record<string, unknown>): Promise<number> {
+  const r = await call<{ seq: number }>(target, "POST", "/record", { type, data });
   return r.seq;
 }
-export async function hostGoal(url: string): Promise<GoalStatus> {
-  return call(url, "GET", "/goal");
+export async function hostGoal(target: HostTarget): Promise<GoalStatus> {
+  return call(target, "GET", "/goal");
 }
-export async function hostSetGoal(url: string, objective: string): Promise<void> {
-  await call(url, "POST", "/goal", { objective }, HOST_SET_GOAL_TIMEOUT_MS);
+export async function hostSetGoal(target: HostTarget, objective: string): Promise<void> {
+  await call(target, "POST", "/goal", { objective }, HOST_SET_GOAL_TIMEOUT_MS);
 }
-export async function hostMcp(url: string): Promise<Record<string, string>> {
-  return call(url, "GET", "/mcp");
+export async function hostMcp(target: HostTarget): Promise<Record<string, string>> {
+  return call(target, "GET", "/mcp");
 }
-export async function hostEvents(url: string, since = 0): Promise<HostEvent[]> {
-  const r = await call<{ events: HostEvent[] }>(url, "GET", `/events?since=${since}`);
+export async function hostEvents(target: HostTarget, since = 0): Promise<HostEvent[]> {
+  const r = await call<{ events: HostEvent[] }>(target, "GET", `/events?since=${since}`);
   return r.events;
 }
 
@@ -68,9 +86,19 @@ export async function hostEvents(url: string, since = 0): Promise<HostEvent[]> {
  * SSE subscription; returns an unsubscribe function. Reconnects with backoff
  * (1 s doubling to 30 s, reset after a successful connect), resuming at the
  * last seq seen; events with seq <= lastSeq are dropped.
+ *
+ * `target` may be a resolver, called before every connect: a desk whose engine
+ * was switched runs a new host (new token, new run, seq restarting at 1), so a
+ * long-lived subscriber re-reads it each time. When the resolved target changes,
+ * the stream restarts from seq 0 of the new run.
  */
-export function hostSubscribe(url: string, since: number, onEvent: (e: HostEvent) => void): () => void {
+export function hostSubscribe(
+  target: HostTarget | (() => Promise<HostTarget>),
+  since: number,
+  onEvent: (e: HostEvent) => void,
+): () => void {
   let lastSeq = since;
+  let current: string | undefined;
   let closed = false;
   let backoff = BACKOFF_START_MS;
   let timer: NodeJS.Timeout | undefined;
@@ -102,8 +130,13 @@ export function hostSubscribe(url: string, since: number, onEvent: (e: HostEvent
     if (closed) return;
     ctrl = new AbortController();
     try {
-      const res = await fetch(join(url, `/events?since=${lastSeq}`), {
-        headers: { accept: "text/event-stream" },
+      const t = typeof target === "function" ? await target() : target;
+      const key = JSON.stringify(t);
+      if (current !== undefined && key !== current) lastSeq = 0; // a new host run: its seq restarts
+      current = key;
+      if (closed) return;
+      const res = await fetch(join(urlOf(t), `/events?since=${lastSeq}`), {
+        headers: headersFor(t, { accept: "text/event-stream" }),
         signal: ctrl.signal,
       });
       if (!res.ok || res.body === null) throw new Error(`HTTP ${res.status}`);
@@ -138,10 +171,10 @@ export function hostSubscribe(url: string, since: number, onEvent: (e: HostEvent
   };
 }
 
-export async function hostAttach(url: string): Promise<string[]> {
-  const r = await call<{ argv: string[] }>(url, "GET", "/attach");
+export async function hostAttach(target: HostTarget): Promise<string[]> {
+  const r = await call<{ argv: string[] }>(target, "GET", "/attach");
   return r.argv;
 }
-export async function hostStop(url: string): Promise<void> {
-  await call(url, "POST", "/stop", {});
+export async function hostStop(target: HostTarget): Promise<void> {
+  await call(target, "POST", "/stop", {});
 }

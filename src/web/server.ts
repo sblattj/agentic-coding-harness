@@ -32,6 +32,7 @@ import { collectQueueViews } from "../core/queue-view.ts";
 import { createPricer, pricingMeta } from "../core/pricing.ts";
 import { renderQueuesPage } from "./queues.ts";
 import { PtyManager } from "./pty-manager.ts";
+import { checkHostOrigin, checkJsonBody } from "./request-guard.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { readLiveInfo } from "../interactive/live-registry.ts";
@@ -579,6 +580,11 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         const pathname = url.pathname;
         const get = req.method === "GET";
 
+        // Every route: refuse cross-site and DNS-rebinding requests, and non-JSON API writes
+        // (src/web/request-guard.ts). Native clients send no Origin and a loopback Host.
+        const refused = checkHostOrigin(req, { host: opts.host, port: boundPort() }) ?? checkJsonBody(req, pathname);
+        if (refused !== null) return jsonError(res, refused.status, refused.message);
+
         if (get && (pathname === "/" || pathname === "/index.html")) {
           const page = await readAsset("index.html");
           if (page === null) return notFound(res);
@@ -803,6 +809,13 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           return sendJson(res, 200, { ...live, ptyId: RUN_PTY_PREFIX + runId, steps: hello.steps });
         }
 
+        // POST /api/pty spawns any command: token-gated like the rest of the API (the whole
+        // /api/pty family, list and kill included).
+        if ((pathname === "/api/pty" || pathname.startsWith("/api/pty/")) && opts.token !== undefined) {
+          const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
+          if (url.searchParams.get("token") !== opts.token && bearer !== opts.token) return jsonError(res, 401, "unauthorized");
+        }
+
         if (pathname === "/api/pty") {
           if (get) return sendJson(res, 200, { sessions: ptyManager.list() });
           if (req.method !== "POST") return notFound(res);
@@ -902,12 +915,24 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
   }
 
   const httpServer = createServer(requestHandler);
+  /** The port the server really listens on (opts.port may be 0). */
+  const boundPort = (): number => (httpServer.address() as AddressInfo | null)?.port ?? opts.port;
 
   /** Answer a rejected upgrade with a plain HTTP status, then drop the
    *  socket so the client sees an error instead of a hang. */
   function rejectUpgrade(socket: Socket, status: number, message: string): void {
     const reason =
-      status === 401 ? "Unauthorized" : status === 404 ? "Not Found" : status === 400 ? "Bad Request" : "Error";
+      status === 401
+        ? "Unauthorized"
+        : status === 403
+          ? "Forbidden"
+          : status === 404
+            ? "Not Found"
+            : status === 400
+              ? "Bad Request"
+              : status === 421
+                ? "Misdirected Request"
+                : "Error";
     const body = JSON.stringify({ error: message });
     socket.write(
       `HTTP/1.1 ${status} ${reason}\r\n` +
@@ -929,6 +954,12 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         return;
       }
       const pathname = url.pathname;
+      // Browsers never same-origin-check a WebSocket: the Origin/Host guard is the only gate.
+      const refused = checkHostOrigin(req, { host: opts.host, port: boundPort() });
+      if (refused !== null) {
+        rejectUpgrade(socket, refused.status, refused.message);
+        return;
+      }
       if (req.method !== "GET" || (pathname !== "/ws" && !PTY_WS_ROUTE.test(pathname))) {
         rejectUpgrade(socket, 404, "not found");
         return;

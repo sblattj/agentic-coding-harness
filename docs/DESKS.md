@@ -62,7 +62,9 @@ Host API (JSON, 127.0.0.1 only):
 | `GET /attach` | the argv a terminal pane runs to show the session |
 | `POST /stop` | stop feed and engine, then exit |
 
-Identity comes from the environment (`ACH_DESK_NAME`, `ACH_DESK_STACK`), never from tool arguments, so a tool call cannot send as someone else. The CLI takes its sender from `--from`, else `$ACH_DESK_NAME`, else `human`, and refuses a `--from` that differs from `$ACH_DESK_NAME` (inside a desk or lane session). Self-send is refused. Every message is a `message_in` event in the target's run and a `message_out` event in the sender's, so replay shows the conversation.
+Every route except `GET /health` needs `Authorization: Bearer <token>` (401 without it). The token is 32 random bytes generated each time the host starts, written only to `specs/<name>.json` (mode 0600); it is never in `roster.json`, the roster view or any API answer. The CLI, the MCP tools and `ach web` read it from the spec file. Every route also checks `Host` (only `127.0.0.1:<port>` or `localhost:<port>`, else 421) and `Origin` (absent or the same origin, else 403), and every non-GET route needs `Content-Type: application/json` (415), so a web page in your browser cannot reach a host by a simple cross-site POST or by DNS rebinding.
+
+Identity comes from the environment (`ACH_DESK_NAME`, `ACH_DESK_STACK`), never from tool arguments, so a desk's MCP tools cannot send as someone else. The CLI takes its sender from `--from`, else `$ACH_DESK_NAME`, else `human`, and refuses a `--from` that differs from `$ACH_DESK_NAME` (inside a desk or lane session). That is not a hard boundary: the token stops HTTP callers that cannot read the spec file, but any process running as the same OS user can read `specs/<name>.json` and call a host with any `from`. Self-send is refused. Every message is a `message_in` event in the target's run and a `message_out` event in the sender's, so replay shows the conversation.
 
 ### Message rules
 
@@ -174,7 +176,7 @@ Under `<stateDir>/desks/<stack>/`:
 | `messages.jsonl` | one `DeskMessage` per line |
 | `decisions.jsonl` | `open`, `answer` and `close` events, folded into the current decision list |
 | `pending-lanes.jsonl` | lane approval requests: request, approve, reject |
-| `specs/<name>.json` | the host spec handed to `ach desk host` |
+| `specs/<name>.json` | the host spec handed to `ach desk host`, including the host's bearer token (mode 0600) |
 | `events/<runId>.jsonl` | the run's desk transcript |
 | `logs/<name>.log` | host stdout and stderr |
 | `layout.json` | the resolved layout `desk up` used |
@@ -225,6 +227,7 @@ Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else 
 - `desk send` and `desk answer` send as `--from`, else `$ACH_DESK_NAME`, else `human`. Inside a desk or lane session (`$ACH_DESK_NAME` set) a `--from` that differs is refused.
 - `-h` or `--help` is help only as the first argument after the subcommand; inside message text it is sent like any other word.
 - Only the human or the stack's decisions desk (the desk with role `decisions`) may `lane approve` or `lane reject`, from the CLI, MCP tools and web API alike (the web API answers 403 otherwise).
+- `desk events --follow` and `desk chat` look the host up again on every reconnect, so they keep streaming across an engine switch (new host token and run; the new run's events start at seq 1).
 - `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions. An agent name ach does not know (the list `GET /api/desks/engines` shows) is refused before the running host is stopped. When the new engine fails to start, the desk is restarted on its previous agent on the same port (with a new run id) and the start error is returned.
 - `lane stop` refuses desk names. A busy lane gets up to 15 s to finish its turn, plus about 2 s for the goal verdict, so a lane that just sent DONE is judged before it dies; `--now` skips the wait (emergency stops; `desk down` always stops at once). It closes the pane, stops the host and removes the roster entry.
 - `ach lane status <name>` also answers for a lane that already ended: the roster has forgotten it, so the row is rebuilt from `lanes.log` with `state: "stopped"` and `goalState` (the final goal state, taken from the lane's last `goal` event so a verdict reported while the host was stopping counts). A lane whose host crashed gets the same row: the roster prune writes its stop line (`by: "prune"`). Without a name only live lanes are listed.
@@ -280,6 +283,8 @@ Switch a running desk with `ach desk engine <name> <agent>`. A missing engine fa
 ## Web
 
 `ach web` serves a Desks view at `/desks`: the desk layout, a lane strip (goal, status, plan progress, cost), a message timeline, decision cards you answer with one click, and cost per desk and lane tree. It uses the Web API below.
+
+`ach web` refuses cross-site requests on every route and WebSocket upgrade: on a loopback bind the `Host` must be `127.0.0.1`, `localhost` or `[::1]` with the bound port (421), a present `Origin` must match the `Host` (403), and a non-GET `/api/*` request with a body must be `application/json` (415). A POST with no body (kill, continue) passes.
 
 ### Web API
 

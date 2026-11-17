@@ -35,7 +35,7 @@ interface Rig {
   err: string[];
   stdin: PassThrough;
   deps: Partial<DeskDeps>;
-  subscribed: { url: string; since: number; cb: (e: HostEvent) => void; stopped: boolean }[];
+  subscribed: { target: unknown; since: number; cb: (e: HostEvent) => void; stopped: boolean }[];
   stdout(): string;
   stderr(): string;
 }
@@ -62,8 +62,8 @@ function rig(returns: Record<string, unknown> = {}, opts: { hostEvents?: HostEve
   } as unknown as DeskService;
   const host = {
     hostEvents: async (_u: string, _s?: number) => opts.hostEvents ?? [],
-    hostSubscribe: (url: string, since: number, cb: (e: HostEvent) => void) => {
-      const s = { url, since, cb, stopped: false };
+    hostSubscribe: (target: unknown, since: number, cb: (e: HostEvent) => void) => {
+      const s = { target, since, cb, stopped: false };
       subscribed.push(s);
       return () => void (s.stopped = true);
     },
@@ -73,6 +73,12 @@ function rig(returns: Record<string, unknown> = {}, opts: { hostEvents?: HostEve
     deps: { service, host, stdout: (s) => void out.push(s), stderr: (s) => void err.push(s), stdin, env: opts.env ?? {}, now: () => NOW, abort: opts.abort },
     stdout: () => out.join(""), stderr: () => err.join(""),
   };
+}
+
+
+/** The CLI hands hostSubscribe a resolver (re-read on every reconnect); tests resolve it once. */
+async function resolveTarget(t: unknown): Promise<unknown> {
+  return typeof t === "function" ? await (t as () => Promise<unknown>)() : t;
 }
 
 describe("desk argument parsing -> service call args", () => {
@@ -412,7 +418,7 @@ describe("desk chat REPL", () => {
     const done = cmdDesk(["chat", "W"], r.deps);
     await new Promise((res) => setTimeout(res, 50));
     assert.equal(r.subscribed.length, 1);
-    assert.equal(r.subscribed[0]?.url, "http://127.0.0.1:4805");
+    assert.equal(await resolveTarget(r.subscribed[0]?.target), "http://127.0.0.1:4805");
     assert.equal(r.subscribed[0]?.since, 60);
     r.subscribed[0]?.cb(ev(61, "text", { text: "live reply" }));
     r.subscribed[0]?.cb(ev(62, "tool", { tool: "read", summary: "a.ts" }));
@@ -455,5 +461,21 @@ describe("desk events --follow", () => {
     assert.equal(await done, 0);
     assert.match(r.stdout(), /text\s+old\n[^\n]*status\s+busy\n/);
     assert.equal(r.subscribed[0]?.stopped, true);
+  });
+  it("subscribes with the host's bearer token from service.deskHostTarget", async () => {
+    const ac = new AbortController();
+    const r = rig({ deskRoster: view([row({ name: "W", url: "http://127.0.0.1:4805", runId: "r9" })]) }, { abort: ac.signal });
+    const asked: unknown[] = [];
+    (r.deps.service as unknown as Record<string, unknown>).deskHostTarget = (o: { url: string }) => {
+      asked.push(o);
+      return { url: o.url, token: "tk" };
+    };
+    const done = cmdDesk(["events", "W", "--follow"], r.deps);
+    await new Promise((res) => setTimeout(res, 50));
+    ac.abort();
+    assert.equal(await done, 0);
+    assert.deepEqual(await resolveTarget(r.subscribed[0]?.target), { url: "http://127.0.0.1:4805", token: "tk" });
+    assert.ok(asked.length >= 1);
+    for (const a of asked) assert.deepEqual(a, { name: "W", url: "http://127.0.0.1:4805", runId: "r9" });
   });
 });

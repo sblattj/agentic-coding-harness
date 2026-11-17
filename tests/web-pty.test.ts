@@ -182,7 +182,8 @@ async function killChild(c: ChildProcess): Promise<void> {
 async function post(srv: ServerHandle, pathname: string, body: string): Promise<Response> {
   return fetch(urlOf(srv, pathname), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // the authed server gates /api/pty behind its token like /ws/pty
+    headers: { 'content-type': 'application/json', ...(srv === authed ? { authorization: 'Bearer sekret' } : {}) },
     body,
   });
 }
@@ -385,6 +386,8 @@ describe('PTY HTTP routes + WS relay (bun subprocess)', { skip: isBun ? false : 
 
     const kill = await post(authed!, `/api/pty/${info.id}/kill`, '');
     assert.equal(kill.status, 200);
+    const noTokSpawn = await fetch(urlOf(authed!, '/api/pty'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command: 'bash' }) });
+    assert.equal(noTokSpawn.status, 401, 'POST /api/pty without the token must 401 on a token-gated server');
   });
 
   it('spawn with a nonexistent command → 400 (not a crash); server keeps serving', async () => {

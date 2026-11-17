@@ -129,4 +129,47 @@ describe('desks host-client', () => {
       await s.close();
     }
   });
+
+  it('hostSubscribe with a resolver re-reads the target on reconnect and restarts at seq 0 for a new run', async () => {
+    // Host A (old run, token a) serves seq 1..2 then closes the stream; host B (new run after an
+    // engine switch, token b) only accepts token b and starts its seq over at 1.
+    const seen: { auth: string | undefined; since: string | null }[] = [];
+    const mk = (token: string, events: HostEvent[]) =>
+      createServer((req, res) => {
+        const u = new URL(req.url ?? '/', 'http://x');
+        seen.push({ auth: req.headers.authorization, since: u.searchParams.get('since') });
+        if (req.headers.authorization !== `Bearer ${token}`) {
+          res.writeHead(401).end();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        for (const e of events.filter((x) => x.seq > Number(u.searchParams.get('since')))) res.write(`data: ${JSON.stringify(e)}\n\n`);
+        res.end();
+      });
+    const a = mk('a', [ev(1), ev(2)]);
+    const b = mk('b', [ev(1)]);
+    await new Promise<void>((r) => a.listen(0, '127.0.0.1', () => r()));
+    await new Promise<void>((r) => b.listen(0, '127.0.0.1', () => r()));
+    const ua = `http://127.0.0.1:${(a.address() as { port: number }).port}`;
+    const ub = `http://127.0.0.1:${(b.address() as { port: number }).port}`;
+    let current: { url: string; token: string } = { url: ua, token: 'a' };
+    const got: number[] = [];
+    const stop = hostSubscribe(async () => current, 0, (e) => {
+      got.push(e.seq);
+      if (e.seq === 2) current = { url: ub, token: 'b' }; // the engine switch happens
+    });
+    try {
+      await waitFor(() => got.length >= 3, 'events from both runs', 8000);
+      assert.deepEqual(got.slice(0, 3), [1, 2, 1], 'the new run is read from its own seq 1');
+      const toB = seen.filter((s) => s.auth === 'Bearer b');
+      assert.ok(toB.length >= 1, 'the reconnect used the new token');
+      assert.equal(toB[0]?.since, '0', 'a new run restarts at seq 0');
+    } finally {
+      stop();
+      a.closeAllConnections();
+      b.closeAllConnections();
+      await new Promise<void>((r) => a.close(() => r()));
+      await new Promise<void>((r) => b.close(() => r()));
+    }
+  });
 });

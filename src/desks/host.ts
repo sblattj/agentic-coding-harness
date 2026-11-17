@@ -5,10 +5,14 @@
 // queue, the meter (run record + token records + budget) and the event log
 // <stateDir>/desks/<stack>/events/<runId>.jsonl.
 //
+// Trust: every route but GET /health needs `Bearer <spec.token>`; every route refuses a
+// foreign Host or Origin, and POSTs must be JSON (see checkHostOrigin, bearerOk).
+//
 // Test hook: env ACH_DESK_FAKE_ENGINE=1 swaps in EchoEngine (replies "echo: <text>")
 // and a no-op meter, so a real child process can be exercised without an agent CLI
 // or a run registry.
 import { spawn } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
@@ -182,6 +186,40 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
     timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
   });
   return Promise.race([p, t]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * True when `header` is `Bearer <token>` for a non-empty `token` (constant-time compare).
+ * A host with no token (an old or hand-written spec) accepts no bearer at all: fail closed.
+ */
+export function bearerOk(header: string | undefined, token: string | undefined): boolean {
+  if (token === undefined || token === "" || header === undefined) return false;
+  const m = /^Bearer (.+)$/i.exec(header);
+  if (m === null) return false;
+  const got = Buffer.from(m[1] as string, "utf8");
+  const want = Buffer.from(token, "utf8");
+  return got.length === want.length && timingSafeEqual(got, want);
+}
+
+/**
+ * Refuse what a browser page could send: a Host other than the loopback name with this
+ * port (DNS rebinding, 421) and an Origin other than this host itself (cross-site, 403).
+ * Native clients (host-client, curl) send no Origin and Host 127.0.0.1:<port>.
+ */
+function checkHostOrigin(req: IncomingMessage, port: number): void {
+  const allowed = [`127.0.0.1:${port}`, `localhost:${port}`];
+  const host = (req.headers.host ?? "").toLowerCase();
+  if (!allowed.includes(host)) throw new HttpError(421, `misdirected request: Host ${JSON.stringify(req.headers.host ?? "")} is not this desk host`);
+  const origin = req.headers.origin;
+  if (origin !== undefined && !allowed.some((a) => origin.toLowerCase() === `http://${a}`)) {
+    throw new HttpError(403, `cross-origin request refused (Origin ${JSON.stringify(origin)})`);
+  }
+}
+
+/** POST bodies must be JSON: a text/plain or form POST is what a page sends without a CORS preflight. */
+function checkJsonType(req: IncomingMessage): void {
+  const type = (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+  if (type !== "application/json") throw new HttpError(415, "content-type must be application/json");
 }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -370,6 +408,8 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   };
 
   let server: Server | undefined;
+  /** The port the server really listens on (spec.port, or the OS pick when spec.port is 0). */
+  let boundPort = spec.port;
   const closeServer = async (): Promise<void> => {
     for (const c of sseClients) c.end();
     sseClients.clear();
@@ -455,6 +495,11 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const route = `${req.method ?? "GET"} ${url.pathname}`;
+    checkHostOrigin(req, boundPort);
+    if (route !== "GET /health") {
+      if (!bearerOk(req.headers.authorization, spec.token)) throw new HttpError(401, "unauthorized: this desk host needs its bearer token");
+      if (req.method !== "GET") checkJsonType(req);
+    }
     switch (route) {
       case "GET /health":
         return sendJson(res, 200, health());
@@ -549,6 +594,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   server.on("error", (e) => process.stderr.write(`desk host ${spec.name}: server error: ${errText(e)}\n`));
   const addr = server.address();
   const port = addr !== null && typeof addr === "object" ? addr.port : spec.port;
+  boundPort = port;
   if (installSignals) {
     process.on("SIGTERM", onSignal);
     process.on("SIGINT", onSignal);

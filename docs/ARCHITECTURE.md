@@ -204,7 +204,11 @@ records power the compare path: `web/compare.ts` rolls `hub.snapshotRuns()` into
 (`experiment`×`variant` or `workflow`×`agent`) exposed as `GET /api/compare?by=…` (rows carry
 `runs`, `avgTotalTokens`, `avgCostUsd`, `avgDurationMs`, `successRate`) and rendered by the
 `GET /compare` view. PTY attach stays local-only — `POST /api/pty` and `/ws/pty/*` reject
-external runs with `409` because no local process exists to attach to.
+external runs with `409` because no local process exists to attach to. With `--token`, every
+`/api/pty` route (spawn, list, kill) needs the token (`?token=` or `Authorization: Bearer`), like
+`/ws/pty/*`. Before any route, `web/request-guard.ts` refuses a foreign `Host` on a loopback bind
+(421), a cross-site `Origin` (403, WebSocket upgrades included) and a non-JSON body on `/api/*`
+writes (415).
 
 ## 2. Token taps
 
