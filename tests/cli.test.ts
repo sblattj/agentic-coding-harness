@@ -44,7 +44,7 @@ describe("harness cli", () => {
   test("--version prints the package version and exits 0", () => {
     const r = runCli(["--version"], {});
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
-    assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
+    assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   });
 
   let stateDir: string;

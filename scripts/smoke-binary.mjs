@@ -18,7 +18,7 @@ let server;
 try {
   const version = spawnSync(binary, ['--version'], options);
   assert.equal(version.status, 0, version.stderr);
-  assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   if (process.env.EXPECTED_VERSION) assert.equal(version.stdout.trim(), process.env.EXPECTED_VERSION);
   const help = spawnSync(binary, ['help'], options);
   assert.equal(help.status, 0, help.stderr);
