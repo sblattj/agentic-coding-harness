@@ -17,6 +17,7 @@ export type DeskToolService = Pick<
   | "laneNew"
   | "laneStatus"
   | "laneStop"
+  | "isApprover"
   | "laneApprove"
   | "laneReject"
   | "decisionOpen"
@@ -29,9 +30,6 @@ export interface DeskToolDeps {
   /** Defaults to process.env, read at registration time. */
   env?: Record<string, string | undefined>;
 }
-
-/** Names allowed to approve/reject pending lanes. */
-const APPROVERS = new Set(["DECISIONS", "human"]);
 
 function str(args: Record<string, unknown>, key: string, required = true): string | undefined {
   const v = args[key];
@@ -88,8 +86,8 @@ export function registerDeskTools(
   const base = { ...(opts.stateDir ? { stateDir: opts.stateDir } : {}), ...(stack ? { stack } : {}) };
 
   const requireApprover = (tool: string): void => {
-    if (!APPROVERS.has(me)) {
-      throw new Error(`${tool}: only DECISIONS or the human may decide pending lanes (you are ${me})`);
+    if (!svc.isApprover({ ...base, name: me })) {
+      throw new Error(`${tool}: only the human or the decisions desk may decide pending lanes (you are ${me})`);
     }
   };
 
@@ -196,7 +194,7 @@ export function registerDeskTools(
 
   server.registerTool({
     name: "lane_status",
-    description: "Status of one lane, or every desk/lane when no name is given: state, goal state, verified plan actions, evidence, cost.",
+    description: "Status of one lane, or of every lane when no name is given (desks are not listed; use desk_roster): state, goal state, verified plan actions, evidence, cost.",
     inputSchema: {
       type: "object",
       properties: { name: { type: "string", description: "Lane or desk name (omit for all)" } },
@@ -227,7 +225,7 @@ export function registerDeskTools(
 
   server.registerTool({
     name: "lane_approve",
-    description: "Approve a pending lane request (e.g. L3) so it starts. Only DECISIONS or the human may approve.",
+    description: "Approve a pending lane request (e.g. L3) so it starts. Only the decisions desk or the human may approve.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string", description: "Pending lane id, e.g. L3" } },
@@ -241,7 +239,7 @@ export function registerDeskTools(
 
   server.registerTool({
     name: "lane_reject",
-    description: "Reject a pending lane request. Only DECISIONS or the human may reject.",
+    description: "Reject a pending lane request. Only the decisions desk or the human may reject.",
     inputSchema: {
       type: "object",
       properties: {

@@ -277,6 +277,7 @@ function numParam(url: URL, k: string): number | undefined {
  */
 const SERVER_FAILURE =
   /not implemented|layout file not found|invalid layout|cannot parse layout|corrupt (layout|roster)|roles\/common\.md not found|role file .* not found|invalid role name|the layout has no desks|did not become idle|timed out after|no spec or layout entry|^desk host |spawnHost:|ACH_SELF_ARGV/i;
+const FORBIDDEN = /only the human or the decisions desk/i;
 const BAD_INPUT =
   /must not be empty|must be (a non-empty string|an array)|needs a label|invalid lane name|cannot send to yourself/i;
 const MISSING_RESOURCE =
@@ -287,6 +288,7 @@ export function statusForError(e: unknown): number {
   if (!(e instanceof Error)) return 500;
   const m = e.message;
   if (SERVER_FAILURE.test(m)) return 500;
+  if (FORBIDDEN.test(m)) return 403;
   if (BAD_INPUT.test(m)) return 400;
   if (MISSING_RESOURCE.test(m)) return 404;
   return 409;

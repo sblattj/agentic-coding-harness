@@ -254,6 +254,19 @@ function decisionsName(stateDir: string, stack: string): string {
   }
 }
 
+/** True for the human or the stack's decisions desk (role "decisions", else "DECISIONS"). The lane approval gate. */
+export function isApprover(o: StackOpts & { name: string }): boolean {
+  if (o.name === "human") return true;
+  const { stateDir, stack } = ctx(o);
+  return o.name === decisionsName(stateDir, stack);
+}
+
+function requireApprover(o: StackOpts & { by: Sender }, what: string): void {
+  if (!isApprover({ ...o, name: o.by })) {
+    throw new Error(`desks: ${what}: only the human or the decisions desk may decide pending lanes (you are ${o.by})`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Host lifecycle
 // ---------------------------------------------------------------------------
@@ -1033,6 +1046,7 @@ function findPending(stateDir: string, stack: string, id: string): PendingLane {
 }
 
 export async function laneApprove(o: StackOpts & { id: string; by: Sender }): Promise<RosterEntry> {
+  requireApprover(o, "lane approve");
   const { stateDir, stack } = ctx(o);
   const p = findPending(stateDir, stack, o.id);
   const entry = await startLane(stateDir, stack, p.request);
@@ -1042,6 +1056,7 @@ export async function laneApprove(o: StackOpts & { id: string; by: Sender }): Pr
 }
 
 export async function laneReject(o: StackOpts & { id: string; by: Sender; reason?: string }): Promise<PendingLane> {
+  requireApprover(o, "lane reject");
   const { stateDir, stack } = ctx(o);
   const p = findPending(stateDir, stack, o.id);
   const next: PendingLane = { ...p, state: "rejected", decidedBy: o.by, decidedAt: Date.now(), ...(o.reason !== undefined ? { reason: o.reason } : {}) };

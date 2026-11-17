@@ -20,6 +20,7 @@ import {
   deskInbox,
   deskRoster,
   deskSend,
+  isApprover,
   laneApprove,
   laneNew,
   laneReject,
@@ -245,6 +246,45 @@ describe('lanes: approval path on real fake-engine hosts', () => {
     writeFileSync(p.layout, JSON.stringify(layout));
     return { sd, stack };
   }
+
+  it('only the human or the stack decisions desk may approve or reject a lane (service-level gate)', async () => {
+    const { sd, stack } = setupStack('decisions');
+    const r = await laneNew({ stateDir: sd, stack, name: 'gate-1', goal: 'x', launchedBy: 'ORCHESTRATOR' });
+    const id = (r as { pending: PendingLane }).pending.id;
+    await assert.rejects(laneApprove({ stateDir: sd, stack, id, by: 'ORCHESTRATOR' }), /only the human or the decisions desk/);
+    await assert.rejects(laneReject({ stateDir: sd, stack, id, by: 'ORCHESTRATOR' }), /only the human or the decisions desk/);
+    assert.equal(isApprover({ stateDir: sd, stack, name: 'ORCHESTRATOR' }), false);
+    assert.equal(isApprover({ stateDir: sd, stack, name: 'DECISIONS' }), true);
+    assert.equal(isApprover({ stateDir: sd, stack, name: 'human' }), true);
+    // still pending: the refused call changed nothing
+    assert.equal((await deskRoster({ stateDir: sd, stack })).pendingLanes.length, 1);
+    const rej = await laneReject({ stateDir: sd, stack, id, by: 'human', reason: 'no' });
+    assert.equal(rej.state, 'rejected');
+  });
+
+  it('a renamed decisions desk is the approver; a desk literally named DECISIONS without the role is not', async () => {
+    const sd = tmpDir();
+    const stack = 'p5901';
+    const layout = parseLayout(
+      JSON.stringify({
+        portBase: 5901,
+        agent: 'opencode',
+        desks: [
+          { name: 'ORCHESTRATOR', role: 'orchestrator', mcps: [] },
+          { name: 'JUDGE', role: 'decisions', mcps: [] },
+          { name: 'DECISIONS', role: 'worker', mcps: [] },
+        ],
+        lanes: { defaultMcps: [], ports: [10, 19], approval: 'decisions' },
+      }),
+      'inline',
+    );
+    const p = deskPaths(sd, stack);
+    mkdirSync(p.root, { recursive: true });
+    writeFileSync(p.layout, JSON.stringify(layout));
+    assert.equal(isApprover({ stateDir: sd, stack, name: 'JUDGE' }), true);
+    assert.equal(isApprover({ stateDir: sd, stack, name: 'DECISIONS' }), false);
+    assert.equal(isApprover({ stateDir: sd, stack, name: 'human' }), true);
+  });
 
   it('desk launcher -> pending; reject; approve starts the lane with brief + goal flags; laneStop refuses desks and cleans up', { timeout: 120_000 }, async () => {
     const { sd, stack } = setupStack('decisions');

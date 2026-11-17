@@ -17,6 +17,7 @@ function fakeService(calls: Call[], overrides: Partial<Record<string, () => unkn
     return ret;
   };
   return {
+    isApprover: ((o: { name: string }) => (overrides.isApprover ? (overrides.isApprover as any)(o) : o.name === "DECISIONS" || o.name === "human")) as unknown,
     deskRoster: mk("deskRoster", { version: "desks-api/1", stack: "default", rows: [] }),
     deskSend: mk("deskSend", { id: "m1", delivered: "now" }),
     deskInbox: mk("deskInbox", []),
@@ -206,8 +207,8 @@ describe("desk MCP tools: approval gating", () => {
     const t = setup(DESK_ENV);
     const a = await t.call("lane_approve", { id: "L1" });
     const r = await t.call("lane_reject", { id: "L1", reason: "no" });
-    assert.match(a.error!.message, /only DECISIONS or the human/);
-    assert.match(r.error!.message, /only DECISIONS or the human/);
+    assert.match(a.error!.message, /only the human or the decisions desk/);
+    assert.match(r.error!.message, /only the human or the decisions desk/);
     assert.equal(t.calls.length, 0);
   });
 
@@ -217,6 +218,16 @@ describe("desk MCP tools: approval gating", () => {
     await t.ok("lane_reject", { id: "L2", reason: "dup" });
     assert.deepEqual(t.calls[0], { fn: "laneApprove", o: { stateDir: "/tmp/state-x", id: "L1", by: "DECISIONS" } });
     assert.deepEqual(t.calls[1], { fn: "laneReject", o: { stateDir: "/tmp/state-x", id: "L2", by: "DECISIONS", reason: "dup" } });
+  });
+
+  it("approval follows the service isApprover, not the literal name: a renamed decisions desk approves, a desk named DECISIONS without the role cannot", async () => {
+    const yes = setup({ ACH_DESK_NAME: "JUDGE" }, { isApprover: () => true });
+    await yes.ok("lane_approve", { id: "L1" });
+    assert.equal(yes.calls[0]!.fn, "laneApprove");
+    const no = setup({ ACH_DESK_NAME: "DECISIONS" }, { isApprover: () => false });
+    const res = await no.call("lane_approve", { id: "L1" });
+    assert.match(res.error!.message, /only the human or the decisions desk/);
+    assert.equal(no.calls.length, 0);
   });
 
   it("the human (ACH_DESK_TOOLS=1) can approve", async () => {
