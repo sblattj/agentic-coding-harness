@@ -43,6 +43,8 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     /** Feed lifecycle notes and errors (spawn failure, exit, malformed line) -> host 'feed' / 'error' events. */
     onNote?: (note: string) => void;
     onError?: (error: string) => void;
+    /** Call state changes: true when a live session starts, false on waiting / call ended. */
+    onActive?: (active: boolean) => void;
     /** First restart delay (ms); doubles to maxBackoffMs. Default 2000. */
     restartBaseMs?: number;
     /** Default 60000. */
@@ -54,6 +56,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
   } = {}): FeedHandle {
   const note = (s: string) => { try { opts.onNote?.(s); } catch { /* host callback */ } };
   const err = (s: string) => { try { opts.onError?.(s); } catch { /* host callback */ } };
+  const active = (a: boolean) => { try { opts.onActive?.(a); } catch { /* host callback */ } };
   const heartbeatType = spec.heartbeatType ?? "alive";
   const endType = spec.endType ?? "call_ended";
   const immediate = new Set(spec.immediate ?? []);
@@ -104,6 +107,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
 
     const becomeActive = async (): Promise<void> => {
       phase = "active";
+      active(true);
       if (spec.fullContext && spec.fullContext.length > 0) {
         try {
           const out = await run(spec.fullContext, opts.cwd, env);
@@ -132,7 +136,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
         if (phase === "backlog" || (phase === "waiting" && spec.activeCheck)) {
           const first = phase === "backlog";
           if (await checkActive()) await becomeActive();
-          else if (first) { phase = "waiting"; enqueue(WAITING_NOTE, e); }
+          else if (first) { phase = "waiting"; active(false); enqueue(WAITING_NOTE, e); }
         }
         return;
       }
@@ -146,6 +150,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
         flush();
         enqueue(CALL_ENDED_MESSAGE, e);
         phase = "backlog"; backlog = 0;
+        active(false);
         return;
       }
       if (immediate.has(type)) {

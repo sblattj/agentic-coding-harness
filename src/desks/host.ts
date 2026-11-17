@@ -383,7 +383,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
       if (feed !== undefined) {
         try {
           await feed.stop();
-          record("feed", { note: "feed stopped" });
+          record("feed", { note: "feed stopped", active: false });
         } catch (e) {
           record("error", { error: `feed stop: ${errText(e)}` });
         }
@@ -588,6 +588,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
       }, {
         cwd: spec.cwd,
         onNote: (note) => record("feed", { note }),
+        onActive: (active) => record("feed", { note: active ? "call active" : "call not active", active }),
         onError: (error) => record("error", { error: `feed: ${error}` }),
       });
       record("feed", { note: `feed started (pid ${feed.pid})`, pid: feed.pid });

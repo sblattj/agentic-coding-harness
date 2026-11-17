@@ -126,6 +126,24 @@ test("call_ended flushes, sends the closing message, and a new call gets full co
   } finally { await h.handle.stop(); }
 });
 
+test("onActive reports true when a call starts, false when it ends or waits", async () => {
+  const states: boolean[] = [];
+  const h = harness({
+    command: feedCmd([alive, { delay: 80 }, ev("utterance", { text: "a" }), ev("call_ended")]),
+    activeCheck: activeCmd(true), batchSeconds: 0.2,
+  }, { onActive: (a: boolean) => states.push(a) });
+  try {
+    await waitFor(() => states.length >= 2, "2 active states");
+    assert.deepEqual(states.slice(0, 2), [true, false]);
+  } finally { await h.handle.stop(); }
+  const w: boolean[] = [];
+  const h2 = harness({ command: feedCmd([alive, { delay: 200 }]), activeCheck: activeCmd(false) }, { onActive: (a: boolean) => w.push(a) });
+  try {
+    await waitFor(() => w.length >= 1, "waiting state");
+    assert.deepEqual(w, [false]);
+  } finally { await h2.handle.stop(); }
+});
+
 test("malformed lines go to onError and the feed keeps going", async () => {
   const h = harness({
     command: feedCmd([alive, { delay: 50 }, { raw: "not json" }, { raw: '{"no":"type"}' }, ev("for_me", { text: "ok" })]),
