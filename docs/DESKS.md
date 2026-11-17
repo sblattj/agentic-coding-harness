@@ -176,6 +176,10 @@ Under `<stateDir>/desks/<stack>/`:
 | `events/<runId>.jsonl` | the run's desk transcript |
 | `logs/<name>.log` | host stdout and stderr |
 | `layout.json` | the resolved layout `desk up` used |
+| `terminal.json` | the terminal the panes live on (`kind`, tmux session and socket), so later commands reach the same tmux server |
+| `specs/<name>.pid` | the launcher pid; `desk down` waits on it and on the host pid |
+| `specs/<name>.switching` | present while `desk engine` restarts that desk, so a roster prune skips it |
+| `lanes.log` | one JSON line per lane start and stop |
 
 The stack name is `--stack`, else `$ACH_DESK_STACK`, else `<stateDir>/desks/active-stack`, else `default`.
 
@@ -221,12 +225,13 @@ Registered on `ach mcp` for every desk and lane session (identity from `ACH_DESK
 |---|---|---|
 | `desk_roster` | none | `me` plus peers with role, busy/idle/dead, tools, goal |
 | `desk_send` | `to, text` | refuses self and unknown names; returns at once; do not wait or poll |
-| `desk_inbox` | `limit` | recent messages to or from the caller |
-| `lane_new` | `name, goal, mcps?, cwd?, agent?, model?, budgetUsd?` | start a lane, or `{pending}` when approval applies |
+| `desk_inbox` | `limit?, since_minutes?` | recent messages to or from the caller |
+| `lane_new` | `name, goal, mcps?, cwd?, agent?, model?, budget_usd?, brief?` | start a lane, or `{pending}` when approval applies |
 | `lane_status` | `name?` | goal state, verified plan actions, evidence |
 | `lane_stop` | `name` | refuses desk names |
-| `lane_approve` | `id` | approve a pending lane |
-| `decision_open` | `question, options, askedBy` | add a question for the human |
+| `lane_approve` | `id` | approve a pending lane (DECISIONS or human only) |
+| `lane_reject` | `id, reason?` | reject a pending lane (DECISIONS or human only) |
+| `decision_open` | `question, options, asked_by?` (alias `askedBy`; default the caller) | add a question for the human |
 | `decision_list` | `state?` | open, answered or closed decisions |
 | `decision_close` | `id, reason?` | close a decision |
 
