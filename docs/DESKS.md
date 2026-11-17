@@ -277,9 +277,9 @@ JSON; SSE where noted. Versioned as `desks-api/1`.
 
 ```
 GET  /api/desks                         -> RosterView   (desk rows carry `pane` when the layout sets one; lanes have none)
-GET  /api/desks/messages?since=<ms>     -> {messages: DeskMessage[]}
+GET  /api/desks/messages?since=<ms>&limit=<n>&name=<desk> -> {messages: DeskMessage[]}   (name keeps messages from or to that desk)
 GET  /api/desks/stream                  -> SSE: message | roster | event | decision
-GET  /api/desks/decisions               -> {decisions: Decision[]}
+GET  /api/desks/decisions?state=<open|answered|closed> -> {decisions: Decision[]}
 POST /api/desks/decisions/:id/answer {text} -> Decision   (delivers the answer to askedBy and to DECISIONS)
 POST /api/desks/send {to, text}         -> DeskMessage   (from "human")
 POST /api/desks/up {layoutFile?, term?} -> RosterView   (term defaults to "none": no terminal panes)
@@ -289,20 +289,28 @@ POST /api/desks/lanes/:name/stop        {now?: true} -> {}   (body optional; now
 POST /api/desks/pending/:id/approve     -> RosterEntry ; /reject {reason?} -> PendingLane
 POST /api/desks/:name/engine {agent, model?} -> RosterEntry
 GET  /api/desks/:name/events?since=<seq> -> {events: HostEvent[]}
+GET  /api/desks/:name/attach            -> {argv: string[]}   (the command that attaches a terminal to the desk or lane; 404 unknown, 409 dead)
 GET  /api/desks/costs                   -> {rows: DeskCostRow[]}
 GET  /api/desks/engines                 -> {engines: {agent, found, path?, auth?}[]}
 GET  /api/desks/mcps                    -> {names: string[]}
 ```
+
+Every route also takes `?stack=<name>` to pick a stack (default: the server's own). When the server runs with a token, pass it as `?token=<token>` or `Authorization: Bearer <token>`.
+
+The page keeps its chats live across a stream reconnect: a new stream subscribes to hosts from "now", so on every (re)open, and again after the first roster snapshot, the page refetches `/api/desks/:name/events?since=<lastSeq>` for each loaded chat and drops duplicates by seq.
 
 Errors are `{error: string}` with a status picked from the service message:
 
 | Status | Message shapes (src/desks/*.ts) |
 |---|---|
 | 400 | `... must not be empty`, `must be an array` / `a non-empty string`, `every decision option needs a label`, `invalid lane name`, `cannot send to yourself`; bad JSON or body fields (HttpError) |
+| 401 | missing or wrong token |
 | 404 | `unknown desk or lane`, `unknown desk`, `unknown lane`, `no pending lane <id>`, `no decision <id>` |
 | 409 | `stack ... is already up`, `port(s) ... already in use`, `port ... still busy`, `name ... is already in use`, `lane ... is already pending approval`, `lane request ... is already <state>`, `decision ... is closed`, `<name> is not running (dead)`, wrong kind (`is a lane` / `is a desk`), `no free lane port` |
 | 500 | config or server failure: `layout file not found`, `invalid layout`, `cannot parse layout`, `corrupt layout`, `corrupt roster`, `roles/common.md not found`, `role file ... not found`, `invalid role name`, `the layout has no desks`, `did not become idle`, `no spec or layout entry`, `timed out ... roster lock`, `desk host ...` upstream failure, `not implemented`; a non-Error throw |
-| 409 | any other message (default) |
+| 405 | wrong HTTP method for a known route |
+| 413 | request body over 1 MiB (the response carries `connection: close`) |
+| 500 | any other message (default): an unknown error is a server bug, not a conflict |
 
 Roster rows (`GET /api/desks`, `desk roster --json`) carry `pane` (`left` | `right-top` | `right-bottom` | `none`) on desks whose layout entry sets one. The web page places desk cards by it and falls back to port order when it is absent.
 

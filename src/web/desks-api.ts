@@ -202,11 +202,14 @@ function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let over = false;
     req.on("data", (c: Buffer) => {
+      if (over) return; // keep draining (and discarding) so the 413 reaches a client that is still writing
       size += c.length;
       if (size > BODY_MAX) {
+        over = true;
+        chunks.length = 0;
         reject(new HttpError(413, `body over ${BODY_MAX} bytes`));
-        req.destroy();
         return;
       }
       chunks.push(c);
@@ -273,7 +276,8 @@ function numParam(url: URL, k: string): number | undefined {
  * roster, host start timeout, upstream host failure, "not implemented") -> 500; bad input
  * (empty text/goal/question, invalid lane name, send to self) -> 400; a desk, lane, decision
  * or pending item named in the request that does not exist -> 404; any other refusal (already
- * up, port busy, name in use, dead target, wrong kind, closed) -> 409; a non-Error throw -> 500.
+ * up, port busy, name in use, dead target, wrong kind, closed; CONFLICT below) -> 409; a
+ * non-Error throw, and any message no rule matches (a server bug) -> 500.
  */
 const SERVER_FAILURE =
   /not implemented|layout file not found|invalid layout|cannot parse layout|corrupt (layout|roster)|roles\/common\.md not found|role file .* not found|invalid role name|the layout has no desks|did not become idle|timed out after|no spec or layout entry|^desk host |spawnHost:|ACH_SELF_ARGV/i;
@@ -283,6 +287,9 @@ const BAD_INPUT =
 const MISSING_RESOURCE =
   /\bunknown (desk|lane|decision|pending)\b|\bno pending lane\b|\bno decision\b|\bno such\b|does not exist|\b(desk|lane|decision|pending)\b[^\n]* not found/i;
 
+const CONFLICT =
+  /is already (up|pending approval|approved|rejected)|already in use|still busy|is not running \(dead\)|is a (lane|desk)\b|is closed|no free lane port/i;
+
 export function statusForError(e: unknown): number {
   if (e instanceof HttpError) return e.status;
   if (!(e instanceof Error)) return 500;
@@ -291,7 +298,8 @@ export function statusForError(e: unknown): number {
   if (FORBIDDEN.test(m)) return 403;
   if (BAD_INPUT.test(m)) return 400;
   if (MISSING_RESOURCE.test(m)) return 404;
-  return 409;
+  if (CONFLICT.test(m)) return 409;
+  return 500;
 }
 
 function authorized(req: IncomingMessage, url: URL, token: string | undefined): boolean {
@@ -457,7 +465,7 @@ export async function handleDesksApi(
       const view = await svc.deskRoster({ ...so, prune: false });
       const entry = view.rows.find((r) => r.name === a);
       if (entry === undefined) throw new HttpError(404, `unknown desk or lane ${a} (known: ${view.rows.map((r) => r.name).join(", ") || "none"})`);
-      if (entry.state === "dead") throw new HttpError(404, `${a} is dead`);
+      if (entry.state === "dead") throw new HttpError(409, `${a} is not running (dead)`);
       return done(res, 200, { argv: await deps.hostAttach(entry.url) });
     }
     if (n === 2 && b === "events") {
@@ -472,7 +480,10 @@ export async function handleDesksApi(
       res.end();
       return true;
     }
-    return done(res, statusForError(e), { error: e instanceof Error ? e.message : String(e) });
+    const status = statusForError(e);
+    // An oversized body is still arriving: answer, then close the connection instead of reading on.
+    if (status === 413) res.setHeader("connection", "close");
+    return done(res, status, { error: e instanceof Error ? e.message : String(e) });
   }
 }
 

@@ -327,6 +327,7 @@ table.costs td.num, table.costs th.num { text-align: right; }
       renderAllChatNodes(row.name);
       renderFeeds();
       drain();
+      if (es && es.readyState === 1) resyncChats(); // the stream may have opened while history loaded
     }).catch(function (e) { c.loading = false; c.loaded = true; showErr(e); drain(); });
   }
   function eventNode(name, ev) {
@@ -924,12 +925,33 @@ table.costs td.num, table.costs th.num { text-align: right; }
 
   /* ===== live stream ===== */
   var es = null;
+  var resyncOnSnapshot = false;
+  // Which chats need a catch-up fetch after the stream (re)opens: every chat whose history has
+  // loaded, from its seq high-water mark. A new stream subscribes to hosts from "now", so events
+  // between the last frame and the new subscription are only recoverable from /events?since=.
+  function resyncTargets(chatMap) {
+    var out = [];
+    Object.keys(chatMap).forEach(function (name) {
+      var c = chatMap[name];
+      if (c.loaded && !c.loading) out.push({ name: name, since: c.lastSeq });
+    });
+    return out;
+  }
+  function resyncChats() {
+    resyncTargets(chats).forEach(function (t) {
+      api("GET", "/" + encodeURIComponent(t.name) + "/events?since=" + t.since).then(function (r) {
+        (r.events || []).forEach(function (ev) { addEvent(ev, false); }); // addEvent drops seq <= lastSeq
+      }).catch(showErr);
+    });
+  }
   function connect() {
     es = new EventSource(q("/api/desks/stream"));
     es.onopen = function () {
       $("pulse").className = "pulse on";
       $("pulseTxt").textContent = "live";
       fetchMessages();
+      resyncChats();
+      resyncOnSnapshot = true; // again after the first snapshot: the server reads hostLastSeq after it
     };
     es.onerror = function () {
       $("pulse").className = "pulse";
@@ -938,7 +960,10 @@ table.costs td.num, table.costs th.num { text-align: right; }
     es.onmessage = function (e) {
       var f;
       try { f = JSON.parse(e.data); } catch (er) { return; }
-      if (f.kind === "roster") { applyView(f.view); refetchCosts(); }
+      if (f.kind === "roster") {
+        applyView(f.view); refetchCosts();
+        if (resyncOnSnapshot) { resyncOnSnapshot = false; resyncChats(); }
+      }
       else if (f.kind === "message") addMessage(f.message);
       else if (f.kind === "decision") { decisions[f.decision.id] = f.decision; renderDecisions(); }
       else if (f.kind === "event") addEvent(f.event, false);
