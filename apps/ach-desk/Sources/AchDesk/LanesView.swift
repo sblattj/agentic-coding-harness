@@ -124,7 +124,7 @@ struct NewLaneSheet: View {
 
     var engineChoices: [String] { store.engines.filter(\.found).map(\.agent) }
 
-    var nameOK: Bool { NewLaneBody.isValidName(name) && !(store.roster?.rows.contains { $0.name == name } ?? false) }
+    var nameOK: Bool { NewLaneBody.isValidName(name) && !(store.roster?.rows.contains { $0.name.lowercased() == name.lowercased() } ?? false) }
     var budgetValue: Double? { Double(budget.trimmingCharacters(in: .whitespaces)) }
     var canSubmit: Bool { nameOK && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (budget.isEmpty || budgetValue != nil) && !submitting }
 
@@ -132,10 +132,9 @@ struct NewLaneSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("New lane").font(.title2.bold())
             Form {
-                TextField("Name", text: $name, prompt: Text("e.g. LANE-DOCS"))
-                    .onChange(of: name) { _, v in if v != v.uppercased() { name = v.uppercased() } }
+                TextField("Name", text: $name, prompt: Text("e.g. fix-login-timeout"))
                 if !name.isEmpty && !nameOK {
-                    Text("Upper-case letters, digits, _ or -, starting with a letter, max 32, not already in use.").font(.caption).foregroundStyle(.red)
+                    Text("Letters, digits, _ or -, starting with a letter or digit, max 48, not human, not already in use.").font(.caption).foregroundStyle(.red)
                 }
                 VStack(alignment: .leading) {
                     Text("Goal")

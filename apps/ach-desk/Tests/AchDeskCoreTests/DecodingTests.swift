@@ -125,9 +125,20 @@ import Testing
     @Test func laneNameRule() {
         #expect(NewLaneBody.isValidName("LANE1"))
         #expect(NewLaneBody.isValidName("A_B-9"))
-        #expect(!NewLaneBody.isValidName("lane1"))
-        #expect(!NewLaneBody.isValidName("1LANE"))
+        // Mirrors src/desks/roster.ts validName(lane): /^[a-z0-9][a-z0-9_-]{0,47}$/i, plus the reserved "human".
+        #expect(NewLaneBody.isValidName("lane1"))
+        #expect(NewLaneBody.isValidName("fix-login-timeout"))
+        #expect(NewLaneBody.isValidName("probe-d2"))
+        #expect(NewLaneBody.isValidName("1LANE"))
+        #expect(NewLaneBody.isValidName("a" + String(repeating: "b", count: 47)))
+        #expect(!NewLaneBody.isValidName("a" + String(repeating: "b", count: 48)))
+        #expect(!NewLaneBody.isValidName("-lane"))
+        #expect(!NewLaneBody.isValidName("_lane"))
+        #expect(!NewLaneBody.isValidName("la ne"))
+        #expect(!NewLaneBody.isValidName("lane\n"))
+        #expect(!NewLaneBody.isValidName("human"))
+        #expect(!NewLaneBody.isValidName("Human"))
+        #expect(NewLaneBody.isValidName("humans"))
         #expect(!NewLaneBody.isValidName(""))
-        #expect(!NewLaneBody.isValidName("A" + String(repeating: "B", count: 32)))
     }
 }

@@ -40,7 +40,7 @@ public struct BackendLauncher: Sendable {
 
     public init(
         isExecutable: @escaping @Sendable (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
-        runCapture: @escaping Exec = BackendLauncher.capture
+        runCapture: @escaping Exec = { BackendLauncher.capture($0, $1) }
     ) {
         self.isExecutable = isExecutable
         self.runCapture = runCapture
@@ -104,14 +104,18 @@ public struct BackendLauncher: Sendable {
                 return .serving(view)
             }
             return .occupied(status: status, detail: String(decoding: data.prefix(200), as: UTF8.self))
-        } catch let e as URLError where [.cannotConnectToHost, .networkConnectionLost, .timedOut, .cannotFindHost].contains(e.code) {
-            return .notRunning
+        } catch let e as URLError where [.timedOut].contains(e.code) {
+            // Something may be listening but slow (a server mid-boot or wedged): not provably free, so never spawn.
+            return .occupied(status: 0, detail: "no answer within \(Int(r.timeoutInterval)) s (timed out)")
         } catch {
+            // Connection refused, host unreachable, etc.: nothing is listening.
             return .notRunning
         }
     }
 
-    public static let capture: Exec = { launchPath, args in
+    /// Runs a command and returns its stdout, or nil on failure or when it outlives `timeout` seconds
+    /// (a slow login shell must not block boot forever; callers fall back).
+    public static func capture(_ launchPath: String, _ args: [String], _ timeout: TimeInterval = 10) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: launchPath)
         p.arguments = args
@@ -120,11 +124,22 @@ public struct BackendLauncher: Sendable {
         p.standardError = FileHandle.nullDevice
         p.standardInput = FileHandle.nullDevice
         do { try p.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
+        let box = CaptureBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            p.terminate()
+            return nil
+        }
         guard p.terminationStatus == 0 else { return nil }
-        return String(decoding: data, as: UTF8.self)
+        return String(decoding: box.data, as: UTF8.self)
     }
+
+    private final class CaptureBox: @unchecked Sendable { var data = Data() }
 }
 
 /// Owns the `ach web` child the app started (if any). Stops it on quit; never kills a server it did not start.
@@ -134,14 +149,22 @@ public final class BackendProcess: @unchecked Sendable {
 
     public init(logURL: URL) { self.logURL = logURL }
 
+    public enum StartError: Error, LocalizedError {
+        case alreadyRunning
+        public var errorDescription: String? { "An ach web child started by this app is still running." }
+    }
+
     public var isRunning: Bool { process?.isRunning ?? false }
 
+    /// Refuses while a child is still running: overwriting `process` would orphan it past quit.
     public func start(achPath: String, port: Int, environment: [String: String]) throws {
+        if isRunning { throw StartError.alreadyRunning }
         try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
         }
         let log = try FileHandle(forWritingTo: logURL)
+        defer { try? log.close() } // the child keeps its own dup of the fd
         log.seekToEndOfFile()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: achPath)
