@@ -102,7 +102,7 @@ export const DESK_USAGE = `usage:
 export const LANE_USAGE = `usage:
   ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N] [--brief TEXT] [--from NAME]
   ach lane status [name] [--json]
-  ach lane stop <name>
+  ach lane stop <name> [--now]
   ach lane approve <Ln>
   ach lane reject <Ln> [--reason R]
   every subcommand takes [--stack S]; --from defaults to $ACH_DESK_NAME, else "human"`;
@@ -557,10 +557,10 @@ async function runLane(sub: string, args: string[], d: DeskDeps): Promise<void> 
       return;
     }
     case "stop": {
-      const p = o({ from: { type: "string" } });
-      need(p.positionals.length === 1, "usage: ach lane stop <name>");
+      const p = o({ from: { type: "string" }, now: { type: "boolean" } });
+      need(p.positionals.length === 1, "usage: ach lane stop <name> [--now]");
       const c = ctxOf(p);
-      const r = await svc.laneStop(compact({ stack: c.stack, name: p.positionals[0] as string, by: fromName(p.values.from, d.env) }));
+      const r = await svc.laneStop(compact({ stack: c.stack, name: p.positionals[0] as string, by: fromName(p.values.from, d.env), now: p.values.now === true ? true : undefined }));
       if (c.json) emitJson(c, r);
       else d.stdout(`stopped ${r.stopped}\n`);
       return;

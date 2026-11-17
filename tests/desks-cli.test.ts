@@ -194,11 +194,13 @@ describe("lane argument parsing -> service call args", () => {
     const r = rig();
     await cmdLane(["status", "audit"], r.deps);
     await cmdLane(["stop", "audit"], r.deps);
+    await cmdLane(["stop", "audit", "--now"], r.deps);
     await cmdLane(["approve", "L1"], r.deps);
     await cmdLane(["reject", "L2", "--reason", "too big"], r.deps);
     assert.deepEqual(r.calls, [
       { fn: "laneStatus", args: { name: "audit" } },
       { fn: "laneStop", args: { name: "audit", by: "human" } },
+      { fn: "laneStop", args: { name: "audit", by: "human", now: true } },
       { fn: "laneApprove", args: { id: "L1", by: "human" } },
       { fn: "laneReject", args: { id: "L2", by: "human", reason: "too big" } },
     ]);
