@@ -249,6 +249,8 @@ Lanes always run inside a goal; desks never do. Lane goals must stand alone (a l
 | `opencode` | agent `opencode` | The host starts `opencode serve` on `port + 500` with a per-desk config (every other MCP forced off, role files as instructions), creates a session, and delivers messages over HTTP. Goals use the goal plugin. Busy/idle is the engine's own status. |
 | `driver` | `claude`, `codex`, `gemini`, and other ach adapters | The host runs one `ach run` per turn with the session resumed. Goals use ach's own loop. Busy/idle is the run's own state. |
 
+If the `opencode serve` of a running desk or lane exits on its own, the engine records an `error` event with `fatal: true`, ends a running turn with a `turn_end` that carries the same `error`, and the host stops with status error (exit 1); it does not restart the serve. Bring the desk back with `ach desk up`. Stopping a host while its engine is still starting is safe: the engine checks for the stop before every serve spawn and kills any serve it already spawned, so no `opencode serve` outlives the host. Setting a goal is confirmed only by a "New active goal" message that is newer than the goal command, so an earlier goal's message in the session never confirms a new one.
+
 Switch a running desk with `ach desk engine <name> <agent>`. A missing engine fails at start with a clear error (see [Troubleshooting](#troubleshooting)).
 
 ## Terminals

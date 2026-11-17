@@ -56,6 +56,34 @@ describe("setOpencodeGoal (fake server)", () => {
     } finally { await close(server); }
   });
 
+  it("a second goal is not confirmed by the first goal's marker still in the history", async () => {
+    // Session history already holds goal 1's marker; the goal 2 command hangs and adds nothing.
+    const history = [{ info: { id: "msg_1", role: "assistant" }, parts: [{ text: "New active goal: first" }] }];
+    const { url, server } = await serve((req, res) => {
+      if (req.method === "POST") return;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(history));
+    });
+    try {
+      await assert.rejects(setOpencodeGoal({ baseUrl: url, sessionId: "s", objective: "second", timeoutMs: 200, pollMs: 20 }), /not active after 200 ms/);
+    } finally { await close(server); }
+  });
+
+  it("a second goal is confirmed by a marker in a message newer than the post", async () => {
+    const history: unknown[] = [{ info: { id: "msg_1", role: "assistant" }, parts: [{ text: "New active goal: first" }] }];
+    const { url, server } = await serve((req, res) => {
+      if (req.method === "POST") {
+        history.push({ info: { id: "msg_2", role: "assistant" }, parts: [{ text: "New active goal: second" }] });
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(history));
+    });
+    try {
+      await setOpencodeGoal({ baseUrl: url, sessionId: "s", objective: "second", timeoutMs: 2000, pollMs: 20 });
+    } finally { await close(server); }
+  });
+
   it("rejects when the server is unreachable", async () => {
     const { url, server } = await serve(() => {});
     await close(server);

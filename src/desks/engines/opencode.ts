@@ -7,7 +7,7 @@
 // events come from the GET /event SSE stream (verified on opencode 1.19.0), reconciled against
 // GET /session/<sid>/message at every busy -> idle transition.
 import { spawn as nodeSpawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -47,6 +47,8 @@ export interface OpenCodeEngineOptions {
   stopGraceMs?: number;
   /** Goal confirmation timeout handed to setOpencodeGoal. Default 40 s. */
   goalTimeoutMs?: number;
+  /** How long after send() an idle signal counts as the previous turn's (opencode not busy yet). Default 15 s. */
+  sendGraceMs?: number;
 }
 
 /** Keys under `mcp` that are config, not server names (opencode config schema). */
@@ -202,14 +204,26 @@ export function portIsOpen(port: number, host = "127.0.0.1", timeoutMs = 500): P
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function tailOf(file: string, max = 2000): string {
+/** The last `max` chars of `file`, reading only bytes from offset `from` on (a shorter file reads from 0). */
+function tailOf(file: string, max = 2000, from = 0): string {
   try {
-    const s = readFileSync(file, "utf8");
+    const buf = readFileSync(file);
+    const s = buf.subarray(buf.length >= from ? from : 0).toString("utf8");
     return s.length > max ? s.slice(-max) : s;
   } catch {
     return "";
   }
 }
+
+function sizeOf(file: string): number {
+  try {
+    return statSync(file).size;
+  } catch {
+    return 0;
+  }
+}
+
+const STOPPED_DURING_START = "desks: opencode engine stopped during start";
 
 export const defaultSpawnServe: SpawnServe = ({ bin, args, cwd, env, logFile }) => {
   mkdirSync(dirname(logFile), { recursive: true });
@@ -291,6 +305,7 @@ export class OpenCodeEngine implements Engine {
   private readonly lockRetryDelayMs: number;
   private readonly stopGraceMs: number;
   private readonly goalTimeoutMs: number;
+  private readonly sendGraceMs: number;
 
   private spec?: HostSpec;
   private port = 0;
@@ -302,6 +317,12 @@ export class OpenCodeEngine implements Engine {
   private sse?: AbortController;
   private stopping = false;
   private stopped?: Promise<void>;
+  /** The in-flight start(), so stop() can wait until it has torn down whatever it spawned. */
+  private starting?: Promise<unknown>;
+  /** start() returned: from now on a serve exit is fatal for the desk. */
+  private started = false;
+  /** Fires at the end of send()'s grace so a turn that never showed busy is still ended. */
+  private graceTimer?: ReturnType<typeof setTimeout>;
   private objective = "";
 
   // event state
@@ -325,6 +346,7 @@ export class OpenCodeEngine implements Engine {
     this.lockRetryDelayMs = o.lockRetryDelayMs ?? 400;
     this.stopGraceMs = o.stopGraceMs ?? 5_000;
     this.goalTimeoutMs = o.goalTimeoutMs ?? 40_000;
+    this.sendGraceMs = o.sendGraceMs ?? 15_000;
   }
 
   /** The serve log path (`<stateDir>/desks/<stack>/logs/<name>.opencode.log`); "" before start(). */
@@ -333,9 +355,24 @@ export class OpenCodeEngine implements Engine {
   }
 
   async start(spec: HostSpec): Promise<{ sessionId?: string; engineUrl?: string; childPid?: number }> {
-    if (this.proc) throw new Error("desks: OpenCodeEngine already started");
+    if (this.proc || this.starting || this.started) throw new Error("desks: OpenCodeEngine already started");
+    if (this.stopping) throw new Error(STOPPED_DURING_START);
+    const p = this.doStart(spec);
+    this.starting = p;
+    try {
+      return await p;
+    } finally {
+      this.starting = undefined;
+    }
+  }
+
+  /** Throws once stop() was called: every spawn window in start() checks this, so stop() during start leaves no serve. */
+  private checkStop(): void {
+    if (this.stopping) throw new Error(STOPPED_DURING_START);
+  }
+
+  private async doStart(spec: HostSpec): Promise<{ sessionId?: string; engineUrl?: string; childPid?: number }> {
     this.spec = spec;
-    this.stopping = false;
     this.port = spec.enginePort ?? spec.port + 500;
     this.baseUrl = `http://127.0.0.1:${this.port}`;
     this.logFile = join(deskPaths(spec.stateDir, spec.stack).logs, `${spec.name}.opencode.log`);
@@ -353,34 +390,42 @@ export class OpenCodeEngine implements Engine {
     }
     const allowed = new Set([...spec.mcps, "desks"]);
 
-    // Up to two boots: the second force-disables any MCP the first boot's GET /mcp showed leaking
-    // (a config file we could not see or parse).
-    let extraDisabled: string[] = [];
-    for (let attempt = 1; ; attempt++) {
-      const config = buildOpencodeConfig(spec, { configured, env: this.env, extraDisabled, base });
-      await this.boot(spec, config);
-      const leaked = Object.entries(await this.mcpStatus())
-        .filter(([n, s]) => !allowed.has(n) && s !== "disabled")
-        .map(([n]) => n);
-      if (leaked.length === 0) break;
-      await this.killServe();
-      if (attempt >= 2) throw new Error(`desks: opencode serve still enables MCPs outside ${JSON.stringify([...allowed])}: ${leaked.join(", ")}`);
-      extraDisabled = [...extraDisabled, ...leaked];
-    }
-
     try {
+      // Up to two boots: the second force-disables any MCP the first boot's GET /mcp showed leaking
+      // (a config file we could not see or parse).
+      let extraDisabled: string[] = [];
+      for (let attempt = 1; ; attempt++) {
+        const config = buildOpencodeConfig(spec, { configured, env: this.env, extraDisabled, base });
+        await this.boot(spec, config);
+        this.checkStop();
+        const leaked = Object.entries(await this.mcpStatus())
+          .filter(([n, s]) => !allowed.has(n) && s !== "disabled")
+          .map(([n]) => n);
+        this.checkStop();
+        if (leaked.length === 0) break;
+        await this.killServe();
+        this.checkStop();
+        if (attempt >= 2) throw new Error(`desks: opencode serve still enables MCPs outside ${JSON.stringify([...allowed])}: ${leaked.join(", ")}`);
+        extraDisabled = [...extraDisabled, ...leaked];
+      }
+
       const created = (await this.http("POST", `/session?directory=${encodeURIComponent(spec.cwd)}`, { title: spec.name })) as { id?: string };
       if (!created || typeof created.id !== "string") throw new Error(`desks: opencode POST /session returned no id: ${JSON.stringify(created)}`);
+      this.checkStop();
       this.sessionId = created.id;
       this.openEventStream();
       const prompt = rolePrompt(spec);
       if (prompt !== "") await this.note(prompt);
+      this.checkStop();
     } catch (err) {
+      // Tear down whatever this start spawned; a stop() that landed meanwhile wins over the original error.
       this.sse?.abort();
       this.sse = undefined;
-      await this.killServe();
+      await this.killServe().catch(() => undefined);
+      if (this.stopping) throw new Error(STOPPED_DURING_START);
       throw err;
     }
+    this.started = true;
     const proc = this.proc as ServeProcess | undefined;
     return { sessionId: this.sessionId, engineUrl: this.baseUrl, childPid: proc?.pid };
   }
@@ -395,9 +440,11 @@ export class OpenCodeEngine implements Engine {
       try {
         return await this.bootOnce(spec, config);
       } catch (err) {
+        if (this.stopping) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         if (attempt >= LOCK_RETRIES || !/exited .* before ready/.test(msg) || !/database is locked/i.test(msg)) throw err;
         await sleep(this.lockRetryDelayMs * (attempt + 1) + Math.floor(Math.random() * this.lockRetryDelayMs));
+        this.checkStop();
       }
     }
   }
@@ -406,6 +453,8 @@ export class OpenCodeEngine implements Engine {
     if (await portIsOpen(this.port)) {
       throw new Error(`desks: opencode engine port ${this.port} is already in use (a stale serve?)`);
     }
+    // No await between this check and the spawn: a stop() either lands before it or sees this.proc.
+    this.checkStop();
     const env: NodeJS.ProcessEnv = {
       ...this.env,
       OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
@@ -414,6 +463,8 @@ export class OpenCodeEngine implements Engine {
       ACH_DESK_NAME: spec.name,
       ACH_DESK_STACK: spec.stack,
     };
+    // The serve log is opened for append: only bytes this boot writes say why THIS boot failed.
+    const logStart = sizeOf(this.logFile);
     const proc = this.spawnServe({
       bin: this.bin,
       args: ["serve", "--hostname", "127.0.0.1", "--port", String(this.port)],
@@ -429,13 +480,15 @@ export class OpenCodeEngine implements Engine {
     void proc.exited.then((c) => {
       exited = true;
       exitedWith = c;
-      if (this.proc === proc && !this.stopping && !booting) this.emit({ type: "error", data: { error: `opencode serve exited (${String(c)}); log ${this.logFile}` } });
+      if (this.proc !== proc || this.stopping || booting) return;
+      if (this.started) this.onServeDied(c);
+      else this.emit({ type: "error", data: { error: `opencode serve exited (${String(c)}); log ${this.logFile}` } });
     });
     const deadline = Date.now() + this.readyTimeoutMs;
     for (;;) {
       if (exited) {
         this.proc = undefined;
-        throw new Error(`desks: opencode serve exited (${String(exitedWith)}) before ready on port ${this.port}. Log tail:\n${tailOf(this.logFile)}`);
+        throw new Error(`desks: opencode serve exited (${String(exitedWith)}) before ready on port ${this.port}. Log tail:\n${tailOf(this.logFile, 2000, logStart)}`);
       }
       try {
         const r = await fetch(`${this.baseUrl}/session`, { signal: AbortSignal.timeout(2000) });
@@ -447,9 +500,10 @@ export class OpenCodeEngine implements Engine {
       } catch {
         // not up yet
       }
+      if (this.stopping) throw new Error(STOPPED_DURING_START);
       if (Date.now() > deadline) {
         await this.killServe();
-        throw new Error(`desks: opencode serve not ready on port ${this.port} after ${this.readyTimeoutMs} ms. Log tail:\n${tailOf(this.logFile)}`);
+        throw new Error(`desks: opencode serve not ready on port ${this.port} after ${this.readyTimeoutMs} ms. Log tail:\n${tailOf(this.logFile, 2000, logStart)}`);
       }
       await sleep(250);
     }
@@ -474,9 +528,28 @@ export class OpenCodeEngine implements Engine {
       await this.http("POST", `/session/${this.sessionId}/prompt_async`, { ...this.modelBody(), parts: [{ type: "text", text }] });
     } catch (err) {
       this.pendingTurn = false;
-      this.setBusy(false);
+      // During an in-flight idle transition, markBusy() only queued a turn_start: drop it and let
+      // that transition emit the turn_end. Otherwise end the turn markBusy() started.
+      if (this.idleInFlight) this.busyAfterIdle = false;
+      else this.setBusy(false);
       throw err;
     }
+    this.armGrace();
+  }
+
+  /**
+   * A turn that fails before opencode ever reports busy only sends idle signals inside the grace,
+   * which streamIdle() ignores as stale. Re-check status once the grace is over so it still ends.
+   */
+  private armGrace(): void {
+    if (this.graceTimer) clearTimeout(this.graceTimer);
+    const since = this.pendingSince;
+    this.graceTimer = setTimeout(() => {
+      this.graceTimer = undefined;
+      if (this.stopping || !this.pendingTurn || this.pendingSince !== since) return;
+      void this.state().catch(() => undefined);
+    }, this.sendGraceMs + 50);
+    this.graceTimer.unref?.();
   }
 
   async note(text: string): Promise<void> {
@@ -494,8 +567,8 @@ export class OpenCodeEngine implements Engine {
       this.markBusy();
       return "busy";
     }
-    // Grace: a just-accepted prompt_async that has not flipped status yet still counts as busy (<= 15 s).
-    if (this.pendingTurn && Date.now() - this.pendingSince < 15_000) return "busy";
+    // Grace: a just-accepted prompt_async that has not flipped status yet still counts as busy (<= sendGraceMs, default 15 s).
+    if (this.pendingTurn && Date.now() - this.pendingSince < this.sendGraceMs) return "busy";
     if (this.pendingTurn || this.busy) {
       this.pendingTurn = false;
       this.onIdle();
@@ -539,9 +612,19 @@ export class OpenCodeEngine implements Engine {
   }
 
   async stop(): Promise<void> {
-    if (this.stopped) return this.stopped;
-    this.stopped = (async () => {
-      this.stopping = true;
+    this.stopping = true;
+    this.stopped ??= this.doStop();
+    await this.stopped;
+    // A start() in flight sees the flag at its next check and kills what it spawned: wait for it,
+    // then kill anything still left so no serve outlives stop().
+    if (this.starting) await this.starting.catch(() => undefined);
+    if (this.proc) await this.killServe();
+  }
+
+  private doStop(): Promise<void> {
+    return (async () => {
+      if (this.graceTimer) clearTimeout(this.graceTimer);
+      this.graceTimer = undefined;
       if (this.sessionId && this.proc) {
         try {
           const st = (await this.http("GET", "/session/status", undefined, 2000)) as Record<string, { type?: string }> | null;
@@ -557,7 +640,28 @@ export class OpenCodeEngine implements Engine {
       await this.killServe();
       if (this.busy) this.setBusy(false);
     })();
-    return this.stopped;
+  }
+
+  /**
+   * The serve exited on its own after start() returned. Fatal for the desk: the error event carries
+   * fatal:true (the host stops with status error), then a busy turn ends with an error marker so
+   * nothing waits on a turn that can never finish. Emitted in that order so the host is already
+   * stopping when turn_end arrives and does not drain its queue into a dead serve.
+   */
+  private onServeDied(code: number | string | null): void {
+    const error = `opencode serve exited (${String(code)}); log ${this.logFile}`;
+    this.proc = undefined;
+    this.sse?.abort();
+    this.sse = undefined;
+    if (this.graceTimer) clearTimeout(this.graceTimer);
+    this.graceTimer = undefined;
+    this.pendingTurn = false;
+    this.busyAfterIdle = false;
+    this.emit({ type: "error", data: { error, fatal: true } });
+    if (this.busy) {
+      this.busy = false;
+      this.emit({ type: "turn_end", data: { sessionId: this.sessionId, error } });
+    }
   }
 
   /** TERM the serve group, KILL after the grace, then wait until the port is free (<= 5 s more). */
@@ -731,9 +835,9 @@ export class OpenCodeEngine implements Engine {
         break;
     }
   }
-  /** An idle event while send()'s latch is up (and busy not yet seen) is the PREVIOUS turn's: ignore it within the grace. */
+  /** An idle event while send()'s latch is up (and busy not yet seen) is the PREVIOUS turn's: ignore it within the grace (armGrace re-checks after). */
   private streamIdle(): void {
-    if (this.pendingTurn && Date.now() - this.pendingSince < 15_000) return;
+    if (this.pendingTurn && Date.now() - this.pendingSince < this.sendGraceMs) return;
     this.pendingTurn = false;
     this.onIdle();
   }
