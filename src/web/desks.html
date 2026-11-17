@@ -474,11 +474,27 @@ table.costs td.num, table.costs th.num { text-align: right; }
 
   /* ===== desk grid ===== */
   var SLOTS = ["left", "right-top", "right-bottom"];
+  // Place each desk by its roster `pane` when the layout set one (left | right-top | right-bottom).
+  // Without it, fall back to the guess: desk i of the layout listens on portBase + 1 + i, so port
+  // order is layout order; unset desks take the free slots in that order, the rest are "extra".
+  // Sorts `desks` into slot order in place and returns the slot of each, same index.
+  function deskSlots(desks) {
+    desks.sort(function (a, b) { return a.port - b.port; });
+    var taken = {};
+    desks.forEach(function (d) { if (SLOTS.indexOf(d.pane) >= 0 && !taken[d.pane]) taken[d.pane] = d.name; });
+    var free = SLOTS.filter(function (s) { return !taken[s]; });
+    var slotOf = {};
+    desks.forEach(function (d) {
+      slotOf[d.name] = taken[d.pane] === d.name ? d.pane : (d.pane === "none" ? "extra" : (free.shift() || "extra"));
+    });
+    var rank = function (d) { var i = SLOTS.indexOf(slotOf[d.name]); return i < 0 ? 9 : i; };
+    desks.sort(function (a, b) { return rank(a) - rank(b) || a.port - b.port; });
+    return desks.map(function (d) { return slotOf[d.name]; });
+  }
   function renderDesks() {
     var grid = $("desk-grid");
     var desks = view ? view.rows.filter(function (r) { return r.kind === "desk"; }) : [];
-    // Desk i of the layout listens on portBase + 1 + i, so port order is layout order -> pane slot.
-    desks.sort(function (a, b) { return a.port - b.port; });
+    var slots = deskSlots(desks);
     // Re-rendering must not eat what the user is typing.
     var typed = {}, focused = null;
     var inputs = grid.querySelectorAll(".desk .send input");
@@ -495,7 +511,7 @@ table.costs td.num, table.costs th.num { text-align: right; }
     }
     grid.className = "";
     for (var i = 0; i < desks.length; i++) {
-      var card = deskCard(desks[i], SLOTS[i] || "extra");
+      var card = deskCard(desks[i], slots[i]);
       var inp = card.querySelector(".send input");
       if (typed[desks[i].name]) inp.value = typed[desks[i].name];
       grid.appendChild(card);

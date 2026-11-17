@@ -271,13 +271,13 @@ Switch a running desk with `ach desk engine <name> <agent>`. A missing engine fa
 JSON; SSE where noted. Versioned as `desks-api/1`.
 
 ```
-GET  /api/desks                         -> RosterView
+GET  /api/desks                         -> RosterView   (desk rows carry `pane` when the layout sets one; lanes have none)
 GET  /api/desks/messages?since=<ms>     -> {messages: DeskMessage[]}
 GET  /api/desks/stream                  -> SSE: message | roster | event | decision
 GET  /api/desks/decisions               -> {decisions: Decision[]}
 POST /api/desks/decisions/:id/answer {text} -> Decision   (delivers the answer to askedBy and to DECISIONS)
 POST /api/desks/send {to, text}         -> DeskMessage   (from "human")
-POST /api/desks/up {layoutFile?}        -> RosterView
+POST /api/desks/up {layoutFile?, term?} -> RosterView   (term defaults to "none": no terminal panes)
 POST /api/desks/down                    -> {stopped: string[]}
 POST /api/desks/lanes {name, goal, mcps?, cwd?, agent?, model?, budgetUsd?} -> RosterEntry | {pending: PendingLane}
 POST /api/desks/lanes/:name/stop        -> {}
@@ -288,6 +288,18 @@ GET  /api/desks/costs                   -> {rows: DeskCostRow[]}
 GET  /api/desks/engines                 -> {engines: {agent, found, path?, auth?}[]}
 GET  /api/desks/mcps                    -> {names: string[]}
 ```
+
+Errors are `{error: string}` with a status picked from the service message:
+
+| Status | Message shapes (src/desks/*.ts) |
+|---|---|
+| 400 | `... must not be empty`, `must be an array` / `a non-empty string`, `every decision option needs a label`, `invalid lane name`, `cannot send to yourself`; bad JSON or body fields (HttpError) |
+| 404 | `unknown desk or lane`, `unknown desk`, `unknown lane`, `no pending lane <id>`, `no decision <id>` |
+| 409 | `stack ... is already up`, `port(s) ... already in use`, `port ... still busy`, `name ... is already in use`, `lane ... is already pending approval`, `lane request ... is already <state>`, `decision ... is closed`, `<name> is not running (dead)`, wrong kind (`is a lane` / `is a desk`), `no free lane port` |
+| 500 | config or server failure: `layout file not found`, `invalid layout`, `cannot parse layout`, `corrupt layout`, `corrupt roster`, `roles/common.md not found`, `role file ... not found`, `invalid role name`, `the layout has no desks`, `did not become idle`, `no spec or layout entry`, `timed out ... roster lock`, `desk host ...` upstream failure, `not implemented`; a non-Error throw |
+| 409 | any other message (default) |
+
+Roster rows (`GET /api/desks`, `desk roster --json`) carry `pane` (`left` | `right-top` | `right-bottom` | `none`) on desks whose layout entry sets one. The web page places desk cards by it and falls back to port order when it is absent.
 
 ## macOS app
 

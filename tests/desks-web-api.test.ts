@@ -8,7 +8,8 @@ import { createServer, get as httpGet, type IncomingMessage, type Server } from 
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Script } from 'node:vm';
+import { createContext, runInContext, Script } from 'node:vm';
+import { readFileSync } from 'node:fs';
 import {
   handleDesksApi,
   listDeskMcps,
@@ -422,6 +423,67 @@ describe('desks web api: routes', () => {
     assert.equal(statusForError(new Error('refusing self-send')), 409);
     assert.equal(statusForError(new Error('desks: deskUp not implemented yet')), 500);
     assert.equal(statusForError('boom'), 500);
+  });
+
+  it('statusForError: config and server failures are 500, bad input 400, conflicts 409, missing resources 404', () => {
+    const cases: Array<[string, number]> = [
+      // 404: a desk, lane, decision or pending item named in the request
+      ['desks: unknown desk or lane "X" in stack "s"; live: A, B', 404],
+      ['desks: unknown desk "X" in stack "s"', 404],
+      ['desks: unknown lane "X" in stack "s"', 404],
+      ['desks: no pending lane L9 in stack "s"', 404],
+      ['desks: no decision D9 in stack "s"', 404],
+      // 500: config or server-side failure, even though the text says "not found"
+      ['desks: layout file not found: /x/desks.yaml', 500],
+      ['desks: roles/common.md not found in: /a, /b', 500],
+      ['desks: role file orchestrator.md not found in: /a, /b', 500],
+      ['desks: invalid layout /x/desks.yaml: desks.0.name: required', 500],
+      ['desks: cannot parse layout /x/desks.yaml: bad yaml', 500],
+      ['desks: corrupt layout /x/layout.json: oops', 500],
+      ['desks: corrupt roster /x/roster.json: oops', 500],
+      ['desks: the layout has no desks', 500],
+      ['desks: host ORCH did not become idle on port 4801 (timeout); log /x/log:\n...', 500],
+      ['desks: no spec or layout entry for ORCH', 500],
+      ['desk host GET http://127.0.0.1:1/health: HTTP 500: boom', 500],
+      // 400: bad input
+      ['desks: invalid lane name "a b" (want /^[a-z0-9][a-z0-9_-]{0,47}$/i)', 400],
+      ['desks: lane goal must not be empty', 400],
+      ['desks: message text must not be empty', 400],
+      ['desks: decision options must be an array', 400],
+      ['desks: every decision option needs a label', 400],
+      ['desks: agent must be a non-empty string', 400],
+      ['desks: ORCH cannot send to yourself', 400],
+      // 409: conflicts and refusals
+      ['desks: stack "s" is already up (alive: A); run `ach desk down` first', 409],
+      ['desks: port(s) 4801 already in use; pick another portBase (--port-base)', 409],
+      ['desks: name "x" is already in use in stack "s"', 409],
+      ['desks: lane "x" is already pending approval (L1)', 409],
+      ['desks: lane request L1 is already approved', 409],
+      ['desks: decision D1 is closed', 409],
+      ['desks: ORCH is not running (dead) in stack "s"; live: A', 409],
+      ['desks: X is a lane; only desks switch engines', 409],
+      ['desks: no free lane port in 4810..4819', 409],
+    ];
+    for (const [msg, want] of cases) assert.equal(statusForError(new Error(msg)), want, msg);
+  });
+
+  it('desks.html places each desk by its roster pane, falling back to port order', () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const src = /var SLOTS = [\s\S]*?\n  function deskSlots[\s\S]*?\n  }\n/.exec(html)?.[0];
+    assert.ok(src, 'deskSlots found in the page script');
+    const ctx = createContext({});
+    runInContext(`${src}; this.deskSlots = deskSlots;`, ctx);
+    const place = (ds: Array<{ name: string; port: number; pane?: string }>): string[] => {
+      const rows = ds.map((d) => ({ ...d }));
+      const slots = (ctx as any).deskSlots(rows) as string[];
+      return rows.map((r, i) => `${r.name}:${slots[i]}`);
+    };
+    // pane wins over port order
+    assert.deepEqual(place([{ name: 'A', port: 4801, pane: 'right-bottom' }, { name: 'B', port: 4802, pane: 'left' }, { name: 'C', port: 4803, pane: 'right-top' }]), ['B:left', 'C:right-top', 'A:right-bottom']);
+    // no pane anywhere: port order guess
+    assert.deepEqual(place([{ name: 'B', port: 4802 }, { name: 'A', port: 4801 }, { name: 'C', port: 4803 }, { name: 'D', port: 4804 }]), ['A:left', 'B:right-top', 'C:right-bottom', 'D:extra']);
+    // mixed: the unset desk takes the free slot
+    assert.deepEqual(place([{ name: 'A', port: 4801 }, { name: 'B', port: 4802, pane: 'left' }]), ['B:left', 'A:right-top']);
   });
 });
 

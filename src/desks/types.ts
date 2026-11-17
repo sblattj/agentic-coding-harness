@@ -148,6 +148,8 @@ export interface RosterEntry {
   startedAt: number;
   /** Lanes: first 400 chars of the objective. */
   goal?: string;
+  /** Desks: the layout slot (DeskSpec.pane) when the layout sets one; lanes have none. */
+  pane?: PaneSlot;
   /** Lanes: desk name (or "human") that launched it. */
   launchedBy?: string;
   feedPid?: number;

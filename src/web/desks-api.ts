@@ -267,17 +267,28 @@ function numParam(url: URL, k: string): number | undefined {
 }
 
 /**
- * Service errors are plain Errors; their message picks the status:
- * HttpError keeps its own; "not implemented" -> 500; unknown / not found / no such /
- * does not exist -> 404; any other refusal (alive, self-send, dead target, wrong kind) -> 409;
- * a non-Error throw -> 500.
+ * Service errors are plain Errors; their message picks the status (shapes are the ones
+ * src/desks/*.ts throws; see the table in docs/DESKS.md):
+ * HttpError keeps its own; server-side or config failure (bad layout or role file, corrupt
+ * roster, host start timeout, upstream host failure, "not implemented") -> 500; bad input
+ * (empty text/goal/question, invalid lane name, send to self) -> 400; a desk, lane, decision
+ * or pending item named in the request that does not exist -> 404; any other refusal (already
+ * up, port busy, name in use, dead target, wrong kind, closed) -> 409; a non-Error throw -> 500.
  */
+const SERVER_FAILURE =
+  /not implemented|layout file not found|invalid layout|cannot parse layout|corrupt (layout|roster)|roles\/common\.md not found|role file .* not found|invalid role name|the layout has no desks|did not become idle|timed out after|no spec or layout entry|^desk host |spawnHost:|ACH_SELF_ARGV/i;
+const BAD_INPUT =
+  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid lane name|cannot send to yourself/i;
+const MISSING_RESOURCE =
+  /\bunknown (desk|lane|decision|pending)\b|\bno pending lane\b|\bno decision\b|\bno such\b|does not exist|\b(desk|lane|decision|pending)\b[^\n]* not found/i;
+
 export function statusForError(e: unknown): number {
   if (e instanceof HttpError) return e.status;
   if (!(e instanceof Error)) return 500;
   const m = e.message;
-  if (/not implemented/i.test(m)) return 500;
-  if (/\bunknown\b|not found|no such|does not exist|\bno (desk|lane|decision|pending)\b/i.test(m)) return 404;
+  if (SERVER_FAILURE.test(m)) return 500;
+  if (BAD_INPUT.test(m)) return 400;
+  if (MISSING_RESOURCE.test(m)) return 404;
   return 409;
 }
 
