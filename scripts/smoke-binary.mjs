@@ -38,6 +38,20 @@ try {
   const stats = spawnSync(binary, ['stats', '--json', '--state-only'], options);
   assert.equal(stats.status, 0, stats.stderr);
   assert.equal(JSON.parse(stats.stdout).total.records, 0);
+  // Desks from the built-in layout and roles (embedded in the binary; nothing on disk),
+  // with the echo engine so no agent CLI is needed. Hosts re-spawn this same binary.
+  const deskOpts = { ...options, env: { ...env, ACH_DESK_FAKE_ENGINE: '1' }, timeout: 60_000 };
+  const portBase = String(40_000 + Math.floor(Math.random() * 2_000) * 10);
+  try {
+    const up = spawnSync(binary, ['desk', 'up', '--term', 'none', '--port-base', portBase, '--stack', 'smoke'], deskOpts);
+    assert.equal(up.status, 0, up.stderr + up.stdout);
+    const roster = spawnSync(binary, ['desk', 'roster', '--stack', 'smoke'], deskOpts);
+    assert.equal(roster.status, 0, roster.stderr);
+    for (const name of ['ORCHESTRATOR', 'DECISIONS', 'LISTENER']) assert.match(roster.stdout, new RegExp(`^${name}\\s+desk\\s+idle`, 'm'));
+    console.log('desks: ORCHESTRATOR, DECISIONS, LISTENER idle');
+  } finally {
+    spawnSync(binary, ['desk', 'down', '--stack', 'smoke'], deskOpts);
+  }
   server = spawn(binary, ['web', '--port', '0', '--dir', env.AGENTIC_CODING_HARNESS_STATE_DIR, '--no-open'], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   server.stderr.on('data', chunk => { output += chunk; });

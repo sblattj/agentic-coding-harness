@@ -12,7 +12,10 @@ export function achSelfArgv(env: NodeJS.ProcessEnv = process.env): string[] {
     return parsed as string[];
   }
   const script = process.argv[1];
-  return script === undefined ? [process.execPath] : [process.execPath, ...process.execArgv, script];
+  // A bun-compiled binary reports a virtual /$bunfs/root/<name> (B:/~BUN/ on Windows) as
+  // argv[1]; passing it back would reach the CLI as a stray argument.
+  const compiled = script === undefined || script.startsWith("/$bunfs/") || script.startsWith("B:/~BUN/");
+  return compiled ? [process.execPath] : [process.execPath, ...process.execArgv, script];
 }
 
 /**

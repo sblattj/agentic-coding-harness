@@ -1,5 +1,5 @@
 // desks.yaml loading (#204). Owner: roster seat. Signatures frozen in wave 0.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,9 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { reservedName, STACK_NAME_RE, validName } from "./roster.ts";
 import type { Layout } from "./types.ts";
+import { stateDir } from "../core/store.ts";
+import { VERSION } from "../version.ts";
+import { BUILTIN_DESK_ASSETS } from "./builtin-assets.gen.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -15,15 +18,30 @@ function assetCandidates(name: string): string[] {
   return [join(here, name), join(here, "..", "..", name)];
 }
 
-/** Absolute path of the built-in roles/ dir (repo root roles/, or next to the bundle in dist). */
+/**
+ * Single-file builds (the bun-compiled binary, the PyPI _vendor/ach.mjs bundle) have no
+ * roles/ or desks.default.yaml beside them. Write the embedded copies once to
+ * <stateDir>/desks/builtin/<version>/ and use that dir, so hosts still get real file paths.
+ */
+export function materializeBuiltinAssets(dir: string = join(stateDir(), "desks", "builtin", VERSION)): string {
+  for (const [rel, text] of Object.entries(BUILTIN_DESK_ASSETS)) {
+    const f = join(dir, rel);
+    if (existsSync(f) && readFileSync(f, "utf8") === text) continue;
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, text);
+  }
+  return dir;
+}
+
+/** Absolute path of the built-in roles/ dir (repo root roles/, next to the bundle in dist, else the embedded copy). */
 export function builtinRolesDir(): string {
   const c = assetCandidates("roles");
-  return c.find((p) => existsSync(p)) ?? resolve(here, "..", "..", "roles");
+  return c.find((p) => existsSync(join(p, "common.md"))) ?? join(materializeBuiltinAssets(), "roles");
 }
 
 function builtinDefaultFile(): string {
   const c = assetCandidates("desks.default.yaml");
-  return c.find((p) => existsSync(p)) ?? resolve(here, "..", "..", "desks.default.yaml");
+  return c.find((p) => existsSync(p)) ?? join(materializeBuiltinAssets(), "desks.default.yaml");
 }
 
 /** The built-in default layout (ORCHESTRATOR, DECISIONS, LISTENER), from the repo's desks.default.yaml. */
