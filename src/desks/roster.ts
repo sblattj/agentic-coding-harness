@@ -1,4 +1,5 @@
 // Roster + stack files (#204). Owner: roster seat. Signatures frozen in wave 0.
+import { join } from "node:path";
 import type { Decision, DecisionEvent, DeskMessage, PendingLane, Roster, RosterEntry } from "./types.ts";
 
 const NI = (fn: string): never => {
@@ -19,8 +20,22 @@ export interface DeskPaths {
   layout: string;
 }
 
-export function deskPaths(_stateDir: string, _stack: string): DeskPaths {
-  return NI("deskPaths");
+/** Frozen in wave 0 (the orchestrator wrote it): every seat derives stack file paths from here. */
+export function deskPaths(stateDir: string, stack: string): DeskPaths {
+  const root = join(stateDir, "desks", stack);
+  return {
+    root,
+    roster: join(root, "roster.json"),
+    lock: join(root, "roster.lock"),
+    messages: join(root, "messages.jsonl"),
+    decisions: join(root, "decisions.jsonl"),
+    pendingLanes: join(root, "pending-lanes.jsonl"),
+    lanesLog: join(root, "lanes.log"),
+    specs: join(root, "specs"),
+    events: join(root, "events"),
+    logs: join(root, "logs"),
+    layout: join(root, "layout.json"),
+  };
 }
 
 /** Missing file = empty roster for the stack. */
