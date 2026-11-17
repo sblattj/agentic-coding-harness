@@ -385,9 +385,12 @@ export interface TerminalDriver {
 // ---------------------------------------------------------------------------
 
 export interface RosterRow extends RosterEntry {
-  state: HostState | "dead";
+  /** "stopped": a lane that ended (read from lanes.log by laneStatus <name>), no longer in the roster. */
+  state: HostState | "dead" | "stopped";
   queueDepth: number;
   goalStatus?: GoalStatus;
+  /** Stopped lanes: the final goal state recorded at stop (from the lane's last goal event), or "dead"/"none". */
+  goalState?: GoalStatus["state"] | "dead";
   /** Cost of this run; for desks also the sum over its lane tree. */
   costUsd: number | null;
   treeCostUsd: number | null;

@@ -48,6 +48,8 @@ export interface RunRecord {
     costUsd: number;
     /** Which cost path fed costUsd (issue #28); absent when both or neither did. */
     costSource?: "reported" | "computed";
+    /** Desk host meter: tokens were seen but no cost could be priced (unknown model), so costUsd 0 means unknown, not free. */
+    costUnpriced?: boolean;
     credits?: number;
     /** Latest DERIVED context-window occupancy (not billed tokens). */
     contextTokens?: number;
@@ -173,6 +175,7 @@ const TotalsSchema = z.object({
   cacheWriteTokens: z.number(),
   costUsd: z.number(),
   costSource: z.enum(["reported", "computed"]).optional(),
+  costUnpriced: z.boolean().optional(),
   credits: z.number().optional(),
   contextTokens: z.number().optional(),
   provenance: z.record(z.string(), z.enum(PROVENANCE_CLASSES)).optional(),

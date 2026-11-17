@@ -155,6 +155,7 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
         // RunRecord.totals.costUsd is a required number; null (nothing priceable) is written as 0
         // exactly like a driver run with no priced usage. totals() still returns null.
         costUsd: s.costUsd ?? 0,
+        ...(s.costUsd === null && s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheWriteTokens > 0 ? { costUnpriced: true } : {}),
         ...(s.anyReported !== s.anyComputed ? { costSource: s.anyReported ? ("reported" as const) : ("computed" as const) } : {}),
       },
       updatedAt: now(),

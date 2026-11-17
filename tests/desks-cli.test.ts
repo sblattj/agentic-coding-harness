@@ -210,6 +210,24 @@ describe("lane argument parsing -> service call args", () => {
   });
 });
 
+describe("lane status for an ended lane", () => {
+  it("shows state stopped and the final goal state", async () => {
+    const r = rig({ laneStatus: [row({ name: "LANE1", kind: "lane", state: "stopped", goalState: "achieved", launchedBy: "human", costUsd: null })] });
+    await cmdLane(["status", "LANE1"], r.deps);
+    assert.match(r.stdout(), /LANE1\s+stopped\s+opencode\s+ferry\/super-flash\s+4801\s+0\s+achieved\s+-\s+human\n$/);
+  });
+});
+
+describe("desk costs: unknown stays a dash", () => {
+  it("prints - for a null cost and never $0.0000", async () => {
+    const rows = [{ name: "ORCH", kind: "desk", runId: "r", costUsd: null, inputTokens: 1200, outputTokens: 30, lanes: [{ name: "LANE1", kind: "lane", runId: "r2", costUsd: 0.5, inputTokens: 5, outputTokens: 6, lanes: [] }] }];
+    const r = rig({ deskCosts: rows });
+    assert.equal(await cmdDesk(["costs"], r.deps), 0);
+    assert.match(r.stdout(), /ORCH\s+desk\s+1,200\s+30\s+-\n/);
+    assert.doesNotMatch(r.stdout(), /\$0\.0000/);
+  });
+});
+
 describe("--json prints exactly the service return value", () => {
   const cases: [string, string[], string[], unknown][] = [
     ["desk", ["up", "--json"], ["deskUp"], view()],

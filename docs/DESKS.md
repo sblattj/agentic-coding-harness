@@ -215,6 +215,7 @@ Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else 
 - `desk send` and `desk answer` send as `human`.
 - `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions.
 - `lane stop` refuses desk names. It closes the pane, stops the host and removes the roster entry.
+- `ach lane status <name>` also answers for a lane that already ended: the roster has forgotten it, so the row is rebuilt from `lanes.log` with `state: "stopped"` and `goalState` (the final goal state, taken from the lane's last `goal` event so a verdict reported while the host was stopping counts). Without a name only live lanes are listed.
 - `--json` prints the `RosterView` (stack, `portBase`, rows with state, queue depth, goal status and cost, pending lanes, open decisions). Without it, a table.
 
 ## MCP tools
@@ -302,7 +303,7 @@ ach stats --by desk         # per desk and per lane, keyed <stack>/<name>; other
 ach desk roster --json      # costUsd and treeCostUsd per row
 ```
 
-Lane cost rolls up under the launching desk. A per-lane budget (`--budget-usd`, `lanes.budgetUsd`) uses the existing [budget alerts](BUDGET-ALERTS.md).
+Lane cost rolls up under the launching desk. Unknown is not zero: when a desk's usage could not be priced (a model with no price, such as `ferry/super-flash`), `costUsd` is `null` in `ach desk costs` / `/api/desks/costs` and prints as `-`, and any tree total (`treeCostUsd`) that contains an unknown part is `null` too, never a partial sum. The host meter marks such runs with `totals.costUnpriced` in the run record (older desk-host records with tokens and a 0 cost and no `costSource` are read the same way). `ach desk costs` also lists lanes that already stopped, because their spend happened: a lane whose launcher is a live desk stays nested under it, and a lane launched by a human or whose launcher is gone is a top-level row. A per-lane budget (`--budget-usd`, `lanes.budgetUsd`) uses the existing [budget alerts](BUDGET-ALERTS.md).
 
 ## Troubleshooting
 
