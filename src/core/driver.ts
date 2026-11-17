@@ -642,6 +642,9 @@ export function createDriver(options: DriverOptions): Driver {
             totals,
             rawTranscript: transcriptPath,
             ...(ancestorInstructions.length > 0 ? { ancestorInstructions } : {}),
+            // #204 lineage: desk engine per-turn runs (and lanes) name their parent run + desk.
+            ...(typeof parsed.parentRunId === 'string' && parsed.parentRunId !== '' ? { parentRunId: parsed.parentRunId } : {}),
+            ...(parsed.desk !== undefined ? { desk: { stack: parsed.desk.stack, name: parsed.desk.name, kind: parsed.desk.kind } } : {}),
           };
           applyRunRecordExtras();
           writeRunRecordThrottled(true);
