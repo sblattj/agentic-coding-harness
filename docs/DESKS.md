@@ -265,7 +265,7 @@ Switch a running desk with `ach desk engine <name> <agent>`. A missing engine fa
 
 `--term` picks the driver; the default is tmux. The pane ids are stored in the roster as `{kind, id}`.
 
-**Moving a running stack.** Hosts, sessions, the roster and feeds do not depend on panes. `ach desk attach --term tmux` closes the old panes and reopens them on the same sessions; history is intact and feeds never stop. `ach desk down` closes every pane it opened and touches no other window.
+**Moving a running stack.** Hosts, sessions, the roster and feeds do not depend on panes. `ach desk attach --term tmux` closes the old panes and reopens them on the same sessions; history is intact and feeds never stop. `ach desk down` closes every pane it opened and touches no other window. tmux pane ids (`%N`) restart with every tmux server, so each pane ach opens is tagged with the pane option `@ach_run` (the token is also kept under `<tmpdir>/ach-desks-tmux`), and closing kills a pane only when its tag still matches; a reused id, or a pane from before tagging, is left alone. Ghostty closing signals the recorded pid only when its command line still matches what ach launched.
 
 ## Web
 
