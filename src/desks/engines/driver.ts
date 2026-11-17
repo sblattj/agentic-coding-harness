@@ -373,7 +373,8 @@ export class DriverEngine implements Engine {
       // Turn 1 never reported a session: keep notes for the retry.
       if (firstTurn && this.#sessionId === undefined) this.#notes = [...notes, ...this.#notes];
     }
-    const finalText = this.#currentText.join("\n");
+    // The turn's FINAL assistant text (goal-loop contract), not every message joined.
+    const finalText = this.#currentText.at(-1) ?? "";
     this.#currentRunId = null;
     this.#pending -= 1;
     if (error !== undefined && !(this.#stopped && result?.exitStatus === "aborted")) {

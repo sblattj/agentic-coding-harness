@@ -30,6 +30,9 @@ class FakeHandle implements AgentHandle {
         await this.#settled;
         return;
       }
+      if (this.spec.prompt.includes('TWO')) {
+        yield { type: 'message', source: 'agent', content: 'interim thought', timestamp: ts } as AgentEvent;
+      }
       yield { type: 'tool_call', functionName: 'Read', arguments: { file: 'x.ts' }, timestamp: ts } as AgentEvent;
       yield { type: 'message', source: 'agent', content: `echo:${this.spec.prompt.split('\n').pop()}`, timestamp: ts } as AgentEvent;
       yield {
@@ -264,6 +267,7 @@ describe('DriverEngine (fake adapter through the real core driver)', () => {
     assert.equal(opts?.objective, 'ship it');
     const text = await opts!.runTurn('do step 1');
     assert.equal(text, 'echo:do step 1', 'runTurn resolves with the final assistant text');
+    assert.equal(await opts!.runTurn('TWO messages'), 'echo:TWO messages', 'only the last assistant text, not the interim one');
     status = { ...status, state: 'achieved' };
     assert.equal((await engine.goalStatus()).state, 'achieved');
     await engine.stop();
@@ -287,7 +291,10 @@ describe('DriverEngine live (claude)', () => {
     const roleDir = join(cwd, '.roles');
     mkdirSync(roleDir);
     const role = join(roleDir, 'r.md');
-    writeFileSync(role, 'You are desk $DESK_NAME. Answer in as few words as possible.');
+    writeFileSync(
+      role,
+      'You are desk $DESK_NAME. Your codename is ZEBRAQUILL. Answer in as few words as possible.',
+    );
     const spec: HostSpec = {
       stack: 'livestack',
       stateDir,
@@ -329,12 +336,26 @@ describe('DriverEngine live (claude)', () => {
     assert.equal(engine.sessionId, sid, 'turn 2 resumed the same session');
     const texts2 = events.slice(before).filter((e) => e.type === 'text').map((e) => String(e.data.text));
     assert.ok(texts2.some((t) => t.includes('PONG')), `turn 2 remembers turn 1: ${JSON.stringify(texts2)}`);
-    assert.ok(events.some((e) => e.type === 'usage'), 'usage emitted');
-    for (const id of engine.turnRunIds) {
+    // Role delivery on a RESUMED turn: the codename lives only in the role file (system prompt).
+    const before3 = events.length;
+    await engine.send('[desk-msg from TEST] what is your codename? reply with just the codename');
+    await idle(engine, 120_000);
+    const texts3 = events.slice(before3).filter((e) => e.type === 'text').map((e) => String(e.data.text));
+    assert.ok(texts3.some((t) => t.toUpperCase().includes('ZEBRAQUILL')), `role reached turn 3: ${JSON.stringify(texts3)}`);
+    const usage = events.filter((e) => e.type === 'usage');
+    assert.equal(usage.length, engine.turnRunIds.length, 'one usage event per turn');
+    for (const [i, id] of engine.turnRunIds.entries()) {
       const rec = readRunRecord(stateDir, id);
       assert.equal(rec?.parentRunId, 'live-desk-run');
       assert.equal(rec?.desk?.kind, 'turn');
       assert.equal(rec?.status, 'success');
+      const u = usage[i]!.data;
+      assert.equal(u.messageId, id);
+      assert.equal(u.inputTokens, rec?.totals?.inputTokens, 'usage input = child record input');
+      assert.equal(u.outputTokens, rec?.totals?.outputTokens, 'usage output = child record output');
+      assert.equal(u.cacheReadTokens, rec?.totals?.cacheReadTokens);
+      assert.equal(u.cacheWriteTokens, rec?.totals?.cacheWriteTokens);
+      assert.ok(Math.abs(Number(u.costUsd) - Number(rec?.totals?.costUsd)) < 1e-9, `cost ${u.costUsd} vs ${rec?.totals?.costUsd}`);
     }
     // claude's init line lists the MCP servers it loaded: desks only (strict), no user globals.
     const init = stdout.split('\n').find((l) => l.includes('"mcp_servers"'));
@@ -350,6 +371,8 @@ describe('DriverEngine live (claude)', () => {
     await engine.stop();
     // every claude turn's argv carries --mcp-config <stateDir>/desks/..., so stateDir marks our children
     assert.equal(claudeChildren(stateDir), '', 'no claude child left behind');
+    // the desks MCP server (`ach mcp` under claude) must exit with its claude parent
+    assert.equal(claudeChildren(`${join(process.cwd(), 'src', 'cli', 'ach.ts')} mcp`), '', 'no ach mcp child left behind');
     console.log(`live: session ${sid}, turns ${engine.turnRunIds.join(',')}, texts ${JSON.stringify(texts)}`);
   });
 });
