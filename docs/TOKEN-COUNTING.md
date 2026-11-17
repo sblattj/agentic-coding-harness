@@ -568,6 +568,8 @@ branch-name pattern) as a string; rows from runs with no recorded PR (older reco
 transcript-only rows) key on `none`. Joined to usage rows by agent + session id like
 `byProject`; no network access.
 
+**`byDesk` (`--by desk`, #204).** Key is `<stack>/<name>` of the desk or lane a row belongs to. Rows written by a desk host carry `extra.desk` and use it directly; rows of a driver-engine per-turn child run (`desk.kind` `turn`) map through the run registry (agent + session id, then `parentRunId`) to their desk. Everything else keys on `(none)`. Totals are unchanged.
+
 **`byProject` (`--by project` or `--project NAME`).** The key is the
 repository root of the run's `cwd`: the outermost enclosing directory holding
 `.git` (so a nested worktree groups with its repo), never the home directory
