@@ -88,7 +88,9 @@ export interface StackTerminal {
 }
 
 /** How long a fresh host may take to report idle. */
-export const HOST_START_TIMEOUT_MS = 60_000;
+// Must stay well below the 60 s request timeout of an MCP client calling lane_new: if startHost
+// outlived it, the client would see "Request timed out" while the host was killed behind its back.
+export const HOST_START_TIMEOUT_MS = 45_000;
 /** How long a stopping host may take to exit before SIGTERM, then SIGKILL. */
 export const HOST_STOP_TIMEOUT_MS = 10_000;
 /** Name of the DECISIONS desk when the layout has no desk with role "decisions". */
@@ -219,7 +221,7 @@ interface Started {
   spawnPid: number;
 }
 
-/** Write the spec, spawn the host, wait until /health says idle for THIS runId. Throws with the log tail. */
+/** Write the spec, spawn the host, wait until /health says idle or busy for THIS runId. Throws with the log tail. */
 async function startHost(stateDir: string, stack: string, spec: HostSpec): Promise<Started> {
   const p = deskPaths(stateDir, stack);
   mkdirSync(p.specs, { recursive: true });
@@ -233,7 +235,8 @@ async function startHost(stateDir: string, stack: string, spec: HostSpec): Promi
   for (;;) {
     last = await hostHealth(url, 1000);
     if (last !== null && last.runId === spec.runId) {
-      if (last.state === "idle") return { spec, health: last, spawnPid };
+      // busy counts: a lane with a goal goes starting -> idle -> busy within ~60 ms, so a poll can miss idle.
+      if (last.state === "idle" || last.state === "busy") return { spec, health: last, spawnPid };
       if (last.state === "error") break;
     }
     const gone = !pidAlive(spawnPid) && (last === null || last.runId !== spec.runId);

@@ -27,6 +27,7 @@ export const DEFAULT_TMUX_SESSION = "ach-desks";
 export class TmuxDriver implements TerminalDriver {
   readonly kind = "tmux" as const;
   private session?: string;
+  private checked = false;
   private readonly socket?: string;
   private readonly runner?: TmuxRunner;
 
@@ -51,8 +52,28 @@ export class TmuxDriver implements TerminalDriver {
     });
   }
 
+  /** Window id of the default window a new-session we created made; reaped once a real window exists. */
+  private strayWindow?: string;
+
+  private async createSession(name: string): Promise<void> {
+    // -P -F prints the default window's id so the first real window can replace it (no stray empty window 0).
+    const w = (await this.tmux(["new-session", "-d", "-s", name, "-P", "-F", "#{window_id}"])).trim();
+    if (/^@\d+$/.test(w)) this.strayWindow = w;
+  }
+
   private async resolveSession(): Promise<string> {
-    if (this.session) return this.session;
+    if (this.session) {
+      if (!this.checked) {
+        // An explicit session may not exist yet (fresh socket): create it, never assume it.
+        try {
+          await this.tmux(["has-session", "-t", this.session]);
+        } catch {
+          await this.createSession(this.session);
+        }
+        this.checked = true;
+      }
+      return this.session;
+    }
     let first = "";
     try {
       first = (await this.tmux(["list-sessions", "-F", "#{session_name}"])).split("\n")[0]?.trim() ?? "";
@@ -60,11 +81,24 @@ export class TmuxDriver implements TerminalDriver {
       first = ""; // no server running
     }
     if (!first) {
-      await this.tmux(["new-session", "-d", "-s", DEFAULT_TMUX_SESSION]);
+      await this.createSession(DEFAULT_TMUX_SESSION);
       first = DEFAULT_TMUX_SESSION;
     }
     this.session = first;
+    this.checked = true;
     return first;
+  }
+
+  /** After the first real window exists in a session we created, drop its empty default window. */
+  private async reapStray(): Promise<void> {
+    const w = this.strayWindow;
+    if (!w) return;
+    this.strayWindow = undefined;
+    try {
+      await this.tmux(["kill-window", "-t", w]);
+    } catch {
+      /* already gone */
+    }
   }
 
   async open(req: OpenRequest): Promise<string> {
@@ -75,6 +109,7 @@ export class TmuxDriver implements TerminalDriver {
       case "window": {
         const s = await this.resolveSession();
         out = await this.tmux(["new-window", "-d", "-t", `${s}:`, "-n", req.name, ...common]);
+        await this.reapStray();
         break;
       }
       case "right":

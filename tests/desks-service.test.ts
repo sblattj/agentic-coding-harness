@@ -326,3 +326,36 @@ describe('lanes: approval path on real fake-engine hosts', () => {
     }
   });
 });
+
+describe('startHost: a lane whose goal turn starts at once', () => {
+  it('treats busy (never idle) as started', { timeout: 20_000 }, async () => {
+    const sd = tmpDir();
+    const stack = 'p5950';
+    const layout = parseLayout(
+      JSON.stringify({
+        portBase: 5950,
+        agent: 'opencode',
+        desks: [{ name: 'ORCHESTRATOR', role: 'orchestrator', mcps: [] }],
+        lanes: { defaultMcps: [], ports: [10, 12], approval: 'none' },
+      }),
+      'inline',
+    );
+    const p = deskPaths(sd, stack);
+    mkdirSync(p.root, { recursive: true });
+    writeFileSync(p.layout, JSON.stringify(layout));
+    const prev = process.env.ACH_SELF_ARGV;
+    process.env.ACH_SELF_ARGV = JSON.stringify([process.execPath, join(ROOT, 'tests', 'support', 'stub-busy-host.mjs')]);
+    try {
+      const t0 = Date.now();
+      const r = await laneNew({ stateDir: sd, stack, name: 'racer', goal: 'go', launchedBy: 'human' });
+      assert.ok(!('pending' in r), 'human launch starts at once');
+      assert.ok(Date.now() - t0 < 10_000, 'returned on busy, did not wait out the start timeout');
+      const h = await hostHealth((r as RosterEntry).url, 2000);
+      assert.equal(h?.state, 'busy');
+      await laneStop({ stateDir: sd, stack, name: 'racer', by: 'human' });
+    } finally {
+      if (prev === undefined) delete process.env.ACH_SELF_ARGV;
+      else process.env.ACH_SELF_ARGV = prev;
+    }
+  });
+});

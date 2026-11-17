@@ -73,6 +73,14 @@ describe("TmuxDriver (private socket)", { skip: !HAVE_TMUX && "tmux not installe
     await d.close(id);
   });
 
+  it("explicit new session: created, with exactly the one real window (no stray window 0)", async () => {
+    const d = new TmuxDriver({ socket: SOCK, session: "fresh" });
+    const id = await d.open({ mode: "window", name: "desks", cwd: tmp, argv: ["sleep", "60"] });
+    assert.match(id, /^%\d+$/);
+    assert.equal(tm("list-windows", "-t", "fresh", "-F", "#{window_name}").trim(), "desks");
+    await d.close(id);
+  });
+
   it("window / right / down / tab / quoting / close", async () => {
     tm("new-session", "-d", "-s", "base");
     const d = new TmuxDriver({ socket: SOCK, session: "base" });
@@ -138,11 +146,42 @@ describe("TmuxDriver command shape (fake runner)", () => {
     await d.open({ mode: "down", name: "n", cwd: "/c", argv: ["x"], of: "%1" });
     await d.open({ mode: "tab", name: "n", cwd: "/c", argv: ["x"], of: "%1" });
     const cmd = paneCommand(["a b"]);
-    assert.deepEqual(calls[0], ["new-window", "-d", "-t", "S:", "-n", "n", "-c", "/c", "-P", "-F", "#{pane_id}", cmd]);
-    assert.deepEqual(calls[1].slice(0, 5), ["split-window", "-d", "-h", "-t", "%1"]);
-    assert.deepEqual(calls[2].slice(0, 5), ["split-window", "-d", "-v", "-t", "%1"]);
-    assert.deepEqual(calls[3], ["display-message", "-p", "-t", "%1", "#{session_name}"]);
-    assert.deepEqual(calls[4].slice(0, 4), ["new-window", "-d", "-t", "S2:"]);
+    assert.deepEqual(calls[1], ["new-window", "-d", "-t", "S:", "-n", "n", "-c", "/c", "-P", "-F", "#{pane_id}", cmd]);
+    assert.deepEqual(calls[2].slice(0, 5), ["split-window", "-d", "-h", "-t", "%1"]);
+    assert.deepEqual(calls[3].slice(0, 5), ["split-window", "-d", "-v", "-t", "%1"]);
+    assert.deepEqual(calls[4], ["display-message", "-p", "-t", "%1", "#{session_name}"]);
+    assert.deepEqual(calls[5].slice(0, 4), ["new-window", "-d", "-t", "S2:"]);
+  });
+});
+
+describe("TmuxDriver explicit session on a fresh socket (fake runner)", () => {
+  it("has-session fails -> new-session -d -s before new-window, and the default window is reaped", async () => {
+    const calls: string[][] = [];
+    const d = new TmuxDriver({
+      session: "e2e",
+      run: async (a) => {
+        calls.push(a);
+        if (a[0] === "has-session") throw new Error("tmux has-session failed: error connecting to /tmp/x (No such file or directory)");
+        if (a[0] === "new-session") return "@0\n";
+        return "%3\n";
+      },
+    });
+    await d.open({ mode: "window", name: "desks", cwd: "/c", argv: ["x"] });
+    await d.open({ mode: "window", name: "lane", cwd: "/c", argv: ["x"] });
+    assert.deepEqual(calls[0], ["has-session", "-t", "e2e"]);
+    assert.deepEqual(calls[1].slice(0, 4), ["new-session", "-d", "-s", "e2e"]);
+    assert.equal(calls[2][0], "new-window");
+    assert.deepEqual(calls[3], ["kill-window", "-t", "@0"]);
+    assert.equal(calls.filter((c) => c[0] === "has-session").length, 1, "checked once");
+    assert.equal(calls.filter((c) => c[0] === "new-session").length, 1);
+    assert.equal(calls[4][0], "new-window");
+  });
+
+  it("existing session: has-session ok, nothing created or killed", async () => {
+    const calls: string[][] = [];
+    const d = new TmuxDriver({ session: "e2e", run: async (a) => (calls.push(a), "%3\n") });
+    await d.open({ mode: "window", name: "w", cwd: "/c", argv: ["x"] });
+    assert.deepEqual(calls.map((c) => c[0]), ["has-session", "new-window"]);
   });
 });
 
