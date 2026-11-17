@@ -1,0 +1,175 @@
+// Ghostty TerminalDriver via AppleScript (#204, guide 8). Everything is addressed by terminal id.
+// Never `close window` / `close tab` (they closed the user's own windows in the prototype).
+// close = kill the pane's process, then `send key "enter"` (Ghostty's own "press any key to close").
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { OpenRequest, TerminalDriver } from "../types.ts";
+import { shellQuote } from "./tmux.ts";
+
+export type OsascriptRunner = (script: string) => Promise<string>;
+
+export interface GhosttyDriverOptions {
+  osascript?: OsascriptRunner;
+  /** Test seam for process kill (default process.kill). */
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Delay between killing the process and sending Enter, ms (default 200). */
+  settleMs?: number;
+  /** Directory for pidfiles (default <tmpdir>/ach-desks-ghostty). */
+  dir?: string;
+}
+
+const defaultDir = (): string => join(tmpdir(), "ach-desks-ghostty");
+
+/** Escape a value for embedding in an AppleScript double-quoted string. */
+export function asString(s: string): string {
+  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`;
+}
+
+const safeId = (id: string): string => id.replace(/[^A-Za-z0-9_-]/g, "_");
+
+/** Sidecar file recording which pidfile belongs to a terminal id (readable from any process). */
+export function sidecarFor(id: string, dir: string = defaultDir()): string {
+  return join(dir, `terminal-${safeId(id)}.ref`);
+}
+
+/** The pidfile of the process running in terminal `id`, or undefined if unknown. */
+export function pidfileFor(id: string, dir: string = defaultDir()): string | undefined {
+  try {
+    const p = readFileSync(sidecarFor(id, dir), "utf8").trim();
+    return p || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Surface command: zsh records its pid, then execs the real command so the pid IS the command. */
+export function surfaceCommand(argv: string[], pidfile: string): string {
+  const inner = `echo $$ > ${shellQuote(pidfile)}; exec ${argv.map(shellQuote).join(" ")}`;
+  return `/bin/zsh -lic ${shellQuote(inner)}`;
+}
+
+const PREAMBLE = (cmd: string, cwd: string): string[] => [
+  `  set cfg to new surface configuration`,
+  `  set command of cfg to ${asString(cmd)}`,
+  `  set initial working directory of cfg to ${asString(cwd)}`,
+];
+
+/** AppleScript to open a terminal. Returns the new terminal id on stdout. */
+export function openScript(req: OpenRequest, cmd: string): string {
+  const head = [`tell application "Ghostty"`, ...PREAMBLE(cmd, req.cwd)];
+  switch (req.mode) {
+    case "window":
+      return [...head, `  set w to new window with configuration cfg`, `  return id of focused terminal of selected tab of w`, `end tell`].join("\n");
+    case "right":
+    case "down":
+      if (!req.of) throw new Error(`ghostty: mode ${req.mode} needs "of" (the terminal to split)`);
+      return [
+        ...head,
+        `  set t to split (first terminal whose id is ${asString(req.of)}) direction ${req.mode} with configuration cfg`,
+        `  return id of t`,
+        `end tell`,
+      ].join("\n");
+    case "tab": {
+      if (!req.of) throw new Error(`ghostty: mode tab needs "of" (a terminal in the target window)`);
+      const of = asString(req.of);
+      return [
+        ...head,
+        `  set target to missing value`,
+        `  repeat with wi from 1 to count of windows`,
+        `    set w to window wi`,
+        `    repeat with ti from 1 to count of tabs of w`,
+        `      if (id of every terminal of tab ti of w) contains ${of} then set target to w`,
+        `    end repeat`,
+        `  end repeat`,
+        `  if target is missing value then error "no window contains terminal " & ${of}`,
+        `  set tb to new tab in target with configuration cfg`,
+        `  return id of focused terminal of tb`,
+        `end tell`,
+      ].join("\n");
+    }
+    default:
+      throw new Error(`ghostty: unknown open mode ${String(req.mode)}`);
+  }
+}
+
+/** AppleScript for the "press any key to close" half of close(). */
+export function closeScript(id: string): string {
+  return [`tell application "Ghostty"`, `  send key "enter" to (first terminal whose id is ${asString(id)})`, `end tell`].join("\n");
+}
+
+export function aliveScript(id: string): string {
+  return [`tell application "Ghostty"`, `  return exists (first terminal whose id is ${asString(id)})`, `end tell`].join("\n");
+}
+
+const runOsascript: OsascriptRunner = (script) =>
+  new Promise((resolve, reject) => {
+    execFile("osascript", ["-e", script], { encoding: "utf8", timeout: 20_000 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(`osascript failed: ${(stderr || err.message).trim()}`));
+      else resolve(stdout);
+    });
+  });
+
+export class GhosttyDriver implements TerminalDriver {
+  readonly kind = "ghostty" as const;
+  private readonly osa: OsascriptRunner;
+  private readonly kill: (pid: number, signal: NodeJS.Signals) => void;
+  private readonly settleMs: number;
+  private readonly dir: string;
+  private readonly pidfiles = new Map<string, string>();
+
+  constructor(opts: GhosttyDriverOptions = {}) {
+    this.osa = opts.osascript ?? runOsascript;
+    this.kill = opts.kill ?? ((pid, sig) => process.kill(pid, sig));
+    this.settleMs = opts.settleMs ?? 200;
+    this.dir = opts.dir ?? defaultDir();
+  }
+
+  async open(req: OpenRequest): Promise<string> {
+    mkdirSync(this.dir, { recursive: true });
+    const pidfile = join(this.dir, `${randomUUID()}.pid`);
+    const out = (await this.osa(openScript(req, surfaceCommand(req.argv, pidfile)))).trim();
+    if (!out) throw new Error("ghostty: open returned no terminal id");
+    this.pidfiles.set(out, pidfile);
+    writeFileSync(sidecarFor(out, this.dir), `${pidfile}\n`);
+    return out;
+  }
+
+  async close(id: string): Promise<void> {
+    const pidfile = this.pidfiles.get(id) ?? pidfileFor(id, this.dir);
+    if (pidfile) {
+      let pid = NaN;
+      try {
+        pid = Number.parseInt(readFileSync(pidfile, "utf8").trim(), 10);
+      } catch {
+        /* never written, or already cleaned */
+      }
+      if (Number.isInteger(pid) && pid > 1) {
+        try {
+          this.kill(pid, "SIGTERM");
+        } catch {
+          /* ESRCH: already dead */
+        }
+        if (this.settleMs > 0) await new Promise((r) => setTimeout(r, this.settleMs));
+      }
+    }
+    try {
+      await this.osa(closeScript(id));
+    } catch {
+      /* terminal already gone */
+    }
+    this.pidfiles.delete(id);
+    if (pidfile) rmSync(pidfile, { force: true });
+    rmSync(sidecarFor(id, this.dir), { force: true });
+  }
+
+  async alive(id: string): Promise<boolean> {
+    try {
+      return (await this.osa(aliveScript(id))).trim() === "true";
+    } catch {
+      return false;
+    }
+  }
+}
