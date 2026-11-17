@@ -76,7 +76,11 @@ jobs:
           sha256sum ach-* > SHA256SUMS
           sha256sum --check SHA256SUMS
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --generate-notes
+            # A version with a "-" (0.30.0-rc.1) is a prerelease: never the Latest release.
+            case "$RELEASE_TAG" in
+              *-*) gh release create "$RELEASE_TAG" --verify-tag --generate-notes --prerelease ;;
+              *) gh release create "$RELEASE_TAG" --verify-tag --generate-notes ;;
+            esac
           fi
           gh release upload "$RELEASE_TAG" ach-* SHA256SUMS --clobber
   npm:
@@ -117,7 +121,11 @@ jobs:
           # A backfill of an older tag must not move the `latest` dist-tag back.
           LATEST="$(npm view "$NAME" dist-tags.latest 2>/dev/null || true)"
           DIST_TAG=latest
-          if [ -n "$LATEST" ] && [ "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -n1)" != "$VERSION" ]; then
+          case "$VERSION" in
+            # A prerelease (0.30.0-rc.1) sorts above the last stable with sort -V; keep it off latest.
+            *-*) DIST_TAG=next ;;
+          esac
+          if [ "$DIST_TAG" = latest ] && [ -n "$LATEST" ] && [ "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -n1)" != "$VERSION" ]; then
             DIST_TAG=backfill
             echo "::notice::$VERSION is older than npm latest $LATEST; publishing under dist-tag '$DIST_TAG'"
           fi
@@ -129,6 +137,8 @@ jobs:
           fi
   pypi:
     needs: build
+    # PyPI spells prereleases differently (0.30.0rc1), so a v*-* tag is npm and GitHub only.
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     # PyPI trusted publishing: the agentic-coding-harness project on PyPI lists
     # GitHub publisher sblattj/agentic-coding-harness, workflow
@@ -168,6 +178,8 @@ jobs:
           skip-existing: true
   homebrew:
     needs: [publish, npm]
+    # The tap formula on main tracks stable releases only.
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
