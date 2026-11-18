@@ -34,14 +34,15 @@ final class Box<T>: @unchecked Sendable {
         s.start()
         defer { s.stop() }
 
-        #expect(await eventually { items.items.count >= 3 })
+        #expect(await eventually(timeout: 15) { items.items.count >= 3 })
         let got = items.items
+        try #require(got.count >= 3, "expected message, futurekind, event; got \(got)") // report, never crash on got[2]
         if case .message(let m) = got[0] { #expect(m.id == "m9") } else { Issue.record("first item should be the message: \(got)") }
         #expect(got[1] == .unknown("futurekind"))
         if case .event(let e) = got[2] { #expect(e.data["text"]?.stringValue == "TP") } else { Issue.record("third item should be the event") }
 
         let streamReqs = server.requests.filter { $0.path == "/api/desks/stream" }
-        #expect(streamReqs.count >= 2)
+        try #require(streamReqs.count >= 2)
         #expect(streamReqs[1].headers["last-event-id"] == "1")
         #expect(streamReqs.allSatisfy { $0.headers["authorization"] == "Bearer tok" && $0.query["token"] == "tok" })
         #expect(streamReqs[0].headers["accept"] == "text/event-stream")

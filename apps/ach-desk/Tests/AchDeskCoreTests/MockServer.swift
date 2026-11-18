@@ -119,14 +119,19 @@ final class MockServer: @unchecked Sendable {
             let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n"
             conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
             var t: TimeInterval = 0
-            for (delay, text) in chunks {
+            for (n, (delay, text)) in chunks.enumerated() {
                 t += delay
+                let isLast = n == chunks.count - 1
                 queue.asyncAfter(deadline: .now() + t) {
-                    conn.send(content: Data(text.utf8), completion: .contentProcessed { _ in })
+                    // Close only once the LAST chunk has been handed to the socket: a fixed-delay cancel() can
+                    // overtake an in-flight send on a slow runner and drop the tail chunk.
+                    conn.send(content: Data(text.utf8), completion: .contentProcessed { _ in
+                        if close && isLast { self.queue.asyncAfter(deadline: .now() + 0.05) { conn.cancel() } }
+                    })
                 }
             }
-            if close {
-                queue.asyncAfter(deadline: .now() + t + 0.05) { conn.cancel() }
+            if close && chunks.isEmpty {
+                queue.asyncAfter(deadline: .now() + 0.05) { conn.cancel() }
             }
         }
     }
