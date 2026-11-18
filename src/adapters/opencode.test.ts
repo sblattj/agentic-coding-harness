@@ -128,6 +128,14 @@ function fakeChild(
 }
 
 describe('opencode adapter', () => {
+  test('parses a 2.x step_finish (no tokens.total): totalTokens derived from parts', () => {
+    const line =
+      '{"type":"step_finish","timestamp":1,"sessionID":"ses_x","part":{"id":"p","sessionID":"ses_x","messageID":"m","type":"step-finish","reason":"stop","cost":0,"tokens":{"input":28683,"output":0,"reasoning":15,"cache":{"read":0,"write":0}}}}';
+    const [evt] = parseOpencodeLine(line);
+    assert.equal(evt?.type, 'usage');
+    assert.equal((evt as { tokens: { totalTokens: number | null } }).tokens.totalTokens, 28698);
+  });
+
   describe('parseOpencodeLineRecord (recorded NDJSON fixture)', () => {
     test('captures sessionID from every event line', () => {
       for (const line of FIXTURE_LINES) {
@@ -360,6 +368,25 @@ describe('opencode adapter', () => {
       const handle = adapter.spawn({ prompt: 'p', preferServer: true });
       const events = await collect(handle.events);
       assert.equal(events.at(-1)?.type, 'error');
+      assert.equal(await handle.wait(), 1);
+    });
+
+    test('v2 serve: HTML 200 body throws a clear unsupported-version error, never parsed as data', { timeout: 5000 }, async () => {
+      const fetchImpl = (async () =>
+        new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
+      const handle = new OpenCodeAdapter({ fetchImpl }).spawn({ prompt: 'p', preferServer: true });
+      const events = await collect(handle.events);
+      const last = events.at(-1);
+      assert.equal(last?.type, 'error');
+      assert.match((last as { message: string }).message, /non-JSON body \(text\/html\).*opencode 2\.x/);
+      assert.equal(await handle.wait(), 1);
+    });
+
+    test('v2 serve: 405 on POST /session names the 2.x API move', { timeout: 5000 }, async () => {
+      const fetchImpl = (async () => new Response('', { status: 405 })) as unknown as typeof fetch;
+      const handle = new OpenCodeAdapter({ fetchImpl }).spawn({ prompt: 'p', preferServer: true });
+      const events = await collect(handle.events);
+      assert.match((events.at(-1) as { message: string }).message, /-> 405; this looks like opencode 2\.x/);
       assert.equal(await handle.wait(), 1);
     });
   });

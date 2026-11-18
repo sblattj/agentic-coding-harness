@@ -35,7 +35,8 @@ export const OPENCODE_CAPABILITIES: AdapterCapabilities = {
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:4096';
 
 // ---------------------------------------------------------------------------
-// Native wire schemas (recorded from `opencode run --format json`, v1.18.30).
+// Native wire schemas (recorded from `opencode run --format json`, v1.18.30; the same
+// shape is emitted unchanged by 2.2.5 and 2.3.2, which omit tokens.total).
 // Envelope: {"type":"step_start"|"text"|"step_finish", timestamp, sessionID,
 // part:{...}}; part types use dashes ("step-start"). Unknown envelope types
 // (tool, reasoning, ...) are skipped but still yield their sessionID.
@@ -117,7 +118,12 @@ function mapTokens(tokens: OpencodeTokens, cost: number | null | undefined): Can
     cacheWriteTokens: tokens.cache?.write ?? 0,
     outputTokens: tokens.output ?? 0,
     reasoningTokens: tokens.reasoning ?? null,
-    totalTokens: tokens.total ?? null,
+    // opencode 2.x omits `total`; derive it from the parts so usage stays comparable.
+    totalTokens:
+      tokens.total ??
+      (tokens.input != null || tokens.output != null
+        ? (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0)
+        : null),
     durationMs: null,
     raw: { tokens, cost: cost ?? 0 },
   };
@@ -230,6 +236,28 @@ export function buildRunArgs(spec: OpencodeRunSpec): string[] {
     args.push('--session', spec.resume.sessionId);
   }
   return args;
+}
+
+const SERVE_V2_HINT =
+  'this looks like opencode 2.x (its JSON API moved under /api/* behind HTTP Basic auth), ' +
+  'which the preferServer path does not support; only opencode 1.x `serve` is supported here. ' +
+  'Use the headless path (omit preferServer) instead';
+
+function serveRouteError(base: string, route: string, status: number): string {
+  const v2 = status === 404 || status === 405 || status === 401 ? `; ${SERVE_V2_HINT}` : '';
+  return `opencode serve (${base}): ${route} -> ${status}${v2}`;
+}
+
+/** Parse a serve response as JSON; an HTML/non-JSON body (e.g. the 2.x web UI) throws, never parsed as data. */
+async function readServeJson(res: Response, base: string, route: string): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    const ct = res.headers?.get('content-type') ?? 'unknown content-type';
+    throw new Error(
+      `opencode serve (${base}): ${route} returned a non-JSON body (${ct}); ${SERVE_V2_HINT}`,
+    );
+  }
 }
 
 /** Split "provider/model" at the first slash (model ids may contain more). */
@@ -457,8 +485,8 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
           body: JSON.stringify({}),
           signal: controller.signal,
         });
-        if (!createRes.ok) throw new Error(`opencode serve: POST /session -> ${createRes.status}`);
-        const session = (await createRes.json()) as { id?: string };
+        if (!createRes.ok) throw new Error(serveRouteError(base, 'POST /session', createRes.status));
+        const session = (await readServeJson(createRes, base, 'POST /session')) as { id?: string };
         if (!session.id) throw new Error('opencode serve: session response missing id');
         state.sessionId = session.id;
         queue.push({ type: 'session', sessionId: session.id });
@@ -472,9 +500,9 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
           { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal },
         );
         if (!msgRes.ok) {
-          throw new Error(`opencode serve: POST /session/${session.id}/message -> ${msgRes.status}`);
+          throw new Error(serveRouteError(base, 'POST /session/:id/message', msgRes.status));
         }
-        const data = (await msgRes.json()) as { parts?: unknown[] };
+        const data = (await readServeJson(msgRes, base, 'POST /session/:id/message')) as { parts?: unknown[] };
         for (const part of data.parts ?? []) {
           const mapped = mapPart(part, state.sessionId, false);
           if (mapped.sessionId) state.sessionId = mapped.sessionId;
