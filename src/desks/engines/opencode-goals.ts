@@ -101,7 +101,9 @@ export async function setOpencodeGoal(o: {
         last = `GET /message HTTP ${r.status}`;
       }
     } catch (e) {
-      last = `GET /message failed: ${e instanceof Error ? e.message : String(e)}`;
+      // A poll our own deadline cut off says nothing new: keep the last messages actually read.
+      const ours = e instanceof Error && e.name === "TimeoutError";
+      if (!ours || last === "") last = `GET /message failed: ${e instanceof Error ? e.message : String(e)}`;
     }
     if (postError) throw postError;
     if (Date.now() + pollMs > deadline) break;

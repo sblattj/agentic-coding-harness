@@ -46,6 +46,20 @@ describe("setOpencodeGoal (fake server)", () => {
     } finally { await close(server); }
   });
 
+  it("a poll cut off by the deadline keeps the last messages read in the error", async () => {
+    // GET 1 is the baseline, GET 2 answers, every later GET hangs until the deadline aborts it.
+    let gets = 0;
+    const { url, server } = await serve((req, res) => {
+      if (req.method === "POST") return;
+      gets++;
+      if (gets <= 2) res.end(JSON.stringify([{ parts: [{ text: "just chatting" }] }]));
+    });
+    try {
+      await assert.rejects(setOpencodeGoal({ baseUrl: url, sessionId: "s", objective: "x", timeoutMs: 400, pollMs: 20 }), /not active after 400 ms.*just chatting/s);
+      assert.ok(gets >= 3, `a later poll hung (gets=${gets})`);
+    } finally { await close(server); }
+  });
+
   it("rejects with the POST error when the command fails first", async () => {
     const { url, server } = await serve((req, res) => {
       if (req.method === "POST") { res.statusCode = 500; res.end("boom"); return; }
