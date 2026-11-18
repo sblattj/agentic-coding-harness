@@ -498,6 +498,29 @@ describe('opencode adapter', () => {
       assert.equal(interrupt?.auth, 'Basic ' + Buffer.from('opencode:pw').toString('base64'));
     });
 
+    test('timeout: a stalled poll request is bounded by the deadline, errors and posts /interrupt', { timeout: 5000 }, async () => {
+      const calls: string[] = [];
+      const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(url);
+        calls.push(u);
+        if (u.endsWith('/api/info')) return json({ version: '2.3.2' });
+        if (u.endsWith('/api/session')) return json({ data: { id: 'ses_v2_s' } });
+        if (u.endsWith('/prompt')) return json({ data: { id: USER_ID } });
+        if (u.endsWith('/interrupt')) return json({ interrupted: true });
+        // the poll: never resolves, only rejects when the caller's signal fires
+        return new Promise<Response>((_res, rej) => {
+          init?.signal?.addEventListener('abort', () => rej(new Error('stalled request aborted')));
+        });
+      }) as typeof fetch;
+      const handle = new OpenCodeAdapter({ fetchImpl, serverPassword: 'pw', serverTimeoutMs: 100, serverPollMs: 5 }).spawn({ prompt: 'p', preferServer: true });
+      const events = await collect(handle.events);
+      const last = events.at(-1) as { type: string; message: string };
+      assert.equal(last.type, 'error');
+      assert.match(last.message, /did not finish within 100 ms/);
+      assert.equal(await handle.wait(), 1);
+      assert.ok(calls.some((c) => c.endsWith('/api/session/ses_v2_s/interrupt')));
+    });
+
     test('abort() ends the run and posts /interrupt with the auth header', { timeout: 5000 }, async () => {
       const calls: Array<{ url: string; method?: string; auth?: string }> = [];
       const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {

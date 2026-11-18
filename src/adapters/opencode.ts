@@ -520,6 +520,19 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
     };
   }
 
+  /** v2: stop a session's turn on the server. Best effort, bounded to 3 s, never throws. */
+  async #interrupt(base: string, sid: string, headers: Record<string, string>): Promise<void> {
+    try {
+      await this.#fetchImpl(`${base}/api/session/${encodeURIComponent(sid)}/interrupt`, {
+        method: 'POST',
+        headers,
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch {
+      // ignore
+    }
+  }
+
   /**
    * Secondary path: talk to a running `opencode serve`. The API generation is
    * detected from the server (GET /api/info: JSON with a 2.x version = v2; an HTML
@@ -535,6 +548,11 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
     let exitCode = 0;
 
     const base = (this.#serverUrl ?? process.env.OPENCODE_SERVER_URL ?? DEFAULT_SERVER_URL).replace(/\/+$/, '');
+    // One deadline for the whole run: every request is bounded by what is left of it (plus the abort controller).
+    const deadline = Date.now() + this.#serverTimeoutMs;
+    const signalFor = (): AbortSignal =>
+      AbortSignal.any([controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
+    const timeoutMessage = `opencode serve (${base}): turn did not finish within ${this.#serverTimeoutMs} ms`;
     const password = this.#serverPassword ?? process.env.OPENCODE_PASSWORD ?? process.env.OPENCODE_SERVER_PASSWORD;
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (password) headers.authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
@@ -549,7 +567,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
     };
 
     const detect = async (): Promise<ServeApi> => {
-      const res = await this.#fetchImpl(`${base}/api/info`, { method: 'GET', headers, signal: controller.signal });
+      const res = await this.#fetchImpl(`${base}/api/info`, { method: 'GET', headers, signal: signalFor() });
       if (res.status === 401) throw new Error(serveRouteError(base, 'GET /api/info', 401, !!password));
       if (!res.ok) return 'v1';
       let info: unknown;
@@ -568,7 +586,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         method: 'POST',
         headers,
         body: JSON.stringify({}),
-        signal: controller.signal,
+        signal: signalFor(),
       });
       if (!createRes.ok) throw new Error(serveRouteError(base, 'POST /session', createRes.status, !!password));
       const session = (await readServeJson(createRes, base, 'POST /session')) as { id?: string };
@@ -582,7 +600,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
 
       const msgRes = await this.#fetchImpl(
         `${base}/session/${encodeURIComponent(session.id)}/message`,
-        { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal },
+        { method: 'POST', headers, body: JSON.stringify(body), signal: signalFor() },
       );
       if (!msgRes.ok) {
         throw new Error(serveRouteError(base, 'POST /session/:id/message', msgRes.status, !!password));
@@ -600,7 +618,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         method,
         headers,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: controller.signal,
+        signal: signalFor(),
       });
       const route = `${method} ${path.replace(/ses_[^/?]+/, ':id')}`;
       if (!res.ok) throw new Error(serveRouteError(base, route, res.status, !!password));
@@ -641,12 +659,8 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
       const userId = prompted?.data?.id;
       if (typeof userId !== 'string' || userId === '') throw new Error('opencode serve: prompt response missing data.id');
 
-      const deadline = Date.now() + this.#serverTimeoutMs;
       for (;;) {
-        if (Date.now() > deadline) {
-          await v2Call('POST', `/api/session/${encodeURIComponent(sid)}/interrupt`).catch(() => undefined);
-          throw new Error(`opencode serve (${base}): turn did not finish within ${this.#serverTimeoutMs} ms`);
-        }
+        if (Date.now() > deadline) throw new Error(timeoutMessage);
         const messages = await v2Messages(sid);
         const at = messages.findIndex((m) => m.id === userId);
         const after = at < 0 ? [] : messages.slice(at + 1);
@@ -678,7 +692,12 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         if (api === 'v2') await runV2();
         else await runV1();
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        let message = err instanceof Error ? err.message : String(err);
+        if (!controller.signal.aborted && Date.now() >= deadline) {
+          // Deadline hit (possibly mid-request): report the timeout and stop the turn server-side.
+          message = timeoutMessage;
+          if (v2Session) await this.#interrupt(base, v2Session, headers);
+        }
         queue.push({ type: 'error', message });
         exitCode = 1;
       } finally {
@@ -693,7 +712,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         controller.abort();
         // v2: the turn keeps running server-side after the client drops; interrupt it (best effort).
         if (v2Session) {
-          void this.#fetchImpl(`${base}/api/session/${encodeURIComponent(v2Session)}/interrupt`, { method: 'POST', headers }).catch(() => undefined);
+          void this.#interrupt(base, v2Session, headers);
         }
       },
       sessionId: () => run.then(() => state.sessionId),
