@@ -4,6 +4,26 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-18
+
+### Added
+
+- Desks and lanes: a small team of agent sessions that message each other, every one metered by ach. A **desk** is a long-lived named session with a role prompt and a fixed set of MCP servers; a **lane** is a short-lived session that runs one goal and reports to the desk that launched it. Messages arrive as user turns prefixed `[desk-msg from <NAME>]`; the roster (one JSON file) is the source of truth for who is alive. The default layout (`desks.default.yaml`) starts ORCHESTRATOR, DECISIONS and LISTENER. Spec: `docs/DESKS.md`. Fixes #204.
+  - `ach desk up | down | attach | roster | send | inbox | events | chat | engine | decisions | answer | close | costs` and `ach lane new | status | stop | approve | reject`. Each desk and lane is one detached host process (HTTP + SSE on a per-start bearer token) running the opencode or driver engine; `ach desk engine <name> <agent>` switches a desk's engine.
+  - Terminals: tmux (one window per lane, panes tagged so ach only kills or respawns panes it opened) or Ghostty (the launched process's start time is checked before it is signaled); `--term none` runs headless.
+  - MCP desk tools on `ach mcp`: `desk_roster`, `desk_send`, `desk_inbox`, `lane_new`, `lane_status`, `lane_stop`, `lane_approve`, `lane_reject`, `decision_open`, `decision_list`, `decision_close`.
+  - Feeds: a desk can follow a JSON-lines command (a live call transcript, CI) with batching, a closing message, and restarts with backoff that give up after 20 failures in a row without a heartbeat.
+  - Cost: `ach stats --by desk` (per desk and lane, keyed `<stack>/<name>`) and `costUsd` / `treeCostUsd` in `ach desk roster --json`. Lane cost rolls up under the launching desk; a usage that cannot be priced stays unknown (null), not zero.
+- `ach web`: a Desks view at `/desks` (desk layout, lane strip with goal, plan progress and cost, message timeline, one-click decision cards, cost tree) and the `/api/desks` routes. Fixes #205.
+- ach Desk, a native SwiftUI macOS app (macOS 14+, `apps/ach-desk`) over the same Web API: starts the default layout without a terminal, shows pending decisions in the menu bar, answers them from notification banners, and starts lanes from a sheet. CI runs its tests and builds the app bundle. Fixes #205.
+
+### Changed
+
+- `ach web` refuses cross-site requests on every route and WebSocket upgrade: on a loopback bind the `Host` must be a loopback name or the bound loopback address with the bound port (421), a present `Origin` must match the `Host` (403), and a non-GET `/api/*` request with a body must be `application/json` (415). `/api/pty` now needs the web token. A POST with no body still passes.
+- The web token file is replaced only under a lock when it is invalid, so concurrent `ach web` starts agree on one token.
+- `ach web` with no `--token` now generates one, stores it in `<stateDir>/web/token` (0600) and reuses it; the printed URL carries it, and `/api/pty`, the PTY WebSockets, `/api/desks`, `/api/live` and the queue routes answer 401 without it.
+- On a non-loopback bind, `ach web` accepts as `Host` only IP literals, `localhost`, the `--host` name and this machine's hostname (full, short and `.local`), else 421. New env `AGENTIC_CODING_HARNESS_WEB_ALLOWED_HOSTS` (comma-separated names, any port) adds names for a reverse proxy or LAN DNS, on either kind of bind.
+
 ## [0.29.0] - 2026-11-16
 
 ### Added
