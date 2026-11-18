@@ -48,7 +48,11 @@ import { descriptorDirs, loadAgentDescriptors } from "../core/agent-descriptors.
 import { splitTemplate } from "../adapters/custom.ts";
 import { AGENTS, HarnessError, isKnownAgent, type AgentName, type CanonicalTokenRecord } from "../core/types.ts";
 
-export type DoctorStatus = "verified" | "failed" | "unproven";
+/**
+ * `skipped` (issue #216): the agent is not installed / not running and doctor
+ * was asked about all agents, so there is nothing to check. Never fails the run.
+ */
+export type DoctorStatus = "verified" | "failed" | "unproven" | "skipped";
 /** deep = observed over a real protocol exchange (kiro ACP); shallow = local evidence only. */
 export type DoctorDepth = "deep" | "shallow";
 
@@ -72,6 +76,12 @@ export interface DoctorReport {
   /** Always 0: the doctor never sends a prompt. Present so scripts can assert it. */
   promptsSent: 0;
   checks: DoctorCheck[];
+  /** Agents with a binary that is present (not skipped), in report order. Additive (#216). */
+  installed: string[];
+  /** Agents reported `skipped` (not installed / not running). Additive (#216). */
+  skipped: string[];
+  /** Agents with at least one failed check, with the names of the failed checks ('harness' included). Additive (#216). */
+  failing: Array<{ agent: string; checks: string[] }>;
 }
 
 export interface DoctorOptions {
@@ -93,6 +103,13 @@ export interface DoctorOptions {
   kiroIdePort?: number;
   /** kiro-ide: Kiro executable (--kiro-ide-bin). */
   kiroIdeBin?: string;
+  /**
+   * All-agents mode (`ach doctor` with no --agent, #216): an agent whose binary is
+   * not installed (kiro-ide: not running) is `skipped`, not `failed`, and the claude
+   * auth row notes a default-config login instead of failing. Default false: an
+   * explicitly requested agent that is missing still fails.
+   */
+  skipNotInstalled?: boolean;
 }
 
 const INSTALL_HINT: Record<AgentName, string> = {
@@ -297,15 +314,31 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object
 
 // ------------------------------------------------------------------ binary
 
+const SKIP_NOT_INSTALLED = "skipped: agent not installed";
+
+/** The rows after `binary`/`version` for an agent that is skipped as not installed. */
+function skippedDependents(agent: string, depth: DoctorDepth, names: string[]): DoctorCheck[] {
+  return names.map((name) => ({ agent, name, status: "skipped" as const, depth, detail: SKIP_NOT_INSTALLED, ms: 0 }));
+}
+
 async function checkBinary(
   agent: AgentName,
   command: string,
   env: NodeJS.ProcessEnv,
   cwd: string,
   timeoutMs: number,
+  skipMissing = false,
 ): Promise<{ checks: DoctorCheck[]; resolved?: string }> {
   const t0 = Date.now();
   const resolved = resolveOnPath(command, env.PATH);
+  if (!resolved && skipMissing) {
+    return {
+      checks: [
+        { agent, name: "binary", status: "skipped", depth: "shallow", detail: `skipped (not installed): '${command}' not found on PATH`, hint: INSTALL_HINT[agent], ms: Date.now() - t0 },
+        { agent, name: "version", status: "skipped", depth: "shallow", detail: SKIP_NOT_INSTALLED, ms: 0 },
+      ],
+    };
+  }
   if (!resolved) {
     return {
       checks: [
@@ -363,7 +396,7 @@ async function checkBinary(
 
 // ------------------------------------------------------------------ auth
 
-async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
+async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv, allAgents = false): Promise<DoctorCheck> {
   const t0 = Date.now();
   const mk = (status: DoctorStatus, detail: string, hint?: string): DoctorCheck => ({
     agent,
@@ -396,6 +429,25 @@ async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv): Promise<Doct
     case "claude": {
       const defaultConfig = env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG === "1";
       if (!defaultConfig) {
+        // All-agents mode (#216): runs would still fail without the flag, but a working
+        // /login in the default config means this is a flag choice, not a broken machine.
+        // Warn (unproven, exit unaffected) and name the flag; no login anywhere still fails.
+        if (allAgents) {
+          const creds = path.join(home, ".claude", ".credentials.json");
+          const cfg = await readJson(path.join(home, ".claude.json"));
+          const login = (await exists(creds))
+            ? `${creds} present`
+            : cfg?.ok && isObj(cfg.value) && cfg.value.oauthAccount !== undefined
+              ? "~/.claude.json records an OAuth account (token in the OS keychain, not checkable offline)"
+              : undefined;
+          if (login !== undefined) {
+            return mk(
+              "unproven",
+              `no ${names.join(" / ")} in env; the default Claude config has a login (${login}), but runs use a fresh per-run CLAUDE_CONFIG_DIR that cannot see it, so \`ach run\` is unauthenticated without --claude-default-config`,
+              "pass --claude-default-config (env AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1) to use that login, or set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) / ANTHROPIC_API_KEY",
+            );
+          }
+        }
         return mk(
           "failed",
           `no ${names.join(" / ")} in env, and runs use a fresh per-run CLAUDE_CONFIG_DIR that cannot see a /login session`,
@@ -743,6 +795,13 @@ async function checkKiro(opts: Required<Pick<DoctorOptions, "env" | "cwd" | "ver
   const command = env.KIRO_CLI_BIN && env.KIRO_CLI_BIN !== "" ? env.KIRO_CLI_BIN : "kiro-cli";
   const t0 = Date.now();
   const resolved = resolveOnPath(command, env.PATH);
+  if (!resolved && opts.skipNotInstalled) {
+    return [
+      { agent: "kiro", name: "binary", status: "skipped", depth: "shallow", detail: `skipped (not installed): '${command}' not found on PATH`, hint: INSTALL_HINT.kiro, ms: Date.now() - t0 },
+      { agent: "kiro", name: "version", status: "skipped", depth: "shallow", detail: SKIP_NOT_INSTALLED, ms: 0 },
+      ...skippedDependents("kiro", "shallow", ["auth", "model", "mcp"]),
+    ];
+  }
   if (!resolved) {
     const out: DoctorCheck[] = [
       { agent: "kiro", name: "binary", status: "failed", depth: "shallow", detail: `'${command}' not found on PATH`, hint: INSTALL_HINT.kiro, ms: Date.now() - t0 },
@@ -788,6 +847,8 @@ export interface KiroIdeDoctorOptions {
   bin?: string;
   platform?: NodeJS.Platform;
   fetchTimeoutMs?: number;
+  /** All-agents mode (#216): Kiro IDE not installed / not running (CDP port free or owned by another app) is `skipped`, not `failed`. */
+  skipNotRunning?: boolean;
 }
 
 const KIRO_IDE_LAUNCH_HINT =
@@ -884,6 +945,12 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
   let t0 = Date.now();
   const bin = opts.bin ?? env.KIRO_IDE_BIN ?? kiroIdeDefaultBin(platform, env);
   const binOk = bin !== undefined && bin !== "" && isExecutableFile(bin);
+  if (!binOk && loopback && opts.skipNotRunning) {
+    return [
+      mk("binary", "skipped", `skipped (not installed): Kiro IDE not found at ${bin ?? "(no default for this platform)"}`, t0, "install Kiro IDE (macOS: `brew install --cask kiro`) or pass --kiro-ide-bin"),
+      ...["cdp", "signed-in", "chat", "model"].map((n) => mk(n, "skipped", SKIP_NOT_INSTALLED, Date.now())),
+    ];
+  }
   let version: string | undefined;
   if (binOk && platform === "darwin") version = await plistVersion(bin);
   if (binOk) {
@@ -906,7 +973,15 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
     const verdict = await checkKiroIdeEndpoint(endpoint, { timeoutMs });
     if (verdict.kind === "other") {
       wrongEndpoint = true;
-      out.push(mk("cdp", "failed", kiroIdeWrongEndpointMessage(endpoint, verdict.product), t0, KIRO_IDE_WRONG_ENDPOINT_HINT));
+      out.push(
+        mk(
+          "cdp",
+          opts.skipNotRunning ? "skipped" : "failed",
+          opts.skipNotRunning ? `skipped (not running): ${kiroIdeWrongEndpointMessage(endpoint, verdict.product)}` : kiroIdeWrongEndpointMessage(endpoint, verdict.product),
+          t0,
+          KIRO_IDE_WRONG_ENDPOINT_HINT,
+        ),
+      );
     } else {
       const ideVersion = verdict.kiroVersion;
       cdpOk = true;
@@ -915,7 +990,8 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
       if (ideVersion && !version) out[binaryIndex] = { ...out[binaryIndex]!, detail: `${out[binaryIndex]!.detail} (running IDE: Kiro ${ideVersion})` };
     }
   } catch (e) {
-    out.push(mk("cdp", "failed", `${endpoint} unreachable: ${e instanceof Error ? e.message : String(e)}`, t0, KIRO_IDE_LAUNCH_HINT));
+    const why = `${endpoint} unreachable: ${e instanceof Error ? e.message : String(e)}`;
+    out.push(opts.skipNotRunning ? mk("cdp", "skipped", `skipped (not running): ${why}`, t0, KIRO_IDE_LAUNCH_HINT) : mk("cdp", "failed", why, t0, KIRO_IDE_LAUNCH_HINT));
   }
   if (!loopback) {
     out.push(
@@ -930,9 +1006,10 @@ export async function checkKiroIde(opts: KiroIdeDoctorOptions): Promise<DoctorCh
   }
   if (!cdpOk) {
     const why = wrongEndpoint ? "endpoint is not Kiro IDE" : "CDP unreachable";
-    out.push(mk("signed-in", "unproven", `not attempted: ${why}`, Date.now()));
-    out.push(mk("chat", "unproven", `not attempted: ${why}`, Date.now()));
-    out.push(mk("model", "unproven", `not attempted: ${why}`, Date.now()));
+    const st: DoctorStatus = opts.skipNotRunning ? "skipped" : "unproven";
+    out.push(mk("signed-in", st, `not attempted: ${why}`, Date.now()));
+    out.push(mk("chat", st, `not attempted: ${why}`, Date.now()));
+    out.push(mk("model", st, `not attempted: ${why}`, Date.now()));
     return out;
   }
 
@@ -1198,15 +1275,45 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
           cwd,
           endpoint: endpointFrom(options.kiroIdeCdp, options.kiroIdePort ?? 9222),
           ...(options.kiroIdeBin !== undefined ? { bin: options.kiroIdeBin } : {}),
+          ...(options.skipNotInstalled ? { skipNotRunning: true } : {}),
         });
       }
       if (agent === "kiro") return checkKiro({ ...options, env, cwd, versionTimeoutMs });
-      const bin = await checkBinary(agent, agent === "copilot" && env.COPILOT_CLI_BIN ? env.COPILOT_CLI_BIN : agent === "cursor" && env.CURSOR_AGENT_BIN ? env.CURSOR_AGENT_BIN : (AGENT_BINARY[agent] ?? agent), env, cwd, versionTimeoutMs);
-      return [...bin.checks, await checkAuth(agent, env), checkModel(agent, options.model), await checkMcp(agent, env, cwd)];
+      const bin = await checkBinary(agent, agent === "copilot" && env.COPILOT_CLI_BIN ? env.COPILOT_CLI_BIN : agent === "cursor" && env.CURSOR_AGENT_BIN ? env.CURSOR_AGENT_BIN : (AGENT_BINARY[agent] ?? agent), env, cwd, versionTimeoutMs, options.skipNotInstalled === true);
+      if (bin.checks[0]?.status === "skipped") return [...bin.checks, ...skippedDependents(agent, "shallow", ["auth", "model", "mcp"])];
+      return [...bin.checks, await checkAuth(agent, env, options.skipNotInstalled === true), checkModel(agent, options.model), await checkMcp(agent, env, cwd)];
     }),
   );
   for (const list of perAgent) checks.push(...list);
-  return { ok: checks.every((c) => c.status !== "failed"), promptsSent: 0, checks };
+  return { ok: checks.every((c) => c.status !== "failed"), promptsSent: 0, checks, ...summarizeChecks(checks) };
+}
+
+/**
+ * Who is installed, who was skipped, who fails (#216). An agent is skipped when its
+ * `binary` row (kiro-ide: or `cdp` row) is `skipped`; `harness` rows are not agents.
+ */
+export function summarizeChecks(checks: readonly DoctorCheck[]): Pick<DoctorReport, "installed" | "skipped" | "failing"> {
+  const order: string[] = [];
+  for (const c of checks) if (!order.includes(c.agent)) order.push(c.agent);
+  const installed: string[] = [];
+  const skipped: string[] = [];
+  const failing: Array<{ agent: string; checks: string[] }> = [];
+  for (const agent of order) {
+    const rows = checks.filter((c) => c.agent === agent);
+    const failed = rows.filter((c) => c.status === "failed").map((c) => c.name);
+    if (failed.length > 0) failing.push({ agent, checks: failed });
+    if (agent === "harness") continue;
+    if (rows.some((c) => (c.name === "binary" || c.name === "cdp") && c.status === "skipped")) skipped.push(agent);
+    else installed.push(agent);
+  }
+  return { installed, skipped, failing };
+}
+
+/** `installed: a, b · skipped: x, y · failing: opencode (mcp)`; empty groups are omitted-as-`none`. */
+export function formatSummaryLine(r: Pick<DoctorReport, "installed" | "skipped" | "failing">): string {
+  const list = (xs: string[]): string => (xs.length > 0 ? xs.join(", ") : "none");
+  const failing = r.failing.length > 0 ? r.failing.map((f) => `${f.agent} (${f.checks.join(", ")})`).join(", ") : "none";
+  return `installed: ${list(r.installed)} · skipped: ${list(r.skipped)} · failing: ${failing}`;
 }
 
 export function formatDoctorTable(report: DoctorReport): string {
@@ -1225,13 +1332,15 @@ export function formatDoctorTable(report: DoctorReport): string {
   }
   const failed = rows.filter((r) => r.status === "failed").length;
   const unproven = rows.filter((r) => r.status === "unproven").length;
+  const skippedRows = rows.filter((r) => r.status === "skipped").length;
   lines.push("");
-  lines.push(`ok ${String(report.ok)} · ${failed} failed · ${unproven} unproven · prompts sent: ${report.promptsSent}`);
+  lines.push(`ok ${String(report.ok)} · ${failed} failed · ${unproven} unproven${skippedRows > 0 ? ` · ${skippedRows} skipped` : ""} · prompts sent: ${report.promptsSent}`);
+  if (report.installed !== undefined) lines.push(formatSummaryLine(report));
   lines.push("depth: deep = observed over a real handshake (kiro ACP); shallow = local evidence only (binary ran, credential present, config parses)");
   return lines.join("\n");
 }
 
-/** `ach doctor [--agent A] [--model M] [--cwd DIR] [--claude-default-config] [--json]`. Exit 0 iff no check failed. */
+/** `ach doctor [--agent A] [--model M] [--cwd DIR] [--claude-default-config] [--json]`. Exit 0 iff no check failed (`skipped` rows never fail). */
 export async function cmdDoctor(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
@@ -1265,6 +1374,7 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
   if (args.values["claude-default-config"]) env.AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG = "1";
   const report = await runDoctor({
     agents: agent !== undefined ? (isKnownAgent(agent) ? [agent] : []) : AGENTS.filter((a) => a !== "null"),
+    skipNotInstalled: agent === undefined,
     env,
     cwd: args.values.cwd ?? process.cwd(),
     stateDir: defaultStateDir(),
@@ -1291,6 +1401,7 @@ export async function cmdDoctor(rest: string[]): Promise<number> {
   }
   for (const issue of catalog.errors) report.checks.push({ agent: "harness", name: "descriptor", status: "failed", depth: "shallow", detail: JSON.stringify(issue), hint: "correct the invalid agents.d descriptor", ms: 0, source: "agents.d" });
   report.ok = report.checks.every((c) => c.status !== "failed");
+  Object.assign(report, summarizeChecks(report.checks));
   process.stdout.write((args.values.json ? JSON.stringify(report, null, 2) : formatDoctorTable(report)) + "\n");
   return report.ok ? 0 : 1;
 }

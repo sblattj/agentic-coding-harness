@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { runDoctor, formatDoctorTable, type DoctorCheck, type DoctorReport } from "../src/cli/doctor.ts";
+import { runDoctor, formatDoctorTable, formatSummaryLine, type DoctorCheck, type DoctorReport } from "../src/cli/doctor.ts";
 
 // `ach doctor` (issue #35). Every test builds its own world: a temp PATH
 // holding fake agent binaries (shell scripts), a temp HOME, a temp state dir.
@@ -605,5 +605,95 @@ describe("ach doctor — agents.d descriptors", () => {
     assert.match(tap.detail, new RegExp(tapDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.ok(!report.checks.some((c) => c.agent === "descmeter" && c.name === "binary"), "meter-only descriptors get no binary check");
     assert.ok(!report.checks.some((c) => c.agent === "descmeter" && c.name === "auth"), "meter-only descriptors get no auth check");
+  });
+});
+
+describe("runDoctor — all-agents mode skips agents that are not installed (#216)", () => {
+  it("skipNotInstalled: a missing binary and its dependent rows are skipped and never fail; the summary names who", async () => {
+    const w = await world();
+    await fakeBin(w, "codex", 'echo "codex-cli 0.46.0"');
+    const r = await runDoctor({ agents: ["codex", "gemini", "prime", "copilot"], env: { ...w.env, OPENAI_API_KEY: "sk-x" }, cwd: w.cwd, stateDir: w.state, skipNotInstalled: true });
+    for (const agent of ["gemini", "prime", "copilot"]) {
+      const rows = r.checks.filter((c) => c.agent === agent);
+      assert.equal(rows.length, 5, agent);
+      assert.ok(rows.every((c) => c.status === "skipped"), `${agent}: ${JSON.stringify(rows.map((c) => c.name + ":" + c.status))}`);
+      assert.match(check(r, agent, "binary").detail, /^skipped \(not installed\)/);
+    }
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.installed, ["codex"]);
+    assert.deepEqual(r.skipped, ["gemini", "prime", "copilot"]);
+    assert.deepEqual(r.failing, []);
+    const table = formatDoctorTable(r);
+    assert.match(table, /installed: codex · skipped: gemini, prime, copilot · failing: none/);
+    assert.match(table, /ok true · 0 failed/);
+  });
+
+  it("explicit --agent with no binary still fails (control), with no skipped rows", async () => {
+    const w = await world();
+    const r = await runDoctor({ agents: ["gemini"], env: w.env, cwd: w.cwd, stateDir: w.state });
+    assert.equal(r.ok, false);
+    assert.equal(check(r, "gemini", "binary").status, "failed");
+    assert.ok(r.checks.every((c) => c.status !== "skipped"));
+    assert.deepEqual(r.failing, [{ agent: "gemini", checks: ["binary", "auth"] }]);
+  });
+
+  it("a real failure of an installed agent stays a failure and is named in the summary (opencode MCP with a stale command path)", async () => {
+    const w = await world();
+    await fakeBin(w, "opencode", 'echo "0.15.2"');
+    await fs.mkdir(path.join(w.home, ".config", "opencode"), { recursive: true });
+    await fs.writeFile(path.join(w.home, ".config", "opencode", "opencode.json"), JSON.stringify({ mcp: { stale: { type: "local", command: ["/nonexistent/node/bin/node", "s.js"] } } }));
+    const r = await runDoctor({ agents: ["opencode", "gemini"], env: { ...w.env, OPENAI_API_KEY: "sk-x" }, cwd: w.cwd, stateDir: w.state, skipNotInstalled: true });
+    assert.equal(r.ok, false);
+    assert.equal(check(r, "opencode", "mcp").status, "failed");
+    assert.deepEqual(r.failing, [{ agent: "opencode", checks: ["mcp"] }]);
+    assert.match(formatDoctorTable(r), /installed: opencode · skipped: gemini · failing: opencode \(mcp\)/);
+  });
+
+  it("an installed binary whose --version fails is a failure, not a skip", async () => {
+    const w = await world();
+    await fakeBin(w, "gemini", "exit 3");
+    const r = await runDoctor({ agents: ["gemini"], env: w.env, cwd: w.cwd, stateDir: w.state, skipNotInstalled: true });
+    assert.equal(check(r, "gemini", "binary").status, "failed");
+    assert.equal(r.ok, false);
+  });
+
+  it("claude auth: no token + a default-config login is a non-failing note naming --claude-default-config; no login anywhere still fails; explicit mode unchanged", async () => {
+    const w = await world();
+    await fakeBin(w, "claude", 'echo "2.1.3 (Claude Code)"');
+    const none = await runDoctor({ agents: ["claude"], env: w.env, cwd: w.cwd, stateDir: w.state, skipNotInstalled: true });
+    assert.equal(check(none, "claude", "auth").status, "failed", "no login anywhere");
+    await fs.mkdir(path.join(w.home, ".claude"), { recursive: true });
+    await fs.writeFile(path.join(w.home, ".claude", ".credentials.json"), '{"claudeAiOauth":{"accessToken":"TOKEN-XYZ"}}');
+    const all = await runDoctor({ agents: ["claude"], env: w.env, cwd: w.cwd, stateDir: w.state, skipNotInstalled: true });
+    const a = check(all, "claude", "auth");
+    assert.equal(a.status, "unproven");
+    assert.match(a.detail, /default Claude config has a login/);
+    assert.match(a.hint ?? "", /--claude-default-config/);
+    assert.equal(all.ok, true);
+    assert.doesNotMatch(JSON.stringify(all), /TOKEN-XYZ/);
+    const explicit = await runDoctor({ agents: ["claude"], env: w.env, cwd: w.cwd, stateDir: w.state });
+    assert.equal(check(explicit, "claude", "auth").status, "failed");
+  });
+
+  it("formatSummaryLine renders groups and `none`", () => {
+    assert.equal(
+      formatSummaryLine({ installed: ["a", "b"], skipped: [], failing: [{ agent: "b", checks: ["mcp", "auth"] }] }),
+      "installed: a, b · skipped: none · failing: b (mcp, auth)",
+    );
+  });
+
+  it("CLI: --json carries installed/skipped/failing additively, and no --agent skips a missing agent while --agent gemini exits 1", async () => {
+    const w = await world();
+    await fakeBin(w, "codex", 'echo "codex-cli 0.46.0"');
+    const env = { ...w.env, AGENTIC_CODING_HARNESS_STATE_DIR: w.state, OPENAI_API_KEY: "sk-x", ANTHROPIC_API_KEY: "k" };
+    const all = runCli(["doctor", "--json", "--kiro-ide-bin", path.join(w.home, "nokiro")], env, w.cwd);
+    const j = JSON.parse(all.stdout) as DoctorReport;
+    assert.ok(Array.isArray(j.checks) && typeof j.ok === "boolean" && j.promptsSent === 0, "existing fields intact");
+    assert.ok(j.skipped.includes("gemini") && j.skipped.includes("kiro-ide"), JSON.stringify(j.skipped));
+    assert.ok(j.installed.includes("codex"));
+    assert.equal(all.code, j.ok ? 0 : 1);
+    assert.ok(!j.failing.some((f) => f.agent === "gemini"));
+    const one = runCli(["doctor", "--agent", "gemini"], env, w.cwd);
+    assert.equal(one.code, 1, one.stdout + one.stderr);
   });
 });

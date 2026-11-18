@@ -377,4 +377,38 @@ describe("checkKiroIde", () => {
     assert.equal(row(rows, "cdp")!.status, "failed");
     assert.match(row(rows, "cdp")!.detail, /is a Chrome\/152\.0\.7977\.130, not Kiro IDE; pass --kiro-ide-port/);
   });
+
+  // Issue #216: all-agents mode reports "not running", not a failure.
+  it("all-agents mode: a foreign app on the port is skipped (not running); explicit mode still fails", async () => {
+    const f = await startFakeCdp({ targets: [], version: { Browser: "Chrome/156.0.0.0", "User-Agent": CHROME_UA } });
+    open.push(f);
+    const all = await checkKiroIde({ env: { PATH: "" }, cwd: tmp, endpoint: f.endpoint, bin, platform: "darwin", fetchTimeoutMs: 2000, skipNotRunning: true });
+    assert.equal(row(all, "cdp")!.status, "skipped");
+    assert.match(row(all, "cdp")!.detail, /^skipped \(not running\): .*not Kiro IDE/);
+    assert.ok(all.every((r) => r.status !== "failed"), JSON.stringify(all));
+    assert.equal(row(all, "chat")!.status, "skipped");
+    const explicit = await run(f.endpoint);
+    assert.equal(row(explicit, "cdp")!.status, "failed");
+  });
+
+  it("all-agents mode: nothing listening is skipped, a missing Kiro binary is skipped (not installed)", async () => {
+    const dead = await startFakeCdp({ targets: [] });
+    const endpoint = dead.endpoint;
+    await dead.close();
+    const noListener = await checkKiroIde({ env: { PATH: "" }, cwd: tmp, endpoint, bin, platform: "darwin", fetchTimeoutMs: 1000, skipNotRunning: true });
+    assert.equal(row(noListener, "cdp")!.status, "skipped");
+    const noBin = await checkKiroIde({ env: { PATH: "" }, cwd: tmp, endpoint, bin: path.join(tmp, "absent"), platform: "darwin", fetchTimeoutMs: 1000, skipNotRunning: true });
+    assert.equal(row(noBin, "binary")!.status, "skipped");
+    assert.match(row(noBin, "binary")!.detail, /skipped \(not installed\)/);
+    const explicit = await checkKiroIde({ env: { PATH: "" }, cwd: tmp, endpoint, bin: path.join(tmp, "absent"), platform: "darwin", fetchTimeoutMs: 1000 });
+    assert.equal(row(explicit, "binary")!.status, "failed");
+  });
+
+  it("all-agents mode: a real Kiro IDE on the port is still fully checked (control)", async () => {
+    const f = await startFakeCdp({ targets: [page(SIGNED_IN), chat(true)], version: REAL_KIRO_VERSION });
+    open.push(f);
+    const rows = await checkKiroIde({ env: { PATH: "" }, cwd: tmp, endpoint: f.endpoint, bin, platform: "darwin", fetchTimeoutMs: 2000, skipNotRunning: true });
+    assert.equal(row(rows, "cdp")!.status, "verified");
+    assert.equal(row(rows, "chat")!.status, "verified");
+  });
 });
