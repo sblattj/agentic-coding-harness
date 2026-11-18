@@ -3,11 +3,17 @@
 // One `opencode serve` per desk/lane (guide section 2), started detached in its own process
 // group from spec.cwd with a per-desk OPENCODE_CONFIG_CONTENT that force-disables every MCP the
 // user's opencode configs define except spec.mcps, and adds the `desks` MCP (`ach mcp`).
-// Turns go through POST /session/<sid>/prompt_async, silent context through noReply messages,
-// events come from the GET /event SSE stream (verified on opencode 1.19.0), reconciled against
-// GET /session/<sid>/message at every busy -> idle transition.
-import { spawn as nodeSpawn } from "node:child_process";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+// Two opencode API generations (#217), picked from `opencode --version` before the serve starts:
+//   v1 (opencode 1.x, verified on 1.19.0): turns via POST /session/<sid>/prompt_async, silent context via
+//      noReply messages, events from GET /event, reconciled against GET /session/<sid>/message.
+//   v2 (opencode 2.x, verified on 2.2.5 and 2.3.2): JSON API under /api/*, HTTP Basic auth (user "opencode",
+//      password from OPENCODE_PASSWORD, set per serve by this engine); every other path serves the web UI.
+//      Turns via POST /api/session/<sid>/prompt, silent context via /synthetic {resume:false}, busy/idle from
+//      session.execution.* on GET /api/event and GET /api/session/active.
+// Every JSON call fails closed: an HTML or non-JSON body is an "unsupported opencode API" error, never data.
+import { execFile, spawn as nodeSpawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -50,6 +56,39 @@ export interface OpenCodeEngineOptions {
   goalTimeoutMs?: number;
   /** How long after send() an idle signal counts as the previous turn's (opencode not busy yet). Default 15 s. */
   sendGraceMs?: number;
+  /** The opencode version, skipping the `--version` probe (tests). */
+  version?: string;
+  /** Version probe. Default runs `<bin> --version`. */
+  probeVersion?: (bin: string, env: NodeJS.ProcessEnv) => Promise<string>;
+  /** v2: how long the MCP list may take to show the desks MCP settled. Default 30 s. */
+  mcpSettleMs?: number;
+}
+
+/** The opencode HTTP API generation an opencode version speaks. */
+export type OpencodeApi = "v1" | "v2";
+
+/** Tested opencode releases (docs/DESKS.md). Other 1.x / 2.x releases run but are untested. */
+export const OPENCODE_TESTED = { v1: "1.19.0", v2: "2.2.5 - 2.3.2" } as const;
+
+/** "opencode v2.2.5" | "1.19.0" -> {version:"2.2.5", api:"v2"}. Throws on output without a version or an unsupported major. */
+export function opencodeApiFor(versionOutput: string): { version: string; api: OpencodeApi } {
+  const m = /(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?/.exec(versionOutput);
+  if (!m) throw new Error(`desks: cannot read the opencode version from ${JSON.stringify(versionOutput.trim().slice(0, 200))}; unsupported opencode`);
+  const version = m[0];
+  const major = Number(m[1]);
+  if (major === 1) return { version, api: "v1" };
+  if (major === 2) return { version, api: "v2" };
+  throw new Error(`desks: opencode ${version} is not supported (ach drives opencode 1.x, tested ${OPENCODE_TESTED.v1}, and 2.x, tested ${OPENCODE_TESTED.v2})`);
+}
+
+/** `<bin> --version`, bounded to 15 s. */
+export function probeOpencodeVersion(bin: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  return new Promise((res, rej) => {
+    execFile(bin, ["--version"], { env, timeout: 15_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return rej(new Error(`desks: \`${bin} --version\` failed: ${err.message}${stderr ? `: ${String(stderr).slice(0, 300)}` : ""}`));
+      res(String(stdout));
+    });
+  });
 }
 
 /** Keys under `mcp` that are config, not server names (opencode config schema). */
@@ -103,11 +142,25 @@ export function parseJsonc(src: string): unknown {
   return JSON.parse(out);
 }
 
-/** Every opencode config file that may define MCPs for a serve started in `cwd`: global, $OPENCODE_CONFIG, project (cwd up to /). */
-export function opencodeConfigFiles(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
+/** opencode 2's managed (system) config directory: core/src/config/discovery.ts (systemDirectory) at v2.2.5. */
+export function opencodeSystemConfigDir(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform === "darwin") return "/Library/Application Support/opencode";
+  if (platform === "win32") return join(env.ProgramData || "C:\\ProgramData", "opencode");
+  return "/etc/opencode";
+}
+
+/**
+ * Every opencode config file that may define MCPs for a serve started in `cwd`: global, $OPENCODE_CONFIG, project (cwd up to /).
+ * api "v2" adds $OPENCODE_CONFIG_DIR (which replaces the XDG dir in opencode 2) and the managed system directory.
+ */
+export function opencodeConfigFiles(cwd: string, env: NodeJS.ProcessEnv = process.env, api: OpencodeApi = "v1"): string[] {
   const home = env.HOME && env.HOME !== "" ? env.HOME : homedir();
   const cfgHome = env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME !== "" ? env.XDG_CONFIG_HOME : join(home, ".config");
   const files = ["config.json", "opencode.json", "opencode.jsonc"].map((f) => join(cfgHome, "opencode", f));
+  if (api === "v2") {
+    if (env.OPENCODE_CONFIG_DIR && env.OPENCODE_CONFIG_DIR !== "") files.push(...["opencode.json", "opencode.jsonc"].map((f) => join(resolve(env.OPENCODE_CONFIG_DIR!), f)));
+    files.push(...["opencode.json", "opencode.jsonc"].map((f) => join(opencodeSystemConfigDir(process.platform, env), f)));
+  }
   if (env.OPENCODE_CONFIG && env.OPENCODE_CONFIG !== "") files.push(resolve(env.OPENCODE_CONFIG));
   let dir = resolve(cwd);
   for (;;) {
@@ -132,9 +185,9 @@ function mcpNamesOf(cfg: unknown): string[] {
 }
 
 /** Names of every MCP server the user's opencode configs define (union over opencodeConfigFiles). Unreadable files are skipped. */
-export function configuredMcpNames(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
+export function configuredMcpNames(cwd: string, env: NodeJS.ProcessEnv = process.env, api: OpencodeApi = "v1"): string[] {
   const names = new Set<string>();
-  for (const f of opencodeConfigFiles(cwd, env)) {
+  for (const f of opencodeConfigFiles(cwd, env, api)) {
     if (!existsSync(f)) continue;
     try {
       for (const n of mcpNamesOf(parseJsonc(readFileSync(f, "utf8")))) names.add(n);
@@ -152,8 +205,9 @@ export function configuredMcpNames(cwd: string, env: NodeJS.ProcessEnv = process
  */
 export function buildOpencodeConfig(
   spec: Pick<HostSpec, "name" | "stack" | "stateDir" | "mcps" | "mcpServers" | "cwd">,
-  o: { configured: string[]; env?: NodeJS.ProcessEnv; extraDisabled?: string[]; base?: Record<string, unknown> } = { configured: [] },
+  o: { configured: string[]; env?: NodeJS.ProcessEnv; extraDisabled?: string[]; base?: Record<string, unknown>; api?: OpencodeApi } = { configured: [] },
 ): Record<string, unknown> {
+  if (o.api === "v2") return buildOpencodeConfigV2(spec, o);
   const want = new Set(spec.mcps);
   const configured = new Set(o.configured);
   const mcp: Record<string, unknown> = {};
@@ -170,6 +224,44 @@ export function buildOpencodeConfig(
   }
   mcp.desks = localMcp(desksMcpDef({ name: spec.name, stack: spec.stack, stateDir: spec.stateDir }, o.env ?? process.env));
   return { ...(o.base ?? {}), mcp };
+}
+
+/**
+ * The opencode 2 form. opencode 2 drops a legacy `mcp.<name>: {enabled:false}` entry that has no `type`
+ * (core/src/config/normalize.ts, isEnabledOnlyMcp, v2.2.5) and merges MCP servers by name with the later
+ * document replacing the whole entry (core/src/config/plugin/mcp.ts). So every MCP to switch off gets a
+ * complete, disabled stand-in under `mcp.servers.<name>`; OPENCODE_CONFIG_CONTENT loads after the global
+ * and project configs, so the stand-in wins. A wanted MCP that opencode already knows is left to the user's
+ * own definition (an enabled-only override would be dropped the same way).
+ */
+function buildOpencodeConfigV2(
+  spec: Pick<HostSpec, "name" | "stack" | "stateDir" | "mcps" | "mcpServers" | "cwd">,
+  o: { configured: string[]; env?: NodeJS.ProcessEnv; extraDisabled?: string[]; base?: Record<string, unknown> },
+): Record<string, unknown> {
+  const want = new Set(spec.mcps);
+  const configured = new Set(o.configured);
+  const baseMcp = o.base?.mcp && typeof o.base.mcp === "object" && !Array.isArray(o.base.mcp) ? { ...(o.base.mcp as Record<string, unknown>) } : {};
+  const baseServers = baseMcp.servers && typeof baseMcp.servers === "object" ? { ...(baseMcp.servers as Record<string, unknown>) } : {};
+  const servers: Record<string, unknown> = { ...baseServers };
+  for (const n of [...o.configured, ...(o.extraDisabled ?? [])]) {
+    if (!want.has(n) && n !== "desks") servers[n] = { type: "local", command: ["false"], disabled: true };
+  }
+  for (const n of spec.mcps) {
+    if (n === "desks") continue;
+    const def: McpServerDef | undefined = spec.mcpServers?.[n];
+    if (configured.has(n) || !def) continue;
+    servers[n] = localMcpV2(def);
+  }
+  servers.desks = localMcpV2(desksMcpDef({ name: spec.name, stack: spec.stack, stateDir: spec.stateDir }, o.env ?? process.env));
+  // A legacy top-level entry with the same name as a server set here would collide with it.
+  for (const n of Object.keys(servers)) delete baseMcp[n];
+  return { ...(o.base ?? {}), mcp: { ...baseMcp, servers } };
+}
+
+function localMcpV2(def: McpServerDef): Record<string, unknown> {
+  const out: Record<string, unknown> = { type: "local", command: [def.command, ...(def.args ?? [])] };
+  if (def.env && Object.keys(def.env).length > 0) out.environment = def.env;
+  return out;
 }
 
 function localMcp(def: McpServerDef): Record<string, unknown> {
@@ -315,6 +407,25 @@ function toolSummary(p: OcPart): string {
   return s.length > 200 ? `${s.slice(0, 197)}...` : s;
 }
 
+/** One opencode 2 session message (schema/src/session-message.ts at v2.2.5), the fields ach reads. */
+interface OcV2Message {
+  id?: string;
+  type?: string;
+  model?: { id?: string; providerID?: string };
+  content?: Array<{ type?: string; text?: string; id?: string; name?: string; state?: { status?: string; input?: unknown; error?: { message?: string } } }>;
+  tokens?: OcTokens;
+  cost?: number;
+  error?: { type?: string; message?: string };
+  time?: { created?: number; completed?: number };
+}
+
+/** A stable key for a v2 text block: v2 text content has no id, and the stream's ordinal is not the content index. */
+function textKey(messageId: string, text: string): string {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) h = (Math.imul(h, 31) + text.charCodeAt(i)) | 0;
+  return `${messageId}:text:${text.length}:${h >>> 0}`;
+}
+
 export class OpenCodeEngine implements Engine {
   readonly kind = "opencode" as const;
 
@@ -327,8 +438,18 @@ export class OpenCodeEngine implements Engine {
   private readonly stopGraceMs: number;
   private readonly goalTimeoutMs: number;
   private readonly sendGraceMs: number;
+  private readonly fixedVersion?: string;
+  private readonly probeVersion: (bin: string, env: NodeJS.ProcessEnv) => Promise<string>;
+  private readonly mcpSettleMs: number;
 
   private spec?: HostSpec;
+  /** API generation of the opencode binary, from its version (set at start). */
+  private api: OpencodeApi = "v1";
+  /** opencode version string, from `--version` (set at start). */
+  private version = "";
+  /** v2: per-serve Basic auth password (OPENCODE_PASSWORD) and the 0600 file attachCommand() reads it from. */
+  private password = "";
+  private passwordFile = "";
   private port = 0;
   private baseUrl = "";
   private sessionId = "";
@@ -370,6 +491,14 @@ export class OpenCodeEngine implements Engine {
     this.stopGraceMs = o.stopGraceMs ?? 5_000;
     this.goalTimeoutMs = o.goalTimeoutMs ?? 40_000;
     this.sendGraceMs = o.sendGraceMs ?? 15_000;
+    this.fixedVersion = o.version;
+    this.probeVersion = o.probeVersion ?? probeOpencodeVersion;
+    this.mcpSettleMs = o.mcpSettleMs ?? 30_000;
+  }
+
+  /** The API generation and version this engine drives ("" before start()). */
+  get apiInfo(): { api: OpencodeApi; version: string } {
+    return { api: this.api, version: this.version };
   }
 
   /** The serve log path (`<stateDir>/desks/<stack>/logs/<name>.opencode.log`); "" before start(). */
@@ -400,9 +529,22 @@ export class OpenCodeEngine implements Engine {
     this.serveExitedDuringStart = undefined;
     this.port = spec.enginePort ?? spec.port + ENGINE_PORT_OFFSET;
     this.baseUrl = `http://127.0.0.1:${this.port}`;
-    this.logFile = join(deskPaths(spec.stateDir, spec.stack).logs, `${spec.name}.opencode.log`);
+    const paths = deskPaths(spec.stateDir, spec.stack);
+    this.logFile = join(paths.logs, `${spec.name}.opencode.log`);
 
-    const configured = configuredMcpNames(spec.cwd, this.env);
+    // Which HTTP API to speak: opencode 2 moved everything under /api/* behind auth (#217).
+    const picked = opencodeApiFor(this.fixedVersion ?? (await this.probeVersion(this.bin, this.env)));
+    this.api = picked.api;
+    this.version = picked.version;
+    this.checkStop();
+    if (this.api === "v2") {
+      this.password = randomBytes(24).toString("base64url");
+      this.passwordFile = join(paths.root, "secrets", `${spec.name}.opencode-password`);
+      mkdirSync(dirname(this.passwordFile), { recursive: true, mode: 0o700 });
+      writeFileSync(this.passwordFile, this.password, { mode: 0o600 });
+    }
+
+    const configured = configuredMcpNames(spec.cwd, this.env, this.api);
     let base: Record<string, unknown> | undefined;
     const inherited = this.env.OPENCODE_CONFIG_CONTENT;
     if (inherited && inherited !== "") {
@@ -420,25 +562,31 @@ export class OpenCodeEngine implements Engine {
       // (a config file we could not see or parse).
       let extraDisabled: string[] = [];
       for (let attempt = 1; ; attempt++) {
-        const config = buildOpencodeConfig(spec, { configured, env: this.env, extraDisabled, base });
+        const config = buildOpencodeConfig(spec, { configured, env: this.env, extraDisabled, base, api: this.api });
         await this.boot(spec, config);
         this.checkStop();
-        const leaked = Object.entries(await this.mcpStatus())
+        const status = this.api === "v2" ? await this.settledMcpStatusV2() : await this.mcpStatus();
+        const leaked = Object.entries(status)
           .filter(([n, s]) => !allowed.has(n) && s !== "disabled")
           .map(([n]) => n);
         this.checkStop();
         if (leaked.length === 0) break;
+        try {
+          appendFileSync(this.logFile, `\n[ach] boot ${attempt}: MCPs outside ${JSON.stringify([...allowed])} not disabled: ${leaked.map((n) => `${n}=${status[n]}`).join(", ")}; ${attempt >= 2 ? "giving up" : "re-booting with them disabled"}\n`);
+        } catch {
+          // diagnostics only
+        }
         await this.killServe();
         this.checkStop();
         if (attempt >= 2) throw new Error(`desks: opencode serve still enables MCPs outside ${JSON.stringify([...allowed])}: ${leaked.join(", ")}`);
         extraDisabled = [...extraDisabled, ...leaked];
       }
 
-      const created = (await this.http("POST", `/session?directory=${encodeURIComponent(spec.cwd)}`, { title: spec.name })) as { id?: string };
-      if (!created || typeof created.id !== "string") throw new Error(`desks: opencode POST /session returned no id: ${JSON.stringify(created)}`);
+      this.sessionId = this.api === "v2" ? await this.createSessionV2(spec) : await this.createSessionV1(spec);
       this.checkStop();
-      this.sessionId = created.id;
-      this.openEventStream();
+      // The first connect must be a real event stream: a wrong content type fails start() here.
+      await this.openEventStream();
+      this.checkStop();
       const prompt = rolePrompt(spec);
       if (prompt !== "") await this.note(prompt);
       this.checkStop();
@@ -447,12 +595,57 @@ export class OpenCodeEngine implements Engine {
       this.sse?.abort();
       this.sse = undefined;
       await this.killServe().catch(() => undefined);
+      this.removePasswordFile();
       if (this.stopping) throw new Error(STOPPED_DURING_START);
       throw err;
     }
     this.started = true;
     const proc = this.proc as ServeProcess | undefined;
     return { sessionId: this.sessionId, engineUrl: this.baseUrl, childPid: proc?.pid };
+  }
+
+  private async createSessionV1(spec: HostSpec): Promise<string> {
+    const created = (await this.http("POST", `/session?directory=${encodeURIComponent(spec.cwd)}`, { title: spec.name })) as { id?: string } | null;
+    if (!created || typeof created.id !== "string") throw new Error(`desks: opencode POST /session returned no id: ${JSON.stringify(created)}`);
+    return created.id;
+  }
+
+  private async createSessionV2(spec: HostSpec): Promise<string> {
+    const m = splitModel(spec.model);
+    const body: Record<string, unknown> = { title: spec.name, location: { directory: spec.cwd } };
+    if (m) body.model = { providerID: m.providerID, id: m.modelID };
+    const created = (await this.http("POST", "/api/session", body)) as { data?: { id?: unknown } } | null;
+    const id = created?.data?.id;
+    if (typeof id !== "string" || id === "") throw new Error(`desks: opencode ${this.version} POST /api/session returned no data.id: ${JSON.stringify(created).slice(0, 300)}`);
+    return id;
+  }
+
+  /**
+   * v2: GET /api/mcp answers [] until the instance has loaded its MCPs, and an entry starts "pending".
+   * An empty or unsettled list proves nothing, so wait until the desks MCP (always configured) is listed
+   * and no entry is pending; fail closed if that never happens.
+   */
+  private async settledMcpStatusV2(): Promise<Record<string, string>> {
+    const deadline = Date.now() + this.mcpSettleMs;
+    let last: Record<string, string> = {};
+    for (;;) {
+      last = await this.mcpStatus();
+      if (last.desks !== undefined && !Object.values(last).includes("pending")) return last;
+      this.checkStop();
+      if (Date.now() > deadline) {
+        throw new Error(`desks: opencode ${this.version} GET /api/mcp did not list a settled "desks" MCP within ${this.mcpSettleMs} ms (got ${JSON.stringify(last)}); refusing to start without a verified MCP set`);
+      }
+      await sleep(250);
+    }
+  }
+
+  private removePasswordFile(): void {
+    if (!this.passwordFile) return;
+    try {
+      rmSync(this.passwordFile, { force: true });
+    } catch {
+      // best effort
+    }
   }
 
   /**
@@ -488,6 +681,11 @@ export class OpenCodeEngine implements Engine {
       ACH_DESK_NAME: spec.name,
       ACH_DESK_STACK: spec.stack,
     };
+    if (this.api === "v2") {
+      // opencode 2 serves its API only with Basic auth; the password comes from env (cli/src/env.ts).
+      env.OPENCODE_PASSWORD = this.password;
+      delete env.OPENCODE_SERVER_PASSWORD;
+    }
     // The serve log is opened for append: only bytes this boot writes say why THIS boot failed.
     const logStart = sizeOf(this.logFile);
     const proc = this.spawnServe({
@@ -519,15 +717,17 @@ export class OpenCodeEngine implements Engine {
         this.proc = undefined;
         throw new Error(`desks: opencode serve exited (${String(exitedWith)}) before ready on port ${this.port}. Log tail:\n${tailOf(this.logFile, 2000, logStart)}`);
       }
+      let ready: boolean;
       try {
-        const r = await fetch(`${this.baseUrl}/session`, { signal: AbortSignal.timeout(2000) });
-        await r.body?.cancel();
-        if (r.status === 200) {
-          booting = false;
-          return;
-        }
-      } catch {
-        // not up yet
+        ready = await this.readyProbe();
+      } catch (err) {
+        // Up, but not an API this engine speaks: fail closed now instead of waiting out the timeout.
+        await this.killServe();
+        throw err;
+      }
+      if (ready) {
+        booting = false;
+        return;
       }
       if (this.stopping) throw new Error(STOPPED_DURING_START);
       if (Date.now() > deadline) {
@@ -536,6 +736,44 @@ export class OpenCodeEngine implements Engine {
       }
       await sleep(250);
     }
+  }
+
+  /**
+   * One readiness probe: false while the serve is not up (connection refused, timeout, non-200), true on a
+   * 200 JSON answer, throws on a 200 that is not JSON (an HTML web UI is not an API: #217).
+   */
+  private async readyProbe(): Promise<boolean> {
+    const path = this.api === "v2" ? "/api/info" : "/session";
+    let r: Response;
+    try {
+      r = await fetch(`${this.baseUrl}${path}`, { headers: this.authHeaders(), signal: AbortSignal.timeout(2000) });
+    } catch {
+      return false;
+    }
+    if (r.status !== 200) {
+      await r.body?.cancel().catch(() => undefined);
+      return false;
+    }
+    let text: string;
+    try {
+      text = await r.text();
+    } catch {
+      return false;
+    }
+    const body = this.parseJson("GET", path, r.headers.get("content-type"), text);
+    if (this.api === "v2") {
+      const v = (body as { version?: unknown } | null)?.version;
+      if (typeof v !== "string") throw new Error(`desks: opencode ${this.version} GET /api/info returned no version; unsupported opencode API`);
+      if (opencodeApiFor(v).api !== "v2") throw new Error(`desks: opencode serve reports ${v} on GET /api/info but \`${this.bin} --version\` said ${this.version}`);
+    }
+    return true;
+  }
+
+  private authHeaders(): Record<string, string> {
+    if (this.api !== "v2") return {};
+    const h: Record<string, string> = { authorization: `Basic ${Buffer.from(`opencode:${this.password}`).toString("base64")}` };
+    if (this.spec) h["x-opencode-directory"] = encodeURIComponent(this.spec.cwd);
+    return h;
   }
 
   private requireSession(fn: string): void {
@@ -554,7 +792,8 @@ export class OpenCodeEngine implements Engine {
     this.pendingSince = Date.now();
     this.markBusy();
     try {
-      await this.http("POST", `/session/${this.sessionId}/prompt_async`, { ...this.modelBody(), parts: [{ type: "text", text }] });
+      if (this.api === "v2") await this.http("POST", `/api/session/${this.sessionId}/prompt`, { text });
+      else await this.http("POST", `/session/${this.sessionId}/prompt_async`, { ...this.modelBody(), parts: [{ type: "text", text }] });
     } catch (err) {
       this.pendingTurn = false;
       // During an in-flight idle transition, markBusy() only queued a turn_start: drop it and let
@@ -583,14 +822,14 @@ export class OpenCodeEngine implements Engine {
 
   async note(text: string): Promise<void> {
     this.requireSession("note");
-    await this.http("POST", `/session/${this.sessionId}/message`, { noReply: true, ...this.modelBody(), parts: [{ type: "text", text }] });
+    // v2: a synthetic message with resume:false is context for the next turn and starts none.
+    if (this.api === "v2") await this.http("POST", `/api/session/${this.sessionId}/synthetic`, { text, resume: false });
+    else await this.http("POST", `/session/${this.sessionId}/message`, { noReply: true, ...this.modelBody(), parts: [{ type: "text", text }] });
   }
 
   async state(): Promise<"busy" | "idle"> {
     this.requireSession("state");
-    const st = (await this.http("GET", "/session/status")) as Record<string, { type?: string }> | null;
-    const mine = st?.[this.sessionId];
-    const engineBusy = mine !== undefined && mine.type !== "idle";
+    const engineBusy = await this.engineBusy();
     if (engineBusy) {
       this.pendingTurn = false;
       this.markBusy();
@@ -605,9 +844,23 @@ export class OpenCodeEngine implements Engine {
     return "idle";
   }
 
+  /** The serve's own view: is this session running? v1 GET /session/status, v2 GET /api/session/active. */
+  private async engineBusy(timeoutMs = 15_000): Promise<boolean> {
+    if (this.api === "v2") {
+      const st = (await this.http("GET", "/api/session/active", undefined, timeoutMs)) as { data?: Record<string, { type?: string }> } | null;
+      if (!st || typeof st !== "object" || !st.data || typeof st.data !== "object") throw new Error(`desks: opencode ${this.version} GET /api/session/active returned no data; unsupported opencode API`);
+      const mine = st.data[this.sessionId];
+      return mine !== undefined && mine.type !== "idle";
+    }
+    const st = (await this.http("GET", "/session/status", undefined, timeoutMs)) as Record<string, { type?: string }> | null;
+    const mine = st?.[this.sessionId];
+    return mine !== undefined && mine.type !== "idle";
+  }
+
   async setGoal(objective: string): Promise<void> {
     this.requireSession("setGoal");
     this.objective = objective;
+    if (this.api === "v2") return this.setGoalV2(objective);
     await this.goals.setOpencodeGoal({
       baseUrl: this.baseUrl,
       sessionId: this.sessionId,
@@ -619,10 +872,78 @@ export class OpenCodeEngine implements Engine {
 
   async goalStatus(): Promise<GoalStatus> {
     this.requireSession("goalStatus");
+    if (this.api === "v2") return this.goalStatusV2();
     return this.goals.readOpencodeGoal({ dir: this.spec!.cwd, sessionId: this.sessionId, objective: this.objective || undefined });
   }
 
+  /**
+   * v2: opencode 2 ships the goal loop as a built-in plugin (core/src/plugin/goal.ts, id "opencode.goal"):
+   * `/goal <objective>` arms it through POST /api/session/<id>/command, and the plugin RPC
+   * POST /api/rpc/opencode.goal/get returns the session's Goal.State. setGoal is confirmed only by a
+   * State that is active, carries this objective and was written after the command was sent.
+   */
+  private async setGoalV2(objective: string): Promise<void> {
+    const text = objective.trim();
+    const sent = Date.now();
+    await this.http("POST", `/api/session/${this.sessionId}/command`, { name: "goal", text }, this.goalTimeoutMs);
+    // The built-in plugin writes the goal before the command returns; allow a short settle, not the whole timeout.
+    const deadline = Date.now() + Math.min(this.goalTimeoutMs, 5000);
+    for (;;) {
+      const g = await this.goalStateV2();
+      if (g && g.status === "active" && g.objective === text && (g.updatedAt ?? 0) >= sent - 2000) return;
+      if (Date.now() > deadline) {
+        // A `goal` command from the user config (`command.goal`) or a plugin replaces the built-in one, and its goals never
+        // reach the opencode.goal RPC: name it instead of reporting a bare timeout.
+        let who = "";
+        try {
+          const cmds = (await this.http("GET", `/api/command?location[directory]=${encodeURIComponent(this.spec!.cwd)}`)) as { data?: Array<{ name?: string; description?: string }> } | null;
+          const goalCmd = cmds?.data?.find((c) => c.name === "goal");
+          if (goalCmd) who = `; the session's /goal command is ${JSON.stringify(goalCmd.description ?? "")} (a "goal" command from the opencode config or another plugin replaces the built-in opencode.goal plugin, which this engine drives)`;
+        } catch {
+          // diagnostics only
+        }
+        throw new Error(`desks: opencode ${this.version} did not confirm the goal (opencode.goal state: ${JSON.stringify(g).slice(0, 300)})${who}`);
+      }
+      await sleep(250);
+    }
+  }
+
+  private async goalStateV2(): Promise<{ objective?: string; status?: string; reason?: string; updatedAt?: number } | null> {
+    const loc = `?location[directory]=${encodeURIComponent(this.spec!.cwd)}`;
+    const r = (await this.http("POST", `/api/rpc/opencode.goal/get${loc}`, { input: { sessionID: this.sessionId } })) as { output?: unknown } | null;
+    if (!r || typeof r !== "object" || !("output" in r)) throw new Error(`desks: opencode ${this.version} goal RPC returned no output; unsupported opencode API`);
+    const g = r.output;
+    if (g === null || g === undefined) return null;
+    if (typeof g !== "object") throw new Error(`desks: opencode ${this.version} goal RPC returned ${JSON.stringify(g).slice(0, 200)}`);
+    return g as { objective?: string; status?: string; reason?: string; updatedAt?: number };
+  }
+
+  /** Goal.State -> GoalStatus: active -> active, complete -> achieved, paused -> stopped (with the plugin's reason). */
+  private async goalStatusV2(): Promise<GoalStatus> {
+    const g = await this.goalStateV2();
+    if (!g) return { state: "none", objective: this.objective, source: "opencode-plugin", updatedAt: Date.now() };
+    const state: GoalStatus["state"] = g.status === "active" ? "active" : g.status === "complete" ? "achieved" : "stopped";
+    const out: GoalStatus = { objective: g.objective ?? this.objective, state, source: "opencode-plugin", updatedAt: typeof g.updatedAt === "number" ? g.updatedAt : Date.now() };
+    if (g.reason) {
+      if (state === "achieved") out.evidence = g.reason;
+      else out.reason = g.reason;
+    }
+    return out;
+  }
+
   async mcpStatus(): Promise<Record<string, string>> {
+    if (this.api === "v2") {
+      const dir = this.spec ? `?location[directory]=${encodeURIComponent(this.spec.cwd)}` : "";
+      const raw = (await this.http("GET", `/api/mcp${dir}`)) as { data?: unknown } | null;
+      if (!raw || typeof raw !== "object" || !Array.isArray(raw.data)) throw new Error(`desks: opencode ${this.version} GET /api/mcp returned no data[]; unsupported opencode API`);
+      const out: Record<string, string> = {};
+      for (const e of raw.data as Array<{ name?: unknown; status?: unknown }>) {
+        if (!e || typeof e.name !== "string") throw new Error(`desks: opencode ${this.version} GET /api/mcp entry without a name: ${JSON.stringify(e).slice(0, 200)}`);
+        const st = e.status;
+        out[e.name] = typeof st === "string" ? st : st && typeof st === "object" && typeof (st as { status?: unknown }).status === "string" ? (st as { status: string }).status : JSON.stringify(st);
+      }
+      return out;
+    }
     const raw = (await this.http("GET", "/mcp")) as Record<string, unknown> | null;
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(raw ?? {})) {
@@ -633,6 +954,11 @@ export class OpenCodeEngine implements Engine {
 
   attachCommand(): string[] {
     this.requireSession("attachCommand");
+    if (this.api === "v2") {
+      // opencode 2 has no `attach`: the TUI connects with --server/--session and reads the password from
+      // OPENCODE_PASSWORD (cli/src/services/server-connection.ts). The password stays in a 0600 file, not argv.
+      return ["/bin/sh", "-c", 'OPENCODE_PASSWORD="$(cat "$1")" exec "$0" --server "$2" --session "$3"', this.bin, this.passwordFile, this.baseUrl, this.sessionId];
+    }
     return [this.bin, "attach", this.baseUrl, "--session", this.sessionId];
   }
 
@@ -656,9 +982,8 @@ export class OpenCodeEngine implements Engine {
       this.graceTimer = undefined;
       if (this.sessionId && this.proc) {
         try {
-          const st = (await this.http("GET", "/session/status", undefined, 2000)) as Record<string, { type?: string }> | null;
-          if (st?.[this.sessionId] && st[this.sessionId]!.type !== "idle") {
-            await this.http("POST", `/session/${this.sessionId}/abort`, undefined, 3000);
+          if (await this.engineBusy(2000)) {
+            await this.http("POST", this.api === "v2" ? `/api/session/${this.sessionId}/interrupt` : `/session/${this.sessionId}/abort`, undefined, 3000);
           }
         } catch {
           // serve unresponsive: the signals below handle it
@@ -667,6 +992,7 @@ export class OpenCodeEngine implements Engine {
       this.sse?.abort();
       this.sse = undefined;
       await this.killServe();
+      this.removePasswordFile();
       if (this.busy) this.setBusy(false);
     })();
   }
@@ -680,6 +1006,7 @@ export class OpenCodeEngine implements Engine {
   private onServeDied(code: number | string | null): void {
     const error = `opencode serve exited (${String(code)}); log ${this.logFile}`;
     this.proc = undefined;
+    this.removePasswordFile();
     this.sse?.abort();
     this.sse = undefined;
     if (this.graceTimer) clearTimeout(this.graceTimer);
@@ -762,11 +1089,111 @@ export class OpenCodeEngine implements Engine {
 
   private async reconcile(): Promise<void> {
     if (!this.sessionId || !this.proc) return;
+    if (this.api === "v2") return this.reconcileV2();
     const msgs = (await this.http("GET", `/session/${this.sessionId}/message`, undefined, 5000)) as Array<{ info?: OcInfo; parts?: OcPart[] }> | null;
     for (const m of msgs ?? []) {
       if (m.info?.id && m.info.role) this.roles.set(m.info.id, m.info.role);
       const done = m.info?.time?.completed !== undefined;
       for (const p of m.parts ?? []) this.handlePart({ ...p, messageID: p.messageID ?? m.info?.id }, m.info, done);
+    }
+  }
+
+  /** v2: GET /api/session/<sid>/message oldest first, following cursor.next (pages of <= 200). */
+  private async reconcileV2(): Promise<void> {
+    let path = `/api/session/${this.sessionId}/message?order=asc&limit=200`;
+    for (let page = 0; page < 1000; page++) {
+      const r = (await this.http("GET", path, undefined, 5000)) as { data?: unknown; cursor?: { next?: unknown } } | null;
+      if (!r || typeof r !== "object" || !Array.isArray(r.data)) throw new Error(`desks: opencode ${this.version} GET /api/session/<id>/message returned no data[]; unsupported opencode API`);
+      for (const m of r.data as OcV2Message[]) this.handleMessageV2(m);
+      const next = r.cursor?.next;
+      if (typeof next !== "string" || next === "" || r.data.length === 0) return;
+      path = `/api/session/${this.sessionId}/message?limit=200&cursor=${encodeURIComponent(next)}`;
+    }
+  }
+
+  private handleMessageV2(m: OcV2Message): void {
+    if (m.type !== "assistant" || !m.id) return;
+    const id = m.id;
+    for (const c of m.content ?? []) {
+      if (c.type === "text") this.emitTextV2(id, c.text);
+      else if (c.type === "tool") {
+        const status = c.state?.status;
+        if (status !== "completed" && status !== "error") continue;
+        const key = c.id ?? `${id}:tool:${c.name ?? "?"}`;
+        if (this.emittedTool.has(key)) continue;
+        this.emittedTool.add(key);
+        const input = c.state?.input;
+        const raw = input === undefined ? "" : typeof input === "string" ? input : JSON.stringify(input);
+        this.emit({ type: "tool", data: { tool: c.name ?? "?", summary: raw.length > 200 ? `${raw.slice(0, 197)}...` : raw, status, callId: c.id } });
+      }
+    }
+    if (m.tokens && m.time?.completed !== undefined) this.emitUsageV2(id, m.tokens, m.cost, m.model?.providerID, m.model?.id);
+  }
+
+  private emitTextV2(messageId: string, text: string | undefined): void {
+    if (!text) return;
+    const key = textKey(messageId, text);
+    if (this.emittedText.has(key)) return;
+    this.emittedText.add(key);
+    this.emit({ type: "text", data: { text, messageId } });
+  }
+
+  /** One usage event per assistant message (= one v2 step), from session.step.ended or the reconciled message. */
+  private emitUsageV2(messageId: string, t: OcTokens, cost: number | undefined, providerID: string | undefined, modelID: string | undefined): void {
+    if (this.emittedUsage.has(messageId)) return;
+    this.emittedUsage.add(messageId);
+    const p = providerID ?? this.modelProvider();
+    const mid = modelID ?? this.modelId();
+    this.emit({
+      type: "usage",
+      data: {
+        inputTokens: t.input ?? 0,
+        outputTokens: t.output ?? 0,
+        reasoningTokens: t.reasoning ?? 0,
+        cacheReadTokens: t.cache?.read ?? 0,
+        cacheWriteTokens: t.cache?.write ?? 0,
+        costUsd: typeof cost === "number" && cost > 0 ? cost : null,
+        providerID: p,
+        modelID: mid,
+        messageId,
+        ...(p && mid ? { model: `${p}/${mid}` } : {}),
+      },
+    });
+  }
+
+  /**
+   * Handle one opencode 2 bus event ({id, type, data}) from GET /api/event. Busy/idle comes from
+   * session.execution.* (v2 publishes no session.status); text and usage stream from text.ended and
+   * step.ended; tools arrive through the reconcile at idle. Exposed for tests.
+   */
+  handleEventV2(ev: { type?: string; data?: Record<string, unknown> }): void {
+    const d = ev.data ?? {};
+    if (d.sessionID !== this.sessionId) return;
+    switch (ev.type) {
+      case "session.execution.started":
+        this.pendingTurn = false;
+        this.markBusy();
+        break;
+      case "session.execution.succeeded":
+      case "session.execution.interrupted":
+        this.streamIdle();
+        break;
+      case "session.execution.failed": {
+        const err = d.error as { type?: string; message?: string } | undefined;
+        this.emit({ type: "error", data: { error: err?.message ?? err?.type ?? "opencode session error", name: err?.type } });
+        this.streamIdle();
+        break;
+      }
+      case "session.text.ended":
+        if (typeof d.assistantMessageID === "string") this.emitTextV2(d.assistantMessageID, typeof d.text === "string" ? d.text : undefined);
+        break;
+      case "session.step.ended": {
+        const t = d.tokens as OcTokens | undefined;
+        if (typeof d.assistantMessageID === "string" && t) this.emitUsageV2(d.assistantMessageID, t, typeof d.cost === "number" ? d.cost : undefined, undefined, undefined);
+        break;
+      }
+      default:
+        break;
     }
   }
 
@@ -871,65 +1298,117 @@ export class OpenCodeEngine implements Engine {
     this.onIdle();
   }
 
-  private openEventStream(): void {
+  /**
+   * Open the bus stream (v1 GET /event, v2 GET /api/event) and keep it open, reconnecting after a drop.
+   * Resolves once the first connection is a real event stream. Fails closed on a content type other than
+   * text/event-stream: the first time it rejects (start() fails); later it emits a fatal error, no retry.
+   */
+  private openEventStream(): Promise<void> {
     const ctl = new AbortController();
     this.sse = ctl;
-    const url = `${this.baseUrl}/event?directory=${encodeURIComponent(this.spec!.cwd)}`;
-    const run = async () => {
-      while (!ctl.signal.aborted) {
-        try {
-          const r = await fetch(url, { headers: { accept: "text/event-stream" }, signal: ctl.signal });
-          if (!r.ok || !r.body) throw new Error(`GET /event -> ${r.status}`);
-          // Reconnected: catch up on anything missed while the stream was down.
-          void this.state().catch(() => undefined);
-          const reader = r.body.getReader();
-          const dec = new TextDecoder();
-          let buf = "";
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buf += dec.decode(value, { stream: true });
-            let nl: number;
-            while ((nl = buf.indexOf("\n")) >= 0) {
-              const line = buf.slice(0, nl).replace(/\r$/, "");
-              buf = buf.slice(nl + 1);
-              if (!line.startsWith("data:")) continue;
-              try {
-                const ev = JSON.parse(line.slice(5)) as { type?: string; properties?: Record<string, unknown> };
+    const v2 = this.api === "v2";
+    const path = v2 ? "/api/event" : "/event";
+    const url = `${this.baseUrl}${path}${v2 ? `?location[directory]=${encodeURIComponent(this.spec!.cwd)}` : `?directory=${encodeURIComponent(this.spec!.cwd)}`}`;
+    let first = true;
+    return new Promise<void>((resolveFirst, rejectFirst) => {
+      const run = async () => {
+        while (!ctl.signal.aborted) {
+          try {
+            const r = await fetch(url, { headers: { accept: "text/event-stream", ...this.authHeaders() }, signal: ctl.signal });
+            const ctype = r.headers.get("content-type") ?? "";
+            if (r.ok && !/^text\/event-stream\b/i.test(ctype)) {
+              await r.body?.cancel().catch(() => undefined);
+              const msg = `desks: opencode ${this.version} returned ${ctype || "no content type"} for GET ${path}, not text/event-stream; unsupported opencode API`;
+              if (first) {
+                first = false;
+                rejectFirst(new Error(msg));
+              } else this.emit({ type: "error", data: { error: msg, fatal: true } });
+              return;
+            }
+            if (!r.ok || !r.body) throw new Error(`GET ${path} -> ${r.status}`);
+            if (first) {
+              first = false;
+              resolveFirst();
+            }
+            // Reconnected: catch up on anything missed while the stream was down.
+            void this.state().catch(() => undefined);
+            const reader = r.body.getReader();
+            const dec = new TextDecoder();
+            let buf = "";
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              let nl: number;
+              while ((nl = buf.indexOf("\n")) >= 0) {
+                const line = buf.slice(0, nl).replace(/\r$/, "");
+                buf = buf.slice(nl + 1);
+                if (!line.startsWith("data:")) continue;
+                let ev: Record<string, unknown>;
+                try {
+                  ev = JSON.parse(line.slice(5)) as Record<string, unknown>;
+                } catch {
+                  continue; // malformed line: skip
+                }
                 this.streamEventCount++;
-                this.handleEvent(ev);
-              } catch {
-                // malformed line: skip
+                if (v2) this.handleEventV2(ev as { type?: string; data?: Record<string, unknown> });
+                else this.handleEvent(ev as { type?: string; properties?: Record<string, unknown> });
               }
             }
+          } catch (err) {
+            // dropped or aborted: retry below unless stopping. A first connect that fails at all fails start().
+            if (first) {
+              first = false;
+              rejectFirst(err instanceof Error ? new Error(`desks: opencode ${this.version} GET ${path} failed: ${err.message}`) : new Error(String(err)));
+              return;
+            }
           }
-        } catch {
-          // dropped or aborted: retry below unless stopping
+          if (first) {
+            first = false;
+            rejectFirst(new Error(`desks: opencode ${this.version} GET ${path} closed before it opened`));
+            return;
+          }
+          if (ctl.signal.aborted || this.stopping) return;
+          await sleep(1000);
         }
-        if (ctl.signal.aborted || this.stopping) return;
-        await sleep(1000);
-      }
-    };
-    void run();
+        if (first) {
+          first = false;
+          rejectFirst(new Error(STOPPED_DURING_START));
+        }
+      };
+      void run();
+    });
   }
 
   // ------------------------------------------------------------------ http
 
   private async http(method: "GET" | "POST", path: string, body?: unknown, timeoutMs = 15_000): Promise<unknown> {
     if (!this.baseUrl) throw new Error("desks: OpenCodeEngine used before start()");
+    const headers: Record<string, string> = { ...this.authHeaders() };
+    if (body !== undefined) headers["content-type"] = "application/json";
     const r = await fetch(`${this.baseUrl}${path}`, {
       method,
-      headers: body === undefined ? undefined : { "content-type": "application/json" },
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await r.text();
     if (!r.ok) throw new Error(`desks: opencode ${method} ${path.split("?")[0]} -> HTTP ${r.status}: ${text.slice(0, 300)}`);
     if (text === "") return null;
+    return this.parseJson(method, path, r.headers.get("content-type"), text);
+  }
+
+  /** A JSON body, or an "unsupported opencode API" error: an HTML page or any non-JSON text is never data (#217). */
+  private parseJson(method: string, path: string, contentType: string | null, text: string): unknown {
+    const p = path.split("?")[0];
+    const who = `opencode ${this.version || "(unknown version)"}`;
+    if (/^\s*text\/html\b/i.test(contentType ?? "") || /^\s*<(?:!doctype|html)\b/i.test(text)) {
+      throw new Error(`desks: ${who} returned HTML for ${method} ${p}; unsupported opencode API`);
+    }
     try {
       return JSON.parse(text) as unknown;
     } catch {
-      return text;
+      throw new Error(`desks: ${who} returned non-JSON (${contentType ?? "no content type"}) for ${method} ${p}: ${JSON.stringify(text.slice(0, 120))}; unsupported opencode API`);
     }
   }
 }

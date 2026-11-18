@@ -22,6 +22,8 @@ import {
 } from "../src/desks/engines/opencode.ts";
 import type { EngineEvent, GoalStatus, HostSpec } from "../src/desks/types.ts";
 
+/** Fake-backed engines speak the v1 API (no `opencode --version` probe). */
+const V1 = "1.19.0";
 const tmpRoots: string[] = [];
 function tmp(prefix: string): string {
   const d = mkdtempSync(join(tmpdir(), prefix));
@@ -274,7 +276,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const { env, spec, cwd } = setup({ model: "ferry/super-flash" });
     spec.enginePort = port;
     const calls: SpawnCall[] = [];
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, calls), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, calls), stopGraceMs: 500 });
     try {
       const r = await eng.start(spec);
       assert.deepEqual(r, { sessionId: "ses_fake1", engineUrl: `http://127.0.0.1:${port}`, childPid: 4243 });
@@ -325,7 +327,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       writeFileSync(o.logFile, "Error: Unexpected error\n\ndatabase is locked\n");
       return { pid: 999, kill() {}, exited: Promise.resolve(1) };
     };
-    const eng = new OpenCodeEngine({ env, spawn: lockedOnce, stopGraceMs: 500, lockRetryDelayMs: 10 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: lockedOnce, stopGraceMs: 500, lockRetryDelayMs: 10 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     try {
@@ -348,7 +350,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       writeFileSync(o.logFile, "Error: bad config\n");
       return { pid: 999, kill() {}, exited: Promise.resolve(1) };
     };
-    const eng = new OpenCodeEngine({ env, spawn: dies, stopGraceMs: 500, lockRetryDelayMs: 10 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: dies, stopGraceMs: 500, lockRetryDelayMs: 10 });
     await assert.rejects(eng.start(spec), /exited \(1\) before ready[\s\S]*bad config/);
     assert.equal(spawns, 1);
   });
@@ -358,7 +360,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const port = await fake.listen();
     const { env, spec } = setup({ model: "ferry/super-flash" });
     spec.enginePort = port;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
     try {
       await eng.start(spec);
       await eng.note("silent context");
@@ -387,7 +389,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const port = await fake.listen();
     const { env, spec } = setup();
     spec.enginePort = port;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
     try {
       await eng.start(spec);
       await eng.send("x");
@@ -403,7 +405,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const port = await fake.listen();
     const { env, spec } = setup({ model: "ferry/super-flash" });
     spec.enginePort = port;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     try {
@@ -465,7 +467,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const port = await fake.listen();
     const { env, spec } = setup();
     spec.enginePort = port;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     try {
@@ -489,7 +491,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const port = await fake.listen();
     const { env, spec } = setup();
     spec.enginePort = port;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     try {
@@ -513,7 +515,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const { env, spec } = setup();
     spec.enginePort = port;
     fake.messageDelayMs = 80;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     const S = "ses_fake1";
@@ -543,7 +545,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const port = await fake.listen();
     const { env, spec } = setup();
     spec.enginePort = port;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     const S = "ses_fake1";
@@ -579,7 +581,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       fake2.port = port;
       return fakeSpawn(fake2, calls)(o);
     };
-    const eng = new OpenCodeEngine({ env, spawn, stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn, stopGraceMs: 500 });
     try {
       await eng.start(spec);
       assert.equal(calls.length, 2);
@@ -606,7 +608,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       f.port = port3;
       return fakeSpawn(f, [])(o);
     };
-    const eng3 = new OpenCodeEngine({ env: s3.env, spawn: always, stopGraceMs: 500 });
+    const eng3 = new OpenCodeEngine({ version: V1, env: s3.env, spawn: always, stopGraceMs: 500 });
     await assert.rejects(eng3.start(s3.spec), /still enables MCPs .*hidden/);
     assert.equal(await portIsOpen(port3), false, "failed start leaves no serve behind");
     await eng3.stop();
@@ -621,7 +623,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       writeFileSync(o.logFile, "boom: bad config\n");
       return { pid: 1, kill() {}, exited: Promise.resolve(1) };
     };
-    const eng = new OpenCodeEngine({ env, spawn });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn });
     await assert.rejects(eng.start(spec), /exited \(1\) before ready[\s\S]*boom: bad config/);
     await eng.stop();
   });
@@ -635,6 +637,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     spec.enginePort = port;
     let spawned = 0;
     const eng = new OpenCodeEngine({
+      version: V1,
       env,
       spawn: () => {
         spawned++;
@@ -654,6 +657,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const seen: unknown[] = [];
     const status: GoalStatus = { objective: "do x", state: "active", source: "opencode-plugin", updatedAt: 1 };
     const eng = new OpenCodeEngine({
+      version: V1,
       env,
       spawn: fakeSpawn(fake, []),
       stopGraceMs: 500,
@@ -682,7 +686,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const { env, spec } = setup();
     spec.enginePort = port;
     const calls: SpawnCall[] = [];
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, calls), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, calls), stopGraceMs: 500 });
     await eng.start(spec);
     fake.status = { ses_fake1: { type: "busy" } };
     await eng.stop();
@@ -707,7 +711,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       },
       exited: new Promise((r) => (resolveExit = r)),
     });
-    const eng = new OpenCodeEngine({ env, spawn, stopGraceMs: 200 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn, stopGraceMs: 200 });
     await eng.start(spec);
     await eng.stop();
     assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
@@ -729,7 +733,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       return { pid: 999, kill() {}, exited: Promise.resolve(1) };
     };
     const live = liveCounter(lockedFirst);
-    const eng = new OpenCodeEngine({ env, spawn: live.spawn, stopGraceMs: 500, lockRetryDelayMs: 300 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: live.spawn, stopGraceMs: 500, lockRetryDelayMs: 300 });
     const started = eng.start(spec).then(() => "started", (e: Error) => e.message);
     await until(() => spawns === 1, 2000, "first boot");
     await sleep(30);
@@ -749,7 +753,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     spec.enginePort = port;
     const calls: SpawnCall[] = [];
     const live = liveCounter(fakeSpawn(fake, calls));
-    const eng = new OpenCodeEngine({ env, spawn: live.spawn, stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: live.spawn, stopGraceMs: 500 });
     const started = eng.start(spec).then(() => "started", (e: Error) => e.message);
     await eng.stop();
     const r = await started;
@@ -785,7 +789,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       };
     };
     const live = liveCounter(spawn);
-    eng = new OpenCodeEngine({ env, spawn: live.spawn, stopGraceMs: 500 });
+    eng = new OpenCodeEngine({ version: V1, env, spawn: live.spawn, stopGraceMs: 500 });
     const r = await eng.start(spec).then(() => "started", (e: Error) => e.message);
     await stopCall;
     await eng.stop();
@@ -805,7 +809,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       appendFileSync(o.logFile, spawns === 1 ? "Error: Unexpected error\n\ndatabase is locked\n" : "Error: bad config\n");
       return { pid: 999, kill() {}, exited: Promise.resolve(1) };
     };
-    const eng = new OpenCodeEngine({ env, spawn, stopGraceMs: 500, lockRetryDelayMs: 10 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn, stopGraceMs: 500, lockRetryDelayMs: 10 });
     const r = await eng.start(spec).then(() => "started", (e: Error) => e.message);
     assert.equal(spawns, 2, "one lock retry, then the bad config is final");
     assert.match(r, /exited \(1\) before ready[\s\S]*bad config/);
@@ -826,7 +830,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       Object.defineProperty(fake, "mcp", { get: () => (res(9), mcp) });
       return { pid: 78, kill(sig) { if (sig === "SIGTERM" || sig === "SIGKILL") void fake.close().then(() => res(sig)); }, exited };
     };
-    const eng = new OpenCodeEngine({ env, spawn, stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn, stopGraceMs: 500 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     try {
@@ -879,7 +883,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
         exited,
       };
     };
-    const eng = new OpenCodeEngine({ env, spawn, stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn, stopGraceMs: 500 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     try {
@@ -902,7 +906,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const port = await fake.listen();
     const { env, spec } = setup();
     spec.enginePort = port;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500, sendGraceMs: 150 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500, sendGraceMs: 150 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     try {
@@ -928,7 +932,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const { env, spec } = setup();
     spec.enginePort = port;
     fake.messageDelayMs = 200;
-    const eng = new OpenCodeEngine({ env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
     const events: EngineEvent[] = [];
     eng.onEvent((e) => events.push(e));
     const S = "ses_fake1";
