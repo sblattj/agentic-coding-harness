@@ -28,7 +28,7 @@ final class Box<T>: @unchecked Sendable {
         let client = APIClient(config: ServerConfig(port: server.port, token: "tok"))
         let items = Box<StreamItem>()
         let statuses = Box<StreamStatus>()
-        let s = SSEStreamClient(request: { client.streamRequest() }, backoff: Backoff(base: 0.05, cap: 0.2), callbackQueue: DispatchQueue(label: "cb"))
+        let s = SSEStreamClient(request: { try client.streamRequest() }, backoff: Backoff(base: 0.05, cap: 0.2), callbackQueue: DispatchQueue(label: "cb"))
         s.onItem = { items.append($0) }
         s.onStatus = { statuses.append($0) }
         s.start()
@@ -56,7 +56,7 @@ final class Box<T>: @unchecked Sendable {
         defer { server.stop() }
         let client = APIClient(config: ServerConfig(port: server.port))
         let statuses = Box<StreamStatus>()
-        let s = SSEStreamClient(request: { client.streamRequest() }, backoff: Backoff(base: 0.02, cap: 0.05), callbackQueue: DispatchQueue(label: "cb2"))
+        let s = SSEStreamClient(request: { try client.streamRequest() }, backoff: Backoff(base: 0.02, cap: 0.05), callbackQueue: DispatchQueue(label: "cb2"))
         s.onStatus = { statuses.append($0) }
         s.start()
         #expect(await eventually { s.failures >= Backoff.pollingThreshold })

@@ -292,9 +292,11 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
       const deltaReasoning = d(next.reasoningTokens, prev?.reasoningTokens ?? 0);
       messages.set(key, next);
       // A message that turns engine-priced late: its earlier lines carried no costUsd, so stats already
-      // priced their tokens (prev.computed). Count only the rest of the reported figure on this line.
-      const deltaReported = reported === null ? null : d(reported, prev?.reported ?? prev?.computed ?? 0);
-      const empty = delta.inputTokens + delta.outputTokens + delta.cacheReadTokens + delta.cacheWriteTokens + deltaReasoning === 0 && !(deltaReported && deltaReported > 0);
+      // priced their tokens (prev.computed). This line carries the difference, negative when the engine's
+      // figure is below that estimate, so the message sums to exactly the reported cost.
+      const deltaReported =
+        reported === null ? null : prev !== undefined && prev.reported === null ? reported - (prev.computed ?? 0) : d(reported, prev?.reported ?? 0);
+      const empty = delta.inputTokens + delta.outputTokens + delta.cacheReadTokens + delta.cacheWriteTokens + deltaReasoning === 0 && !deltaReported;
       if (!empty && s.recorded !== true) {
         const line = {
           ts: s.at,

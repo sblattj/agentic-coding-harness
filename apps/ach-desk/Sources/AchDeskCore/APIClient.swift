@@ -14,19 +14,28 @@ public struct ServerConfig: Equatable, Sendable {
         self.token = (token?.isEmpty ?? true) ? nil : token
     }
 
-    public var baseURL: URL { URL(string: "http://\(host):\(port)")! }
+    /// nil when host/port cannot form a URL (space, unbalanced `[`, port out of range, ...); never crashes.
+    public var baseURL: URL? {
+        var c = URLComponents()
+        c.scheme = "http"
+        c.host = host
+        c.port = port
+        return c.url
+    }
 }
 
 public enum APIError: Error, Equatable, CustomStringConvertible {
     case http(status: Int, body: String)
     case transport(String)
     case decoding(String)
+    case invalidServer(String)
 
     public var description: String {
         switch self {
         case .http(let s, let b): return "HTTP \(s): \(b.prefix(300))"
         case .transport(let m): return "network: \(m)"
         case .decoding(let m): return "decode: \(m)"
+        case .invalidServer(let m): return "invalid server address: \(m)"
         }
     }
 }
@@ -56,17 +65,20 @@ public final class APIClient: @unchecked Sendable {
     // MARK: request building (internal for tests)
 
     /// path is relative to /api/desks, e.g. "" or "/send" or "/messages".
-    public func url(_ path: String, query: [URLQueryItem] = []) -> URL {
-        var comps = URLComponents(url: config.baseURL, resolvingAgainstBaseURL: false)!
+    public func url(_ path: String, query: [URLQueryItem] = []) throws -> URL {
+        guard let base = config.baseURL, var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidServer("\(config.host):\(config.port)")
+        }
         comps.percentEncodedPath = "/api/desks" + path
         var items = query
         if let t = config.token { items.append(URLQueryItem(name: "token", value: t)) }
         comps.queryItems = items.isEmpty ? nil : items
-        return comps.url!
+        guard let u = comps.url else { throw APIError.invalidServer("\(config.host):\(config.port)") }
+        return u
     }
 
-    public func request(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data? = nil, accept: String = "application/json") -> URLRequest {
-        var r = URLRequest(url: url(path, query: query))
+    public func request(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data? = nil, accept: String = "application/json") throws -> URLRequest {
+        var r = URLRequest(url: try url(path, query: query))
         r.httpMethod = method
         r.setValue(accept, forHTTPHeaderField: "Accept")
         if let t = config.token { r.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization") }
@@ -104,7 +116,7 @@ public final class APIClient: @unchecked Sendable {
     }
 
     func post<B: Encodable, T: Decodable>(_ path: String, _ body: B, as t: T.Type) async throws -> T {
-        try await send(request("POST", path, body: try encoder.encode(body)), as: t)
+        try await send(try request("POST", path, body: try encoder.encode(body)), as: t)
     }
 
     struct Empty: Encodable {}
@@ -113,16 +125,16 @@ public final class APIClient: @unchecked Sendable {
     // MARK: routes
 
     public func roster() async throws -> RosterView {
-        try await send(request("GET", ""), as: RosterView.self)
+        try await send(try request("GET", ""), as: RosterView.self)
     }
 
     public func messages(since: Double? = nil) async throws -> [DeskMessage] {
         let q = since.map { [URLQueryItem(name: "since", value: String(Int64($0)))] } ?? []
-        return try await send(request("GET", "/messages", query: q), as: MessagesResponse.self).messages
+        return try await send(try request("GET", "/messages", query: q), as: MessagesResponse.self).messages
     }
 
     public func decisions() async throws -> [Decision] {
-        try await send(request("GET", "/decisions"), as: DecisionsResponse.self).decisions
+        try await send(try request("GET", "/decisions"), as: DecisionsResponse.self).decisions
     }
 
     @discardableResult
@@ -170,24 +182,24 @@ public final class APIClient: @unchecked Sendable {
 
     public func events(desk: String, since: Int? = nil) async throws -> [HostEvent] {
         let q = since.map { [URLQueryItem(name: "since", value: String($0))] } ?? []
-        return try await send(request("GET", "/\(Self.seg(desk))/events", query: q), as: EventsResponse.self).events
+        return try await send(try request("GET", "/\(Self.seg(desk))/events", query: q), as: EventsResponse.self).events
     }
 
     public func costs() async throws -> [DeskCostRow] {
-        try await send(request("GET", "/costs"), as: CostsResponse.self).rows
+        try await send(try request("GET", "/costs"), as: CostsResponse.self).rows
     }
 
     public func engines() async throws -> [EngineInfo] {
-        try await send(request("GET", "/engines"), as: EnginesResponse.self).engines
+        try await send(try request("GET", "/engines"), as: EnginesResponse.self).engines
     }
 
     public func mcps() async throws -> [String] {
-        try await send(request("GET", "/mcps"), as: McpsResponse.self).names
+        try await send(try request("GET", "/mcps"), as: McpsResponse.self).names
     }
 
     /// The SSE request (GET /api/desks/stream). No idle timeout: the stream may be quiet for a long time.
-    public func streamRequest() -> URLRequest {
-        var r = request("GET", "/stream", accept: "text/event-stream")
+    public func streamRequest() throws -> URLRequest {
+        var r = try request("GET", "/stream", accept: "text/event-stream")
         r.timeoutInterval = 24 * 3600
         r.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         return r

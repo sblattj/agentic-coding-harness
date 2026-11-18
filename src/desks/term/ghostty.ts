@@ -87,7 +87,11 @@ function psStart(pid: number): number | undefined {
  * The pidfile mtime is the per-open marker; two opens never share one.
  */
 const START_BEFORE_PIDFILE_MS = 120_000;
-const START_AFTER_PIDFILE_MS = 1_500;
+// The launched process started at or before the pidfile write, so in theory lstart <= mtime. Slack covers only clock
+// granularity: ps lstart is truncated to whole seconds (which only lowers it) and the file mtime comes from a coarser
+// kernel clock than the process start stamp, so 1 s is the smallest round slack that keeps the real launch accepted.
+// Anything later (a reused pid started after the original died) is rejected.
+const START_AFTER_PIDFILE_MS = 1_000;
 export function startMatchesPidfile(startMs: number | undefined, pidfileMtimeMs: number): boolean {
   if (startMs === undefined) return false;
   return startMs <= pidfileMtimeMs + START_AFTER_PIDFILE_MS && startMs >= pidfileMtimeMs - START_BEFORE_PIDFILE_MS;
@@ -117,7 +121,7 @@ export function pidfileFor(id: string, dir: string = defaultDir()): string | und
 /** Surface command: the pane shell records its pid, then execs the real command so the pid IS the command. */
 export function surfaceCommand(argv: string[], pidfile: string, shell: PaneShell = pickPaneShell()): string {
   const inner = `echo $$ > ${shellQuote(pidfile)}; exec ${argv.map(shellQuote).join(" ")}`;
-  return [shell.path, ...shell.flags, shellQuote(inner)].join(" ");
+  return [shellQuote(shell.path), ...shell.flags, shellQuote(inner)].join(" ");
 }
 
 const PREAMBLE = (cmd: string, cwd: string): string[] => [
@@ -217,6 +221,10 @@ export class GhosttyDriver implements TerminalDriver {
   async close(id: string): Promise<void> {
     const pidfile = this.pidfiles.get(id) ?? pidfileFor(id, this.dir);
     const needles = needlesOf(id, this.dir);
+    // Enter only goes to a process we confirmed is ours (signaled, or already gone): otherwise the keystroke could land
+    // in a process ach did not launch.
+    let ours = false;
+    let confirmed = false;
     if (pidfile) {
       let pid = NaN;
       let pidfileMtime = NaN;
@@ -232,7 +240,9 @@ export class GhosttyDriver implements TerminalDriver {
       const cmdOk = cmd !== undefined && (cmd.includes(pidfile) || (needles !== undefined && needles.length > 0 && needles.every((n) => cmd.includes(n))));
       // Same executable and script is not enough (a reused pid can run the same thing): the start time must also
       // fit this open's pidfile.
-      const ours = cmdOk && startMatchesPidfile(this.startOf(pid), pidfileMtime);
+      ours = cmdOk && startMatchesPidfile(this.startOf(pid), pidfileMtime);
+      // A recorded pid with no command line has exited: the terminal sits at "press any key", so Enter is safe.
+      confirmed = ours || (Number.isInteger(pid) && pid > 1 && cmd === undefined && !this.isAlive(pid));
       if (Number.isInteger(pid) && pid > 1 && !ours && cmd !== undefined) {
         process.stderr.write(`desks: ghostty pid ${pid} is not the process we launched; not signaling it\n`);
       }
@@ -254,10 +264,12 @@ export class GhosttyDriver implements TerminalDriver {
         }
       }
     }
-    try {
-      await this.osa(closeScript(id));
-    } catch {
-      /* terminal already gone */
+    if (confirmed) {
+      try {
+        await this.osa(closeScript(id));
+      } catch {
+        /* terminal already gone */
+      }
     }
     this.pidfiles.delete(id);
     if (pidfile) rmSync(pidfile, { force: true });

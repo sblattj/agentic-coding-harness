@@ -96,4 +96,19 @@ describe("host meter: reported cost covers later token growth (priceable model)"
     assert.equal(total.inputTokens, 2000);
     assert.ok(Math.abs(total.costUsd! - 0.5) < 1e-9, `stats costUsd ${total.costUsd} vs 0.5 (early price ${early} counted twice?)`);
   });
+
+  it("a late reported cost BELOW the earlier stats estimate still sums to the reported figure", () => {
+    const state = mkState();
+    const m = createHostMeter(mkSpec(state));
+    m.begin({ sessionId: "ses_fixA_4", pid: 1 });
+    m.usage(sample({ messageId: "m1", costUsd: null, inputTokens: 100000, outputTokens: 10000 }));
+    const early = stats(state).costUsd!;
+    const reported = early / 4;
+    assert.ok(reported > 0 && reported < early, `estimate ${early} must exceed the reported ${reported}`);
+    m.usage(sample({ messageId: "m1", costUsd: reported, inputTokens: 100000, outputTokens: 10000 }));
+    assert.ok(Math.abs(m.totals().costUsd! - reported) < 1e-12);
+    const total = stats(state);
+    assert.equal(total.inputTokens, 100000);
+    assert.ok(Math.abs(total.costUsd! - reported) < 1e-9, `stats costUsd ${total.costUsd} vs reported ${reported} (estimate ${early})`);
+  });
 });

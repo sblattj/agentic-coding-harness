@@ -96,6 +96,8 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     restartBaseMs?: number;
     /** Default 60000. */
     maxBackoffMs?: number;
+    /** Restarts in a row without a heartbeat before the feed gives up (reported as an error). Default 20. */
+    maxRestarts?: number;
     /** Grace between TERM and KILL on stop (ms). Default 3000. */
     killAfterMs?: number;
     /** Minimum gap between "feed stderr:" notes (ms). Default 5000. */
@@ -116,6 +118,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
   const batchMs = Math.max(0, (spec.batchSeconds ?? 10) * 1000);
   const baseMs = opts.restartBaseMs ?? 2000;
   const maxMs = opts.maxBackoffMs ?? 60000;
+  const maxRestarts = Math.max(0, opts.maxRestarts ?? 20);
   const killAfter = opts.killAfterMs ?? 3000;
   const stderrGap = opts.stderrGapMs ?? 5000;
   const helperTimeout = opts.helperTimeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS;
@@ -128,6 +131,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
   let child: ChildProcess | undefined;
   let exited: Promise<void> = Promise.resolve();
   let backoff = baseMs;
+  let restarts = 0; // in a row without a heartbeat
   let restartTimer: NodeJS.Timeout | undefined;
   let epoch = 0; // bumps per child; stale line work is dropped
 
@@ -193,6 +197,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
       const type = ev.type as string;
       if (type === heartbeatType) {
         backoff = baseMs;
+        restarts = 0;
         if (phase === "backlog" || (phase === "waiting" && spec.activeCheck)) {
           const first = phase === "backlog";
           if (await checkActive()) await becomeActive();
@@ -301,6 +306,11 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
 
   function scheduleRestart(): void {
     if (stopped) return;
+    if (restarts >= maxRestarts) {
+      err(`feed gave up after ${restarts} restarts without a heartbeat; fix the feed command and restart the desk`);
+      return;
+    }
+    restarts++;
     const wait = backoff;
     backoff = Math.min(backoff * 2, maxMs);
     restartTimer = setTimeout(() => { restartTimer = undefined; if (!stopped) spawnChild(); }, wait);

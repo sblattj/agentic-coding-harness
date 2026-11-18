@@ -233,6 +233,17 @@ test("spawn failure is reported and retried without throwing", async () => {
   } finally { await h.handle.stop(); }
 });
 
+test("a feed that keeps dying without a heartbeat gives up after maxRestarts", async () => {
+  const h = harness({ command: ["/nonexistent/binary-xyz"] }, { restartBaseMs: 5, maxBackoffMs: 5, maxRestarts: 3 });
+  try {
+    await waitFor(() => h.errors.some((e) => /gave up after 3 restarts/.test(e)), "give-up error");
+    const spawns = h.errors.filter((e) => /spawn failed/.test(e)).length;
+    await sleep(200);
+    assert.equal(h.errors.filter((e) => /spawn failed/.test(e)).length, spawns, "no respawn after giving up");
+    assert.equal(spawns, 4, "first spawn plus 3 restarts");
+  } finally { await h.handle.stop(); }
+});
+
 test("renderEvent: text/speaker/t when present, else compact JSON", () => {
   assert.equal(renderEvent({ type: "utterance", speaker: "Bo", t: "9:00", text: "hi" }), "utterance: [9:00] Bo: hi");
   assert.equal(renderEvent({ type: "utterance", text: "hi" }), "utterance: hi");

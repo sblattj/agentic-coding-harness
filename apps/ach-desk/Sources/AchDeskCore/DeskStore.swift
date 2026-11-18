@@ -73,7 +73,8 @@ public final class DeskStore: ObservableObject {
     public func start() {
         stop()
         let c = client
-        let s = SSEStreamClient(request: { c.streamRequest() })
+        let s = SSEStreamClient(request: { try c.streamRequest() })
+        s.onRequestError = { [weak self] msg in MainActor.assumeIsolated { self?.lastError = msg } }
         s.onItem = { [weak self] item in MainActor.assumeIsolated { self?.apply(item) } }
         s.onStatus = { [weak self] st in MainActor.assumeIsolated { self?.streamStatusChanged(st) } }
         stream = s

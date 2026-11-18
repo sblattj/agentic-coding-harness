@@ -97,7 +97,8 @@ public struct BackendLauncher: Sendable {
     }
 
     public static func probe(_ client: APIClient) async -> ProbeResult {
-        var r = client.request("GET", "")
+        var r: URLRequest
+        do { r = try client.request("GET", "") } catch { return .occupied(status: 0, detail: "\(error)") }
         r.timeoutInterval = 3
         do {
             let (data, resp) = try await client.session.data(for: r)

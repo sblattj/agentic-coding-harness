@@ -16,11 +16,11 @@ import { TmuxDriver, paneCommand, pickPaneShell, shellQuote } from "../src/desks
 
 // The shell the product picks on this host (/bin/zsh on macOS, bash or sh on stock Ubuntu).
 const SHELL = pickPaneShell();
-const SHELL_PREFIX = `${[SHELL.path, ...SHELL.flags].join(" ")} `;
+const SHELL_PREFIX = `${[shellQuote(SHELL.path), ...SHELL.flags].join(" ")} `;
 /** Run the quoted command string a pane/surface command carries through the same shell, without rc files. */
 const runBare = (cmd: string): string => {
   assert.ok(cmd.startsWith(`${SHELL_PREFIX}'`), `${cmd} starts with ${SHELL_PREFIX}`);
-  return execFileSync("/bin/sh", ["-c", `${[SHELL.path, ...SHELL.bareFlags].join(" ")} ${cmd.slice(SHELL_PREFIX.length)}`], { encoding: "utf8" });
+  return execFileSync("/bin/sh", ["-c", `${[shellQuote(SHELL.path), ...SHELL.bareFlags].join(" ")} ${cmd.slice(SHELL_PREFIX.length)}`], { encoding: "utf8" });
 };
 
 const HAVE_TMUX = spawnSync("tmux", ["-V"]).status === 0;
@@ -349,12 +349,17 @@ describe("GhosttyDriver (generated AppleScript only)", () => {
     assert.throws(() => openScript({ ...base, mode: "tab" }, "C"), /of/);
   });
   it("surface command records pid then execs the quoted argv", () => {
-    const c = surfaceCommand(["echo", "it's $x; y"], "/tmp/p.pid");
-    const out = runBare(c);
-    assert.equal(out, "it's $x; y\n");
-    assert.ok(existsSync("/tmp/p.pid"));
-    assert.match(readFileSync("/tmp/p.pid", "utf8"), /^\d+$/m);
-    rmSync("/tmp/p.pid", { force: true });
+    const pdir = mkdtempSync(join(tmpdir(), "term-pid-"));
+    const pidPath = join(pdir, "p.pid");
+    try {
+      const c = surfaceCommand(["echo", "it's $x; y"], pidPath);
+      const out = runBare(c);
+      assert.equal(out, "it's $x; y\n");
+      assert.ok(existsSync(pidPath));
+      assert.match(readFileSync(pidPath, "utf8"), /^\d+$/m);
+    } finally {
+      rmSync(pdir, { recursive: true, force: true });
+    }
   });
   it("close script sends enter, never closes windows; alive uses exists", () => {
     const s = closeScript("T-9");

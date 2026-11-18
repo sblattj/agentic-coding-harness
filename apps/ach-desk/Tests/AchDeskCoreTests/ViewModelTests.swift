@@ -258,4 +258,48 @@ import Testing
         c.ingestForTesting("retry: 1000\n\n")
         #expect(c.nextReconnectDelayForTesting() == 1)
     }
+
+    // MARK: invalid host does not crash
+
+    @MainActor @Test func invalidHostSurfacesAsLastErrorInsteadOfCrashing() async throws {
+        for host in ["bad host", "[::1", "a b/c"] {
+            let cfg = ServerConfig(host: host, port: 1)
+            let client = APIClient(config: cfg)
+            #expect(throws: APIError.self) { try client.url("") }
+            #expect(throws: APIError.self) { try client.streamRequest() }
+            let store = DeskStore(client: client, clock: { Fixtures.noon })
+            await store.refreshAll()
+            #expect(store.lastError?.contains("invalid server address") == true)
+        }
+        #expect(ServerConfig(host: "127.0.0.1", port: 8399).baseURL?.absoluteString == "http://127.0.0.1:8399")
+    }
+
+    @Test func streamClientReportsRequestBuildFailureAndStops() async throws {
+        let c = SSEStreamClient(request: { throw APIError.invalidServer("bad host:1") }, callbackQueue: DispatchQueue(label: "cb-bad"))
+        let got = LockedBox<String?>(nil)
+        c.onRequestError = { got.set($0) }
+        c.start()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(got.get()?.contains("bad host") == true)
+    }
+
+    // MARK: SSE last-event-id commits on dispatch only
+
+    @Test func lastEventIDAdvancesOnlyWhenEventIsDispatched() {
+        let c = SSEStreamClient(request: { URLRequest(url: URL(string: "http://127.0.0.1:1")!) })
+        c.ingestForTesting("id: 5\ndata: a\n\n")
+        #expect(c.lastEventIDForTesting() == "5")
+        c.ingestForTesting("id: 6\ndata: b") // stream cut mid-event
+        #expect(c.lastEventIDForTesting() == "5")
+        c.ingestForTesting("\n\n")
+        #expect(c.lastEventIDForTesting() == "6")
+    }
+}
+
+private final class LockedBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v: T
+    init(_ v: T) { self.v = v }
+    func set(_ n: T) { lock.withLock { v = n } }
+    func get() -> T { lock.withLock { v } }
 }

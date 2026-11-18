@@ -107,7 +107,7 @@ func desksHandler(_ r: RecordedRequest, _ i: Int) -> MockResponse {
                 #expect(r.query["token"] == "s3cret")
             }
             #expect(reqs[2].query["since"] == "5")
-            let s = client.streamRequest()
+            let s = try client.streamRequest()
             #expect(s.value(forHTTPHeaderField: "Authorization") == "Bearer s3cret")
             #expect(s.url?.query?.contains("token=s3cret") == true)
             #expect(s.value(forHTTPHeaderField: "Accept") == "text/event-stream")

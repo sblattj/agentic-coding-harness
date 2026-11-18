@@ -67,7 +67,7 @@ export function pickPaneShell(opts: PickPaneShellOptions = {}): PaneShell {
 
 /** The pane command: `<shell> <flags> <quoted argv>` (e.g. `/bin/zsh -lic '...'`). */
 export function paneCommand(argv: string[], shell: PaneShell = pickPaneShell()): string {
-  return [shell.path, ...shell.flags, shellQuote(argv.map(shellQuote).join(" "))].join(" ");
+  return [shellQuote(shell.path), ...shell.flags, shellQuote(argv.map(shellQuote).join(" "))].join(" ");
 }
 
 /** tmux expands formats in -c and -n values; `##` is a literal `#`. */

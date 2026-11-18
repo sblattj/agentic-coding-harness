@@ -74,31 +74,51 @@ final class HotKey {
     static let controlOptionCommand = UInt32(controlKey | optionKey | cmdKey)
 
     private var ref: EventHotKeyRef?
-    private var handler: EventHandlerRef?
     private let action: () -> Void
     private static var registry: [UInt32: HotKey] = [:]
     private static var nextID: UInt32 = 1
+    /// One process-wide handler shared by every HotKey (a handler per instance would fire each action once per handler).
+    private static var sharedHandler: EventHandlerRef?
     private let hotKeyID: UInt32
 
-    init?(keyCode: UInt32, modifiers: UInt32, action: @escaping () -> Void) {
-        self.action = action
-        hotKeyID = HotKey.nextID
-        HotKey.nextID += 1
+    private static func installHandlerIfNeeded() -> Bool {
+        if sharedHandler != nil { return true } // later successful registrations never double-install
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var h: EventHandlerRef?
         let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
             var hk = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hk)
             if let target = HotKey.registry[hk.id] { DispatchQueue.main.async { target.action() } }
             return noErr
-        }, 1, &spec, nil, &handler)
-        guard status == noErr else { return nil }
+        }, 1, &spec, nil, &h)
+        guard status == noErr else { return false }
+        sharedHandler = h
+        return true
+    }
+
+    /// Remove the shared handler once no hotkey needs it (failed registration, last HotKey gone).
+    private static func removeHandlerIfUnused() {
+        guard registry.isEmpty, let h = sharedHandler else { return }
+        RemoveEventHandler(h)
+        sharedHandler = nil
+    }
+
+    init?(keyCode: UInt32, modifiers: UInt32, action: @escaping () -> Void) {
+        self.action = action
+        hotKeyID = HotKey.nextID
+        HotKey.nextID += 1
+        guard HotKey.installHandlerIfNeeded() else { return nil }
         let id = EventHotKeyID(signature: OSType(0x4143_4844), id: hotKeyID) // 'ACHD'
-        guard RegisterEventHotKey(keyCode, modifiers, id, GetApplicationEventTarget(), 0, &ref) == noErr else { return nil }
+        guard RegisterEventHotKey(keyCode, modifiers, id, GetApplicationEventTarget(), 0, &ref) == noErr else {
+            HotKey.removeHandlerIfUnused() // registration failed: do not leave the handler installed
+            return nil
+        }
         HotKey.registry[hotKeyID] = self
     }
 
     deinit {
         if let ref { UnregisterEventHotKey(ref) }
-        if let handler { RemoveEventHandler(handler) }
+        HotKey.registry[hotKeyID] = nil
+        HotKey.removeHandlerIfUnused()
     }
 }

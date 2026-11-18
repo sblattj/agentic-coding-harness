@@ -44,13 +44,13 @@ describe("paneCommand / surfaceCommand through each shell, as the pane runs it (
   for (const sh of SHELLS) {
     it(`${sh.path} ${sh.flags.join(" ")}`, () => {
       const pc = paneCommand(["printf", "%s|", "a b", "it's", weird], sh);
-      assert.ok(pc.startsWith(`${sh.path} ${sh.flags.join(" ")} '`), pc);
+      assert.ok(pc.startsWith(`'${sh.path}' ${sh.flags.join(" ")} '`), pc);
       const out = execFileSync("/bin/sh", ["-c", pc], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
       assert.ok(out.endsWith(`a b|it's|${weird}|`), `quoting survived: ${JSON.stringify(out)}`);
 
       const pidfile = join(tmp, `${sh.path.replace(/\W/g, "_")}.pid`);
       const sc = surfaceCommand(["printf", "%s", weird], pidfile, sh);
-      assert.ok(sc.startsWith(`${sh.path} ${sh.flags.join(" ")} '`), sc);
+      assert.ok(sc.startsWith(`'${sh.path}' ${sh.flags.join(" ")} '`), sc);
       const out2 = execFileSync("/bin/sh", ["-c", sc], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
       assert.ok(out2.endsWith(weird), `surface quoting survived: ${JSON.stringify(out2)}`);
       assert.match(readFileSync(pidfile, "utf8"), /^\d+$/m, "pid recorded");

@@ -15,7 +15,7 @@ public struct SSEParser: Sendable {
     private var eventName = ""
     private var pendingID: String?
     private var sawCR = false
-    /// Last `id:` seen (sent back as Last-Event-ID on reconnect).
+    /// ID of the last DISPATCHED event (sent back as Last-Event-ID on reconnect).
     public private(set) var lastEventID: String?
     /// Server-requested reconnect delay (`retry:` field), in milliseconds.
     public private(set) var retryMs: Int?
@@ -70,7 +70,7 @@ public struct SSEParser: Sendable {
         switch field {
         case "data": dataLines.append(value)
         case "event": eventName = value
-        case "id": if !value.contains("\0") { pendingID = value; lastEventID = value }
+        case "id": if !value.contains("\0") { pendingID = value } // committed to lastEventID on dispatch only
         case "retry": // spec: ASCII digits only ("+5", "-5", "1e3" are ignored)
             if !value.isEmpty, value.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }), let n = Int(value) { retryMs = n }
         default: break
@@ -79,6 +79,7 @@ public struct SSEParser: Sendable {
 
     private mutating func dispatch(_ out: inout [SSEEvent]) {
         defer { dataLines.removeAll(); eventName = ""; pendingID = nil }
+        if let id = pendingID { lastEventID = id } // spec: set at dispatch, even for an event with empty data
         guard !dataLines.isEmpty else { return }
         out.append(SSEEvent(event: eventName.isEmpty ? "message" : eventName, data: dataLines.joined(separator: "\n"), id: pendingID ?? lastEventID))
     }
@@ -120,8 +121,10 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
     public var onItem: ((StreamItem) -> Void)?
     public var onStatus: ((StreamStatus) -> Void)?
     public var onDecodeError: ((String) -> Void)?
+    /// The request could not be built (bad host); the stream stops instead of retrying.
+    public var onRequestError: ((String) -> Void)?
 
-    private let makeRequest: () -> URLRequest
+    private let makeRequest: () throws -> URLRequest
     private let lock = NSLock()
     private var session: URLSession?
     private var task: URLSessionDataTask?
@@ -131,7 +134,7 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
     private var generation = 0
     private let callbackQueue: DispatchQueue
 
-    public init(request: @escaping () -> URLRequest, backoff: Backoff = Backoff(), callbackQueue: DispatchQueue = .main) {
+    public init(request: @escaping () throws -> URLRequest, backoff: Backoff = Backoff(), callbackQueue: DispatchQueue = .main) {
         self.makeRequest = request
         self.backoff = backoff
         self.callbackQueue = callbackQueue
@@ -158,11 +161,17 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
     }
 
     private func connect() {
+        var buildError: String?
         let (req, gen): (URLRequest?, Int) = lock.withLock {
             guard !stopped else { return (nil, generation) }
             generation += 1
             parser.reset()
-            var r = makeRequest()
+            var r: URLRequest
+            do { r = try makeRequest() } catch {
+                stopped = true
+                buildError = "\(error)"
+                return (nil, generation)
+            }
             if let last = parser.lastEventID { r.setValue(last, forHTTPHeaderField: "Last-Event-ID") }
             let cfg = URLSessionConfiguration.ephemeral
             cfg.timeoutIntervalForRequest = 24 * 3600
@@ -174,6 +183,12 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
             task = t
             t.resume()
             return (r, generation)
+        }
+        if let msg = buildError {
+            let cb = onRequestError
+            callbackQueue.async { cb?(msg) }
+            emit(.stopped)
+            return
         }
         guard req != nil else { return }
         _ = gen
@@ -195,6 +210,7 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
 
     /// Internal seams for tests.
     func ingestForTesting(_ chunk: String) { lock.withLock { _ = parser.feed(chunk) } }
+    func lastEventIDForTesting() -> String? { lock.withLock { parser.lastEventID } }
     func nextReconnectDelayForTesting() -> TimeInterval { lock.withLock { nextReconnectDelayLocked() } }
 
     private func scheduleReconnect() {
