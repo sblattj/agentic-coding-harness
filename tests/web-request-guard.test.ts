@@ -60,6 +60,13 @@ describe('ach web request guard (no token, the default)', () => {
     assert.equal(none.status, 415, 'a body with no content-type is 415');
   });
 
+  it('a bodyless non-GET /api request passes the content-type check whatever its type', async () => {
+    for (const headers of [{ 'content-type': 'text/plain' }, { 'content-type': 'application/x-www-form-urlencoded' }, {}] as Record<string, string>[]) {
+      const r = await raw(srv.port, 'POST', '/api/desks/lanes', headers);
+      assert.notEqual(r.status, 415, `bodyless POST with ${JSON.stringify(headers)} must not be 415, got ${r.status} ${r.text}`);
+    }
+  });
+
   it('a foreign Host is refused (DNS rebinding), on pages and the API', async () => {
     for (const host of ['evil.example', `evil.example:${srv.port}`, `127.0.0.1:${srv.port + 1}`]) {
       assert.equal((await raw(srv.port, 'GET', '/api/desks', { host })).status, 421, `GET /api/desks Host ${host}`);

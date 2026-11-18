@@ -115,10 +115,10 @@ export function checkJsonBody(req: IncomingMessage, pathname: string): GuardVerd
   const method = req.method ?? "GET";
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
   if (pathname !== "/api" && !pathname.startsWith("/api/")) return null;
-  const type = (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
-  if (type === "application/json") return null;
   const length = req.headers["content-length"];
   const hasBody = req.headers["transfer-encoding"] !== undefined || (length !== undefined && length !== "0");
-  if (type === "" && !hasBody) return null;
+  if (!hasBody) return null;
+  const type = (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+  if (type === "application/json") return null;
   return { status: 415, message: "content-type must be application/json" };
 }
