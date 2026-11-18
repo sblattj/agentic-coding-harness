@@ -15,6 +15,8 @@ struct RecordedRequest: Sendable {
 
 enum MockResponse: Sendable {
     case json(Int, String)
+    /// Same as `.json`, answered after a delay (seconds): lets a test hold a request in flight.
+    case jsonAfter(TimeInterval, Int, String)
     /// SSE: send each chunk after its delay (seconds); close the connection afterwards when `close`.
     case sse(chunks: [(TimeInterval, String)], close: Bool)
 }
@@ -115,6 +117,12 @@ final class MockServer: @unchecked Sendable {
             let b = Data(body.utf8)
             let head = "HTTP/1.1 \(status) X\r\nContent-Type: application/json\r\nContent-Length: \(b.count)\r\nConnection: close\r\n\r\n"
             conn.send(content: Data(head.utf8) + b, completion: .contentProcessed { _ in conn.cancel() })
+        case .jsonAfter(let delay, let status, let body):
+            let b = Data(body.utf8)
+            let head = "HTTP/1.1 \(status) X\r\nContent-Type: application/json\r\nContent-Length: \(b.count)\r\nConnection: close\r\n\r\n"
+            queue.asyncAfter(deadline: .now() + delay) {
+                conn.send(content: Data(head.utf8) + b, completion: .contentProcessed { _ in conn.cancel() })
+            }
         case .sse(let chunks, let close):
             let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n"
             conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in })

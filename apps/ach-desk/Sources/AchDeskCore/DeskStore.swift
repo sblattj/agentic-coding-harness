@@ -31,6 +31,9 @@ public final class DeskStore: ObservableObject {
     private var clockTimer: Timer?
     private var seenDecisionIDs = Set<String>()
     private var hadRoster = false
+    /// Bumped by `reconfigure` when the server changes. Every async refresh or action captures it at the
+    /// start and drops its result if it moved, so a response from the previous server never lands in state.
+    private var serverEpoch = 0
 
     public init(client: APIClient, clock: @escaping () -> Date = Date.init) {
         self.client = client
@@ -57,6 +60,7 @@ public final class DeskStore: ObservableObject {
         // Same server (host, port, token): keep everything.
         guard config != client.config else { return }
         stop()
+        serverEpoch += 1
         client = APIClient(config: config)
         roster = nil
         messages = []
@@ -120,34 +124,53 @@ public final class DeskStore: ObservableObject {
 
     public func refreshAll() async {
         await refreshCore()
+        let epoch = serverEpoch
+        let client = client
         async let e = try? client.engines()
         async let m = try? client.mcps()
         async let c = try? client.costs()
-        if let v = await e { engines = v }
-        if let v = await m { mcpNames = v }
-        if let v = await c { costs = v }
-        for d in desks where d.entry.feedPid != nil || d.name == listenerName { await loadEvents(desk: d.name) }
+        let (ev, mv, cv) = (await e, await m, await c)
+        guard epoch == serverEpoch else { return }
+        if let v = ev { engines = v }
+        if let v = mv { mcpNames = v }
+        if let v = cv { costs = v }
+        for d in desks where d.entry.feedPid != nil || d.name == listenerName {
+            guard epoch == serverEpoch else { return }
+            await loadEvents(desk: d.name)
+        }
     }
 
     func refreshCore() async {
         now = clock()
+        let epoch = serverEpoch
+        let client = client
         do {
             let v = try await client.roster()
+            guard epoch == serverEpoch else { return }
             applyRoster(v)
             lastError = nil
         } catch {
+            guard epoch == serverEpoch else { return }
             lastError = "\(error)"
             return
         }
-        if let msgs = try? await client.messages(since: messages.last?.at) { mergeMessages(msgs) }
-        if let ds = try? await client.decisions() { mergeDecisions(ds) }
+        let msgs = try? await client.messages(since: messages.last?.at)
+        guard epoch == serverEpoch else { return }
+        if let msgs { mergeMessages(msgs) }
+        let ds = try? await client.decisions()
+        guard epoch == serverEpoch else { return }
+        if let ds { mergeDecisions(ds) }
     }
 
     public func loadEvents(desk: String) async {
         // seq is per host run; after an engine restart (new runId) start that run's events from the top.
+        let epoch = serverEpoch
+        let client = client
         let runId = roster?.rows.first { $0.name == desk }?.entry.runId
         let since = eventsByDesk[desk]?.filter { runId == nil || $0.runId == runId }.map(\.seq).max()
-        if let evs = try? await client.events(desk: desk, since: since) { mergeEvents(evs, desk: desk) }
+        let evs = try? await client.events(desk: desk, since: since)
+        guard epoch == serverEpoch else { return }
+        if let evs { mergeEvents(evs, desk: desk) }
     }
 
     // MARK: applying updates
@@ -212,13 +235,14 @@ public final class DeskStore: ObservableObject {
 
     @discardableResult
     private func run(_ what: String, _ op: @escaping () async throws -> Void) async -> String? {
+        let epoch = serverEpoch
         do {
             try await op()
-            lastError = nil
+            if epoch == serverEpoch { lastError = nil }
             return nil
         } catch {
             let msg = "\(what): \(error)"
-            lastError = msg
+            if epoch == serverEpoch { lastError = msg }
             return msg
         }
     }
@@ -226,21 +250,30 @@ public final class DeskStore: ObservableObject {
     /// Run an action, then refresh. A successful refresh clears `lastError`, so a failed
     /// action's error is put back afterwards: the user must still see why it failed.
     private func runThenRefresh(_ what: String, _ op: @escaping () async throws -> Void) async {
+        let epoch = serverEpoch
         let failure = await run(what, op)
         await refreshCore()
-        if let failure { lastError = failure }
+        if let failure, epoch == serverEpoch { lastError = failure }
     }
 
     public func send(to: String, text: String) async {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        await run("send") { [self] in mergeMessages([try await client.sendMessage(to: to, text: t)]) }
+        let epoch = serverEpoch
+        await run("send") { [self] in
+            let m = try await client.sendMessage(to: to, text: t)
+            if epoch == serverEpoch { mergeMessages([m]) }
+        }
     }
 
     public func answer(decisionID: String, text: String) async {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        await run("answer") { [self] in mergeDecisions([try await client.answerDecision(id: decisionID, text: t)]) }
+        let epoch = serverEpoch
+        await run("answer") { [self] in
+            let d = try await client.answerDecision(id: decisionID, text: t)
+            if epoch == serverEpoch { mergeDecisions([d]) }
+        }
     }
 
     public func newLane(_ body: NewLaneBody) async -> LaneCreateResult? {
@@ -262,7 +295,11 @@ public final class DeskStore: ObservableObject {
     }
 
     public func up(layoutFile: String? = nil) async {
-        await run("start stack") { [self] in applyRoster(try await client.up(layoutFile: layoutFile)) }
+        let epoch = serverEpoch
+        await run("start stack") { [self] in
+            let v = try await client.up(layoutFile: layoutFile)
+            if epoch == serverEpoch { applyRoster(v) }
+        }
     }
 
     public func down() async {
@@ -274,6 +311,9 @@ public final class DeskStore: ObservableObject {
     }
 
     public func refreshCosts() async {
-        if let c = try? await client.costs() { costs = c }
+        let epoch = serverEpoch
+        let c = try? await client.costs()
+        guard epoch == serverEpoch else { return }
+        if let c { costs = c }
     }
 }
