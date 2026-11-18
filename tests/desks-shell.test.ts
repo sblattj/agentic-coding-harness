@@ -75,7 +75,7 @@ describe("real tmux panes without zsh", { skip: !HAVE_TMUX && "tmux not installe
       const id = await d.open({ mode: "window", name: "w", cwd: tmp, argv: ["/bin/sh", "-c", `printf '%s' "$1" > "$0"; sleep 60`, marker, weird] });
       const start = execFileSync("tmux", ["-L", sock, "display-message", "-p", "-t", id, "#{pane_start_command}"], { encoding: "utf8" });
       assert.ok(start.includes(path) && !start.includes("zsh"), `pane started through ${path}: ${start}`);
-      for (let i = 0; i < 100 && !existsSync(marker); i++) await new Promise((r) => setTimeout(r, 100));
+      for (let i = 0; i < 100 && !(existsSync(marker) && readFileSync(marker, "utf8") === weird); i++) await new Promise((r) => setTimeout(r, 100));
       assert.equal(readFileSync(marker, "utf8"), weird);
       await d.close(id);
       assert.equal(await d.alive(id), false);
