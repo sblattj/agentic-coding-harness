@@ -60,6 +60,20 @@ import Testing
         #expect(p.retryMs == 100)
     }
 
+    @Test func leadingBomIsStrippedOnceEvenWhenSplitAcrossChunks() {
+        var p = SSEParser()
+        var out = p.feed(Data([0xEF, 0xBB]))
+        out += p.feed(Data([0xBF]) + Data("event: roster\ndata: a\n\n".utf8))
+        #expect(out == [SSEEvent(event: "roster", data: "a", id: nil)])
+        // only at the stream start: a later BOM is part of the field name, so the line is ignored
+        out = p.feed(Data([0xEF, 0xBB, 0xBF]) + Data("data: b\n\n".utf8))
+        #expect(out.isEmpty)
+        // a reconnect is a new stream
+        p.reset()
+        out = p.feed(Data([0xEF, 0xBB, 0xBF]) + Data("data: c\n\n".utf8))
+        #expect(out.map(\.data) == ["c"])
+    }
+
     @Test func utf8SplitAcrossChunks() {
         var p = SSEParser()
         let bytes = Array("data: caf\u{00E9} \u{1F600}\n\n".utf8)

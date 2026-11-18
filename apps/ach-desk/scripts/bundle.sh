@@ -4,6 +4,8 @@
 #   --with-ach copies an ach binary into Contents/Resources/ach (used only when no
 #   Settings path or login-shell ach is found). The default is the user's install,
 #   because standalone ach builds lack bun-pty.
+# CI: the `ach-desk` job in .github/workflows/ci.yml runs this script ("Bundle the app")
+#   and checks the bundle's executable, identifier and ad-hoc signature.
 set -euo pipefail
 
 here="${0:A:h}"

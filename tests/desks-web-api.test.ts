@@ -653,6 +653,30 @@ describe('desks web api: routes', () => {
     assert.equal(c.events.length, cap, 'buffered newest events replayed after the history');
   });
 
+  it('desks.html loads history for a chat whose first event arrived before the roster', async () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const chatSrc = /function chatOf[\s\S]*?\n  function eventNode/.exec(html)?.[0]?.replace(/function eventNode$/, '');
+    const addSrc = /function addEvent[\s\S]*?\n  }\n/.exec(html)?.[0];
+    assert.ok(chatSrc && addSrc);
+    let roster: { name: string; runId: string } | null = null;
+    const urls: string[] = [];
+    const ctx = createContext({
+      chats: {}, MAX_EVENTS: 300, es: null, feeds: {}, view: null,
+      api: (_m: string, url: string) => { urls.push(url); return Promise.resolve({ events: [1, 2, 3].map((seq) => ({ name: 'A', runId: 'r1', seq, type: 'x' })) }); },
+      renderAllChatNodes: () => {}, renderFeeds: () => {}, resyncChats: () => {}, showErr: () => {},
+      rowByName: () => roster, eventNode: () => null, document: { body: { contains: () => true } },
+    });
+    runInContext(`${chatSrc}; ${addSrc}; this.addEvent = addEvent; this.loadHistory = loadHistory;`, ctx);
+    (ctx as any).addEvent({ name: 'A', runId: 'r1', seq: 4, type: 'x' }, false); // no roster yet
+    const c = (ctx as any).chats.A;
+    assert.equal(c.loaded, false, 'a pre-roster chat is not marked loaded');
+    roster = { name: 'A', runId: 'r1' }; // the roster arrives
+    (ctx as any).loadHistory(roster);
+    assert.deepEqual(urls, ['/A/events?since=0'], 'history is fetched for it');
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual([...c.events].map((e: any) => e.seq), [1, 2, 3, 4], 'earlier events shown, the buffered one kept');
+  });
+
   it('desks.html nav links carry both the token and the selected stack', () => {
     const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
     const src = /var QS = new URLSearchParams[\s\S]*?querySelectorAll\("#pagenav a"\)[\s\S]*?\}\)\(\);/.exec(html)?.[0];

@@ -210,13 +210,25 @@ public final class DeskStore: ObservableObject {
 
     // MARK: actions
 
-    private func run(_ what: String, _ op: @escaping () async throws -> Void) async {
+    @discardableResult
+    private func run(_ what: String, _ op: @escaping () async throws -> Void) async -> String? {
         do {
             try await op()
             lastError = nil
+            return nil
         } catch {
-            lastError = "\(what): \(error)"
+            let msg = "\(what): \(error)"
+            lastError = msg
+            return msg
         }
+    }
+
+    /// Run an action, then refresh. A successful refresh clears `lastError`, so a failed
+    /// action's error is put back afterwards: the user must still see why it failed.
+    private func runThenRefresh(_ what: String, _ op: @escaping () async throws -> Void) async {
+        let failure = await run(what, op)
+        await refreshCore()
+        if let failure { lastError = failure }
     }
 
     public func send(to: String, text: String) async {
@@ -233,24 +245,20 @@ public final class DeskStore: ObservableObject {
 
     public func newLane(_ body: NewLaneBody) async -> LaneCreateResult? {
         var result: LaneCreateResult?
-        await run("new lane") { [self] in result = try await client.newLane(body) }
-        await refreshCore()
+        await runThenRefresh("new lane") { [self] in result = try await client.newLane(body) }
         return result
     }
 
     public func stopLane(_ name: String) async {
-        await run("stop \(name)") { [self] in try await client.stopLane(name: name) }
-        await refreshCore()
+        await runThenRefresh("stop \(name)") { [self] in try await client.stopLane(name: name) }
     }
 
     public func approve(_ id: String) async {
-        await run("approve \(id)") { [self] in _ = try await client.approvePending(id: id) }
-        await refreshCore()
+        await runThenRefresh("approve \(id)") { [self] in _ = try await client.approvePending(id: id) }
     }
 
     public func reject(_ id: String, reason: String?) async {
-        await run("reject \(id)") { [self] in _ = try await client.rejectPending(id: id, reason: reason) }
-        await refreshCore()
+        await runThenRefresh("reject \(id)") { [self] in _ = try await client.rejectPending(id: id, reason: reason) }
     }
 
     public func up(layoutFile: String? = nil) async {
@@ -258,13 +266,11 @@ public final class DeskStore: ObservableObject {
     }
 
     public func down() async {
-        await run("stop stack") { [self] in _ = try await client.down() }
-        await refreshCore()
+        await runThenRefresh("stop stack") { [self] in _ = try await client.down() }
     }
 
     public func setEngine(desk: String, agent: String, model: String?) async {
-        await run("engine \(desk)") { [self] in _ = try await client.setEngine(desk: desk, agent: agent, model: model) }
-        await refreshCore()
+        await runThenRefresh("engine \(desk)") { [self] in _ = try await client.setEngine(desk: desk, agent: agent, model: model) }
     }
 
     public func refreshCosts() async {

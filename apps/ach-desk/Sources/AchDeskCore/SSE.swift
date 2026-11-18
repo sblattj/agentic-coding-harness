@@ -15,6 +15,8 @@ public struct SSEParser: Sendable {
     private var eventName = ""
     private var pendingID: String?
     private var sawCR = false
+    /// True until the first line of this connection is processed (a leading U+FEFF BOM is stripped there).
+    private var atStreamStart = true
     /// ID of the last DISPATCHED event (sent back as Last-Event-ID on reconnect).
     public private(set) var lastEventID: String?
     /// Server-requested reconnect delay (`retry:` field), in milliseconds.
@@ -29,6 +31,7 @@ public struct SSEParser: Sendable {
         eventName = ""
         pendingID = nil
         sawCR = false
+        atStreamStart = true // the next connection is a new stream, which may start with its own BOM
     }
 
     public mutating func feed(_ chunk: String) -> [SSEEvent] { feed(Data(chunk.utf8)) }
@@ -53,6 +56,11 @@ public struct SSEParser: Sendable {
     }
 
     private mutating func processLine(_ out: inout [SSEEvent]) {
+        // Spec: one leading U+FEFF (EF BB BF) at the start of the stream is ignored.
+        if atStreamStart {
+            atStreamStart = false
+            if buffer.starts(with: [0xEF, 0xBB, 0xBF]) { buffer.removeFirst(3) }
+        }
         let line = String(decoding: buffer, as: UTF8.self)
         buffer.removeAll(keepingCapacity: true)
         if line.isEmpty {

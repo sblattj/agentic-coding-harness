@@ -367,7 +367,9 @@ table.costs td.num, table.costs th.num { text-align: right; }
   var refetchCosts = debounce(function () { fetchCosts(); }, 2500);
   function addEvent(ev, quiet) {
     var row = rowByName(ev.name);
-    var c = row ? chatOf(row) : (chats[ev.name] || (chats[ev.name] = { runId: ev.runId, lastSeq: 0, floor: 0, seen: new Set(), events: [], nodes: [], loaded: true }));
+    // An event that beats the roster still gets an unloaded chat: it buffers, and the first
+    // loadHistory once the roster names the row fetches everything before it.
+    var c = chatOf(row || { name: ev.name, runId: ev.runId });
     if (c.runId !== ev.runId) return;
     if (!c.loaded) {
       // An unopened chat only buffers the newest MAX_EVENTS; opening it loads the full history (since=0).

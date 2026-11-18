@@ -190,6 +190,23 @@ import Testing
         store.apply(.unknown("whatever"))
     }
 
+    @Test func failedActionErrorSurvivesTheRefreshAfterIt() async throws {
+        let server = try MockServer(handler: { r, i in
+            if r.method == "POST" { return .json(500, #"{"error":"boom"}"#) }
+            return desksHandler(r, i)
+        })
+        try await server.start()
+        defer { server.stop() }
+        let store = DeskStore(client: APIClient(config: ServerConfig(port: server.port)), clock: { Fixtures.noon })
+        await store.stopLane("LANE1")
+        #expect(server.requests.contains { $0.method == "GET" && $0.path == "/api/desks" }, "the refresh ran")
+        #expect(store.lastError?.hasPrefix("stop LANE1:") == true, "the action error is still shown")
+        await store.approve("L1")
+        #expect(store.lastError?.hasPrefix("approve L1:") == true)
+        await store.refreshAll()
+        #expect(store.lastError == nil, "a later clean refresh clears it")
+    }
+
     @Test func refreshAllLoadsListenerEventsSoHudAndLiveCallWorkAtLaunch() async throws {
         let server = try MockServer(handler: desksHandler)
         try await server.start()
