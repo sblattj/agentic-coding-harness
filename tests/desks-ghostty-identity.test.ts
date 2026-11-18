@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -115,5 +115,37 @@ describe("GhosttyDriver close sends Enter only after the process is gone", () =>
   it("escalates to SIGKILL when SIGTERM is ignored, then sends Enter", async () => {
     const t = await run("stubborn", "SIGKILL");
     assert.deepEqual(t.events, ["SIGTERM", "SIGKILL", "enter-after-exit"]);
+  });
+});
+
+describe("GhosttyDriver open cleans up when the sidecar cannot be written", () => {
+  it("signals the launched process, sends Enter, and rejects (the caller never gets the id)", async () => {
+    const dir = join(tmp, "sidecar-fail");
+    mkdirSync(join(dir, "terminal-T-9.ref"), { recursive: true }); // a directory where the sidecar file goes: write fails
+    const events: string[] = [];
+    let dead = false;
+    const d = new GhosttyDriver({
+      dir,
+      settleMs: 0,
+      exitWaitMs: 200,
+      isAlive: () => !dead,
+      kill: (pid, sig) => {
+        events.push(`${sig} ${pid}`);
+        dead = true;
+      },
+      commandOf: () => (dead ? undefined : "/usr/local/bin/node /opt/ach/pane.js"),
+      startOf: () => Date.now() - 1_000,
+      osascript: async (script) => {
+        const pidfile = /[^\s'"]+\.pid/.exec(script)?.[0];
+        if (pidfile && !events.length) {
+          writeFileSync(pidfile, "5150\n");
+          return "T-9";
+        }
+        events.push("close");
+        return "";
+      },
+    });
+    await assert.rejects(d.open({ mode: "window", name: "n", cwd: "/c", argv: ["/usr/local/bin/node", "/opt/ach/pane.js"] }), /could not record terminal T-9/);
+    assert.deepEqual(events, ["SIGTERM 5150", "close"]);
   });
 });

@@ -3,7 +3,7 @@
 // close = kill the pane's process, then `send key "enter"` (Ghostty's own "press any key to close").
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { OpenRequest, TerminalDriver } from "../types.ts";
@@ -60,6 +60,8 @@ function pidAlive(pid: number): boolean {
 }
 
 const POLL_MS = 50;
+/** How long open() waits for the launched shell's pidfile before cleaning up after a failed sidecar write. */
+const PIDFILE_WAIT_MS = 2_000;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 function psCommand(pid: number): string | undefined {
@@ -196,6 +198,8 @@ export class GhosttyDriver implements TerminalDriver {
   private readonly exitWaitMs: number;
   private readonly dir: string;
   private readonly pidfiles = new Map<string, string>();
+  /** needlesFor(argv) per open, so close() can confirm identity even when the sidecar was never written. */
+  private readonly needles = new Map<string, string[]>();
 
   constructor(opts: GhosttyDriverOptions = {}) {
     this.osa = opts.osascript ?? runOsascript;
@@ -214,13 +218,24 @@ export class GhosttyDriver implements TerminalDriver {
     const out = (await this.osa(openScript(req, surfaceCommand(req.argv, pidfile)))).trim();
     if (!out) throw new Error("ghostty: open returned no terminal id");
     this.pidfiles.set(out, pidfile);
-    writeFileSync(sidecarFor(out, this.dir), `${pidfile}\n${JSON.stringify(needlesFor(req.argv))}\n`);
+    const needles = needlesFor(req.argv);
+    this.needles.set(out, needles);
+    try {
+      writeFileSync(sidecarFor(out, this.dir), `${pidfile}\n${JSON.stringify(needles)}\n`);
+    } catch (err) {
+      // The terminal and its process are already running, and the caller will never get this id: close them here.
+      // Give the launched shell a moment to write its pidfile, since close() only signals a recorded, confirmed pid.
+      const deadline = Date.now() + PIDFILE_WAIT_MS;
+      while (!existsSync(pidfile) && Date.now() < deadline) await sleep(POLL_MS);
+      await this.close(out).catch(() => {});
+      throw new Error(`ghostty: could not record terminal ${out}: ${(err as Error).message}`);
+    }
     return out;
   }
 
   async close(id: string): Promise<void> {
     const pidfile = this.pidfiles.get(id) ?? pidfileFor(id, this.dir);
-    const needles = needlesOf(id, this.dir);
+    const needles = needlesOf(id, this.dir) ?? this.needles.get(id);
     // Enter only goes to a process we confirmed is ours (signaled, or already gone): otherwise the keystroke could land
     // in a process ach did not launch.
     let ours = false;
@@ -283,6 +298,7 @@ export class GhosttyDriver implements TerminalDriver {
       }
     }
     this.pidfiles.delete(id);
+    this.needles.delete(id);
     if (pidfile) rmSync(pidfile, { force: true });
     rmSync(sidecarFor(id, this.dir), { force: true });
   }
