@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { createDriver } from '../src/core/driver.ts';
 import type { AgentAdapter, AgentEvent, AgentHandle } from '../src/core/types.ts';
 
@@ -24,13 +24,23 @@ const adapter: AgentAdapter = {
   },
 };
 
+const made: string[] = [];
+function tmpState(): string {
+  const d = mkdtempSync(join(tmpdir(), 'ach-lineage-'));
+  made.push(d);
+  return d;
+}
+after(() => {
+  for (const d of made) rmSync(d, { recursive: true, force: true });
+});
+
 function recordOnDisk(stateDir: string, runId: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(stateDir, 'runs', `${runId}.json`), 'utf8')) as Record<string, unknown>;
 }
 
 describe('run lineage on the RunRecord (#204)', () => {
   it('a run with parentRunId + desk persists both', async () => {
-    const stateDir = mkdtempSync(join(tmpdir(), 'ach-lineage-'));
+    const stateDir = tmpState();
     const driver = createDriver({ adapters: { lineage: adapter }, stateDir, registry: { stateDir } });
     await driver.run('lineage', {
       prompt: 'hi',
@@ -45,7 +55,7 @@ describe('run lineage on the RunRecord (#204)', () => {
   });
 
   it('a run without them gets neither key', async () => {
-    const stateDir = mkdtempSync(join(tmpdir(), 'ach-lineage-'));
+    const stateDir = tmpState();
     const driver = createDriver({ adapters: { lineage: adapter }, stateDir, registry: { stateDir } });
     await driver.run('lineage', { prompt: 'hi', runId: 'plain-1' });
     const rec = recordOnDisk(stateDir, 'plain-1');

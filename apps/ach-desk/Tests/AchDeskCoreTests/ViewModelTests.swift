@@ -66,6 +66,23 @@ import Testing
         #expect(Derived.liveCallDesks(rows: roster.rows, eventsByDesk: ["LISTENER": events], now: Fixtures.noon) == ["LISTENER"])
     }
 
+    @Test func liveCallRejectsFutureFeedTimestamps() {
+        let desk = roster.rows[0]
+        let beforeEvent = Date(timeIntervalSince1970: (1763380400000 - 60_000) / 1000)
+        #expect(!Derived.isLiveCall(row: desk, events: events, now: beforeEvent))
+    }
+
+    @Test func sinceQueryOmitsNonFiniteAndOutOfRangeValues() {
+        #expect(APIClient.sinceQuery(nil).isEmpty)
+        #expect(APIClient.sinceQuery(.nan).isEmpty)
+        #expect(APIClient.sinceQuery(.infinity).isEmpty)
+        #expect(APIClient.sinceQuery(-.infinity).isEmpty)
+        #expect(APIClient.sinceQuery(1e30).isEmpty)
+        #expect(APIClient.sinceQuery(-1e30).isEmpty)
+        #expect(APIClient.sinceQuery(9223372036854775808.0).isEmpty)
+        #expect(APIClient.sinceQuery(1763380400000.7).map(\.value) == ["1763380400000"])
+    }
+
     @Test func listenerAndLatestTalkingPoint() {
         #expect(Derived.listenerName(rows: roster.rows) == "LISTENER")
         #expect(Derived.latestText(events: events) == "Talking point A")

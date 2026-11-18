@@ -75,7 +75,9 @@ final class HotKey {
 
     private var ref: EventHotKeyRef?
     private let action: () -> Void
-    private static var registry: [UInt32: HotKey] = [:]
+    private struct WeakBox { weak var hotKey: HotKey? }
+    /// Weak so an owner dropping its HotKey runs deinit (a strong registry would keep it alive forever).
+    private static var registry: [UInt32: WeakBox] = [:]
     private static var nextID: UInt32 = 1
     /// One process-wide handler shared by every HotKey (a handler per instance would fire each action once per handler).
     private static var sharedHandler: EventHandlerRef?
@@ -88,7 +90,7 @@ final class HotKey {
         let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
             var hk = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hk)
-            if let target = HotKey.registry[hk.id] { DispatchQueue.main.async { target.action() } }
+            if let target = HotKey.registry[hk.id]?.hotKey { DispatchQueue.main.async { target.action() } }
             return noErr
         }, 1, &spec, nil, &h)
         guard status == noErr else { return false }
@@ -98,6 +100,7 @@ final class HotKey {
 
     /// Remove the shared handler once no hotkey needs it (failed registration, last HotKey gone).
     private static func removeHandlerIfUnused() {
+        registry = registry.filter { $0.value.hotKey != nil } // drop boxes of deallocated keys
         guard registry.isEmpty, let h = sharedHandler else { return }
         RemoveEventHandler(h)
         sharedHandler = nil
@@ -113,7 +116,7 @@ final class HotKey {
             HotKey.removeHandlerIfUnused() // registration failed: do not leave the handler installed
             return nil
         }
-        HotKey.registry[hotKeyID] = self
+        HotKey.registry[hotKeyID] = WeakBox(hotKey: self)
     }
 
     deinit {

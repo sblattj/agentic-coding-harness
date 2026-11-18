@@ -128,8 +128,15 @@ public final class APIClient: @unchecked Sendable {
         try await send(try request("GET", ""), as: RosterView.self)
     }
 
+    /// `since` query item, or none when the value cannot be an Int64 (NaN, infinite, out of range).
+    /// Omitting (not clamping) means the server returns its default window instead of a bogus cursor.
+    static func sinceQuery(_ since: Double?) -> [URLQueryItem] {
+        guard let since, since.isFinite, since >= Double(Int64.min), since < 9223372036854775808.0 else { return [] }
+        return [URLQueryItem(name: "since", value: String(Int64(since)))]
+    }
+
     public func messages(since: Double? = nil) async throws -> [DeskMessage] {
-        let q = since.map { [URLQueryItem(name: "since", value: String(Int64($0)))] } ?? []
+        let q = Self.sinceQuery(since)
         return try await send(try request("GET", "/messages", query: q), as: MessagesResponse.self).messages
     }
 

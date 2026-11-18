@@ -49,7 +49,8 @@ public enum Derived {
         let feed = events.filter { $0.name == row.name && $0.type == "feed" }.max { $0.at < $1.at }
         guard let last = feed else { return false }
         let nowMs = now.timeIntervalSince1970 * 1000
-        guard nowMs - last.at <= liveFeedWindowMs else { return false }
+        let age = nowMs - last.at
+        guard age >= 0, age <= liveFeedWindowMs else { return false } // a future timestamp is invalid, not fresh
         if let active = last.data["active"]?.boolValue { return active }
         let note = (last.data["note"]?.stringValue ?? "").lowercased()
         return !inactiveFeedWords.contains { note.contains($0) }

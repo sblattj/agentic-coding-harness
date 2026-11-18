@@ -1,15 +1,23 @@
 // Backs the rebuttal of "Surface failed driver turns instead of discarding them" (driver.ts send):
 // a failing turn never reaches the .catch in send(); #runTurn reports it as error + turn_end events.
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import type { AgentAdapter, AgentHandle, RunSpec } from '../src/core/types.ts';
 import { DriverEngine } from '../src/desks/engines/driver.ts';
 import type { EngineEvent, HostSpec } from '../src/desks/types.ts';
 
-const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
+const made: string[] = [];
+const tmp = (p: string) => {
+  const d = mkdtempSync(join(tmpdir(), p));
+  made.push(d);
+  return d;
+};
+after(() => {
+  for (const d of made) rmSync(d, { recursive: true, force: true });
+});
 
 class FailingAdapter implements AgentAdapter {
   readonly name = 'fake';

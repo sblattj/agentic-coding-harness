@@ -164,4 +164,19 @@ describe("startGoalLoop", () => {
     }).done;
     assert.deepEqual(seen, [600_000, 360_000]);
   });
+
+  it("a turn limit of 0 runs no turn and stops with the max-turns reason", async () => {
+    let calls = 0;
+    const final = await startGoalLoop({
+      objective: "o",
+      maxTurns: 0,
+      runTurn: async () => {
+        calls++;
+        return "GOAL: CONTINUE";
+      },
+    }).done;
+    assert.equal(calls, 0, "runTurn never called");
+    assert.equal(final.state, "stopped");
+    assert.equal(final.reason, "max turns reached (0)");
+  });
 });

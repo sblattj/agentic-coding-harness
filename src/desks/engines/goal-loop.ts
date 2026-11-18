@@ -124,6 +124,11 @@ export function startGoalLoop(o: GoalLoopOptions): GoalLoopHandle {
     let prompt = firstPrompt(objective);
     let turns = 0;
     let missing = 0;
+    // A limit of 0 (or less) means no turn at all, not "unlimited": end exactly as when the cap is hit.
+    if (maxTurns <= 0) {
+      emit({ state: "stopped", reason: `max turns reached (${maxTurns})` });
+      return current;
+    }
     for (;;) {
       let reply: string;
       try {
