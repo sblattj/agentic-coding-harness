@@ -43,10 +43,32 @@ export function sidecarFor(id: string, dir: string = defaultDir()): string {
   return join(dir, `terminal-${safeId(id)}.ref`);
 }
 
-/** Strings the launched process's command line must contain: argv[0]'s basename, plus argv[1] when it is a path. */
+/** Commands that exec the next word: the launched process's command line shows that word, not the wrapper. */
+const WRAPPERS = new Set(["env", "nohup", "nice", "caffeinate", "time", "command", "exec", "stdbuf", "timeout"]);
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const WRAPPER_ARG = /^(-.*|\d+(\.\d+)?[smhd]?)$/;
+
+/**
+ * Strings the launched process's command line must contain: the executable's basename, plus the next word when it is
+ * a path. Leading wrappers (`env A=1`, `nohup`, `nice -n 5`, ...) and `VAR=value` words are skipped, since after they
+ * exec the process shows only what follows.
+ */
 export function needlesFor(argv: string[]): string[] {
-  const out = [basename(argv[0] ?? "")];
-  if (argv[1] && argv[1].includes("/") && !argv[1].startsWith("-")) out.push(basename(argv[1]));
+  let i = 0;
+  while (i < argv.length) {
+    const word = argv[i]!;
+    if (ASSIGNMENT.test(word)) {
+      i++;
+    } else if (WRAPPERS.has(basename(word))) {
+      i++;
+      while (i < argv.length && (WRAPPER_ARG.test(argv[i]!) || ASSIGNMENT.test(argv[i]!))) i++;
+    } else {
+      break;
+    }
+  }
+  const out = [basename(argv[i] ?? "")];
+  const next = argv[i + 1];
+  if (next && next.includes("/") && !next.startsWith("-")) out.push(basename(next));
   return out.filter((n) => n !== "");
 }
 

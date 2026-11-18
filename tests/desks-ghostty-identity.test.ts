@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { GhosttyDriver, pidfileFor, startMatchesPidfile } from "../src/desks/term/ghostty.ts";
+import { GhosttyDriver, needlesFor, pidfileFor, startMatchesPidfile } from "../src/desks/term/ghostty.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "ghostty-identity-"));
 after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -147,5 +147,15 @@ describe("GhosttyDriver open cleans up when the sidecar cannot be written", () =
     });
     await assert.rejects(d.open({ mode: "window", name: "n", cwd: "/c", argv: ["/usr/local/bin/node", "/opt/ach/pane.js"] }), /could not record terminal T-9/);
     assert.deepEqual(events, ["SIGTERM 5150", "close"]);
+  });
+});
+
+describe("needlesFor matches the executable after wrapper commands", () => {
+  it("skips env assignments, nohup, nice -n and timeout args", () => {
+    assert.deepEqual(needlesFor(["/usr/local/bin/node", "/opt/ach/pane.js"]), ["node", "pane.js"]);
+    assert.deepEqual(needlesFor(["/usr/bin/env", "ACH_DESK_NAME=X", "node", "/opt/ach/pane.js"]), ["node", "pane.js"]);
+    assert.deepEqual(needlesFor(["nohup", "nice", "-n", "5", "/usr/local/bin/ach", "desk"]), ["ach"]);
+    assert.deepEqual(needlesFor(["A=1", "timeout", "30s", "opencode", "/x/y"]), ["opencode", "y"]);
+    assert.deepEqual(needlesFor(["env"]), []);
   });
 });

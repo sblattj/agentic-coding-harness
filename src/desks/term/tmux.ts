@@ -26,7 +26,8 @@ export interface PaneShell {
 const SH_LIKE = new Set(["sh", "dash", "ash"]);
 const RC_SHELLS = new Set(["zsh", "bash", "ksh", "mksh"]);
 
-function isExecutable(p: string): boolean {
+/** True for an executable regular file. */
+export function isExecutable(p: string): boolean {
   try {
     accessSync(p, constants.X_OK);
     return statSync(p).isFile();

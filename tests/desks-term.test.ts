@@ -499,5 +499,8 @@ describe("defaultTerminal", () => {
   });
   it("default which scans PATH", () => {
     assert.equal(defaultTerminal({ env: { PATH: "/a:/b" }, exists: (p) => p === "/b/tmux", platform: "linux" }), "tmux");
+    // A file named tmux that is not executable does not select tmux.
+    assert.equal(defaultTerminal({ env: { PATH: "/a:/b" }, exists: (p) => p === "/b/tmux", executable: () => false, platform: "linux" }), "none");
+    assert.equal(defaultTerminal({ env: { PATH: "/a:/b" }, executable: (p) => p === "/a/tmux", platform: "linux" }), "tmux");
   });
 });
