@@ -17,7 +17,8 @@ jobs:
   test:
     name: test (node ${{ matrix.node-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Two full suite passes (Bun off and on PATH); macOS runners take up to ~13 min for both.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:

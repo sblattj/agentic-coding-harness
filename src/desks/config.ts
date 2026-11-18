@@ -182,7 +182,7 @@ export function parseLayout(text: string, source: string): Layout {
     agent: p.agent,
     model: p.model,
     cwd: p.cwd,
-    rolesDir: p.rolesDir && !isAbsolute(p.rolesDir) && source && isAbsolute(source) ? resolve(dirname(source), p.rolesDir) : p.rolesDir,
+    rolesDir: resolveRolesDir(p.rolesDir, source),
     mcpServers: p.mcpServers,
     desks: p.desks.map((d) => ({
       ...d,
@@ -192,6 +192,13 @@ export function parseLayout(text: string, source: string): Layout {
     lanes: { ...p.lanes, ports: p.lanes.ports as [number, number] },
   };
   return stripUndefined(layout);
+}
+
+/** `~` and `~/x` mean the home directory; any other relative path is relative to the layout file. */
+function resolveRolesDir(dir: string | undefined, source: string | undefined): string | undefined {
+  if (!dir) return dir;
+  const expanded = dir === "~" ? homedir() : dir.startsWith("~/") ? join(homedir(), dir.slice(2)) : dir;
+  return !isAbsolute(expanded) && source && isAbsolute(source) ? resolve(dirname(source), expanded) : expanded;
 }
 
 function stripUndefined<T>(v: T): T {

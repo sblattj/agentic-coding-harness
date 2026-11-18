@@ -15,6 +15,7 @@ describe("GhosttyDriver close requires this open's identity, not only the comman
     const d = new GhosttyDriver({
       dir,
       settleMs: 0,
+      isAlive: () => false,
       kill: (pid) => void kills.push(pid),
       commandOf: () => "/usr/local/bin/node /opt/ach/pane.js", // identical executable and script
       startOf,
@@ -47,5 +48,49 @@ describe("GhosttyDriver close requires this open's identity, not only the comman
     assert.equal(startMatchesPidfile(10_000, 1000), false);
     assert.equal(startMatchesPidfile(1000 - 200_000, 1000), false);
     assert.equal(startMatchesPidfile(undefined, 1000), false);
+  });
+});
+
+describe("GhosttyDriver close sends Enter only after the process is gone", () => {
+  const argv = ["/usr/local/bin/node", "/opt/ach/pane.js"];
+  const run = async (name: string, deadAfterSignals: "SIGTERM" | "SIGKILL" | "never") => {
+    const dir = join(tmp, name);
+    const events: string[] = [];
+    let dead = false;
+    let polls = 0;
+    const d = new GhosttyDriver({
+      dir,
+      settleMs: 0,
+      exitWaitMs: 200,
+      kill: (_pid, sig) => {
+        events.push(sig);
+        if (sig === deadAfterSignals && sig === "SIGKILL") dead = true;
+      },
+      isAlive: () => {
+        polls++;
+        if (deadAfterSignals === "SIGTERM" && polls > 3) dead = true; // exits a few polls after SIGTERM
+        return !dead;
+      },
+      commandOf: () => "/usr/local/bin/node /opt/ach/pane.js",
+      startOf: () => Date.now() - 5_000,
+      osascript: async (script) => {
+        if (script.includes("send key")) events.push(dead ? "enter-after-exit" : "enter-while-alive");
+        return "T-1";
+      },
+    });
+    const id = await d.open({ mode: "window", name: "n", cwd: "/c", argv });
+    writeFileSync(pidfileFor(id, dir) as string, "5150\n");
+    await d.close(id);
+    return { events, polls };
+  };
+
+  it("waits for a slow-exiting process, then sends Enter (no SIGKILL)", async () => {
+    const t = await run("slow", "SIGTERM");
+    assert.deepEqual(t.events, ["SIGTERM", "enter-after-exit"]);
+    assert.ok(t.polls > 3);
+  });
+  it("escalates to SIGKILL when SIGTERM is ignored, then sends Enter", async () => {
+    const t = await run("stubborn", "SIGKILL");
+    assert.deepEqual(t.events, ["SIGTERM", "SIGKILL", "enter-after-exit"]);
   });
 });

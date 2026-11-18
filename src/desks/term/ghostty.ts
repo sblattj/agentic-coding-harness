@@ -15,11 +15,15 @@ export interface GhosttyDriverOptions {
   osascript?: OsascriptRunner;
   /** Test seam for process kill (default process.kill). */
   kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Test seam: is the pid still running (default process.kill(pid, 0); ESRCH means gone). */
+  isAlive?: (pid: number) => boolean;
+  /** Longest wait for the process to exit after SIGTERM before SIGKILL, ms (default 3000). */
+  exitWaitMs?: number;
   /** Test seam: the command line of a pid (default `ps -o command= -p <pid>`), undefined when it is gone. */
   commandOf?: (pid: number) => string | undefined;
   /** Test seam: the start time of a pid in epoch ms (default `ps -o lstart= -p <pid>`), undefined when it is gone. */
   startOf?: (pid: number) => number | undefined;
-  /** Delay between killing the process and sending Enter, ms (default 200). */
+  /** Minimum delay between killing the process and sending Enter, ms (default 200); Enter also waits for the process to exit. */
   settleMs?: number;
   /** Directory for pidfiles (default <tmpdir>/ach-desks-ghostty). */
   dir?: string;
@@ -45,6 +49,18 @@ export function needlesFor(argv: string[]): string[] {
   if (argv[1] && argv[1].includes("/") && !argv[1].startsWith("-")) out.push(basename(argv[1]));
   return out.filter((n) => n !== "");
 }
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+const POLL_MS = 50;
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 function psCommand(pid: number): string | undefined {
   try {
@@ -172,6 +188,8 @@ export class GhosttyDriver implements TerminalDriver {
   private readonly commandOf: (pid: number) => string | undefined;
   private readonly startOf: (pid: number) => number | undefined;
   private readonly settleMs: number;
+  private readonly isAlive: (pid: number) => boolean;
+  private readonly exitWaitMs: number;
   private readonly dir: string;
   private readonly pidfiles = new Map<string, string>();
 
@@ -181,6 +199,8 @@ export class GhosttyDriver implements TerminalDriver {
     this.commandOf = opts.commandOf ?? psCommand;
     this.startOf = opts.startOf ?? psStart;
     this.settleMs = opts.settleMs ?? 200;
+    this.isAlive = opts.isAlive ?? pidAlive;
+    this.exitWaitMs = opts.exitWaitMs ?? 3_000;
     this.dir = opts.dir ?? defaultDir();
   }
 
@@ -222,7 +242,16 @@ export class GhosttyDriver implements TerminalDriver {
         } catch {
           /* ESRCH: already dead */
         }
-        if (this.settleMs > 0) await new Promise((r) => setTimeout(r, this.settleMs));
+        if (this.settleMs > 0) await sleep(this.settleMs);
+        // Enter goes to the program if it is still running: wait for it to exit, escalating to SIGKILL.
+        if (!(await this.waitGone(pid, this.exitWaitMs))) {
+          try {
+            this.kill(pid, "SIGKILL");
+          } catch {
+            /* ESRCH: already dead */
+          }
+          await this.waitGone(pid, 1_000);
+        }
       }
     }
     try {
@@ -233,6 +262,15 @@ export class GhosttyDriver implements TerminalDriver {
     this.pidfiles.delete(id);
     if (pidfile) rmSync(pidfile, { force: true });
     rmSync(sidecarFor(id, this.dir), { force: true });
+  }
+
+  private async waitGone(pid: number, maxMs: number): Promise<boolean> {
+    const deadline = Date.now() + maxMs;
+    while (this.isAlive(pid)) {
+      if (Date.now() >= deadline) return false;
+      await sleep(POLL_MS);
+    }
+    return true;
   }
 
   async alive(id: string): Promise<boolean> {

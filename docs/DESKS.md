@@ -122,7 +122,7 @@ lanes:
 | `agent` | string | `opencode` | Default agent CLI (an ach adapter id). |
 | `model` | string | engine default | Default model id, e.g. `provider/model` or `claude-sonnet-5-5`. |
 | `cwd` | string | dir `desk up` ran in | Default working directory. |
-| `rolesDir` | string | none | Extra roles directory searched before the built-in `roles/`. |
+| `rolesDir` | string | none | Extra roles directory searched before the built-in `roles/`. A leading `~` or `~/` means your home directory; other relative paths are relative to the layout file. |
 | `mcpServers` | map name to `{command, args?, env?}` | none | Definitions for MCP names, for engines that cannot read your own config by name (driver engine). The opencode engine resolves names from its own config. |
 | `desks` | DeskSpec[] | required | The desks. |
 | `lanes` | LanesSpec | `{defaultMcps: [], ports: [10, 99], approval: none}` | Lane defaults (optional). |

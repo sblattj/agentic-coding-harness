@@ -29,7 +29,7 @@ Quote speakers and times from the transcript. If you used a tool (transcript sea
 
 On `call_ended`, within seconds:
 
-1. Send ORCHESTRATOR the full action list: owner, time, speaker, one line each.
+1. Send ORCHESTRATOR only the action items not yet sent (owner, time, speaker, one line each), plus one line with the count already sent (`N items already sent`). Do not resend items already sent.
 2. Send DECISIONS every open ask and every decision not yet sent.
 3. Say `call ended` to both so queued `POST AFTER CALL` items can be released.
 4. Reply to the human with the final list.

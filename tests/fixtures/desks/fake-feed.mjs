@@ -1,6 +1,8 @@
 // Scripted JSONL feed for desks-feeds tests. argv[2] = JSON array of steps:
 //   {delay: ms}  wait | {line: obj} print JSON line | {raw: "text"} print verbatim line
-//   {stderr: "text"} | {exit: n} exit | {hold: true} stay alive forever (at end)
+//   {stderr: "text"} | {exit: n} exit | {hold: true} no-op marker
+//   After its steps the script ALWAYS stays alive until SIGTERM or an {exit} step; {hold: true}
+//   is accepted but changes nothing, kept for readability.
 // argv[3] (optional) = path; the pid is appended there on start.
 import { appendFileSync } from "node:fs";
 

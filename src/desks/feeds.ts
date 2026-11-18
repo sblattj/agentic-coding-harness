@@ -270,7 +270,8 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
       const finish = (code: number | null, signal: NodeJS.Signals | null) => {
         if (done) return;
         done = true;
-        if (batchTimer) { clearTimeout(batchTimer); batchTimer = undefined; }
+        if (!stopped) flush(); // events batched before the exit are delivered, not dropped
+        else if (batchTimer) { clearTimeout(batchTimer); batchTimer = undefined; }
         if (!stopped && !spawnFailed) note(`feed exited code=${code === null ? `signal ${signal}` : code}`);
         resolve();
         if (!stopped) scheduleRestart();

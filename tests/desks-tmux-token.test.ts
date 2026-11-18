@@ -1,7 +1,7 @@
 // A stale roster entry must never own a pane opened later under the same reused %N (threads-210, tmux.ts:196).
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -125,5 +125,17 @@ describe("TmuxDriver ownership token survives pane id reuse (real tmux)", { skip
         /* gone */
       }
     }
+  });
+});
+
+describe("TmuxDriver.open when the ownership claim throws", () => {
+  it("kills the freshly tagged pane and rethrows (fake server)", async () => {
+    const srv = fakeServer();
+    const blocker = join(tmp, "claim-blocker");
+    writeFileSync(blocker, "a file, not a directory\n");
+    const d = new TmuxDriver({ session: "S", run: srv.run, dir: join(blocker, "sub") });
+    await assert.rejects(() => d.open({ mode: "window", name: "w", cwd: tmp, argv: ["sh"] } as never));
+    assert.equal(srv.live.size, 0, `panes left behind: ${[...srv.live.keys()].join(",")}`);
+    assert.deepEqual(srv.killed, ["%0"]);
   });
 });

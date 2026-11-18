@@ -89,8 +89,23 @@ async function acquireLock(lock: string): Promise<void> {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     }
     try {
-      if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
-        rmSync(lock, { recursive: true, force: true });
+      const st = statSync(lock);
+      if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+        // Move the lock aside atomically, then confirm it is the stale one before deleting: a plain
+        // check-then-rmSync could delete a fresh lock another process created in between.
+        const aside = `${lock}.stale-${process.pid}-${Math.random().toString(36).slice(2)}`;
+        try {
+          renameSync(lock, aside);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw e;
+        }
+        let same = false;
+        try { same = statSync(aside).ino === st.ino; } catch { /* gone */ }
+        if (same) rmSync(aside, { recursive: true, force: true });
+        else {
+          try { renameSync(aside, lock); } catch { rmSync(aside, { recursive: true, force: true }); }
+        }
         continue;
       }
     } catch {
@@ -253,6 +268,7 @@ export function validName(name: string, kind: "desk" | "lane"): boolean {
  * spec is for another run (the host then answers 401, fail closed).
  */
 export function readHostToken(stateDir: string, stack: string, name: string, runId?: string): string | undefined {
+  if (!validName(name, "desk") && !validName(name, "lane")) return undefined; // never join an unvalidated name into a path
   try {
     const spec = JSON.parse(readFileSync(join(deskPaths(stateDir, stack).specs, `${name}.json`), "utf8")) as { token?: unknown; runId?: unknown };
     if (runId !== undefined && spec.runId !== runId) return undefined;

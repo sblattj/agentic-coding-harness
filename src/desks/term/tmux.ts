@@ -282,7 +282,15 @@ export class TmuxDriver implements TerminalDriver {
           await this.tmux(["kill-pane", "-t", id]).catch(() => undefined);
           throw e;
         }
-        if (this.claim(id, token)) {
+        let claimed: boolean;
+        try {
+          claimed = this.claim(id, token);
+        } catch (e) {
+          // The sidecar could not be written: the tagged pane would be unclosable and unowned. Do not leave it behind.
+          await this.tmux(["kill-pane", "-t", id]).catch(() => undefined);
+          throw e;
+        }
+        if (claimed) {
           this.tokens.set(id, token);
           if (req.mode === "window") await this.reapStray();
           return id;
