@@ -225,7 +225,7 @@ td.num.succ { color: var(--cyan); }
 
   // nav links keep the session token when one is in play
   (function () {
-    var qs = TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "";
+    var qp = []; var STK = new URLSearchParams(location.search).get("stack") || ""; if (TOKEN) qp.push("token=" + encodeURIComponent(TOKEN)); if (STK) qp.push("stack=" + encodeURIComponent(STK)); var qs = qp.length ? "?" + qp.join("&") : ""; // token and selected desks stack ride along
     var links = document.querySelectorAll(".pagenav a");
     for (var i = 0; i < links.length; i++) links[i].href += qs;
   })();

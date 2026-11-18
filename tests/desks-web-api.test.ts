@@ -653,6 +653,49 @@ describe('desks web api: routes', () => {
     assert.equal(c.events.length, cap, 'buffered newest events replayed after the history');
   });
 
+  it('desks.html nav links carry both the token and the selected stack', () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const src = /var QS = new URLSearchParams[\s\S]*?querySelectorAll\("#pagenav a"\)[\s\S]*?\}\)\(\);/.exec(html)?.[0];
+    assert.ok(src, 'QS, q() and the #pagenav rewrite found in the page script');
+    const nav = /<nav[^>]*id="pagenav"[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? '';
+    const hrefs = [...nav.matchAll(/<a[^>]*href="([^"]+)"/g)].map((m) => m[1]!);
+    assert.deepEqual(hrefs, ['/', '/grid', '/compare', '/desks'], 'every page link is covered');
+    const links = hrefs.map((h) => ({ href: h, getAttribute: (n: string) => (n === 'href' ? h : null) }));
+    const ctx = createContext({
+      URLSearchParams,
+      location: { search: '?token=T&stack=S' },
+      document: { querySelectorAll: (sel: string) => (sel === '#pagenav a' ? links : []), getElementById: () => null },
+    });
+    runInContext(src, ctx);
+    for (const l of links) {
+      const u = new URL(l.href, 'http://x');
+      assert.equal(u.searchParams.get('token'), 'T', `${l.href} keeps the token`);
+      assert.equal(u.searchParams.get('stack'), 'S', `${l.href} keeps the stack`);
+    }
+  });
+
+  it('the other pages keep the selected stack (and token) in their nav links', () => {
+    for (const page of ['index.html', 'compare.html', 'grid.html', 'trio.html']) {
+      const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', page), 'utf8');
+      const src = /\(function \(\) \{\s*var q[ps] = [\s\S]*?pagenav a"\);[\s\S]*?\}\)\(\);/.exec(html)?.[0];
+      assert.ok(src, `${page}: nav rewrite found`);
+      const links = [{ href: '/desks' }, { href: '/grid' }];
+      const ctx = createContext({
+        URLSearchParams,
+        encodeURIComponent,
+        TOKEN: 'T',
+        location: { search: '?token=T&stack=S' },
+        document: { querySelectorAll: () => links },
+      });
+      runInContext(src, ctx);
+      for (const l of links) {
+        const u = new URL(l.href, 'http://x');
+        assert.equal(u.searchParams.get('token'), 'T', `${page} ${l.href} keeps the token`);
+        assert.equal(u.searchParams.get('stack'), 'S', `${page} ${l.href} keeps the stack`);
+      }
+    }
+  });
+
   it('desks.html places each desk by its roster pane, falling back to port order', () => {
     const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
     const src = /var SLOTS = [\s\S]*?\n  function deskSlots[\s\S]*?\n  }\n/.exec(html)?.[0];

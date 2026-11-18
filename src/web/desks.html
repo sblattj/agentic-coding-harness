@@ -250,10 +250,10 @@ table.costs td.num, table.costs th.num { text-align: right; }
     if (!p.length) return path;
     return path + (path.indexOf("?") >= 0 ? "&" : "?") + p.join("&");
   }
+  // nav links carry the token AND the selected stack (q), not just the token (#212 review)
   (function () {
-    var qs = TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "";
     var links = document.querySelectorAll("#pagenav a");
-    for (var i = 0; i < links.length; i++) links[i].href += qs;
+    for (var i = 0; i < links.length; i++) links[i].href = q(links[i].getAttribute("href"));
   })();
   function api(method, path, body) {
     var init = { method: method, headers: {} };

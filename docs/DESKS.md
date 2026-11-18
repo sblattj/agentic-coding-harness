@@ -286,7 +286,7 @@ Switch a running desk with `ach desk engine <name> <agent>`. A missing engine fa
 
 `ach web` serves a Desks view at `/desks`: the desk layout, a lane strip (goal, status, plan progress, cost), a message timeline, decision cards you answer with one click, and cost per desk and lane tree. It uses the Web API below.
 
-`ach web` refuses cross-site requests on every route and WebSocket upgrade: on a loopback bind the `Host` must be `127.0.0.1`, `localhost` or `[::1]` with the bound port (421), a present `Origin` must match the `Host` (403), and a non-GET `/api/*` request with a body must be `application/json` (415). A POST with no body (kill, continue) passes.
+`ach web` refuses cross-site requests on every route and WebSocket upgrade: on a loopback bind the `Host` must be `127.0.0.1`, `localhost` or `[::1]` with the bound port, and on a non-loopback bind an IP literal, `localhost`, the `--host` name or this machine's hostname (421; add a reverse-proxy or LAN DNS name to the comma-separated env `AGENTIC_CODING_HARNESS_WEB_ALLOWED_HOSTS`), a present `Origin` must match the `Host` (403), and a non-GET `/api/*` request with a body must be `application/json` (415). A POST with no body (kill, continue) passes.
 
 ### Web API
 

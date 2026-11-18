@@ -209,8 +209,10 @@ token (`--token`, the env var, else one generated into `<stateDir>/web/token`; `
 every privileged route needs it as `?token=`, `Authorization: Bearer` or the `HttpOnly`,
 `SameSite=Strict` cookie a valid `?token=` sets: `/api/pty` (spawn, list, kill), `/ws/pty/*`
 (including typing into a live run), `POST /api/live/<runId>/continue` and `/api/desks`. A server
-embedded via `startWebServer` without a token answers those with `403`. Before any route, `web/request-guard.ts` refuses a foreign `Host` on a loopback bind
-(421), a cross-site `Origin` (403, WebSocket upgrades included) and a non-JSON body on `/api/*`
+embedded via `startWebServer` without a token answers those with `403`. Before any route, `web/request-guard.ts` refuses a foreign `Host`
+(421: on a loopback bind anything but the loopback names with the bound port; on a non-loopback bind any
+DNS name that is not localhost, the `--host` name or this machine's hostname; names in env
+`AGENTIC_CODING_HARNESS_WEB_ALLOWED_HOSTS` always pass), a cross-site `Origin` (403, WebSocket upgrades included) and a non-JSON body on `/api/*`
 writes (415).
 
 ## 2. Token taps
