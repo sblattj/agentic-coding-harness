@@ -546,10 +546,10 @@ function fmtDurMs(ms) {
 var QS = new URLSearchParams(location.search);
 var RUN_ID = QS.get("run") || "";
 var TOKEN = QS.get("token") || "";
-var BACK_HREF = "/grid" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+var BACK_HREF = "/grid" + (function () { var p = []; var st = QS.get("stack") || ""; if (TOKEN) p.push("token=" + encodeURIComponent(TOKEN)); if (st) p.push("stack=" + encodeURIComponent(st)); return p.length ? "?" + p.join("&") : ""; })();
 $("backBtn").href = BACK_HREF;
 (function () {
-  var qs = TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "";
+  var qp = []; var STK = new URLSearchParams(location.search).get("stack") || ""; if (TOKEN) qp.push("token=" + encodeURIComponent(TOKEN)); if (STK) qp.push("stack=" + encodeURIComponent(STK)); var qs = qp.length ? "?" + qp.join("&") : ""; // token and selected desks stack ride along
   var links = document.querySelectorAll(".pagenav a");
   for (var i = 0; i < links.length; i++) links[i].href += qs;
 })();

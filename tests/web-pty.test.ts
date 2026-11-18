@@ -122,15 +122,19 @@ interface Relay {
 
 const states: string[] = [];
 const children: ChildProcess[] = [];
-let open: ServerHandle | null = null; // no token
+// /api/pty fails closed without a token (#212 review; tests/desks-tokenless-fail-closed.test.ts
+// covers the tokenless server), so the relay-mechanics server carries one too: urlOf/wsOf/post
+// add it for `open`, and `authed` exercises the token gate itself.
+const OPEN_TOKEN = 'opentok';
+let open: ServerHandle | null = null; // token: opentok, sent implicitly by the helpers
 let authed: ServerHandle | null = null; // token: sekret
 
 function urlOf(srv: ServerHandle, pathname: string): string {
-  return `http://127.0.0.1:${srv.port}${pathname}`;
+  return `http://127.0.0.1:${srv.port}${pathname}${srv === open ? `?token=${OPEN_TOKEN}` : ''}`;
 }
 
 function wsOf(srv: ServerHandle, pathname: string): string {
-  return `ws://127.0.0.1:${srv.port}${pathname}`;
+  return `ws://127.0.0.1:${srv.port}${pathname}${srv === open ? `?token=${OPEN_TOKEN}` : ''}`;
 }
 
 async function spawnServer(stateDir: string, token: string): Promise<ServerHandle> {
@@ -182,7 +186,8 @@ async function killChild(c: ChildProcess): Promise<void> {
 async function post(srv: ServerHandle, pathname: string, body: string): Promise<Response> {
   return fetch(urlOf(srv, pathname), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // both servers gate /api/pty behind their token like /ws/pty
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${srv === authed ? 'sekret' : OPEN_TOKEN}` },
     body,
   });
 }
@@ -244,7 +249,7 @@ describe('PTY HTTP routes + WS relay (bun subprocess)', { skip: isBun ? false : 
     const s1 = mkdtempSync(join(tmpdir(), 'harness-web-pty-open-'));
     const s2 = mkdtempSync(join(tmpdir(), 'harness-web-pty-auth-'));
     states.push(s1, s2);
-    open = await spawnServer(s1, '');
+    open = await spawnServer(s1, OPEN_TOKEN);
     authed = await spawnServer(s2, 'sekret');
   });
 
@@ -385,6 +390,8 @@ describe('PTY HTTP routes + WS relay (bun subprocess)', { skip: isBun ? false : 
 
     const kill = await post(authed!, `/api/pty/${info.id}/kill`, '');
     assert.equal(kill.status, 200);
+    const noTokSpawn = await fetch(urlOf(authed!, '/api/pty'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command: 'bash' }) });
+    assert.equal(noTokSpawn.status, 401, 'POST /api/pty without the token must 401 on a token-gated server');
   });
 
   it('spawn with a nonexistent command → 400 (not a crash); server keeps serving', async () => {
