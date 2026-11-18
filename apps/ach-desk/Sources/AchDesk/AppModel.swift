@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
     let hud: HUDController
     let notifier: Notifier
     private var hotKey: HotKey?
+    private let bootCoordinator = BootCoordinator()
 
     init() {
         let s = AppSettings.load()
@@ -63,8 +64,11 @@ final class AppModel: ObservableObject {
         booting = true
         let s = settings
         store.reconfigure(s.serverConfig)
-        Task {
-            let outcome = await BackendBoot.ensure(settings: s, launcher: launcher, process: backend, bundledAchPath: bundledAchPath)
+        let launcher = launcher, backend = backend, achPath = bundledAchPath
+        // A boot that completes after a newer connect() or shutdown is dropped by the coordinator.
+        bootCoordinator.run({
+            await BackendBoot.ensure(settings: s, launcher: launcher, process: backend, bundledAchPath: achPath)
+        }, apply: { [self] outcome in
             bootOutcome = outcome
             // A child started without a Settings token generated <stateDir>/web/token just now.
             store.reconfigure(s.serverConfig)
@@ -77,7 +81,7 @@ final class AppModel: ObservableObject {
             case .failed:
                 break
             }
-        }
+        })
     }
 
     func applySettings(_ new: AppSettings) {
@@ -91,6 +95,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown(_ done: @escaping () -> Void) {
+        bootCoordinator.invalidate()
         store.stop()
         hud.close()
         let startedByUs = backend.isRunning
