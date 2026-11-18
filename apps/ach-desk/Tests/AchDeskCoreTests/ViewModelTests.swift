@@ -223,4 +223,39 @@ import Testing
         #expect(!store.polling)
         #expect(!store.isConnected)
     }
+
+    // MARK: reconfigure
+
+    @MainActor @Test func reconfigureToAnotherServerClearsOldServerStateButSameServerKeepsIt() {
+        let a = ServerConfig(port: 1, token: "ta")
+        let roster = try! JSONDecoder().decode(RosterView.self, from: Fixtures.data(Fixtures.rosterView))
+        let store = DeskStore(client: APIClient(config: a), clock: { Fixtures.noon })
+        store.apply(.roster(roster))
+        store.apply(.decision(Decision(id: "D9", question: "q", options: [], askedBy: "X", openedAt: 1, state: "open")))
+        #expect(store.roster != nil)
+        #expect(!store.decisions.isEmpty)
+        store.reconfigure(ServerConfig(port: 1, token: "ta")) // same server
+        #expect(store.roster != nil)
+        #expect(!store.decisions.isEmpty)
+        store.reconfigure(ServerConfig(port: 2, token: "ta")) // other port
+        #expect(store.roster == nil)
+        #expect(store.decisions.isEmpty)
+        #expect(store.desks.isEmpty)
+        store.apply(.roster(roster))
+        store.reconfigure(ServerConfig(port: 2, token: "tb")) // token change only
+        #expect(store.roster == nil)
+    }
+
+    // MARK: SSE retry honored
+
+    @Test func reconnectDelayHonorsServerRetryOverBackoff() {
+        let c = SSEStreamClient(request: { URLRequest(url: URL(string: "http://127.0.0.1:1")!) }, backoff: Backoff(base: 4, cap: 30))
+        #expect(c.nextReconnectDelayForTesting() == 4) // no retry yet: backoff fallback
+        c.ingestForTesting("retry: 2500\ndata: x\n\n")
+        #expect(c.nextReconnectDelayForTesting() == 2.5)
+        c.ingestForTesting("retry: +9\nretry: abc\n\n") // non-digit values ignored
+        #expect(c.nextReconnectDelayForTesting() == 2.5)
+        c.ingestForTesting("retry: 1000\n\n")
+        #expect(c.nextReconnectDelayForTesting() == 1)
+    }
 }

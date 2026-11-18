@@ -201,24 +201,31 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 const BODY_MAX = 1024 * 1024;
+/** An over-cap body is drained (and discarded) up to this size so the 413 arrives before the socket closes. */
+const BODY_DRAIN_MAX = 16 * BODY_MAX;
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     let over = false;
+    const tooBig = () => reject(new HttpError(413, `body over ${BODY_MAX} bytes`));
     req.on("data", (c: Buffer) => {
-      if (over) return; // keep draining (and discarding) so the 413 reaches a client that is still writing
       size += c.length;
+      if (over) {
+        // Answer only once the client stops writing: closing on unread data makes the kernel send a reset,
+        // which can reach the client before the 413. A body past BODY_DRAIN_MAX is cut off at once.
+        if (size > BODY_DRAIN_MAX) tooBig();
+        return;
+      }
       if (size > BODY_MAX) {
         over = true;
         chunks.length = 0;
-        reject(new HttpError(413, `body over ${BODY_MAX} bytes`));
         return;
       }
       chunks.push(c);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => (over ? tooBig() : resolve(Buffer.concat(chunks).toString("utf8"))));
     req.on("error", reject);
   });
 }

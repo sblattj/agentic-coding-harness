@@ -38,7 +38,9 @@ export function checkHostOrigin(req: IncomingMessage, bind: { host: string; port
   if (isLoopbackBind(bind.host)) {
     const { name, port } = splitHost(hostHeader);
     const portOk = port === String(bind.port) || (port === "" && bind.port === 80);
-    if (!LOOPBACK_NAMES.includes(name) || !portOk) {
+    // A loopback bind to 127.0.0.2 is reached as Host 127.0.0.2: accept the bind address itself too.
+    const allowed = LOOPBACK_NAMES.includes(name) || name === bind.host.toLowerCase();
+    if (!allowed || !portOk) {
       return { status: 421, message: `misdirected request: Host ${JSON.stringify(hostHeader)} is not this server` };
     }
   }

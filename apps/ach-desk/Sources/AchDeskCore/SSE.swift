@@ -71,7 +71,8 @@ public struct SSEParser: Sendable {
         case "data": dataLines.append(value)
         case "event": eventName = value
         case "id": if !value.contains("\0") { pendingID = value; lastEventID = value }
-        case "retry": if let n = Int(value), n >= 0 { retryMs = n }
+        case "retry": // spec: ASCII digits only ("+5", "-5", "1e3" are ignored)
+            if !value.isEmpty, value.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }), let n = Int(value) { retryMs = n }
         default: break
         }
     }
@@ -184,13 +185,23 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
         callbackQueue.async { cb?(s) }
     }
 
+    /// Reconnect delay: the server's last `retry:` wins; exponential backoff is the fallback.
+    /// Call with `lock` held. The backoff still counts the failure (drives polling).
+    private func nextReconnectDelayLocked() -> TimeInterval {
+        let backoffDelay = backoff.nextDelay()
+        guard let r = parser.retryMs else { return backoffDelay }
+        return Double(r) / 1000
+    }
+
+    /// Internal seams for tests.
+    func ingestForTesting(_ chunk: String) { lock.withLock { _ = parser.feed(chunk) } }
+    func nextReconnectDelayForTesting() -> TimeInterval { lock.withLock { nextReconnectDelayLocked() } }
+
     private func scheduleReconnect() {
         let (delay, fails): (TimeInterval?, Int) = lock.withLock {
             guard !stopped else { return (nil, 0) }
             task = nil
-            var d = backoff.nextDelay()
-            if let r = parser.retryMs { d = max(d, Double(r) / 1000) }
-            return (d, backoff.failures)
+            return (nextReconnectDelayLocked(), backoff.failures)
         }
         guard let delay else { return }
         emit(.disconnected(retryIn: delay, failures: fails))

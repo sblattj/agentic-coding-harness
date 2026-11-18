@@ -455,7 +455,8 @@ describe('desks web api: routes', () => {
       });
       req.on('error', (e) => fin({ body: '', err: String(e) }));
       const chunk = Buffer.alloc(256 * 1024, 97);
-      for (let i = 0; i < 6; i++) req.write(chunk); // 1.5 MiB, cap is 1 MiB
+      // 8 MiB against a 1 MiB cap: the server must drain it and answer, not close on unread data (a reset).
+      for (let i = 0; i < 32; i++) req.write(chunk);
       req.end();
     });
     assert.equal(r.status, 413, `expected a 413 response, got ${r.status ?? r.err}`);

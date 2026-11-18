@@ -54,12 +54,18 @@ public final class DeskStore: ObservableObject {
     // MARK: lifecycle
 
     public func reconfigure(_ config: ServerConfig) {
+        // Same server (host, port, token): keep everything.
+        guard config != client.config else { return }
         stop()
         client = APIClient(config: config)
         roster = nil
         messages = []
         decisions = []
         eventsByDesk = [:]
+        costs = []
+        engines = []
+        mcpNames = []
+        lastError = nil
         hadRoster = false
         seenDecisionIDs = []
     }
