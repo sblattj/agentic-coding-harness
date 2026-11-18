@@ -304,7 +304,7 @@ table.costs td.num, table.costs th.num { text-align: right; }
   function chatOf(row) {
     var c = chats[row.name];
     if (!c || c.runId !== row.runId) {
-      c = chats[row.name] = { runId: row.runId, lastSeq: 0, events: [], nodes: [], loading: false, loaded: false, pending: [] };
+      c = chats[row.name] = { runId: row.runId, lastSeq: 0, floor: 0, seen: new Set(), events: [], nodes: [], loading: false, loaded: false, pending: [], pendingTruncated: false };
     }
     return c;
   }
@@ -317,6 +317,7 @@ table.costs td.num, table.costs th.num { text-align: right; }
     var drain = function () {
       var held = c.pending;
       c.pending = [];
+      c.pendingTruncated = false; // the full since=0 history above covers whatever the capped buffer dropped
       for (var j = 0; j < held.length; j++) addEvent(held[j], false);
     };
     api("GET", "/" + encodeURIComponent(row.name) + "/events?since=0").then(function (r) {
@@ -366,13 +367,30 @@ table.costs td.num, table.costs th.num { text-align: right; }
   var refetchCosts = debounce(function () { fetchCosts(); }, 2500);
   function addEvent(ev, quiet) {
     var row = rowByName(ev.name);
-    var c = row ? chatOf(row) : (chats[ev.name] || (chats[ev.name] = { runId: ev.runId, lastSeq: 0, events: [], nodes: [], loaded: true }));
+    var c = row ? chatOf(row) : (chats[ev.name] || (chats[ev.name] = { runId: ev.runId, lastSeq: 0, floor: 0, seen: new Set(), events: [], nodes: [], loaded: true }));
     if (c.runId !== ev.runId) return;
-    if (!c.loaded) { c.pending.push(ev); return; }
-    if (ev.seq <= c.lastSeq) return;
-    c.lastSeq = ev.seq;
-    c.events.push(ev);
-    if (c.events.length > MAX_EVENTS) c.events.splice(0, c.events.length - MAX_EVENTS);
+    if (!c.loaded) {
+      // An unopened chat only buffers the newest MAX_EVENTS; opening it loads the full history (since=0).
+      c.pending.push(ev);
+      if (c.pending.length > MAX_EVENTS) { c.pending.splice(0, c.pending.length - MAX_EVENTS); c.pendingTruncated = true; }
+      return;
+    }
+    // Dedupe by seq, not a high-water mark: a catch-up response can bring seqs below one the
+    // stream already delivered. `floor` is the highest seq trimmed from the rendered window.
+    if (ev.seq <= c.floor || c.seen.has(ev.seq)) return;
+    c.seen.add(ev.seq);
+    if (ev.seq > c.lastSeq) c.lastSeq = ev.seq; // max seq, used for the ?since= query
+    var inOrder = !c.events.length || ev.seq > c.events[c.events.length - 1].seq;
+    if (inOrder) c.events.push(ev);
+    else {
+      var at = c.events.length;
+      while (at > 0 && c.events[at - 1].seq > ev.seq) at--;
+      c.events.splice(at, 0, ev);
+    }
+    if (c.events.length > MAX_EVENTS) {
+      var cut = c.events.splice(0, c.events.length - MAX_EVENTS);
+      for (var k = 0; k < cut.length; k++) { c.seen.delete(cut[k].seq); if (cut[k].seq > c.floor) c.floor = cut[k].seq; }
+    }
     if (ev.type === "text" && row && row.feedPid && typeof (ev.data || {}).text === "string") {
       feeds[ev.name] = { text: ev.data.text, at: ev.at, active: feeds[ev.name] ? feeds[ev.name].active : undefined };
       if (!quiet) renderFeeds();
@@ -384,9 +402,11 @@ table.costs td.num, table.costs th.num { text-align: right; }
       if (!quiet) renderFeeds();
     }
     if (quiet) return;
+    if (!inOrder) renderAllChatNodes(ev.name); // late event: re-render so it sits in seq order
     if (ev.type === "status" && row && ev.data && ev.data.state) { row.state = ev.data.state; renderDesks(); renderLanes(); }
     if (ev.type === "goal" && row && ev.data && ev.data.goal) { row.goalStatus = ev.data.goal; renderLanes(); }
     if (ev.type === "usage" || ev.type === "turn_end" || ev.type === "status") { refetchRoster(); refetchCosts(); }
+    if (!inOrder) return;
     var n = eventNode(ev.name, ev);
     if (!n) return;
     c.nodes = c.nodes.filter(function (b) { return document.body.contains(b); });
@@ -940,7 +960,7 @@ table.costs td.num, table.costs th.num { text-align: right; }
   function resyncChats() {
     resyncTargets(chats).forEach(function (t) {
       api("GET", "/" + encodeURIComponent(t.name) + "/events?since=" + t.since).then(function (r) {
-        (r.events || []).forEach(function (ev) { addEvent(ev, false); }); // addEvent drops seq <= lastSeq
+        (r.events || []).forEach(function (ev) { addEvent(ev, false); }); // addEvent dedupes by seq and inserts late ones in order
       }).catch(showErr);
     });
   }

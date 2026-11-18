@@ -596,6 +596,63 @@ describe('desks web api: routes', () => {
     assert.equal(calls, 2, 'a loaded chat is not refetched');
   });
 
+  it('desks.html keeps earlier events from a catch-up response that lands after a newer stream event', async () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const chatSrc = /function chatOf[\s\S]*?\n  function eventNode/.exec(html)?.[0]?.replace(/function eventNode$/, '');
+    const addSrc = /function addEvent[\s\S]*?\n  }\n/.exec(html)?.[0];
+    assert.ok(chatSrc && addSrc, 'chatOf, loadHistory and addEvent found in the page script');
+    const row = { name: 'A', runId: 'r1' };
+    const ctx = createContext({
+      chats: {}, MAX_EVENTS: 300, es: null, feeds: {}, view: null, rerenders: 0,
+      api: () => Promise.resolve({ events: [{ name: 'A', runId: 'r1', seq: 9, type: 'x' }] }),
+      renderAllChatNodes: () => { (ctx as any).rerenders++; }, renderFeeds: () => {}, resyncChats: () => {}, showErr: () => {},
+      rowByName: () => row, eventNode: () => null, document: { body: { contains: () => true } },
+    });
+    runInContext(`${chatSrc}; ${addSrc}; this.addEvent = addEvent; this.loadHistory = loadHistory;`, ctx);
+    (ctx as any).loadHistory(row);
+    await new Promise((r) => setTimeout(r, 10));
+    const c = (ctx as any).chats.A;
+    assert.equal(c.loaded, true);
+    const ev = (seq: number) => ({ name: 'A', runId: 'r1', seq, type: 'x' });
+    const since = c.lastSeq; // a resync request goes out with since=9 ...
+    assert.equal(since, 9);
+    (ctx as any).addEvent(ev(12), false); // ... seq 12 arrives on the stream first ...
+    assert.equal(c.lastSeq, 12, 'lastSeq stays the max for the since query');
+    for (const e of [ev(10), ev(11), ev(12)]) (ctx as any).addEvent(e, false); // ... then the response (10, 11, plus a duplicate 12)
+    assert.deepEqual([...c.events].map((e: any) => e.seq), [9, 10, 11, 12], 'in seq order, no duplicates, none dropped');
+    assert.equal(c.lastSeq, 12);
+    assert.ok((ctx as any).rerenders >= 1, 'late events re-render the chat nodes so they sit in order');
+  });
+
+  it('desks.html caps an unopened chat pending buffer and opening it does a full history load', async () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const chatSrc = /function chatOf[\s\S]*?\n  function eventNode/.exec(html)?.[0]?.replace(/function eventNode$/, '');
+    const addSrc = /function addEvent[\s\S]*?\n  }\n/.exec(html)?.[0];
+    assert.ok(chatSrc && addSrc);
+    const row = { name: 'A', runId: 'r1' };
+    const urls: string[] = [];
+    const ctx = createContext({
+      chats: {}, MAX_EVENTS: 300, es: null, feeds: {}, view: null,
+      api: (_m: string, url: string) => { urls.push(url); return Promise.resolve({ events: [] }); },
+      renderAllChatNodes: () => {}, renderFeeds: () => {}, resyncChats: () => {}, showErr: () => {},
+      rowByName: () => row, eventNode: () => null, document: { body: { contains: () => true } },
+    });
+    runInContext(`${chatSrc}; ${addSrc}; this.addEvent = addEvent; this.loadHistory = loadHistory; this.chatOf = chatOf;`, ctx);
+    const cap = 300;
+    for (let i = 1; i <= 2 * cap; i++) (ctx as any).addEvent({ name: 'A', runId: 'r1', seq: i, type: 'x' }, false);
+    const c = (ctx as any).chats.A;
+    assert.equal(c.loaded, false);
+    assert.equal(c.pending.length, cap, 'pending is capped');
+    assert.equal(c.pending[0].seq, cap + 1, 'the newest events are kept');
+    assert.equal(c.pendingTruncated, true, 'truncation is marked');
+    (ctx as any).loadHistory(row);
+    assert.deepEqual(urls, ['/A/events?since=0'], 'opening does a full history load, not just the buffer');
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(c.loaded, true);
+    assert.equal(c.pendingTruncated, false);
+    assert.equal(c.events.length, cap, 'buffered newest events replayed after the history');
+  });
+
   it('desks.html places each desk by its roster pane, falling back to port order', () => {
     const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
     const src = /var SLOTS = [\s\S]*?\n  function deskSlots[\s\S]*?\n  }\n/.exec(html)?.[0];
