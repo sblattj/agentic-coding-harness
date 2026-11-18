@@ -139,12 +139,15 @@ function stackLayout(stateDir: string, stack: string): Layout | null {
 export async function listDeskMcps(stateDir: string, stack: string, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
   const names = new Set<string>();
   const layout = stackLayout(stateDir, stack);
-  const agents = new Set<string>(["opencode"]);
+  // Only the agents the layout/roster actually use. "opencode" is the implicit default engine
+  // (src/desks/service.ts: `agent ?? d.agent ?? layout.agent ?? "opencode"`), so it counts only
+  // where nothing names an agent: a desk or lane with no agent of its own and no layout.agent.
+  const agents = new Set<string>();
   if (layout !== null) {
     for (const n of layout.lanes?.defaultMcps ?? []) names.add(n);
     for (const d of layout.desks ?? []) {
       for (const n of d.mcps ?? []) names.add(n);
-      if (d.agent) agents.add(d.agent);
+      agents.add(d.agent ?? layout.agent ?? "opencode");
     }
     for (const n of Object.keys(layout.mcpServers ?? {})) names.add(n);
     if (layout.agent) agents.add(layout.agent);
@@ -154,6 +157,7 @@ export async function listDeskMcps(stateDir: string, stack: string, env: NodeJS.
     for (const n of r.mcps ?? []) names.add(n);
     agents.add(r.agent);
   }
+  if (agents.size === 0) agents.add("opencode"); // nothing named an agent: the default engine
   const cwd = layout?.cwd ?? homedir();
   for (const a of agents) {
     if (!(AGENTS as readonly string[]).includes(a)) continue;

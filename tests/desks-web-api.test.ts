@@ -946,6 +946,28 @@ describe('desks web api: engines and mcps (real probes, hermetic env)', () => {
   });
 });
 
+describe('desks web api: mcps only scan the agents in use', () => {
+  function seed(layout: object): { dir: string; env: NodeJS.ProcessEnv } {
+    const dir = tmp('mcps-agents');
+    const p = deskPaths(dir, 's');
+    mkdirSync(p.root, { recursive: true });
+    writeFileSync(p.layout, JSON.stringify(layout));
+    mkdirSync(join(dir, 'home', '.config', 'opencode'), { recursive: true });
+    writeFileSync(join(dir, 'home', '.config', 'opencode', 'opencode.json'), JSON.stringify({ mcp: { sentry: { type: 'remote', url: 'https://x' } } }));
+    return { dir, env: { HOME: join(dir, 'home'), PATH: '' } };
+  }
+
+  it('does not list opencode user MCPs when the layout and roster use only another agent', async () => {
+    const { dir, env } = seed({ portBase: 4800, agent: 'claude', desks: [{ name: 'A', role: 'a', mcps: ['tracker'] }], lanes: { ports: [10, 99] } });
+    assert.deepEqual(await listDeskMcps(dir, 's', env), ['tracker']);
+  });
+
+  it('still scans opencode when a desk names no agent and the layout names none (the implicit default)', async () => {
+    const { dir, env } = seed({ portBase: 4800, desks: [{ name: 'A', role: 'a' }], lanes: { ports: [10, 99] } });
+    assert.deepEqual(await listDeskMcps(dir, 's', env), ['sentry']);
+  });
+});
+
 describe('desks page via ach web', () => {
   let srv: WebServerHandle;
   let base: string;
