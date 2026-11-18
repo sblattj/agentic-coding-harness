@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "goals": [],
+  "results": [
+    {
+      "condition": "write the word DONE into /tmp/desks-probe/dir/out.txt",
+      "state": "achieved",
+      "reason": "",
+      "evidence": "`cat /tmp/desks-probe/dir/out.txt` printed `DONE` after writing it with printf.",
+      "blockedReason": "",
+      "turnCount": 0,
+      "peakContextTokens": 27983,
+      "usage": {
+        "input": 55580,
+        "output": 18,
+        "reasoning": 279,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cost": 0,
+        "costKnown": true
+      },
+      "startedAt": 1794946768197,
+      "finishedAt": 1794946791045,
+      "lastStatus": "Goal completed.",
+      "lastCheckpoint": {
+        "summary": "[goal:evidence] `cat /tmp/desks-probe/dir/out.txt` printed `DONE` after writing it with printf. [goal:complete]",
+        "timestamp": 1794946791044
+      },
+      "checkpoints": [
+        {
+          "summary": "[goal:evidence] `cat /tmp/desks-probe/dir/out.txt` printed `DONE` after writing it with printf. [goal:complete]",
+          "timestamp": 1794946791044
+        }
+      ],
+      "history": [
+        {
+          "type": "set",
+          "detail": "Goal created with limits: unlimited auto-continues, 2m, 100,000,000 tokens.",
+          "timestamp": 1794946768200
+        },
+        {
+          "type": "completed",
+          "detail": "Assistant marked the goal complete with evidence: `cat /tmp/desks-probe/dir/out.txt` printed `DONE` after writing it with printf.",
+          "timestamp": 1794946791044
+        }
+      ],
+      "sessionID": "ses_e14d6642dffefhU48dHiuz74pI"
+    }
+  ],
+  "archives": [
+    {
+      "sessionID": "ses_e14d6642dffefhU48dHiuz74pI",
+      "results": [
+        {
+          "condition": "write the word DONE into /tmp/desks-probe/dir/out.txt",
+          "state": "achieved",
+          "reason": "",
+          "evidence": "`cat /tmp/desks-probe/dir/out.txt` printed `DONE` after writing it with printf.",
+          "blockedReason": "",
+          "turnCount": 0,
+          "peakContextTokens": 27983,
+          "usage": {
+            "input": 55580,
+            "output": 18,
+            "reasoning": 279,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "cost": 0,
+            "costKnown": true
+          },
+          "startedAt": 1794946768197,
+          "finishedAt": 1794946791045,
+          "lastStatus": "Goal completed.",
+          "lastCheckpoint": {
+            "summary": "[goal:evidence] `cat /tmp/desks-probe/dir/out.txt` printed `DONE` after writing it with printf. [goal:complete]",
+            "timestamp": 1794946791044
+          },
+          "checkpoints": [
+            {
+              "summary": "[goal:evidence] `cat /tmp/desks-probe/dir/out.txt` printed `DONE` after writing it with printf. [goal:complete]",
+              "timestamp": 1794946791044
+            }
+          ],
+          "history": [
+            {
+              "type": "set",
+              "detail": "Goal created with limits: unlimited auto-continues, 2m, 100,000,000 tokens.",
+              "timestamp": 1794946768200
+            },
+            {
+              "type": "completed",
+              "detail": "Assistant marked the goal complete with evidence: `cat /tmp/desks-probe/dir/out.txt` printed `DONE` after writing it with printf.",
+              "timestamp": 1794946791044
+            }
+          ],
+          "sessionID": "ses_e14d6642dffefhU48dHiuz74pI"
+        }
+      ]
+    }
+  ],
+  "orderedSessions": []
+}
