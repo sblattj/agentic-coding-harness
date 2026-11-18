@@ -100,6 +100,12 @@ export interface StatRecord extends CanonicalTokenRecord {
    * (issue #28: `ach stats --cost-mode`).
    */
   reportedCostUsd?: number;
+  /**
+   * The registry run id a driver NDJSON event line was written for
+   * (`ach_chain.run`). Driver `usage` lines often carry no sessionId, so
+   * `ach stats` keys the run-indexed dimensions (desk, cwd, branch, pr) on this.
+   */
+  runId?: string;
 }
 
 function finiteCost(v: unknown): number | undefined {
@@ -192,10 +198,13 @@ function eventLineToStatRecord(line: Record<string, unknown>, relPath: string): 
     line.type === "usage"
       ? finiteCost((line.usage as { costUsd?: unknown } | undefined)?.costUsd)
       : finiteCost(rec.costUsd);
+  const chain = line.ach_chain as { run?: unknown } | undefined;
+  const runId = typeof chain?.run === "string" && chain.run ? chain.run : undefined;
   return {
     ...rec,
     agent: rec.agent ?? agentFromPath(relPath) ?? "unknown",
     ts: isoTs(rec.timestamp),
+    ...(runId !== undefined ? { runId } : {}),
     ...(reported !== undefined ? { reportedCostUsd: reported } : {}),
   };
 }

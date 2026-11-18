@@ -89,7 +89,7 @@ describe("scripts/build-binaries.sh", () => {
 
     const version = spawnSync(outPath, ["--version"], { encoding: "utf8" });
     assert.equal(version.status, 0, `--version exited ${version.status}: ${version.stderr}`);
-    assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+$/, `expected a semver on stdout, got: ${JSON.stringify(version.stdout)}`);
+    assert.match(version.stdout.trim(), /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/, `expected a semver on stdout, got: ${JSON.stringify(version.stdout)}`);
 
     const help = spawnSync(outPath, ["help"], { encoding: "utf8" });
     assert.equal(help.status, 0, `help exited ${help.status}: ${help.stderr}`);

@@ -171,29 +171,34 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     assert.equal(liveFiles(sb.state).length, 0);
   });
 
+  const LIVE_TOKEN = 'live-tok';
+  const TQ = `?token=${LIVE_TOKEN}`;
   it('ach web attaches the run PTY by runId (scrollback, typing reaches the same session) and serves the TUI cast', async () => {
     const sb = sandbox();
     const run = startRun(sb, ['--model', 'claude-sonnet-4-5', 'hello web']);
     const live = await waitFor('live file', () => liveFiles(sb.state)[0], 20_000, run.stderr);
-    const web = spawn('bun', [WEB_RUNNER, sb.state, ''], { env: sb.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const web = spawn('bun', [WEB_RUNNER, sb.state, LIVE_TOKEN], { env: sb.env, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(web);
     let webOut = '';
     web.stdout!.setEncoding('utf8').on('data', (c: string) => (webOut += c));
     const port = Number(await waitFor('web READY', () => /READY (\d+)/.exec(webOut)?.[1]));
     const base = `http://127.0.0.1:${port}`;
+    // #212 review: live-run PTY input and continue are privileged, like /api/pty.
+    assert.equal((await fetch(`${base}/api/live/${live.runId}/continue`, { method: 'POST' })).status, 401, 'continue needs the token');
+    assert.equal((await fetch(`${base}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}`)).status, 401, 'typing into the run needs the token');
 
-    const list = (await (await fetch(`${base}/api/live`)).json()) as { live: LiveFile[] };
+    const list = (await (await fetch(`${base}/api/live${TQ}`)).json()) as { live: LiveFile[] };
     assert.deepEqual(list.live.map((l) => l.runId), [live.runId]);
-    const one = (await (await fetch(`${base}/api/live/${live.runId}`)).json()) as { ptyId: string; sessionId: string };
+    const one = (await (await fetch(`${base}/api/live/${live.runId}${TQ}`)).json()) as { ptyId: string; sessionId: string };
     assert.equal(one.ptyId, `run:${live.runId}`);
     assert.equal(one.sessionId, live.sessionId);
-    assert.equal((await fetch(`${base}/api/live/nope`)).status, 404);
+    assert.equal((await fetch(`${base}/api/live/nope${TQ}`)).status, 404);
     // An entry for another run id that points at this run's socket (stale or
     // forged) can neither be read nor release a step.
     writeFileSync(join(sb.state, 'live', 'other000-0000.json'), JSON.stringify({ ...live, runId: 'other000-0000', pid: process.pid }));
-    assert.equal((await fetch(`${base}/api/live/other000-0000`)).status, 404);
-    assert.equal((await fetch(`${base}/api/live/other000-0000/continue`, { method: 'POST' })).status, 404, 'continue checks the socket owner too');
-    const forged = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent('run:other000-0000')}`);
+    assert.equal((await fetch(`${base}/api/live/other000-0000${TQ}`)).status, 404);
+    assert.equal((await fetch(`${base}/api/live/other000-0000/continue${TQ}`, { method: 'POST' })).status, 404, 'continue checks the socket owner too');
+    const forged = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent('run:other000-0000')}${TQ}`);
     const forgedFrames: string[] = [];
     forged.on('message', (m) => forgedFrames.push(m.toString()));
     await new Promise((r) => forged.once('close', r));
@@ -201,7 +206,7 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     assert.ok(forgedFrames.some((f) => f.includes('"exit"')), 'it is told the PTY is gone');
     rmSync(join(sb.state, 'live', 'other000-0000.json'));
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}${TQ}`);
     const frames: string[] = [];
     ws.on('message', (m) => frames.push(m.toString()));
     await new Promise((r, j) => {
@@ -216,7 +221,7 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     ws.close();
     // Keys sent the moment the socket opens, before the server's relay
     // connection is up, are held and delivered, not dropped.
-    const early = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}`);
+    const early = new WebSocket(`ws://127.0.0.1:${port}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}${TQ}`);
     const earlyFrames: string[] = [];
     early.on('message', (m) => earlyFrames.push(m.toString()));
     await new Promise((r, j) => {
@@ -243,7 +248,7 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     assert.deepEqual(sumTokens(result.tokens), { input: 30, output: 15, cacheRead: 300, cacheWrite: 150 }, 'the browser turns are metered on the run');
     const cast = await (await fetch(`${base}/api/runs/${live.runId}/cast`)).text();
     assert.ok(cast.includes('FAKE CLAUDE TUI'));
-    assert.equal((await fetch(`${base}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}`)).status, 404, 'no live PTY after the run ends');
+    assert.equal((await fetch(`${base}/ws/pty/${encodeURIComponent(`run:${live.runId}`)}${TQ}`)).status, 404, 'no live PTY after the run ends');
     web.kill('SIGTERM');
   });
 

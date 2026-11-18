@@ -642,6 +642,9 @@ export function createDriver(options: DriverOptions): Driver {
             totals,
             rawTranscript: transcriptPath,
             ...(ancestorInstructions.length > 0 ? { ancestorInstructions } : {}),
+            // #204 lineage: desk engine per-turn runs (and lanes) name their parent run + desk.
+            ...(typeof parsed.parentRunId === 'string' && parsed.parentRunId !== '' ? { parentRunId: parsed.parentRunId } : {}),
+            ...(parsed.desk !== undefined ? { desk: { stack: parsed.desk.stack, name: parsed.desk.name, kind: parsed.desk.kind } } : {}),
           };
           applyRunRecordExtras();
           writeRunRecordThrottled(true);
@@ -819,7 +822,15 @@ export function createDriver(options: DriverOptions): Driver {
                     modelCosts.set(m.model, cur);
                   }
                   if (Number.isNaN(cost)) {
-                    drainPricerWarnings(); // unpriced model: contributes 0 to total but is never silent
+                    drainPricerWarnings(); // unpriced model: never silent
+                    // ...but the CLI may have stated the cost itself (claude on a
+                    // model missing from the price table): keep that figure.
+                    const stated = normalized.costUsd;
+                    if (typeof stated === 'number' && Number.isFinite(stated)) {
+                      cumulativeCost += stated;
+                      pricerPriced = true;
+                      costFromReported = true;
+                    }
                   } else {
                     cumulativeCost += cost;
                     pricerPriced = true;

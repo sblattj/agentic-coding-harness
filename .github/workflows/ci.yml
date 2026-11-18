@@ -17,7 +17,8 @@ jobs:
   test:
     name: test (node ${{ matrix.node-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Two full suite passes (Bun off and on PATH); macOS runners take up to ~13 min for both.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +40,12 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      # Generated desks assets must match their sources; run once, on the
+      # Node 24 ubuntu leg only, since the output is platform independent.
+      - name: Check generated desks assets
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '24.x' && hashFiles('scripts/gen-desks-assets.mjs') != ''
+        run: node scripts/gen-desks-assets.mjs --check
 
       # Bundled task suite (#51): every task's verify.sh must FAIL on the
       # untouched starter, PASS on reference/ and FAIL on broken/. A checker
@@ -98,3 +105,31 @@ jobs:
 
       - name: Test
         run: pytest -v
+
+  # bundle.sh builds and ad-hoc signs "ach Desk.app"; nothing else runs it, so
+  # a Package.swift or bundle.sh break would otherwise go unnoticed.
+  # Every step is guarded on Package.swift so this workflow also runs on a tree
+  # without the app (hashFiles is not allowed in a job-level if).
+  ach-desk:
+    name: ach-desk (macos)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/ach-desk
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Swift test
+        if: hashFiles('apps/ach-desk/Package.swift') != ''
+        run: swift test
+
+      - name: Bundle the app
+        if: hashFiles('apps/ach-desk/Package.swift') != ''
+        run: zsh scripts/bundle.sh
+
+      - name: Assert the app bundle exists
+        if: hashFiles('apps/ach-desk/Package.swift') != ''
+        run: |
+          test -x "build/ach Desk.app/Contents/MacOS/AchDesk"
+          test -f "build/ach Desk.app/Contents/Info.plist"
