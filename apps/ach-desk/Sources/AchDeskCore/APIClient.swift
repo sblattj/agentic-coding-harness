@@ -1,6 +1,6 @@
 // HTTP client for the ach Web API (route list: WEB_API_PREFIX comment in src/desks/types.ts).
-// Token: `ach web --token` gates routes by `?token=` on some paths and by Bearer-or-query on
-// others (src/web/server.ts), so every request carries BOTH when a token is configured.
+// Token: `ach web` always has one (Settings, else <stateDir>/web/token, AppSettings.effectiveToken); routes take `?token=` or Bearer
+// (src/web/auth.ts requestHasToken), and every request carries BOTH.
 import Foundation
 
 public struct ServerConfig: Equatable, Sendable {

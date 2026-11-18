@@ -48,7 +48,8 @@ export async function setOpencodeGoal(o: {
   if (o.model) body.model = o.model;
 
   const listUrl = `${base}/session/${sid}/message`;
-  const baseline = await fetch(listUrl)
+  // Every GET carries an abort signal: a stalled request (headers or body) must never outlive the timeout.
+  const baseline = await fetch(listUrl, { signal: AbortSignal.timeout(timeoutMs) })
     .then(async (r) => {
       const text = await r.text();
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 300)}`);
@@ -80,8 +81,10 @@ export async function setOpencodeGoal(o: {
   let last = "";
   for (;;) {
     if (postError) throw postError;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
     try {
-      const r = await fetch(listUrl);
+      const r = await fetch(listUrl, { signal: AbortSignal.timeout(remaining) });
       if (r.ok) {
         last = await r.text();
         let list: unknown;

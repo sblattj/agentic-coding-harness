@@ -28,7 +28,11 @@ access to resolve that dependency (it is a test-only dependency; the app does no
 
 ## How it finds and starts ach
 
-1. Probe `GET /api/desks` on `127.0.0.1:<port>` (Settings, default 8399) with the token.
+1. Probe `GET /api/desks` on `127.0.0.1:<port>` (Settings, default 8399) with the token. `ach web`
+   always has a token: with the Settings token empty, the app uses the one `ach web` generates and
+   keeps in `<stateDir>/web/token` (state dir: Settings, else `AGENTIC_CODING_HARNESS_STATE_DIR`,
+   else `~/.agentic-coding-harness`, the same rule as the CLI). So an `ach web` you started in a
+   terminal with no `--token` is reused without copying anything into Settings.
    - 200 with a roster: reuse that server. The app will not stop a server it did not start.
    - Any other HTTP answer (401, 404, ...): the port is busy with something else, so the app
      shows a banner with a hint (wrong token, or an `ach` too old to have the desks API).
@@ -37,8 +41,10 @@ access to resolve that dependency (it is a test-only dependency; the app does no
    - `/bin/zsh -lc 'command -v ach'` (your login shell PATH, so Homebrew/bun installs work from Finder),
    - `Contents/Resources/ach` inside the app (only present with `--with-ach`).
 3. Start `ach web --port <port> --no-open` as a child process with no terminal. Output goes to
-   `~/Library/Logs/ach Desk/ach-web.log` (Settings > Show log). The token is passed as
-   `AGENTIC_CODING_HARNESS_HTTP_TOKEN` and the state dir as `AGENTIC_CODING_HARNESS_STATE_DIR`.
+   `~/Library/Logs/ach Desk/ach-web.log` (Settings > Show log). A Settings token is passed as
+   `AGENTIC_CODING_HARNESS_HTTP_TOKEN` (env, so it never shows in `ps`) and the state dir as
+   `AGENTIC_CODING_HARNESS_STATE_DIR`. With no Settings token the child generates
+   `<stateDir>/web/token` at startup and the app reads it while it waits for the server.
 4. On quit the app sends SIGTERM (then SIGKILL after a grace period) only to a child it started.
    "Stop the stack on quit" (off by default) also calls `POST /api/desks/down` first, and only
    when the app started `ach web` itself.
@@ -47,8 +53,8 @@ The default is your installed `ach`, because standalone ach builds lack bun-pty.
 
 ## API used
 
-Every request carries the token both as `Authorization: Bearer <token>` and `?token=<token>`
-when one is set. Shapes mirror `src/desks/types.ts`; unknown fields are ignored, optional fields
+Every request carries the token (Settings, else `<stateDir>/web/token`) both as
+`Authorization: Bearer <token>` and `?token=<token>`; without it every route answers 401. Shapes mirror `src/desks/types.ts`; unknown fields are ignored, optional fields
 are optional, and unknown stream kinds and event types are tolerated.
 
 | Route | Used for |

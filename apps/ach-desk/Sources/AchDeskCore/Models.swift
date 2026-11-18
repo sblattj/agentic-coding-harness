@@ -447,9 +447,28 @@ public struct NewLaneBody: Encodable, Equatable, Sendable {
     /// Lane name rule from src/desks/roster.ts validName(lane): /^[a-z0-9][a-z0-9_-]{0,47}$/i (case-insensitive,
     /// may start with a digit, up to 48 chars). "human" is reserved (the sender id for the user), any case.
     public static func isValidName(_ s: String) -> Bool {
-        guard s.range(of: "^[a-z0-9][a-z0-9_-]{0,47}$", options: [.regularExpression, .caseInsensitive]) != nil else { return false }
-        // NSRegularExpression's $ also matches before a trailing newline; JS /$/ does not.
-        if s.hasSuffix("\n") { return false }
+        // \z (end of input only): ICU's $ also matches before a trailing \n, \r\n, \r, U+0085, U+2028 and U+2029,
+        // while JS /$/ without the m flag matches only at the very end. Swift treats "\r\n" as one Character, so a
+        // hasSuffix("\n") guard misses it.
+        guard s.range(of: "^[a-z0-9][a-z0-9_-]{0,47}\\z", options: [.regularExpression, .caseInsensitive]) != nil else { return false }
         return s.lowercased() != "human"
     }
+
+    /// First free `LANE<n>`, comparing case-insensitively like the server (laneNameTaken in src/desks/service.ts).
+    public static func suggestedName(used: [String]) -> String {
+        let lowered = Set(used.map { $0.lowercased() })
+        var i = 1
+        while lowered.contains("lane\(i)") { i += 1 }
+        return "LANE\(i)"
+    }
+}
+
+/// POSIX-shell quoting for a copy-pasteable command line.
+public enum ShellQuote {
+    public static func word(_ s: String) -> String {
+        if !s.isEmpty, s.range(of: "^[A-Za-z0-9_@%+=:,./-]+$", options: .regularExpression) != nil { return s }
+        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    public static func command(_ argv: [String]) -> String { argv.map(word).joined(separator: " ") }
 }

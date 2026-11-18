@@ -85,7 +85,9 @@ public struct BackendLauncher: Sendable {
     }
 
     /// Child environment: inherit, set PATH, token (AGENTIC_CODING_HARNESS_HTTP_TOKEN) and state dir
-    /// (AGENTIC_CODING_HARNESS_STATE_DIR). An empty token removes an inherited one so the app and server agree.
+    /// (AGENTIC_CODING_HARNESS_STATE_DIR). An empty token removes an inherited one so the child
+    /// falls back to <stateDir>/web/token, which the app reads too (AppSettings.effectiveToken).
+    /// The token goes by env, not --token, so it never shows in `ps`.
     public static func childEnvironment(base: [String: String], path: String, token: String?, stateDir: String?) -> [String: String] {
         var env = base
         env["PATH"] = path

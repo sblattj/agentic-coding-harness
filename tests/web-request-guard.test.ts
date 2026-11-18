@@ -1,6 +1,7 @@
 // `ach web` request guard: cross-site and DNS-rebinding requests are refused on every
 // route (plain HTTP and WebSocket upgrades), non-GET /api/* writes must be JSON, and
-// /api/pty sits behind the token like the other API routes. A native client (the macOS
+// /api/pty sits behind the token like the other API routes, and with no token it and every
+// desks write fail closed (403). A native client (the macOS
 // app: no Origin, Host 127.0.0.1:<port>, JSON bodies) keeps working.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -69,19 +70,12 @@ describe('ach web request guard (no token, the default)', () => {
     }
   });
 
-  it('a same-origin JSON POST with no Origin (the macOS app) still reaches the route', async () => {
+  it('a same-origin JSON POST passes the guard, then fails closed with no token (#212 review)', async () => {
     const r = await raw(srv.port, 'POST', '/api/desks/lanes', { 'content-type': 'application/json' }, '{}');
-    assert.equal(r.status, 400, `reaches body validation: ${r.text}`);
-    assert.match(r.text, /must be a non-empty string/);
-    const same = await raw(srv.port, 'POST', '/api/desks/lanes', { 'content-type': 'application/json', origin: `http://127.0.0.1:${srv.port}` }, '{}');
-    assert.equal(same.status, 400, 'a same-origin browser POST reaches the route');
-    const local = await raw(srv.port, 'POST', '/api/desks/lanes', { 'content-type': 'application/json', host: `localhost:${srv.port}`, origin: `http://localhost:${srv.port}` }, '{}');
-    assert.equal(local.status, 400, 'localhost origin on localhost host is same-origin');
-  });
-
-  it('a bodyless POST (the grid kill/continue buttons) needs no content-type', async () => {
-    const r = await raw(srv.port, 'POST', '/api/pty/no-such-session/kill', {});
-    assert.equal(r.status, 404, `bodyless POST reaches the route: ${r.text}`);
+    assert.equal(r.status, 403, `tokenless desks write is refused: ${r.text}`);
+    assert.match(r.text, /needs a token/);
+    const kill = await raw(srv.port, 'POST', '/api/pty/no-such-session/kill', {});
+    assert.equal(kill.status, 403, `tokenless /api/pty is refused: ${kill.text}`);
   });
 
   it('a cross-origin WebSocket upgrade is refused; a same-origin one upgrades', async () => {
@@ -101,6 +95,21 @@ describe('ach web request guard: /api/pty behind the token', () => {
     srv = await startWebServer({ port: 0, host: '127.0.0.1', stateDir: tmp('tok'), token: 'tok' });
   });
   after(async () => srv.close());
+
+  it('a same-origin JSON POST with no Origin (the macOS app) still reaches the route', async () => {
+    const r = await raw(srv.port, 'POST', '/api/desks/lanes', { 'content-type': 'application/json', authorization: 'Bearer tok' }, '{}');
+    assert.equal(r.status, 400, `reaches body validation: ${r.text}`);
+    assert.match(r.text, /must be a non-empty string/);
+    const same = await raw(srv.port, 'POST', '/api/desks/lanes', { 'content-type': 'application/json', authorization: 'Bearer tok', origin: `http://127.0.0.1:${srv.port}` }, '{}');
+    assert.equal(same.status, 400, 'a same-origin browser POST reaches the route');
+    const local = await raw(srv.port, 'POST', '/api/desks/lanes', { 'content-type': 'application/json', authorization: 'Bearer tok', host: `localhost:${srv.port}`, origin: `http://localhost:${srv.port}` }, '{}');
+    assert.equal(local.status, 400, 'localhost origin on localhost host is same-origin');
+  });
+
+  it('a bodyless POST (the grid kill/continue buttons) needs no content-type', async () => {
+    const r = await raw(srv.port, 'POST', '/api/pty/no-such-session/kill', { authorization: 'Bearer tok' });
+    assert.equal(r.status, 404, `bodyless POST reaches the route: ${r.text}`);
+  });
 
   it('POST and GET /api/pty and kill need the token when one is set', async () => {
     const post = await raw(srv.port, 'POST', '/api/pty', { 'content-type': 'application/json' }, '{}');

@@ -12,7 +12,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var achPath: String = ""
     /// `ach web` port (src/cli/web.ts DEFAULT_PORT = 8399).
     public var port: Int = 8399
-    /// `ach web --token` value; sent as Bearer + ?token=. Empty = none.
+    /// `ach web --token` value; sent as Bearer + ?token=. Empty = use the token `ach web`
+    /// generates into <stateDir>/web/token (see `effectiveToken`).
     public var token: String = ""
     /// Passed to the child as AGENTIC_CODING_HARNESS_STATE_DIR. Empty = ach's default (~/.agentic-coding-harness).
     public var stateDir: String = ""
@@ -30,7 +31,31 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init() {}
 
-    public var serverConfig: ServerConfig { ServerConfig(port: port, token: token) }
+    public var serverConfig: ServerConfig { ServerConfig(port: port, token: effectiveToken()) }
+
+    /// The state dir `ach web` uses, by the CLI's rule (src/core/store.ts stateDir): the Settings
+    /// value (passed to the child as AGENTIC_CODING_HARNESS_STATE_DIR), else that env var, else
+    /// ~/.agentic-coding-harness.
+    public func resolvedStateDir(environment: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> String {
+        if !stateDir.isEmpty { return (stateDir as NSString).expandingTildeInPath }
+        if let d = environment["AGENTIC_CODING_HARNESS_STATE_DIR"], !d.isEmpty { return d }
+        return (home as NSString).appendingPathComponent(".agentic-coding-harness")
+    }
+
+    /// Path of the token `ach web` generates when it has no --token (src/web/auth.ts webTokenPath).
+    public func webTokenPath(environment: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> String {
+        ((resolvedStateDir(environment: environment, home: home) as NSString).appendingPathComponent("web") as NSString).appendingPathComponent("token")
+    }
+
+    /// The token to send: the Settings token when set, else the stored `ach web` token (trimmed,
+    /// at least 16 chars like src/web/auth.ts accepts), else nil (no server has made one yet).
+    public func effectiveToken(environment: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> String? {
+        if !token.isEmpty { return token }
+        let path = webTokenPath(environment: environment, home: home)
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.count >= 16 ? t : nil
+    }
 
     static let key = "achDesk.settings"
 

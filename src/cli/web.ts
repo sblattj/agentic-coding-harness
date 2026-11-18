@@ -1,9 +1,11 @@
 // web — dashboard server CLI (src/web/server.ts over node:http + ws; one
 // code path under Bun and Node).
 // Serves the live-run dashboard (HTML + /api/runs + ws tails) and opens the
-// browser to it. Without a token (--token or env AGENTIC_CODING_HARNESS_HTTP_TOKEN)
-// the server binds loopback only and runs unauthenticated with a stderr
-// warning, mirroring serve.
+// browser to it. The server always has a token (the Jupyter model, src/web/auth.ts):
+// --token, else env AGENTIC_CODING_HARNESS_HTTP_TOKEN, else the one generated and kept in
+// <stateDir>/web/token (an empty value counts as unset). With a generated token the
+// server still binds loopback only. The printed and opened URL carries ?token=, which
+// sets an HttpOnly cookie so the pages keep working without it.
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "./config.ts"; // #41: config-aware node:util parseArgs
 import { HarnessError } from "../core/types.ts";
@@ -12,6 +14,7 @@ import { stateDir } from "../core/store.ts";
 import { resolveDirFlag } from "./lib.ts";
 import { describeListenError } from "./serve.ts";
 import { startWebServer, type WebServerHandle } from "../web/server.ts";
+import { loadOrCreateWebToken } from "../web/auth.ts";
 import { TranscriptRunSource } from "../web/run-source-transcript.ts";
 import { FsRunSource, type RunSource } from "../web/run-source.ts";
 import { HttpRunSource } from "../web/run-source-http.ts";
@@ -204,12 +207,18 @@ export async function cmdWeb(rest: string[]): Promise<number> {
   const port = optPort(args.values.port, "--port");
   const listWindow = resolveListWindow(args.values.recent, args.values["page-size"]);
   if (args.values.offline) installOfflineGuard();
-  // CLI flag wins over env; when both are unset: warn + force loopback.
-  const token = args.values.token ?? (process.env.AGENTIC_CODING_HARNESS_HTTP_TOKEN || undefined);
+  // CLI flag wins over env (an empty value counts as unset); with neither, use the stored
+  // token (generated on first start) and force loopback, since reads stay unauthenticated.
+  const explicitToken = args.values.token || process.env.AGENTIC_CODING_HARNESS_HTTP_TOKEN || undefined;
   let host = args.values.host ?? DEFAULT_HOST;
-  if (token === undefined) {
-    process.stderr.write("web: no token set — unauthenticated loopback only\n");
+  let token: string;
+  if (explicitToken === undefined) {
+    const stored = loadOrCreateWebToken(dir);
+    token = stored.token;
+    process.stderr.write(`web: ${stored.created ? "generated a token in" : "using the token in"} ${stored.path} (loopback only; pass --token to set one)\n`);
     host = DEFAULT_HOST;
+  } else {
+    token = explicitToken;
   }
 
   const source = resolveSourceOptions(
@@ -219,7 +228,8 @@ export async function cmdWeb(rest: string[]): Promise<number> {
       "source-mode": args.values["source-mode"],
       "source-poll-ms": args.values["source-poll-ms"],
       "source-merge": args.values["source-merge"],
-      token,
+      // Only an explicit dashboard token may ride along to an external feed, never the stored one.
+      ...(explicitToken !== undefined ? { token: explicitToken } : {}),
     },
     process.env,
   );
@@ -265,8 +275,8 @@ export async function cmdWeb(rest: string[]): Promise<number> {
     }
     throw err;
   }
-  const url = `http://${host}:${handle.port}` + (token === undefined ? "" : `?token=${token}`);
-  process.stderr.write(`web dashboard: http://${host}:${handle.port} (auth ${token === undefined ? "off" : "on"})\n`);
+  const url = `http://${host}:${handle.port}/?token=${encodeURIComponent(token)}`;
+  process.stderr.write(`web dashboard: ${url}\n`);
 
   if (!args.values["no-open"]) {
     try {

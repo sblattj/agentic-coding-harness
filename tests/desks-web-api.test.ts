@@ -106,9 +106,11 @@ interface Harness {
   st: { view: RosterView; throwFor?: Record<string, Error> };
   subs: Array<{ url: HostTarget; since: number; emit: (e: HostEvent) => void; unsubscribed: boolean }>;
   attachUrls: HostTarget[];
+  /** Sent as Bearer by call() when the harness was built with autoAuth (and no header was given). */
+  autoToken?: string;
 }
 
-async function harness(stateDir: string, token?: string): Promise<Harness> {
+async function harness(stateDir: string, token?: string, autoAuth = false): Promise<Harness> {
   const calls: Call[] = [];
   const st: Harness['st'] = { view: viewOf([row('ORCH')]) };
   const subs: Harness['subs'] = [];
@@ -140,7 +142,7 @@ async function harness(stateDir: string, token?: string): Promise<Harness> {
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, st, subs, attachUrls };
+  return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, calls, st, subs, attachUrls, ...(autoAuth && token !== undefined ? { autoToken: token } : {}) };
 }
 
 async function closeHarness(h: Harness): Promise<void> {
@@ -149,6 +151,7 @@ async function closeHarness(h: Harness): Promise<void> {
 }
 
 async function call(h: Harness, method: string, path: string, body?: string, headers: Record<string, string> = {}): Promise<{ status: number; json: any }> {
+  if (h.autoToken !== undefined && headers.authorization === undefined) headers = { ...headers, authorization: `Bearer ${h.autoToken}` };
   const res = await fetch(h.base + path, { method, ...(body !== undefined ? { body, headers: { 'content-type': 'application/json', ...headers } } : { headers }) });
   const text = await res.text();
   return { status: res.status, json: text === '' ? null : JSON.parse(text) };
@@ -239,7 +242,8 @@ describe('desks web api: routes', () => {
   let stateDir: string;
   before(async () => {
     stateDir = tmp('routes');
-    h = await harness(stateDir);
+    // Writes fail closed without a token (#212 review), so the route suite runs with one.
+    h = await harness(stateDir, 'routes-tok', true);
   });
   after(async () => closeHarness(h));
 
@@ -444,7 +448,7 @@ describe('desks web api: routes', () => {
           resolve(v);
         }
       };
-      const req = httpRequest({ host: '127.0.0.1', port, path: '/api/desks/send', method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path: '/api/desks/send', method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${h.autoToken}` } }, (res) => {
         let body = '';
         res.on('data', (c) => (body += c));
         res.on('end', () => fin({ status: res.statusCode, body }));

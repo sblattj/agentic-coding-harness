@@ -276,9 +276,11 @@ Switch a running desk with `ach desk engine <name> <agent>`. A missing engine fa
 | `ghostty` | Optional, macOS. Panes are addressed by terminal id. |
 | `none` | No panes; use the web view, the app or `ach desk chat`. |
 
-`--term` picks the driver; the default is tmux. The pane ids are stored in the roster as `{kind, id}`.
+`--term` picks the driver; the default is tmux. The pane ids are stored in the roster as `{kind, id, token}`.
 
-**Moving a running stack.** Hosts, sessions, the roster and feeds do not depend on panes. `ach desk attach --term tmux` closes the old panes and reopens them on the same sessions; history is intact and feeds never stop. `ach desk down` closes every pane it opened and touches no other window. tmux pane ids (`%N`) restart with every tmux server, so each pane ach opens is tagged with the pane option `@ach_run` (the token is also kept under `<tmpdir>/ach-desks-tmux`), and closing kills a pane only when its tag still matches; a reused id, or a pane from before tagging, is left alone. Ghostty closing signals the recorded pid only when its command line still matches what ach launched and its start time fits that open's pidfile (a reused pid starts after the pidfile was written, so the same executable and script is not enough).
+**Moving a running stack.** Hosts, sessions, the roster and feeds do not depend on panes. `ach desk attach --term tmux` closes the old panes and reopens them on the same sessions; history is intact and feeds never stop. `ach desk down` closes every pane it opened and touches no other window. tmux pane ids (`%N`) restart with every tmux server, so each pane ach opens is tagged with the pane option `@ach_run` (the token is also kept under `<tmpdir>/ach-desks-tmux`), and the roster stores that token in the entry's `terminal.token`. `desk down`, `desk attach`, lane stop and desk restart close, check or respawn a pane only while it still carries that token, so a reused id is left alone. Roster entries written before the token was stored have none: their panes are left open (with a note on stderr), never closed by id. Ghostty closing signals the recorded pid only when its command line still matches what ach launched and its start time fits that open's pidfile (a reused pid starts after the pidfile was written, so the same executable and script is not enough).
+
+**Ports.** A desk or lane on port P runs its opencode engine on P + 500. Layout validation reserves those ports for every desk and lane: lane ports may not overlap the desks' engine ports, the lane range must be under 500 ports wide, and portBase + lanes.ports[1] + 500 must be at most 65535 (also checked for a `--port-base` override).
 
 ## Web
 
@@ -310,7 +312,7 @@ GET  /api/desks/engines                 -> {engines: {agent, found, path?, auth?
 GET  /api/desks/mcps                    -> {names: string[]}
 ```
 
-Every route also takes `?stack=<name>` to pick a stack (default: the server's own). When the server runs with a token, pass it as `?token=<token>` or `Authorization: Bearer <token>`.
+Every route also takes `?stack=<name>` to pick a stack (default: the server's own). Every route needs the `ach web` token, as `?token=<token>`, `Authorization: Bearer <token>`, or the cookie a valid `?token=` sets (401 without it). `ach web` always has one: `--token`, else `AGENTIC_CODING_HARNESS_HTTP_TOKEN`, else a random token generated on first start into `<stateDir>/web/token` (0600; reused across restarts; an empty value counts as unset; loopback only). It prints and opens `http://127.0.0.1:<port>/?token=<token>`; that first visit sets an `HttpOnly`, `SameSite=Strict` cookie, so the desks page keeps working without the token in its URL. The macOS app sends its Settings token, or reads `<stateDir>/web/token` when that is empty. A server embedded without any token (`startWebServer` with no `token`) answers the GET routes and refuses every POST route with 403.
 
 The page keeps its chats live across a stream reconnect: a new stream subscribes to hosts from "now", so on every (re)open, and again after the first roster snapshot, the page refetches `/api/desks/:name/events?since=<lastSeq>` for each loaded chat and drops duplicates by seq.
 
@@ -320,6 +322,7 @@ Errors are `{error: string}` with a status picked from the service message:
 |---|---|
 | 400 | `... must not be empty`, `must be an array` / `a non-empty string`, `every decision option needs a label`, `invalid lane name`, `invalid stack name`, `invalid desk or lane name`, `invalid run id`, `cannot send to yourself`; bad JSON or body fields, or a path segment holding `/`, `\` or a leading `.` (HttpError) |
 | 401 | missing or wrong token |
+| 403 | a write (any POST route) on a server embedded without any token (`ach web` always has one) |
 | 404 | `unknown desk or lane`, `unknown desk`, `unknown lane`, `no pending lane <id>`, `no decision <id>` |
 | 409 | `stack ... is already up`, `port(s) ... already in use`, `port ... still busy`, `name ... is already in use`, `lane ... is already pending approval`, `lane request ... is already <state>`, `decision ... is closed`, `<name> is not running (dead)`, wrong kind (`is a lane` / `is a desk`), `no free lane port` |
 | 500 | config or server failure: `layout file not found`, `invalid layout`, `cannot parse layout`, `corrupt layout`, `corrupt roster`, `roles/common.md not found`, `role file ... not found`, `invalid role name`, `the layout has no desks`, `did not become idle`, `no spec or layout entry`, `timed out ... roster lock`, `desk host ...` upstream failure, `not implemented`; a non-Error throw |

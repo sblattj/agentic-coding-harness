@@ -270,7 +270,10 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
       if (model !== undefined) lastModel = model;
       const key = s.messageId ?? `anon-${anon++}`;
       const prev = messages.get(key);
-      const reported = typeof s.costUsd === "number" && Number.isFinite(s.costUsd) && s.costUsd > 0 ? s.costUsd : null;
+      const sampleReported = typeof s.costUsd === "number" && Number.isFinite(s.costUsd) && s.costUsd > 0 ? s.costUsd : null;
+      // Once a message has a reported cost it stays engine-priced: a later sample without one keeps the
+      // earlier figure, so its token delta is never handed to the stats pricer on top of that figure.
+      const reported = sampleReported ?? prev?.reported ?? null;
       const next: MessageState = {
         inputTokens: s.inputTokens,
         outputTokens: s.outputTokens,
@@ -298,9 +301,11 @@ export function createHostMeter(spec: HostSpec, opts: HostMeterOptions = {}): Ho
           ...(model !== undefined ? { model } : {}),
           ...delta,
           reasoningTokens: deltaReasoning,
-          // Only an engine-REPORTED cost goes on the line; stats prices unreported lines itself
-          // (auto cost mode), so desk usage needs no special casing and nothing is double priced.
-          ...(deltaReported !== null && deltaReported > 0 ? { costUsd: deltaReported } : {}),
+          // An engine-REPORTED message always carries costUsd, its reported delta, even when that is 0:
+          // the reported figure already covers every token of the message, and a line without costUsd
+          // would be priced again by stats (auto cost mode). Unreported messages carry none, so stats
+          // prices them itself and desk usage needs no special casing.
+          ...(deltaReported !== null ? { costUsd: deltaReported } : {}),
           extra: { source: "desk-host", runId, desk, ...(s.messageId !== undefined ? { messageId: s.messageId } : {}) },
         };
         try {

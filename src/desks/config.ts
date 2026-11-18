@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { reservedName, STACK_NAME_RE, validName } from "./roster.ts";
-import type { Layout } from "./types.ts";
+import { ENGINE_PORT_OFFSET, type Layout } from "./types.ts";
 import { stateDir } from "../core/store.ts";
 import { VERSION } from "../version.ts";
 import { BUILTIN_DESK_ASSETS } from "./builtin-assets.gen.ts";
@@ -150,10 +150,31 @@ export function parseLayout(text: string, source: string): Layout {
   if (lo < 1) fail(source, "lanes.ports[0]", `${lo} must be >= 1`);
   const lastDesk = p.portBase + p.desks.length; // desk i = portBase + 1 + i
   if (p.portBase < 1) fail(source, "portBase", `${p.portBase} must be >= 1`);
-  if (lastDesk + 1 > p.portBase + lo - 1) {
-    fail(source, "lanes.ports[0]", `${lo} overlaps the ${p.desks.length} desk port(s) ${p.portBase + 1}..${lastDesk}; use at least ${p.desks.length + 2}`);
+  // Desks occupy offsets 1..N, so the first lane offset may be N + 1 (adjacent, no overlap).
+  if (p.portBase + lo <= lastDesk) {
+    fail(source, "lanes.ports[0]", `${lo} overlaps the ${p.desks.length} desk port(s) ${p.portBase + 1}..${lastDesk}; use at least ${p.desks.length + 1}`);
   }
   if (p.portBase + hi > 65535) fail(source, "lanes.ports[1]", `portBase + ${hi} = ${p.portBase + hi} exceeds 65535`);
+  // Every desk and lane on port P may run its opencode engine on P + ENGINE_PORT_OFFSET (the agent is chosen per
+  // desk, per lane request, and on desk switch), so those ports are reserved too: no host port may equal another
+  // host's engine port, and no engine port may pass 65535. Desks sit below lanes, so engine ports of desks never
+  // overlap engine ports of lanes when the host ports do not.
+  const E = ENGINE_PORT_OFFSET;
+  const n = p.desks.length;
+  if (p.portBase + hi + E > 65535) {
+    fail(source, "lanes.ports[1]", `the opencode engine port of the last lane, portBase + ${hi} + ${E} = ${p.portBase + hi + E}, exceeds 65535`);
+  }
+  if (n > E) fail(source, "desks", `${n} desks: desk ports ${p.portBase + 1}..${lastDesk} overlap their own opencode engine ports (desk port + ${E}); use at most ${E} desks`);
+  if (n > 0 && lo <= n + E && hi >= 1 + E) {
+    fail(
+      source,
+      "lanes.ports",
+      `lane ports ${p.portBase + lo}..${p.portBase + hi} overlap the desks' opencode engine ports ${p.portBase + 1 + E}..${lastDesk + E} (desk port + ${E})`,
+    );
+  }
+  if (hi - lo >= E) {
+    fail(source, "lanes.ports", `[${lo}, ${hi}] spans ${hi - lo + 1} ports: a lane port would equal another lane's opencode engine port (lane port + ${E}); keep the range under ${E} ports wide`);
+  }
 
   const layout: Layout = {
     portBase: p.portBase,

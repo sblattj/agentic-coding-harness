@@ -88,6 +88,7 @@ public final class DeskStore: ObservableObject {
         pollTimer = nil
         clockTimer?.invalidate()
         clockTimer = nil
+        polling = false
         streamStatus = .stopped
     }
 

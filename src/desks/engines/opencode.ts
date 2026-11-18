@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { deskPaths } from "../roster.ts";
 import { desksMcpDef } from "../self.ts";
 import type { Engine, EngineEvent, GoalStatus, HostSpec, McpServerDef } from "../types.ts";
+import { ENGINE_PORT_OFFSET } from "../types.ts";
 import { readOpencodeGoal, setOpencodeGoal } from "./opencode-goals.ts";
 
 /** What start() needs from a spawned `opencode serve`. The default wraps node:child_process. */
@@ -373,7 +374,7 @@ export class OpenCodeEngine implements Engine {
 
   private async doStart(spec: HostSpec): Promise<{ sessionId?: string; engineUrl?: string; childPid?: number }> {
     this.spec = spec;
-    this.port = spec.enginePort ?? spec.port + 500;
+    this.port = spec.enginePort ?? spec.port + ENGINE_PORT_OFFSET;
     this.baseUrl = `http://127.0.0.1:${this.port}`;
     this.logFile = join(deskPaths(spec.stateDir, spec.stack).logs, `${spec.name}.opencode.log`);
 

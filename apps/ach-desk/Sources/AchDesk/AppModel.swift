@@ -66,6 +66,8 @@ final class AppModel: ObservableObject {
         Task {
             let outcome = await BackendBoot.ensure(settings: s, launcher: launcher, process: backend, bundledAchPath: bundledAchPath)
             bootOutcome = outcome
+            // A child started without a Settings token generated <stateDir>/web/token just now.
+            store.reconfigure(s.serverConfig)
             store.backendNote = outcome.note
             booting = false
             store.start()

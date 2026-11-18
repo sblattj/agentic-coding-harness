@@ -179,12 +179,7 @@ struct NewLaneSheet: View {
         model.settings.defaultLaneAgent.isEmpty ? "Default (layout)" : "Default (\(model.settings.defaultLaneAgent))"
     }
 
-    func suggestedName() -> String {
-        let used = Set(store.roster?.rows.map(\.name) ?? [])
-        var i = 1
-        while used.contains("LANE\(i)") { i += 1 }
-        return "LANE\(i)"
-    }
+    func suggestedName() -> String { NewLaneBody.suggestedName(used: store.roster?.rows.map(\.name) ?? []) }
 
     func pickFolder() {
         let p = NSOpenPanel()

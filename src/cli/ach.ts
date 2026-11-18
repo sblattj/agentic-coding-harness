@@ -497,7 +497,9 @@ ${QUEUE_USAGE}
                   started within --recent (running runs always), and "load older" on
                   /grid pages back through the rest (config keys web.recent, web.pageSize);
                   token via --token
-                  or env AGENTIC_CODING_HARNESS_HTTP_TOKEN; --no-open skips the browser;
+                  or env AGENTIC_CODING_HARNESS_HTTP_TOKEN, else one generated and kept in
+                  <stateDir>/web/token (loopback only); the printed URL carries ?token=,
+                  which sets a cookie for the pages; --no-open skips the browser;
                   --source reads runs from an external http(s) feed instead of the
                   state dir — flags or env AGENTIC_CODING_HARNESS_SOURCE[_TOKEN|_MODE|
                   _POLL_MS|_MERGE]; --source-token falls back to --token;
@@ -527,7 +529,7 @@ ${CONFIG_USAGE}
 env:
   AGENTIC_CODING_HARNESS_CONFIG      config file path (same as --config; replaces the default search)
   AGENTIC_CODING_HARNESS_STATE_DIR   state root (default ~/.agentic-coding-harness)
-  AGENTIC_CODING_HARNESS_HTTP_TOKEN  default for serve --token (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_HTTP_TOKEN  default for serve/web --token (CLI flags win over env)
   AGENTIC_CODING_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
   AGENTIC_CODING_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
@@ -1535,6 +1537,11 @@ async function cmdStats(rest: string[]): Promise<number> {
   const pricer = createPricer();
   const probe = createPricer();
   const disagreements: string[] = [];
+  // Desk-host lines are per-message DELTAS (src/desks/host-metering.ts): an engine-priced message writes its whole
+  // reported cost on the line that first carries it and costUsd 0 on later lines that only add tokens. A per-line
+  // check would flag every such line (reported 0 vs computed > 0), so their figures are kept here (keyed by the
+  // shared `extra` object, which the record keeps) and compared per message once the records are filtered.
+  const deskDelta = new WeakMap<object, { key: string; label: string; reported?: number; computed?: number }>();
   const costFor = (
     r: Pick<StatRecord, "agent" | "sessionId" | "model" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cacheWrite1hTokens" | "extra">,
     reported: number | undefined,
@@ -1556,6 +1563,12 @@ async function cmdStats(rest: string[]): Promise<number> {
         { computedOnly: true },
       );
       if (!Number.isNaN(c)) computed = c;
+    }
+    const label = `${r.agent} session=${r.sessionId ?? "unknown"} model=${r.model ?? "unknown"}`;
+    const ex = r.extra;
+    if (ex && ex.source === "desk-host" && typeof ex.messageId === "string" && ex.messageId !== "") {
+      deskDelta.set(ex, { key: `${r.agent}\0${r.sessionId ?? ""}\0${String(ex.runId ?? "")}\0${ex.messageId}`, label, reported, computed });
+      return selectCost(costMode, reported, computed);
     }
     const d = costDisagreement(reported, computed);
     return { ...selectCost(costMode, reported, computed), ...(d ? { costDisagreement: formatDisagreement(`${r.agent} session=${r.sessionId ?? "unknown"} model=${r.model ?? "unknown"}`, d) } : {}) };
@@ -1740,6 +1753,28 @@ async function cmdStats(rest: string[]): Promise<number> {
   for (const r of records) r.origin = originIndex.originOf(r);
   if (wantOrigin !== "all") records = records.filter((r) => r.origin === wantOrigin);
   disagreements.push(...records.flatMap((r) => r.costDisagreement ? [r.costDisagreement] : []));
+  {
+    // Per message: the sum of a desk message's reported deltas vs the price of the sum of its token deltas.
+    const msgs = new Map<string, { label: string; reported: number; anyReported: boolean; computed: number; priced: boolean }>();
+    for (const r of records) {
+      const m = r.extra ? deskDelta.get(r.extra) : undefined;
+      if (!m) continue;
+      const g = msgs.get(m.key) ?? { label: m.label, reported: 0, anyReported: false, computed: 0, priced: true };
+      if (m.reported !== undefined) {
+        g.reported += m.reported;
+        g.anyReported = true;
+      }
+      if (m.computed === undefined) g.priced = false;
+      else g.computed += m.computed;
+      msgs.set(m.key, g);
+    }
+    for (const g of msgs.values()) {
+      // A reported message always sums above 0; a 0 sum means the window cut off the line that carried its cost.
+      if (!g.anyReported || !g.priced || g.reported === 0) continue;
+      const d = costDisagreement(g.reported, g.computed);
+      if (d) disagreements.push(formatDisagreement(g.label, d));
+    }
+  }
   const agg = aggregate(records, { timeZone, by });
   // #142: codex parent/child reconciliation over the windowed codex rows —
   // which totals include child sessions, and which trees miss some.

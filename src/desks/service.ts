@@ -44,7 +44,7 @@ import {
 } from "./roster.ts";
 import { fmtEscape, paneCommand } from "./term/tmux.ts";
 import { terminalDriver } from "./term/index.ts";
-import { DESKS_API_VERSION } from "./types.ts";
+import { DESKS_API_VERSION, ENGINE_PORT_OFFSET } from "./types.ts";
 import type {
   DeskCostRow,
   DeskMessage,
@@ -487,7 +487,7 @@ function deskHostSpec(stateDir: string, stack: string, layout: Layout, d: DeskSp
     mcps: [...d.mcps],
     ...(servers ? { mcpServers: servers } : {}),
     port,
-    ...(engine === "opencode" ? { enginePort: port + 500 } : {}),
+    ...(engine === "opencode" ? { enginePort: port + ENGINE_PORT_OFFSET } : {}),
     cwd: d.cwd ?? layout.cwd ?? process.cwd(),
     runId: randomUUID(),
     ...(d.feed ? { feed: d.feed } : {}),
@@ -514,11 +514,37 @@ function tmuxRaw(socket: string | undefined, args: string[]): Promise<string> {
   });
 }
 
-async function closePane(t: StackTerminal | null, ref: TerminalRef | undefined): Promise<void> {
+/** The ref of pane `id` that `drv` just opened, carrying its ownership token when the driver has one. */
+function refOf(drv: TerminalDriver, id: string): TerminalRef {
+  const token = drv.tokenOf?.(id);
+  return { kind: drv.kind, id, ...(token !== undefined ? { token } : {}) };
+}
+
+/**
+ * A tmux ref without a token predates TerminalRef.token. Its %N may now be any pane (ids restart with the tmux
+ * server) and the sidecar on disk may name a newer pane of ours that reused it, so it is never treated as ours:
+ * at worst an old pane is left open, never a wrong one killed.
+ */
+function legacyTmuxRef(ref: TerminalRef): boolean {
+  return ref.kind === "tmux" && (ref.token === undefined || ref.token === "");
+}
+
+/** True while `ref` still names the pane we opened (for tmux: the pane carries ref.token). */
+async function paneAlive(drv: TerminalDriver, ref: TerminalRef | undefined): Promise<boolean> {
+  if (!ref || ref.kind !== drv.kind || ref.id === "" || legacyTmuxRef(ref)) return false;
+  return drv.alive(ref.id, ref.token);
+}
+
+/** Closes the pane `ref` names, only while it is still ours (exported for tests). */
+export async function closePane(t: StackTerminal | null, ref: TerminalRef | undefined): Promise<void> {
   if (!ref || ref.kind === "none" || ref.id === "") return;
+  if (legacyTmuxRef(ref)) {
+    process.stderr.write(`desks: tmux pane ${ref.id} has no ownership token in the roster (recorded by an older version); not closing it\n`);
+    return;
+  }
   try {
     const drv = await driverFor(t?.kind === ref.kind ? t : { kind: ref.kind }, ref.kind);
-    await drv?.close(ref.id);
+    await drv?.close(ref.id, ref.token);
   } catch {
     /* already gone */
   }
@@ -579,24 +605,25 @@ async function openLayout(t: StackTerminal, layout: Layout, entries: RosterEntry
       if (slot === "right-top") rightTop = id;
       lastRight = id;
     }
-    out[entry.name] = { kind: drv.kind, id };
+    out[entry.name] = refOf(drv, id);
   }
+  const firstRef = first !== undefined ? refOf(drv, first) : undefined;
   for (const e of entries.filter((x) => x.kind === "lane")) {
-    out[e.name] = { kind: drv.kind, id: await openLaneWindow(drv, first, e, sd) };
+    out[e.name] = refOf(drv, await openLaneWindow(drv, firstRef, e, sd));
   }
   return out;
 }
 
-async function openLaneWindow(drv: TerminalDriver, anyPane: string | undefined, e: RosterEntry, sd: StackDir): Promise<string> {
+async function openLaneWindow(drv: TerminalDriver, anyPane: TerminalRef | undefined, e: RosterEntry, sd: StackDir): Promise<string> {
   const argv = await attachArgv(e, sd);
-  if (anyPane !== undefined && (await drv.alive(anyPane))) {
-    return drv.open({ mode: "tab", name: e.name, cwd: e.cwd, argv, of: anyPane });
+  if (anyPane !== undefined && (await paneAlive(drv, anyPane))) {
+    return drv.open({ mode: "tab", name: e.name, cwd: e.cwd, argv, of: anyPane.id });
   }
   return drv.open({ mode: "window", name: e.name, cwd: e.cwd, argv });
 }
 
-function anyDeskPane(entries: RosterEntry[], kind: TerminalKind): string | undefined {
-  return entries.find((e) => e.kind === "desk" && e.terminal?.kind === kind && e.terminal.id !== "")?.terminal?.id;
+function anyDeskPane(entries: RosterEntry[], kind: TerminalKind): TerminalRef | undefined {
+  return entries.find((e) => e.kind === "desk" && e.terminal?.kind === kind && e.terminal.id !== "" && !legacyTmuxRef(e.terminal))?.terminal;
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +639,14 @@ export async function deskUp(o: UpOpts = {}): Promise<RosterView> {
     const derived = layout.portBase === 4800 ? "default" : `p${layout.portBase}`;
     if (layout.stack === undefined || layout.stack === derived) layout.stack = o.portBase === 4800 ? "default" : `p${o.portBase}`;
     layout.portBase = o.portBase;
+    // parseLayout checked the file's portBase; the override moves every port, so re-check the top of the range
+    // (the overlap checks are offsets and still hold).
+    const top = o.portBase + layout.lanes.ports[1] + ENGINE_PORT_OFFSET;
+    if (!Number.isInteger(o.portBase) || o.portBase < 1 || top > 65535) {
+      throw new Error(
+        `desks: portBase ${o.portBase} does not fit this layout: the last lane's opencode engine port, ${o.portBase} + ${layout.lanes.ports[1]} + ${ENGINE_PORT_OFFSET} = ${top}, must be <= 65535 (and portBase >= 1)`,
+      );
+    }
   }
   const stack = o.stack ?? layout.stack ?? "default";
   layout.stack = stack;
@@ -1004,7 +1039,7 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
     : deskHostSpec(stateDir, stack, layout, d!, old.port, o.agent, model);
   if (model !== undefined) spec.model = model;
   else delete spec.model;
-  if (engine === "opencode") spec.enginePort = old.port + 500;
+  if (engine === "opencode") spec.enginePort = old.port + ENGINE_PORT_OFFSET;
   else delete spec.enginePort;
 
   // The config to come back to when the new engine does not start: the old spec (or the old agent
@@ -1056,7 +1091,7 @@ async function installDesk(stateDir: string, stack: string, old: RosterEntry, s:
       // Respawn in place only while the stored pane id is still the pane we opened (its @ach_run tag
       // matches): after a tmux restart the same %N can be a user's pane, which -k would kill.
       const tmuxDrv = await driverFor(t, "tmux");
-      if (tmuxDrv !== null && (await tmuxDrv.alive(old.terminal.id))) {
+      if (tmuxDrv !== null && (await paneAlive(tmuxDrv, old.terminal))) {
         try {
           await tmuxRaw(t?.tmuxSocket, ["respawn-pane", "-k", "-t", old.terminal.id, "-c", fmtEscape(entry.cwd), paneCommand(argv)]);
           return entry;
@@ -1070,7 +1105,7 @@ async function installDesk(stateDir: string, stack: string, old: RosterEntry, s:
       await closePane(t, old.terminal);
       const others = Object.values(readRoster(stateDir, stack).entries).filter((e) => e.name !== entry.name);
       const id = await openLaneWindow(drv, anyDeskPane(others, drv.kind), entry, { stateDir, stack });
-      entry.terminal = { kind: drv.kind, id };
+      entry.terminal = refOf(drv, id);
       await putEntry(stateDir, stack, entry);
     }
   }
@@ -1090,13 +1125,36 @@ async function waitPortFree(port: number, ms: number): Promise<boolean> {
 // Lanes
 // ---------------------------------------------------------------------------
 
-async function freeLanePort(layout: Layout, roster: RosterEntry[], skip: Set<number>): Promise<number> {
-  const used = new Set(roster.map((e) => e.port));
+/** The opencode engine port of a roster entry (its engineUrl's port, else port + ENGINE_PORT_OFFSET), or undefined. */
+function enginePortOf(e: RosterEntry): number | undefined {
+  if (e.engine !== "opencode") return undefined;
+  try {
+    const p = e.engineUrl ? Number(new URL(e.engineUrl).port) : NaN;
+    if (Number.isInteger(p) && p > 0) return p;
+  } catch {
+    /* malformed URL: fall back to the offset */
+  }
+  return e.port + ENGINE_PORT_OFFSET;
+}
+
+/**
+ * First lane port whose host port AND engine port (port + ENGINE_PORT_OFFSET, used when the lane runs opencode;
+ * checked for every lane because the agent is picked per request) are taken by no roster entry (host or engine)
+ * and are bindable now. Exported for tests.
+ */
+export async function freeLanePort(layout: Layout, roster: RosterEntry[], skip: Set<number>): Promise<number> {
+  const used = new Set<number>();
+  for (const e of roster) {
+    used.add(e.port);
+    const ep = enginePortOf(e);
+    if (ep !== undefined) used.add(ep);
+  }
   const [lo, hi] = layout.lanes.ports;
   for (let off = lo; off <= hi; off++) {
     const port = layout.portBase + off;
-    if (used.has(port) || skip.has(port)) continue;
-    if (await portFree(port)) return port;
+    const engine = port + ENGINE_PORT_OFFSET;
+    if (skip.has(port) || used.has(port) || used.has(engine) || engine > 65535) continue;
+    if ((await portFree(port)) && (await portFree(engine))) return port;
   }
   throw new Error(`desks: no free lane port in ${layout.portBase + lo}..${layout.portBase + hi}`);
 }
@@ -1212,7 +1270,7 @@ async function startReservedLane(stateDir: string, stack: string, req: LaneReq, 
       mcps: [...mcps],
       ...(servers ? { mcpServers: servers } : {}),
       port,
-      ...(engine === "opencode" ? { enginePort: port + 500 } : {}),
+      ...(engine === "opencode" ? { enginePort: port + ENGINE_PORT_OFFSET } : {}),
       cwd: req.cwd ?? layout.cwd ?? launcher?.cwd ?? process.cwd(),
       runId: randomUUID(),
       ...(launcher ? { parentRunId: launcher.runId } : {}),
@@ -1249,7 +1307,7 @@ async function startReservedLane(stateDir: string, stack: string, req: LaneReq, 
     if (drv) {
       try {
         const id = await openLaneWindow(drv, anyDeskPane(Object.values(readRoster(stateDir, stack).entries), drv.kind), entry, { stateDir, stack });
-        entry.terminal = { kind: drv.kind, id };
+        entry.terminal = refOf(drv, id);
         await putEntry(stateDir, stack, entry);
       } catch {
         /* a missing pane never fails the lane; `desk attach` reopens it */

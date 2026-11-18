@@ -285,3 +285,40 @@ test("stop() kills grandchildren of a shell-wrapped feed (process group)", async
   if (!dead) { try { process.kill(gc, "SIGKILL"); } catch { /* gone */ } }
   assert.ok(dead, "grandchild survived stop()");
 });
+
+// prxref #208: a feed that writes without newlines must not grow the host's buffer without bound.
+const writerCmd = (script: string) => [node, "-e", `${script}; setInterval(() => {}, 1 << 30);`];
+
+test("unterminated stdout over maxLineChars is dropped at once, then the feed resyncs at the next newline", async () => {
+  const h = harness({
+    command: writerCmd(`process.stdout.write("a".repeat(300)); setTimeout(() => process.stdout.write("more-garbage\\n" + JSON.stringify({ type: "alive" }) + "\\n"), 2000)`),
+  }, { maxLineChars: 100 });
+  try {
+    // Old code buffered forever here: no error until a newline, so this wait failed.
+    await waitFor(() => h.errors.some((e) => e.includes("over 100 chars")), "over-cap error while the line is unterminated", 1500);
+    assert.deepEqual(h.msgs, [], "nothing parsed before the newline");
+    await waitFor(() => h.msgs.length >= 1, "event after resync", 5000);
+    assert.deepEqual(h.msgs, [WAITING_NOTE]);
+    assert.equal(h.errors.filter((e) => e.includes("over 100 chars")).length, 1, "one error per oversized line");
+    assert.equal(h.errors.filter((e) => e.includes("malformed")).length, 0, "the dropped tail is never parsed");
+  } finally { await h.handle.stop(); }
+});
+
+test("over-cap line followed by its newline in the same chunk: one error, next line still parsed", async () => {
+  const h = harness({
+    command: writerCmd(`process.stdout.write("b".repeat(300) + "\\n" + JSON.stringify({ type: "alive" }) + "\\n")`),
+  }, { maxLineChars: 100 });
+  try {
+    await waitFor(() => h.msgs.length >= 1, "event after oversized line");
+    assert.deepEqual(h.msgs, [WAITING_NOTE]);
+    assert.equal(h.errors.length, 1, h.errors.join("\n"));
+    assert.ok(h.errors[0]!.includes("over 100 chars"), h.errors[0]);
+  } finally { await h.handle.stop(); }
+});
+
+test("unterminated stderr over maxLineChars is dropped with a note instead of buffering", async () => {
+  const h = harness({ command: writerCmd(`process.stderr.write("c".repeat(300))`) }, { maxLineChars: 100, stderrGapMs: 0 });
+  try {
+    await waitFor(() => h.notes.some((n) => n.includes("feed stderr line over 100 chars")), "stderr over-cap note", 1500);
+  } finally { await h.handle.stop(); }
+});

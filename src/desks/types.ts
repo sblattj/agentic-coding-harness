@@ -21,6 +21,9 @@
 /** Bumped on any breaking change to the Host API, the Web API, or the files below. */
 export const DESKS_API_VERSION = "desks-api/1" as const;
 
+/** A desk or lane host on port P runs its opencode engine (`opencode serve`) on P + ENGINE_PORT_OFFSET. */
+export const ENGINE_PORT_OFFSET = 500;
+
 // ---------------------------------------------------------------------------
 // Layout (desks.yaml)
 // ---------------------------------------------------------------------------
@@ -122,6 +125,12 @@ export interface TerminalRef {
   kind: TerminalKind;
   /** tmux pane id ("%15") or ghostty terminal id; "" for none. */
   id: string;
+  /**
+   * tmux: the ownership token the driver put in the pane's @ach_run option when it opened it. close/alive/respawn
+   * act only while the pane at `id` still carries this token (pane ids restart from %0 with every tmux server).
+   * A tmux ref without one (written before tokens existed) is treated as not ours. Unused for ghostty.
+   */
+  token?: string;
 }
 
 export interface RosterEntry {
@@ -263,7 +272,7 @@ export interface HostSpec {
   /** Resolved definitions for `mcps` when the engine needs them (driver engine). */
   mcpServers?: Record<string, McpServerDef>;
   port: number;
-  /** opencode engine: port for `opencode serve` (port + 500). */
+  /** opencode engine: port for `opencode serve` (port + ENGINE_PORT_OFFSET). */
   enginePort?: number;
   cwd: string;
   runId: string;
@@ -397,8 +406,12 @@ export interface TerminalDriver {
   readonly kind: Exclude<TerminalKind, "none">;
   /** Opens without stealing focus; returns the pane/terminal id. */
   open(req: OpenRequest): Promise<string>;
-  close(id: string): Promise<void>;
-  alive(id: string): Promise<boolean>;
+  /** Ownership token of a pane this driver instance opened (store it as TerminalRef.token); undefined when the driver has none. */
+  tokenOf?(id: string): string | undefined;
+  /** With `token`, acts only while the pane still carries that token. */
+  close(id: string, token?: string): Promise<void>;
+  /** With `token`, true only while the pane exists and still carries that token. */
+  alive(id: string, token?: string): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------

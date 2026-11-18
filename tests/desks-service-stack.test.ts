@@ -1,7 +1,7 @@
 // src/desks/service.ts end to end: real detached host processes (ACH_DESK_FAKE_ENGINE=1)
 // on ports 5801.., panes on a PRIVATE tmux server (-L ach-desks-svc-<pid>), temp state dir.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -82,7 +82,10 @@ const allPanes = (): string[] => {
 };
 const windows = (): string[] => tmux('list-windows', '-t', SESSION, '-F', '#{window_name}').trim().split('\n');
 
-describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
+// GitHub macOS runners have no tmux; Linux runners do, so CI still runs this there.
+const HAVE_TMUX = spawnSync('tmux', ['-V']).status === 0;
+
+describe('desk service: real stack (3 fake-engine hosts, private tmux)', { skip: !HAVE_TMUX && 'tmux not installed' }, () => {
   it('up -> send -> lane -> switch engine -> costs -> attach -> down', { timeout: 240_000 }, async () => {
     const layoutFile = join(sd, 'desks.yaml');
     writeFileSync(
@@ -127,6 +130,11 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
       assert.equal(panes.length, 3, 'desks window has 3 panes');
       assert.deepEqual(v.rows.map((r) => r.terminal?.id).sort(), [...panes].sort(), 'roster holds the pane ids');
       assert.ok(v.rows.every((r) => r.terminal?.kind === 'tmux'));
+      // each ref carries the @ach_run ownership token its pane holds, so close/alive/respawn can verify it.
+      for (const r of v.rows) {
+        assert.ok(typeof r.terminal?.token === 'string' && r.terminal.token.length > 0, `${r.name} ref carries a token`);
+        assert.equal(tmux('display-message', '-p', '-t', r.terminal!.id, '#{@ach_run}').trim(), r.terminal!.token, `${r.name} pane holds its ref token`);
+      }
       await assert.rejects(deskUp({ stateDir: sd, layoutFile, portBase: PORT_BASE, term: 'none' }), /already up/);
 
       // --- send -------------------------------------------------------------
@@ -167,6 +175,7 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', () => {
       const lr = (await deskRoster({ stateDir: sd, stack })).rows.find((r) => r.name === 'audit-x');
       assert.equal(lr?.state, 'idle');
       assert.equal(lr?.terminal?.kind, 'tmux');
+      assert.ok(lr?.terminal?.token, 'lane ref carries its ownership token');
 
       // --- decisions relays ---------------------------------------------------
       const dq = await decisionOpen({ stateDir: sd, stack, question: 'Write to the tracker?', options: [{ label: 'no', recommended: true, reason: 'draft first' }], askedBy: 'audit-x', openedBy: 'ORCHESTRATOR' });

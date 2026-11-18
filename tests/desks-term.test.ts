@@ -12,7 +12,16 @@ import {
   openScript,
   surfaceCommand,
 } from "../src/desks/term/ghostty.ts";
-import { TmuxDriver, paneCommand, shellQuote } from "../src/desks/term/tmux.ts";
+import { TmuxDriver, paneCommand, pickPaneShell, shellQuote } from "../src/desks/term/tmux.ts";
+
+// The shell the product picks on this host (/bin/zsh on macOS, bash or sh on stock Ubuntu).
+const SHELL = pickPaneShell();
+const SHELL_PREFIX = `${[SHELL.path, ...SHELL.flags].join(" ")} `;
+/** Run the quoted command string a pane/surface command carries through the same shell, without rc files. */
+const runBare = (cmd: string): string => {
+  assert.ok(cmd.startsWith(`${SHELL_PREFIX}'`), `${cmd} starts with ${SHELL_PREFIX}`);
+  return execFileSync("/bin/sh", ["-c", `${[SHELL.path, ...SHELL.bareFlags].join(" ")} ${cmd.slice(SHELL_PREFIX.length)}`], { encoding: "utf8" });
+};
 
 const HAVE_TMUX = spawnSync("tmux", ["-V"]).status === 0;
 const SOCK = `ach-desks-test-${process.pid}`;
@@ -35,11 +44,9 @@ describe("shell quoting", () => {
       assert.equal(out, s);
     }
   });
-  it("paneCommand is /bin/zsh -lic with the argv quoted twice", () => {
+  it("paneCommand runs the picked pane shell with the argv quoted twice", () => {
     const c = paneCommand(["echo", "a b", "it's"]);
-    assert.ok(c.startsWith("/bin/zsh -lic '"));
-    const out = execFileSync("/bin/sh", ["-c", `/bin/zsh -fc ${c.slice("/bin/zsh -lic ".length)}`], { encoding: "utf8" });
-    assert.equal(out, "a b it's\n");
+    assert.equal(runBare(c), "a b it's\n");
   });
 });
 
@@ -251,12 +258,14 @@ describe("TmuxDriver pane ownership tag (fake runner)", () => {
 describe("TmuxDriver command shape (fake runner)", () => {
   it("emits the guide 8b argv, with -d everywhere and the socket handled by the runner", async () => {
     const calls: string[][] = [];
+    let n = 6; // tmux hands every new pane a fresh %N
     const d = new TmuxDriver({
       session: "S",
       dir: join(tmp, "shape"),
       run: async (a) => {
         calls.push(a);
-        return a[0] === "display-message" ? "S2\n" : "%7\n";
+        if (a[0] === "display-message") return "S2\n";
+        return a[0] === "new-window" || a[0] === "split-window" ? `%${++n}\n` : "";
       },
     });
     await d.open({ mode: "window", name: "n", cwd: "/c", argv: ["a b"] });
@@ -277,6 +286,7 @@ describe("TmuxDriver command shape (fake runner)", () => {
 describe("TmuxDriver explicit session on a fresh socket (fake runner)", () => {
   it("has-session fails -> new-session -d -s before new-window, and the default window is reaped", async () => {
     const calls: string[][] = [];
+    let n = 2;
     const d = new TmuxDriver({
       session: "e2e",
       dir: join(tmp, "e2e"),
@@ -284,7 +294,7 @@ describe("TmuxDriver explicit session on a fresh socket (fake runner)", () => {
         calls.push(a);
         if (a[0] === "has-session") throw new Error("tmux has-session failed: error connecting to /tmp/x (No such file or directory)");
         if (a[0] === "new-session") return "@0\n";
-        return "%3\n";
+        return a[0] === "new-window" ? `%${++n}\n` : "";
       },
     });
     await d.open({ mode: "window", name: "desks", cwd: "/c", argv: ["x"] });
@@ -340,8 +350,7 @@ describe("GhosttyDriver (generated AppleScript only)", () => {
   });
   it("surface command records pid then execs the quoted argv", () => {
     const c = surfaceCommand(["echo", "it's $x; y"], "/tmp/p.pid");
-    assert.ok(c.startsWith("/bin/zsh -lic '"));
-    const out = execFileSync("/bin/sh", ["-c", `/bin/zsh -fc ${c.slice("/bin/zsh -lic ".length)}`], { encoding: "utf8" });
+    const out = runBare(c);
     assert.equal(out, "it's $x; y\n");
     assert.ok(existsSync("/tmp/p.pid"));
     assert.match(readFileSync("/tmp/p.pid", "utf8"), /^\d+$/m);

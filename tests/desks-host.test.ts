@@ -663,9 +663,18 @@ async function portFree(port: number): Promise<boolean> {
   });
 }
 
+async function freePort(): Promise<number> {
+  const s = createServer();
+  await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+  const port = (s.address() as { port: number }).port;
+  await new Promise<void>((r) => s.close(() => r()));
+  return port;
+}
+
 describe('desk host: real child process via spawnHost', () => {
-  async function childHost(port: number, how: 'stop' | 'sigterm'): Promise<void> {
+  async function childHost(how: 'stop' | 'sigterm'): Promise<void> {
     const stateDir = tmpDir();
+    const port = await freePort();
     assert.equal(await portFree(port), true, `port ${port} free before the test`);
     const spec = baseSpec(stateDir, { port, name: 'ECHO', runId: 'run_echo_1' });
     mkdirSync(join(stateDir, 'specs'), { recursive: true });
@@ -710,8 +719,8 @@ describe('desk host: real child process via spawnHost', () => {
     }
   }
 
-  it('ach desk host --spec runs EchoEngine, answers HTTP, exits on /stop and frees the port', { timeout: 90_000 }, () => childHost(5711, 'stop'));
-  it('SIGTERM stops the host the same way: process exits, port freed', { timeout: 90_000 }, () => childHost(5712, 'sigterm'));
+  it('ach desk host --spec runs EchoEngine, answers HTTP, exits on /stop and frees the port', { timeout: 90_000 }, () => childHost('stop'));
+  it('SIGTERM stops the host the same way: process exits, port freed', { timeout: 90_000 }, () => childHost('sigterm'));
 
   it('EchoEngine replies "echo: <text>"', async () => {
     const e = new EchoEngine(1);

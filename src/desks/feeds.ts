@@ -25,6 +25,47 @@ export function renderEvent(ev: Record<string, unknown>): string {
 
 export const DEFAULT_HELPER_TIMEOUT_MS = 15_000;
 export const DEFAULT_MAX_PENDING_EVENTS = 1000;
+/** Longest feed stdout/stderr line kept in memory (chars); a longer line is dropped up to its newline. */
+export const DEFAULT_MAX_LINE_CHARS = 1024 * 1024;
+
+/**
+ * Newline splitter with a bounded buffer. A line that grows past maxChars is reported once through
+ * onOverflow (with its first 200 chars), its buffer is freed, and every further byte is discarded
+ * until the next newline, so a runaway or newline-free stream never grows memory past maxChars.
+ */
+function lineSplitter(maxChars: number, onLine: (line: string) => void, onOverflow: (head: string) => void) {
+  let buf = "";
+  let discarding = false;
+  return {
+    push(d: string): void {
+      let start = 0;
+      for (;;) {
+        const i = d.indexOf("\n", start);
+        const piece = i >= 0 ? d.slice(start, i) : d.slice(start);
+        if (!discarding) {
+          if (buf.length + piece.length > maxChars) {
+            const head = (buf + piece.slice(0, 200)).slice(0, 200);
+            buf = "";
+            discarding = true;
+            onOverflow(head);
+          } else {
+            buf += piece;
+          }
+        }
+        if (i < 0) return;
+        if (discarding) discarding = false;
+        else { const l = buf; buf = ""; onLine(l); }
+        start = i + 1;
+      }
+    },
+    end(): void {
+      const l = buf;
+      buf = "";
+      if (!discarding && l) onLine(l);
+      discarding = false;
+    },
+  };
+}
 
 /** Runs a helper command (activeCheck / fullContext). Killed at timeoutMs; `live` tracks it so stop() can kill it. */
 function run(argv: string[], cwd: string | undefined, env: NodeJS.ProcessEnv, timeoutMs: number, live: Set<ChildProcess>): Promise<string> {
@@ -63,6 +104,8 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     helperTimeoutMs?: number;
     /** Max feed events waiting for the helper-gated handler; beyond it the oldest are dropped with a note. Default 1000. */
     maxPendingEvents?: number;
+    /** Longest stdout/stderr line kept (chars); longer lines are dropped with one error each. Default 1 MiB. */
+    maxLineChars?: number;
   } = {}): FeedHandle {
   const note = (s: string) => { try { opts.onNote?.(s); } catch { /* host callback */ } };
   const err = (s: string) => { try { opts.onError?.(s); } catch { /* host callback */ } };
@@ -77,6 +120,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
   const stderrGap = opts.stderrGapMs ?? 5000;
   const helperTimeout = opts.helperTimeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS;
   const maxPending = Math.max(1, opts.maxPendingEvents ?? DEFAULT_MAX_PENDING_EVENTS);
+  const maxLine = Math.max(1, opts.maxLineChars ?? DEFAULT_MAX_LINE_CHARS);
   const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
   const helpers = new Set<ChildProcess>();
 
@@ -235,25 +279,21 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
       proc.on("close", finish);
     });
 
-    let buf = "";
+    // Both streams are split with a bounded buffer: a feed that never writes a newline cannot grow host memory.
+    const out = lineSplitter(maxLine, onLine, (head) => err(`feed line over ${maxLine} chars dropped up to its newline: ${head}`));
     proc.stdout!.setEncoding("utf8");
-    proc.stdout!.on("data", (d: string) => {
-      buf += d;
-      let i: number;
-      while ((i = buf.indexOf("\n")) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
-    });
-    proc.stdout!.on("end", () => { if (buf) { onLine(buf); buf = ""; } });
-    let errBuf = "";
+    proc.stdout!.on("data", (d: string) => out.push(d));
+    proc.stdout!.on("end", () => out.end());
+    const stderrNote = (text: string) => {
+      const now = Date.now();
+      if (now - lastStderr >= stderrGap) { lastStderr = now; note(text); }
+    };
+    const errLines = lineSplitter(maxLine, (raw) => {
+      const l = raw.trim();
+      if (l) stderrNote(`feed stderr: ${l}`);
+    }, (head) => stderrNote(`feed stderr line over ${maxLine} chars dropped: ${head.trim()}`));
     proc.stderr!.setEncoding("utf8");
-    proc.stderr!.on("data", (d: string) => {
-      errBuf += d;
-      let i: number;
-      while ((i = errBuf.indexOf("\n")) >= 0) {
-        const l = errBuf.slice(0, i).trim(); errBuf = errBuf.slice(i + 1);
-        const now = Date.now();
-        if (l && now - lastStderr >= stderrGap) { lastStderr = now; note(`feed stderr: ${l}`); }
-      }
-    });
+    proc.stderr!.on("data", (d: string) => errLines.push(d));
     proc.stderr!.on("error", () => {});
     proc.stdout!.on("error", () => {});
   }

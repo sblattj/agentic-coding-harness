@@ -23,8 +23,7 @@ public enum BackendBoot {
         bundledAchPath: String?,
         waitSeconds: TimeInterval = 30
     ) async -> BootOutcome {
-        let client = APIClient(config: settings.serverConfig)
-        switch await BackendLauncher.probe(client) {
+        switch await BackendLauncher.probe(APIClient(config: settings.serverConfig)) {
         case .serving(let v):
             return .reused(v)
         case .occupied(let status, let detail):
@@ -56,7 +55,9 @@ public enum BackendBoot {
             if !process.isRunning {
                 return .failed("ach web exited during startup; see \(process.logURL.path)")
             }
-            if case .serving(let v) = await BackendLauncher.probe(client) { return .started(location: loc, view: v) }
+            // Re-read the config each try: with no Settings token, the child writes
+            // <stateDir>/web/token at startup and the app picks it up from there.
+            if case .serving(let v) = await BackendLauncher.probe(APIClient(config: settings.serverConfig)) { return .started(location: loc, view: v) }
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
         process.stop() // do not leave a half-booted child running (a retry would orphan it)

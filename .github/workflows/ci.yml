@@ -40,6 +40,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Generated desks assets must match their sources; run once, on the
+      # Node 24 ubuntu leg only, since the output is platform independent.
+      - name: Check generated desks assets
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '24.x'
+        run: node scripts/gen-desks-assets.mjs --check
+
       # Bundled task suite (#51): every task's verify.sh must FAIL on the
       # untouched starter, PASS on reference/ and FAIL on broken/. A checker
       # that cannot tell a right answer from a wrong one fails here.

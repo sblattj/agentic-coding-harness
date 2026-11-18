@@ -12,7 +12,7 @@
 // Live per-run text is NOT taken from the hub topic: hub broadcasts carry
 // raw AgentEvents, which the dashboard cannot render. Instead each run
 // socket runs its own transcript tailer that forwards eventToText output.
-import { handleDesksApi } from "./desks-api.ts";
+import { handleDesksApi, PRIVILEGED_NEEDS_TOKEN } from "./desks-api.ts";
 import { open as openFile, readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
@@ -33,6 +33,7 @@ import { createPricer, pricingMeta } from "../core/pricing.ts";
 import { renderQueuesPage } from "./queues.ts";
 import { PtyManager } from "./pty-manager.ts";
 import { checkHostOrigin, checkJsonBody } from "./request-guard.ts";
+import { queryHasToken, requestHasToken, tokenCookie } from "./auth.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { readLiveInfo } from "../interactive/live-registry.ts";
@@ -239,7 +240,9 @@ function isRunLive(stateDir: string, runId: string): boolean {
   return rec.status === "running" && Date.now() - (rec.updatedAt ?? 0) <= NOT_LIVE_AFTER_MS;
 }
 
-export async function startWebServer(opts: WebServerOptions): Promise<WebServerHandle> {
+export async function startWebServer(rawOpts: WebServerOptions): Promise<WebServerHandle> {
+  // An empty token is no token: `?token=` must never match it (#212 review).
+  const opts: WebServerOptions = rawOpts.token === "" ? (({ token: _empty, ...rest }) => rest)(rawOpts) : rawOpts;
   // createRunEventHub() takes no source param, so a configured source is
   // injected through the class constructor; passing undefined selects the
   // historical FsRunSource default (behavior identical to pre-0.8.0).
@@ -526,14 +529,16 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
    *  status/body when the request must NOT be upgraded (auth failure, bad
    *  params, unknown session, missing Upgrade header). */
   function resolveWsRoute(
+    req: IncomingMessage,
     pathname: string,
     url: URL,
   ): { data: WsData } | { reject: { status: number; message: string } } {
     const ptyWs = PTY_WS_ROUTE.exec(pathname);
     if (ptyWs !== null) {
-      if (opts.token !== undefined && url.searchParams.get("token") !== opts.token) {
-        return { reject: { status: 401, message: "unauthorized" } };
-      }
+      // Typing into a PTY (a spawned session or a live run) is as privileged as spawning one:
+      // fail closed with no token, else ?token=, Bearer or the token cookie.
+      if (opts.token === undefined) return { reject: { status: 403, message: PRIVILEGED_NEEDS_TOKEN } };
+      if (!authed(req, url)) return { reject: { status: 401, message: "unauthorized" } };
       let sessionId: string;
       try {
         sessionId = decodeURIComponent(ptyWs[1] as string);
@@ -555,7 +560,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
     }
 
     if (pathname === "/ws") {
-      if (opts.token !== undefined && url.searchParams.get("token") !== opts.token) {
+      if (opts.token !== undefined && !authed(req, url)) {
         return { reject: { status: 401, message: "unauthorized" } };
       }
       const runsMode = url.searchParams.get("runs") === "1";
@@ -584,6 +589,9 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         // (src/web/request-guard.ts). Native clients send no Origin and a loopback Host.
         const refused = checkHostOrigin(req, { host: opts.host, port: boundPort() }) ?? checkJsonBody(req, pathname);
         if (refused !== null) return jsonError(res, refused.status, refused.message);
+        // A valid ?token= (the URL `ach web` prints) earns the HttpOnly, SameSite=Strict token
+        // cookie, so the page's own fetch/EventSource/WebSocket calls authenticate without it.
+        if (queryHasToken(url, opts.token)) res.setHeader("set-cookie", tokenCookie(boundPort(), opts.token as string));
 
         if (get && (pathname === "/" || pathname === "/index.html")) {
           const page = await readAsset("index.html");
@@ -617,7 +625,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
 
         // #204/#205: desks Web API (src/web/desks-api.ts owns every /api/desks route).
         if (pathname === "/api/desks" || pathname.startsWith("/api/desks/")) {
-          if (await handleDesksApi(req, res, url, { stateDir: opts.stateDir, ...(opts.token !== undefined ? { token: opts.token } : {}) })) return;
+          if (await handleDesksApi(req, res, url, { stateDir: opts.stateDir, port: boundPort(), ...(opts.token !== undefined ? { token: opts.token } : {}) })) return;
         }
 
         if (get && pathname === "/desks") {
@@ -650,10 +658,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         // Queue panel (#115). Unlike /api/runs this IS token-gated when a token
         // is configured: queue state carries plan paths and working directories.
         if (get && (pathname === "/api/queues" || pathname === "/queues")) {
-          if (opts.token !== undefined) {
-            const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
-            if (url.searchParams.get("token") !== opts.token && bearer !== opts.token) return jsonError(res, 401, "unauthorized");
-          }
+          if (opts.token !== undefined && !authed(req, url)) return jsonError(res, 401, "unauthorized");
           const queues = collectQueueViews(opts.stateDir);
           if (pathname === "/api/queues") return sendJson(res, 200, { queues });
           return res
@@ -774,10 +779,11 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         // #195: interactive runs' own PTYs. Token-gated like /api/queues
         // (entries carry working directories).
         if (pathname === "/api/live" || LIVE_ROUTE.test(pathname)) {
-          if (opts.token !== undefined) {
-            const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
-            if (url.searchParams.get("token") !== opts.token && bearer !== opts.token) return jsonError(res, 401, "unauthorized");
-          }
+          // Reads are gated when a token is configured; continue (releases a step of the run)
+          // is privileged and fails closed without one.
+          if (opts.token === undefined) {
+            if (LIVE_ROUTE.exec(pathname)?.[2] === "continue") return jsonError(res, 403, PRIVILEGED_NEEDS_TOKEN);
+          } else if (!authed(req, url)) return jsonError(res, 401, "unauthorized");
           if (pathname === "/api/live") {
             if (!get) return notFound(res);
             return sendJson(res, 200, { live: await listConfirmedLiveRuns(opts.stateDir) });
@@ -810,10 +816,12 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         }
 
         // POST /api/pty spawns any command: token-gated like the rest of the API (the whole
-        // /api/pty family, list and kill included).
-        if ((pathname === "/api/pty" || pathname.startsWith("/api/pty/")) && opts.token !== undefined) {
-          const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
-          if (url.searchParams.get("token") !== opts.token && bearer !== opts.token) return jsonError(res, 401, "unauthorized");
+        // /api/pty family, list and kill included). Fail closed: with no token configured the
+        // family is refused outright, since loopback alone does not stop another local process
+        // or OS user from spawning commands as this user.
+        if (pathname === "/api/pty" || pathname.startsWith("/api/pty/")) {
+          if (opts.token === undefined) return jsonError(res, 403, PRIVILEGED_NEEDS_TOKEN);
+          if (!authed(req, url)) return jsonError(res, 401, "unauthorized");
         }
 
         if (pathname === "/api/pty") {
@@ -877,7 +885,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
           // right status (401/404/400); a well-formed request without an
           // Upgrade header lands here as "upgrade failed" 400.
           if (!get) return notFound(res);
-          const resolved = resolveWsRoute(pathname, url);
+          const resolved = resolveWsRoute(req, pathname, url);
           if ("reject" in resolved) return jsonError(res, resolved.reject.status, resolved.reject.message);
           return jsonError(res, 400, "upgrade failed");
         }
@@ -917,6 +925,10 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
   const httpServer = createServer(requestHandler);
   /** The port the server really listens on (opts.port may be 0). */
   const boundPort = (): number => (httpServer.address() as AddressInfo | null)?.port ?? opts.port;
+  /** ?token=, Bearer, or this port's token cookie (src/web/auth.ts). */
+  function authed(req: IncomingMessage, url: URL): boolean {
+    return requestHasToken(req, url, opts.token, boundPort());
+  }
 
   /** Answer a rejected upgrade with a plain HTTP status, then drop the
    *  socket so the client sees an error instead of a hang. */
@@ -964,7 +976,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<WebServerH
         rejectUpgrade(socket, 404, "not found");
         return;
       }
-      const resolved = resolveWsRoute(pathname, url);
+      const resolved = resolveWsRoute(req, pathname, url);
       if ("reject" in resolved) {
         rejectUpgrade(socket, resolved.reject.status, resolved.reject.message);
         return;

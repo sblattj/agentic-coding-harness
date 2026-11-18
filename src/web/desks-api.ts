@@ -16,11 +16,14 @@ import { loadLayout } from "../desks/config.ts";
 import { AGENTS, type AgentName } from "../core/types.ts";
 import { kiroIdeDefaultBin, resolveOnPath, runDoctor, scanMcp, type DoctorCheck } from "../cli/doctor.ts";
 import { WEB_API_PREFIX } from "../desks/types.ts";
+import { requestHasToken } from "./auth.ts";
 import type { Decision, DeskMessage, HostEvent, Layout, RosterRow, RosterView, TerminalKind } from "../desks/types.ts";
 
 export interface DesksApiOptions {
   stateDir: string;
   token?: string;
+  /** The server's bound port: names the token cookie (src/web/auth.ts). Unset = no cookie auth. */
+  port?: number;
 }
 
 /** One row of GET /api/desks/engines. */
@@ -303,10 +306,21 @@ export function statusForError(e: unknown): number {
   return 500;
 }
 
-function authorized(req: IncomingMessage, url: URL, token: string | undefined): boolean {
-  if (token === undefined) return true;
-  const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
-  return url.searchParams.get("token") === token || bearer === token;
+/** The 403 a privileged route answers when the server has no token at all (#212 review). */
+export const PRIVILEGED_NEEDS_TOKEN =
+  "this route needs a token, and this server was started without one (ach web always has one: --token, AGENTIC_CODING_HARNESS_HTTP_TOKEN, or <stateDir>/web/token)";
+
+/**
+ * Token gate. With a token (always, under `ach web`): ?token=, Bearer or the token cookie must
+ * match (401 otherwise). A server embedded without a token fails closed for writes: GET/HEAD
+ * answer, every mutating route (send, up, down, lanes, answers, approvals, engine) is 403.
+ */
+function authorize(req: IncomingMessage, url: URL, token: string | undefined, port: number | undefined): { status: number; error: string } | null {
+  if (token === undefined || token === "") {
+    const method = req.method ?? "GET";
+    return method === "GET" || method === "HEAD" ? null : { status: 403, error: PRIVILEGED_NEEDS_TOKEN };
+  }
+  return requestHasToken(req, url, token, port) ? null : { status: 401, error: "unauthorized" };
 }
 
 function decodeSeg(s: string): string {
@@ -335,8 +349,9 @@ export async function handleDesksApi(
 ): Promise<boolean> {
   const pathname = url.pathname;
   if (pathname !== WEB_API_PREFIX && !pathname.startsWith(`${WEB_API_PREFIX}/`)) return false;
-  if (!authorized(req, url, opts.token)) {
-    sendJson(res, 401, { error: "unauthorized" });
+  const denied = authorize(req, url, opts.token, opts.port);
+  if (denied !== null) {
+    sendJson(res, denied.status, { error: denied.error });
     return true;
   }
   const svc = deps.service;

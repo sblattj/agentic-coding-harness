@@ -177,11 +177,11 @@ struct DeskChatView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("An embedded terminal is not in this build. Run this in a terminal to attach:").font(.caption)
             HStack {
-                Text(attachArgv.joined(separator: " ")).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                Text(ShellQuote.command(attachArgv)).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 Spacer()
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(attachArgv.joined(separator: " "), forType: .string)
+                    NSPasteboard.general.setString(ShellQuote.command(attachArgv), forType: .string)
                 }
             }
             if let url = row?.entry.engineUrl {

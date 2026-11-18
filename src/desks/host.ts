@@ -340,20 +340,18 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     startTurn(merged);
   };
 
-  /** Deliver text (already header-prefixed) now or queue it. */
-  const deliver = (engineText: string): "now" | "queued" => {
-    if (state === "idle" && queue.length === 0) {
-      startTurn(engineText);
-      return "now";
-    }
-    queue.push({ text: engineText });
-    return "queued";
-  };
-
+  /**
+   * Record the message, then deliver it now or queue it. message_in is recorded BEFORE the turn
+   * starts: an engine may emit turn_start synchronously inside send(), and subscribers and replay
+   * must see the message ahead of the turn it caused.
+   */
   const acceptMessage = (from: Sender, text: string, header: boolean): DeskMessage => {
-    const delivered = deliver(header ? peerHeader(from) + text : text);
+    const engineText = header ? peerHeader(from) + text : text;
+    const delivered: "now" | "queued" = state === "idle" && queue.length === 0 ? "now" : "queued";
     const message: DeskMessage = { id: newMessageId(), from, to: spec.name, text, at: Date.now(), delivered };
     record("message_in", { message });
+    if (delivered === "now") startTurn(engineText);
+    else queue.push({ text: engineText });
     return message;
   };
 

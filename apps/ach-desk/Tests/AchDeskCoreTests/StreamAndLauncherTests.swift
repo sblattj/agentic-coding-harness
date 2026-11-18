@@ -118,11 +118,59 @@ final class Box<T>: @unchecked Sendable {
         #expect(env2["AGENTIC_CODING_HARNESS_STATE_DIR"] == nil)
     }
 
+    /// #212 review: `ach web` without --token keeps a generated token in <stateDir>/web/token and
+    /// 401s without it; an app with an empty Settings token must read that file to connect.
+    @Test func bootWithEmptySettingsTokenUsesTheStoredWebToken() async throws {
+        let state = FileManager.default.temporaryDirectory.appendingPathComponent("ach-desk-token-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: state.appendingPathComponent("web"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: state) }
+        let stored = "stored-web-token-0123456789abcdef"
+        try "\(stored)\n".write(to: state.appendingPathComponent("web/token"), atomically: true, encoding: .utf8)
+        let server = try MockServer { r, i in
+            r.headers["authorization"] == "Bearer \(stored)" ? desksHandler(r, i) : .json(401, #"{"error":"unauthorized"}"#)
+        }
+        try await server.start()
+        defer { server.stop() }
+        let proc = BackendProcess(logURL: FileManager.default.temporaryDirectory.appendingPathComponent("ach-desk-boot-unused.log"))
+        let l = BackendLauncher(isExecutable: { _ in false }, runCapture: { _, _ in nil })
+        var s = AppSettings()
+        s.port = server.port
+        s.stateDir = state.path
+        let out = await BackendBoot.ensure(settings: s, launcher: l, process: proc, bundledAchPath: nil)
+        if case .reused = out {} else { Issue.record("expected reuse with the stored token, got \(out)") }
+        s.token = "settings-token-wins-0000"
+        if case .failed(let m) = await BackendBoot.ensure(settings: s, launcher: l, process: proc, bundledAchPath: nil) {
+            #expect(m.contains("401"))
+        } else { Issue.record("a non-empty Settings token must win over the file") }
+    }
+
+    @Test func effectiveTokenFollowsTheCLIStateDirRule() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("ach-desk-home-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        var s = AppSettings()
+        #expect(s.webTokenPath(environment: [:], home: home) == home + "/.agentic-coding-harness/web/token")
+        #expect(s.webTokenPath(environment: ["AGENTIC_CODING_HARNESS_STATE_DIR": "/env/state"], home: home) == "/env/state/web/token")
+        #expect(s.webTokenPath(environment: ["AGENTIC_CODING_HARNESS_STATE_DIR": ""], home: home) == home + "/.agentic-coding-harness/web/token")
+        #expect(s.effectiveToken(environment: [:], home: home) == nil, "no file yet")
+        let dir = home + "/.agentic-coding-harness/web"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try "short\n".write(toFile: dir + "/token", atomically: true, encoding: .utf8)
+        #expect(s.effectiveToken(environment: [:], home: home) == nil, "too short to be a real token")
+        try "  abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG\n".write(toFile: dir + "/token", atomically: true, encoding: .utf8)
+        #expect(s.effectiveToken(environment: [:], home: home) == "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG")
+        s.stateDir = "/settings/state"
+        #expect(s.webTokenPath(environment: ["AGENTIC_CODING_HARNESS_STATE_DIR": "/env/state"], home: home) == "/settings/state/web/token")
+        s.token = "explicit"
+        #expect(s.effectiveToken(environment: [:], home: home) == "explicit")
+        #expect(s.serverConfig.token == "explicit")
+    }
+
     @Test func bootReusesServingAndRefusesOccupiedOrMissing() async throws {
         let proc = BackendProcess(logURL: FileManager.default.temporaryDirectory.appendingPathComponent("ach-desk-boot-unused.log"))
         let ok = try MockServer(handler: desksHandler)
         try await ok.start()
         var s = AppSettings()
+        s.stateDir = "/nonexistent/ach-desk-test-state" // never read the real ~/.agentic-coding-harness/web/token
         s.port = ok.port
         let l = BackendLauncher(isExecutable: { _ in false }, runCapture: { _, _ in nil })
         if case .reused = await BackendBoot.ensure(settings: s, launcher: l, process: proc, bundledAchPath: nil) {} else { Issue.record("expected reuse") }
@@ -217,6 +265,7 @@ final class Box<T>: @unchecked Sendable {
         probeServer.stop()
         try await Task.sleep(nanoseconds: 100_000_000)
         var s = AppSettings()
+        s.stateDir = "/nonexistent/ach-desk-test-state" // never read the real ~/.agentic-coding-harness/web/token
         s.port = free
         let l = BackendLauncher(isExecutable: { _ in true }, runCapture: { _, args in args.last == "command -v ach" ? script : nil })
         let out = await BackendBoot.ensure(settings: s, launcher: l, process: proc, bundledAchPath: nil, waitSeconds: 1)

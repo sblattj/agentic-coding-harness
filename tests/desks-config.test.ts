@@ -69,13 +69,32 @@ describe("parseLayout", () => {
 
   it("rejects overlapping, inverted and out-of-range ports", () => {
     const d = (n: number) => Array.from({ length: n }, (_, i) => `  - {name: D${i}, role: r}`).join("\n");
-    // 3 desks need ports[0] >= 5
-    assert.match(msgOf(() => parseLayout(`lanes: {ports: [4, 99]}\ndesks:\n${d(3)}\n`, "t")), /lanes\.ports\[0\]/);
+    // 3 desks sit on offsets 1..3, so ports[0] >= 4 (adjacent is fine, overlap is not)
+    assert.match(msgOf(() => parseLayout(`lanes: {ports: [3, 99]}\ndesks:\n${d(3)}\n`, "t")), /lanes\.ports\[0\]: 3 overlaps .*4801\.\.4803; use at least 4/);
+    const adj = parseLayout(`lanes: {ports: [4, 99]}\ndesks:\n${d(3)}\n`, "t");
+    assert.equal(deskPort(adj, 2) + 1, adj.portBase + adj.lanes.ports[0], "first lane port is right after the last desk port");
     assert.doesNotThrow(() => parseLayout(`lanes: {ports: [5, 99]}\ndesks:\n${d(3)}\n`, "t"));
     assert.match(msgOf(() => parseLayout(`lanes: {ports: [50, 10]}\ndesks:\n${d(1)}\n`, "t")), /lanes\.ports/);
     assert.match(msgOf(() => parseLayout(`portBase: 65500\ndesks:\n${d(1)}\n`, "t")), /lanes\.ports\[1\].*65535/);
     assert.match(msgOf(() => parseLayout(`portBase: 0\ndesks:\n${d(1)}\n`, "t")), /portBase/);
     assert.match(msgOf(() => parseLayout(`lanes: {ports: [0, 5]}\ndesks:\n${d(1)}\n`, "t")), /lanes\.ports\[0\]/);
+  });
+
+  it("reserves every host's opencode engine port (port + 500): no overlap, nothing past 65535", () => {
+    const d = (n: number) => Array.from({ length: n }, (_, i) => `  - {name: D${i}, role: r}`).join("\n");
+    // Control: the default layout (4800, lanes [10, 99]) stays valid.
+    assert.doesNotThrow(() => parseLayout(`desks:\n${d(3)}\n`, "t"));
+    // Last lane's engine port: 4800 + 99 + 500 = 5399; portBase 65036 puts it at 65635.
+    assert.match(msgOf(() => parseLayout(`portBase: 65036\ndesks:\n${d(1)}\n`, "t")), /lanes\.ports\[1\]: the opencode engine port .* exceeds 65535/);
+    assert.doesNotThrow(() => parseLayout(`portBase: 64936\ndesks:\n${d(1)}\n`, "t"), "engine port 65535 exactly is fine");
+    // Lane offsets 501..503 would sit on the engine ports of 3 desks (offsets 1..3 + 500).
+    assert.match(msgOf(() => parseLayout(`lanes: {ports: [503, 600]}\ndesks:\n${d(3)}\n`, "t")), /lanes\.ports: lane ports .* overlap the desks' opencode engine ports 5301\.\.5303/);
+    assert.match(msgOf(() => parseLayout(`lanes: {ports: [400, 501]}\ndesks:\n${d(3)}\n`, "t")), /overlap the desks' opencode engine ports/);
+    assert.doesNotThrow(() => parseLayout(`lanes: {ports: [504, 600]}\ndesks:\n${d(3)}\n`, "t"), "first lane right after the last desk engine port");
+    assert.doesNotThrow(() => parseLayout(`lanes: {ports: [400, 500]}\ndesks:\n${d(3)}\n`, "t"), "last lane right before the first desk engine port");
+    // A range 500 ports wide holds a lane port equal to another lane's engine port.
+    assert.match(msgOf(() => parseLayout(`lanes: {ports: [600, 1100]}\ndesks:\n${d(1)}\n`, "t")), /lanes\.ports: \[600, 1100\] spans 501 ports/);
+    assert.doesNotThrow(() => parseLayout(`lanes: {ports: [600, 1099]}\ndesks:\n${d(1)}\n`, "t"), "499 apart is fine");
   });
 
   it("rejects an empty feed command", () => {

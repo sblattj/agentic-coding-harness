@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { OpenRequest, TerminalDriver } from "../types.ts";
-import { shellQuote } from "./tmux.ts";
+import { pickPaneShell, shellQuote, type PaneShell } from "./tmux.ts";
 
 export type OsascriptRunner = (script: string) => Promise<string>;
 
@@ -65,7 +65,7 @@ function psStart(pid: number): number | undefined {
 }
 
 /**
- * Identity check for a recorded pid. The launched zsh writes the pidfile after it started and then execs, so the
+ * Identity check for a recorded pid. The launched pane shell writes the pidfile after it started and then execs, so the
  * pid keeps its start time: the process we launched started shortly BEFORE the pidfile was written. A reused pid
  * started after the original died, so after the pidfile (ps lstart has whole-second resolution, hence the slack).
  * The pidfile mtime is the per-open marker; two opens never share one.
@@ -98,10 +98,10 @@ export function pidfileFor(id: string, dir: string = defaultDir()): string | und
   }
 }
 
-/** Surface command: zsh records its pid, then execs the real command so the pid IS the command. */
-export function surfaceCommand(argv: string[], pidfile: string): string {
+/** Surface command: the pane shell records its pid, then execs the real command so the pid IS the command. */
+export function surfaceCommand(argv: string[], pidfile: string, shell: PaneShell = pickPaneShell()): string {
   const inner = `echo $$ > ${shellQuote(pidfile)}; exec ${argv.map(shellQuote).join(" ")}`;
-  return `/bin/zsh -lic ${shellQuote(inner)}`;
+  return [shell.path, ...shell.flags, shellQuote(inner)].join(" ");
 }
 
 const PREAMBLE = (cmd: string, cwd: string): string[] => [

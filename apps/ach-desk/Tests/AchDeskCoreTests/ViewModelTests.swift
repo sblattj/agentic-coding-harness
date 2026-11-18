@@ -185,3 +185,42 @@ import Testing
         #expect(store.engines.count == 3 && store.mcpNames.count == 3 && store.messages.count == 2)
     }
 }
+
+
+@Suite struct HelperPureTests {
+    @Test func laneNameRejectsEveryTrailingLineTerminator() {
+        for tail in ["\n", "\r\n", "\r", "\u{85}", "\u{2028}", "\u{2029}"] {
+            #expect(!NewLaneBody.isValidName("lane1" + tail), "tail \(tail.unicodeScalars.map(\.value))")
+        }
+        #expect(NewLaneBody.isValidName("lane1"))
+    }
+
+    @Test func suggestedNameSkipsNamesCaseInsensitively() {
+        #expect(NewLaneBody.suggestedName(used: []) == "LANE1")
+        #expect(NewLaneBody.suggestedName(used: ["lane1"]) == "LANE2")
+        #expect(NewLaneBody.suggestedName(used: ["Lane1", "lane2", "LANE4"]) == "LANE3")
+    }
+
+    @Test func shellQuoteProtectsMetacharacters() {
+        #expect(ShellQuote.command(["ach", "desk", "chat", "LANE1"]) == "ach desk chat LANE1")
+        #expect(ShellQuote.command(["/Users/a b/ach", "desk"]) == "'/Users/a b/ach' desk")
+        #expect(ShellQuote.word("it's") == "'it'\\''s'")
+        #expect(ShellQuote.word("$(rm -rf ~)") == "'$(rm -rf ~)'")
+        #expect(ShellQuote.word("") == "''")
+    }
+}
+
+@MainActor
+@Suite struct DeskStoreFixTests {
+    @Test func stopClearsPollingSoStoppedStoreIsNotConnected() throws {
+        let store = DeskStore(client: APIClient(config: ServerConfig(port: 1)), clock: { Fixtures.noon })
+        let roster = try JSONDecoder().decode(RosterView.self, from: Fixtures.data(Fixtures.rosterView))
+        store.apply(.roster(roster))
+        store.streamStatusChanged(.disconnected(retryIn: 1, failures: 5))
+        #expect(store.polling)
+        #expect(store.isConnected)
+        store.stop()
+        #expect(!store.polling)
+        #expect(!store.isConnected)
+    }
+}
