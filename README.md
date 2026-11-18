@@ -1025,7 +1025,7 @@ loopback only, whatever `--host` says. It prints and opens `http://127.0.0.1:<po
 a request with a valid `?token=` gets an `HttpOnly`, `SameSite=Strict` cookie (one per port,
 30 days), and from then on the pages work without the token in the URL. Clients without
 cookies send `Authorization: Bearer <t>` or `?token=<t>`. Everything that can run a command or
-change state needs the token (401 without it): `/api/pty` (spawn, list, kill), `/ws/pty/*`
+change state needs the token (401 without it; an embedded server started with no token answers 403 on these instead): `/api/pty` (spawn, list, kill), `/ws/pty/*`
 (typing into a new PTY or a live run), `POST /api/live/<runId>/continue`, and every
 `/api/desks` route; so do `/ws`, `/api/live` and `/api/queues`. Pages and the read-only JSON
 API (`/api/runs`, `/api/stats`, `/api/compare`, `/health`) stay open on the loopback bind.
