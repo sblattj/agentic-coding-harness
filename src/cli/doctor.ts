@@ -396,6 +396,33 @@ async function checkBinary(
 
 // ------------------------------------------------------------------ auth
 
+/**
+ * Evidence of a USABLE /login in the default Claude config (#216 review), or undefined.
+ * `~/.claude/.credentials.json` must parse and hold claudeAiOauth.accessToken as a
+ * non-empty string, and when `expiresAt` (epoch ms) is present it must be in the future.
+ * Otherwise `~/.claude.json` must hold oauthAccount with a non-empty string
+ * accountUuid or emailAddress. An empty, malformed, expired or wrong-shape file is not a login.
+ * Never returns a token value.
+ */
+export async function defaultClaudeLogin(home: string, now: number = Date.now()): Promise<string | undefined> {
+  const credsPath = path.join(home, ".claude", ".credentials.json");
+  const creds = await readJson(credsPath);
+  if (creds?.ok && isObj(creds.value) && isObj(creds.value.claudeAiOauth)) {
+    const o = creds.value.claudeAiOauth;
+    const tokenOk = typeof o.accessToken === "string" && o.accessToken.trim() !== "";
+    const exp = o.expiresAt;
+    const expired = typeof exp === "number" && Number.isFinite(exp) && exp <= now;
+    if (tokenOk && !expired) return `${credsPath} holds an unexpired OAuth token`;
+  }
+  const cfg = await readJson(path.join(home, ".claude.json"));
+  if (cfg?.ok && isObj(cfg.value) && isObj(cfg.value.oauthAccount)) {
+    const a = cfg.value.oauthAccount;
+    const has = (k: string): boolean => typeof a[k] === "string" && (a[k] as string).trim() !== "";
+    if (has("accountUuid") || has("emailAddress")) return "~/.claude.json records an OAuth account (token in the OS keychain, not checkable offline)";
+  }
+  return undefined;
+}
+
 async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv, allAgents = false): Promise<DoctorCheck> {
   const t0 = Date.now();
   const mk = (status: DoctorStatus, detail: string, hint?: string): DoctorCheck => ({
@@ -433,17 +460,11 @@ async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv, allAgents = f
         // /login in the default config means this is a flag choice, not a broken machine.
         // Warn (unproven, exit unaffected) and name the flag; no login anywhere still fails.
         if (allAgents) {
-          const creds = path.join(home, ".claude", ".credentials.json");
-          const cfg = await readJson(path.join(home, ".claude.json"));
-          const login = (await exists(creds))
-            ? `${creds} present`
-            : cfg?.ok && isObj(cfg.value) && cfg.value.oauthAccount !== undefined
-              ? "~/.claude.json records an OAuth account (token in the OS keychain, not checkable offline)"
-              : undefined;
+          const login = await defaultClaudeLogin(home);
           if (login !== undefined) {
             return mk(
               "unproven",
-              `no ${names.join(" / ")} in env; the default Claude config has a login (${login}), but runs use a fresh per-run CLAUDE_CONFIG_DIR that cannot see it, so \`ach run\` is unauthenticated without --claude-default-config`,
+              `no ${names.join(" / ")} in env; the default Claude config has a usable login (${login}), but runs use a fresh per-run CLAUDE_CONFIG_DIR that cannot see it, so \`ach run\` is unauthenticated without --claude-default-config`,
               "pass --claude-default-config (env AGENTIC_CODING_HARNESS_DEFAULT_CLAUDE_CONFIG=1) to use that login, or set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) / ANTHROPIC_API_KEY",
             );
           }

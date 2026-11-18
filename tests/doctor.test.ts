@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { runDoctor, formatDoctorTable, formatSummaryLine, type DoctorCheck, type DoctorReport } from "../src/cli/doctor.ts";
+import { runDoctor, formatDoctorTable, formatSummaryLine, defaultClaudeLogin, type DoctorCheck, type DoctorReport } from "../src/cli/doctor.ts";
 
 // `ach doctor` (issue #35). Every test builds its own world: a temp PATH
 // holding fake agent binaries (shell scripts), a temp HOME, a temp state dir.
@@ -667,7 +667,7 @@ describe("runDoctor — all-agents mode skips agents that are not installed (#21
     const all = await runDoctor({ agents: ["claude"], env: w.env, cwd: w.cwd, stateDir: w.state, skipNotInstalled: true });
     const a = check(all, "claude", "auth");
     assert.equal(a.status, "unproven");
-    assert.match(a.detail, /default Claude config has a login/);
+    assert.match(a.detail, /default Claude config has a usable login/);
     assert.match(a.hint ?? "", /--claude-default-config/);
     assert.equal(all.ok, true);
     assert.doesNotMatch(JSON.stringify(all), /TOKEN-XYZ/);
@@ -695,5 +695,47 @@ describe("runDoctor — all-agents mode skips agents that are not installed (#21
     assert.ok(!j.failing.some((f) => f.agent === "gemini"));
     const one = runCli(["doctor", "--agent", "gemini"], env, w.cwd);
     assert.equal(one.code, 1, one.stdout + one.stderr);
+  });
+
+  it("defaultClaudeLogin: empty, malformed, expired and wrong-shape files are not a login; valid ones are", async () => {
+    const home = async (files: Record<string, string>): Promise<string> => {
+      const h = (await world()).home;
+      for (const [rel, body] of Object.entries(files)) {
+        await fs.mkdir(path.dirname(path.join(h, rel)), { recursive: true });
+        await fs.writeFile(path.join(h, rel), body);
+      }
+      return h;
+    };
+    const C = ".claude/.credentials.json";
+    const now = 1_700_000_000_000;
+    const tok = (o: object): string => JSON.stringify({ claudeAiOauth: o });
+    assert.equal(await defaultClaudeLogin(await home({}), now), undefined, "no files");
+    assert.equal(await defaultClaudeLogin(await home({ [C]: "" }), now), undefined, "empty credentials");
+    assert.equal(await defaultClaudeLogin(await home({ [C]: "{not json" }), now), undefined, "malformed credentials");
+    assert.equal(await defaultClaudeLogin(await home({ [C]: "{}" }), now), undefined, "no claudeAiOauth");
+    assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "" }) }), now), undefined, "empty token");
+    assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: 5 }) }), now), undefined, "non-string token");
+    assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: now - 1 }) }), now), undefined, "expired");
+    assert.match((await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: now + 60_000 }) }), now)) ?? "", /unexpired OAuth token/);
+    assert.match((await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t" }) }), now)) ?? "", /OAuth token/, "no expiry field");
+    const J = ".claude.json";
+    assert.equal(await defaultClaudeLogin(await home({ [J]: "" }), now), undefined, "empty claude.json");
+    assert.equal(await defaultClaudeLogin(await home({ [J]: "{oops" }), now), undefined, "malformed claude.json");
+    assert.equal(await defaultClaudeLogin(await home({ [J]: '{"oauthAccount":null}' }), now), undefined, "null account");
+    assert.equal(await defaultClaudeLogin(await home({ [J]: '{"oauthAccount":{}}' }), now), undefined, "empty account");
+    assert.equal(await defaultClaudeLogin(await home({ [J]: '{"oauthAccount":{"emailAddress":""}}' }), now), undefined, "blank email");
+    assert.match((await defaultClaudeLogin(await home({ [J]: '{"oauthAccount":{"accountUuid":"u-1"}}' }), now)) ?? "", /OAuth account/);
+    // An expired token file does not mask a valid account record.
+    assert.match((await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: 1 }), [J]: '{"oauthAccount":{"emailAddress":"a@b.c"}}' }), now)) ?? "", /OAuth account/);
+  });
+
+  it("claude auth in all-agents mode: an empty credentials file does not downgrade the failure", async () => {
+    const w = await world();
+    await fakeBin(w, "claude", 'echo "2.1.3 (Claude Code)"');
+    await fs.mkdir(path.join(w.home, ".claude"), { recursive: true });
+    await fs.writeFile(path.join(w.home, ".claude", ".credentials.json"), "");
+    const r = await runDoctor({ agents: ["claude"], env: w.env, cwd: w.cwd, stateDir: w.state, skipNotInstalled: true });
+    assert.equal(check(r, "claude", "auth").status, "failed");
+    assert.equal(r.ok, false);
   });
 });
