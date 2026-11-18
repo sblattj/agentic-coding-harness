@@ -8,7 +8,7 @@
 //   port). So a page opened once with ?token= keeps working: its same-origin fetch, EventSource
 //   and WebSocket calls carry the cookie without the page knowing the token.
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, constants, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
 
@@ -64,54 +64,86 @@ function inode(file: string): number | null {
   return lstatSync(file, { throwIfNoEntry: false })?.ino ?? null;
 }
 
+const sleepMs = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+/** A lock left by a starter that died mid-replace is taken over after this long. */
+const LOCK_STALE_MS = 10_000;
+
+/** Runs `fn` holding `<file>.lock` (an atomic mkdir), waiting up to ~15 s for another holder. */
+function withReplaceLock<T>(file: string, fn: () => T): T {
+  const lock = `${file}.lock`;
+  for (let i = 0; ; i++) {
+    try {
+      mkdirSync(lock, { mode: 0o700 });
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const st = statSync(lock, { throwIfNoEntry: false });
+      if (st !== undefined && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+        try {
+          rmdirSync(lock);
+        } catch {
+          /* another starter took it over first */
+        }
+        continue;
+      }
+      if (i >= 1500) throw new Error(`timed out waiting for ${lock}`);
+      sleepMs(10);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmdirSync(lock);
+  }
+}
+
 /**
  * The stored token, created on first use. A missing, empty or too-short file gets a fresh
  * 256-bit token. Symlinks are refused (O_NOFOLLOW) so the file cannot be redirected.
  *
- * Concurrent starters agree on one token: a token file only ever appears whole (written to a
- * temp file, then link(2)ed into place, which fails if the name is taken), so the first writer
- * wins and every other starter reads its token. An invalid file left by a crash or an outside
- * edit is moved aside first; if what got moved is not the invalid file this starter read (a
- * racer already replaced it), it is put back.
+ * Concurrent starters agree on one token. A token file only ever appears whole: it is written
+ * to a temp file first. A missing name is claimed with link(2), which fails if the name is
+ * taken, so the first writer wins and the others read its token. An invalid file (left by a
+ * crash or an outside edit) is replaced only under a lock, after re-reading it under that lock,
+ * so a starter that arrives late reads the replacement instead of writing its own.
  */
 export function loadOrCreateWebToken(stateDir: string): { token: string; path: string; created: boolean } {
   const dir = join(stateDir, "web");
   const file = webTokenPath(stateDir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  const seenIno = inode(file);
   const existing = readTokenFile(file);
   if (existing !== null) return { token: existing, path: file, created: false };
   const token = randomBytes(32).toString("base64url");
   let tmp: string | undefined;
-  let won = false;
   try {
     tmp = writeTempToken(file, token);
-    if (seenIno !== null) {
-      const aside = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.bad`;
-      try {
-        renameSync(file, aside);
-        if (inode(aside) !== seenIno) claim(aside, file); // a racer's good token: put it back
-        rmSync(aside, { force: true });
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; // another starter moved it first
+    const t = tmp;
+    if (claim(t, file)) return { token, path: file, created: true };
+    const raced = readTokenFile(file);
+    if (raced !== null) return { token: raced, path: file, created: false };
+    return withReplaceLock(file, () => {
+      const now = readTokenFile(file);
+      if (now !== null) return { token: now, path: file, created: false };
+      if (inode(file) === null) {
+        if (claim(t, file)) return { token, path: file, created: true };
+      } else {
+        renameSync(t, file); // replaces the invalid file atomically; only the lock holder does this
+        tmp = undefined;
+        return { token, path: file, created: true };
       }
-    }
-    won = claim(tmp, file);
-    // A racer may hold the good file aside for a moment before putting it back (above), so the
-    // name can be briefly empty: wait a bounded time, and claim it again if it stays empty.
-    for (let i = 0; i < 200; i++) {
-      const t = readTokenFile(file);
-      if (t !== null) return { token: t, path: file, created: won && t === token };
-      if (inode(file) === null && claim(tmp, file)) won = true;
-      else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
+      const after = readTokenFile(file);
+      if (after === null) throw new Error("still empty or too short after replacing it");
+      return { token: after, path: file, created: false };
+    });
   } catch (e) {
     throw new Error(`web: cannot write the token file ${file}: ${(e as Error).message}`);
   } finally {
     if (tmp !== undefined) rmSync(tmp, { force: true });
   }
-  throw new Error(`web: token file ${file} is still empty or too short after replacing it`);
 }
 
 /** Cookie name per port: cookies ignore ports, so two servers on one host must not share one. */

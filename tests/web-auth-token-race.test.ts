@@ -1,7 +1,7 @@
 // An empty/short token file is replaced atomically; every starter ends with the file's token.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -59,6 +59,21 @@ describe('loadOrCreateWebToken with an invalid token file', () => {
       assert.deepEqual(tokens, tokens.map(() => content), `round ${round}: a starter kept a token the file does not hold`);
       assert.deepEqual(readdirSync(dirname(file)), ['token'], `round ${round}: temp or aside file left behind`);
     }
+  });
+
+  it('a replace lock left by a crashed starter is taken over once stale', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ach-web-token-race-'));
+    dirs.push(dir);
+    const file = webTokenPath(dir);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, '', { mode: 0o600 });
+    mkdirSync(`${file}.lock`);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${file}.lock`, old, old);
+    const r = loadOrCreateWebToken(dir);
+    assert.equal(r.token, readFileSync(file, 'utf8').trim());
+    assert.ok(r.token.length >= 16);
+    assert.deepEqual(readdirSync(dirname(file)), ['token']);
   });
 
   it('a loader holding a stale token is impossible: sequential loads agree', () => {
