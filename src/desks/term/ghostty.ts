@@ -43,31 +43,171 @@ export function sidecarFor(id: string, dir: string = defaultDir()): string {
   return join(dir, `terminal-${safeId(id)}.ref`);
 }
 
-/** Commands that exec the next word: the launched process's command line shows that word, not the wrapper. */
-const WRAPPERS = new Set(["env", "nohup", "nice", "caffeinate", "time", "command", "exec", "stdbuf", "timeout"]);
+/**
+ * Commands that exec a later word: the launched process's command line shows that word, not the wrapper.
+ *
+ * The class this table handles: wrappers whose OPTIONS may take a SEPARATE operand word (`env -u NAME`, `nice -n 10`,
+ * `timeout -s KILL`, `stdbuf -o L`, `env -C /dir`) and that may eat POSITIONAL words before the command (timeout's
+ * DURATION). Skipping only the option word would leave its operand to be read as the executable. So each wrapper
+ * lists the short option letters and long names that take an operand, the ones that do not, and how many positional
+ * words it eats. Anything else that looks like an option is unknown: needlesFor returns no needles rather than guess.
+ */
+interface WrapperSpec {
+  /** Short option letters that take an operand (attached, `-n5`, or the next word, `-n 5`). */
+  operand?: string;
+  /** Short option letters that take no operand. */
+  flags?: string;
+  /** Long options that take an operand (`--unset NAME` or `--unset=NAME`). */
+  longOperand?: string[];
+  /** Long options that take no operand. */
+  longFlags?: string[];
+  /** Positional words the wrapper eats after its options, before the command (timeout's DURATION). */
+  positional?: number;
+  /** NAME=value words are environment assignments, not the command (env). */
+  assignments?: boolean;
+  /** `-<digits>` is an option (nice's legacy `nice -10 cmd`). */
+  numericOption?: boolean;
+  /** This short letter / long name's operand is itself a list of words to splice in place (env -S). */
+  split?: { short: string; long: string };
+  /** A lone `-` is an option (env: same as -i). */
+  dash?: boolean;
+}
+
+const WRAPPERS: Record<string, WrapperSpec> = {
+  env: {
+    operand: "uCSP",
+    flags: "iv0",
+    longOperand: ["unset", "chdir", "split-string"],
+    longFlags: ["ignore-environment", "null", "debug", "block-signal", "default-signal", "ignore-signal", "list-signal-handling"],
+    assignments: true,
+    split: { short: "S", long: "split-string" },
+    dash: true,
+  },
+  nohup: {},
+  nice: { operand: "n", longOperand: ["adjustment"], numericOption: true },
+  caffeinate: { operand: "tw", flags: "dimsu" },
+  time: { operand: "fo", flags: "alphvq", longOperand: ["format", "output"], longFlags: ["append", "verbose", "portability", "quiet"] },
+  command: { flags: "pvV" },
+  // exec -a NAME renames argv[0], so the command line shows NAME, not the command: -a stays unknown (no needles).
+  exec: { flags: "cl" },
+  stdbuf: { operand: "ioe", longOperand: ["input", "output", "error"] },
+  timeout: {
+    operand: "sk",
+    flags: "fpv",
+    longOperand: ["signal", "kill-after"],
+    longFlags: ["foreground", "preserve-status", "verbose"],
+    positional: 1,
+  },
+};
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-const WRAPPER_ARG = /^(-.*|\d+(\.\d+)?[smhd]?)$/;
+/** env -S strings we can split without a shell parser: no quoting, escapes or expansion. */
+const PLAIN_SPLIT = /^[^'"\\$`]*$/;
+
+/**
+ * Index of the first word after wrapper `spec`'s own options and positional words (words[i] is the wrapper), or
+ * undefined when an option is unknown or malformed. Splices env -S operands into `words` in place.
+ */
+function skipWrapper(spec: WrapperSpec, words: string[], i: number): number | undefined {
+  i++;
+  let ended = false; // after `--`
+  while (i < words.length) {
+    const w = words[i]!;
+    if (!ended && w === "--") {
+      ended = true;
+      i++;
+      continue;
+    }
+    if (!ended && w === "-" && spec.dash) {
+      i++;
+      continue;
+    }
+    if (!ended && w.startsWith("--")) {
+      const eq = w.indexOf("=");
+      const name = w.slice(2, eq < 0 ? undefined : eq);
+      const takes = spec.longOperand?.includes(name) ?? false;
+      if (!takes && !(spec.longFlags?.includes(name) ?? false)) return undefined;
+      if (!takes && eq >= 0) return undefined; // a flag given a value: not a form we know
+      const operand = takes ? (eq >= 0 ? w.slice(eq + 1) : words[i + 1]) : undefined;
+      if (takes && operand === undefined) return undefined;
+      const next = i + (takes && eq < 0 ? 2 : 1);
+      if (spec.split && name === spec.split.long) {
+        if (!PLAIN_SPLIT.test(operand!)) return undefined;
+        words.splice(i, next - i, ...operand!.split(/\s+/).filter(Boolean));
+        continue;
+      }
+      i = next;
+      continue;
+    }
+    if (!ended && w.startsWith("-") && w.length > 1) {
+      if (spec.numericOption && /^-\d+$/.test(w)) {
+        i++;
+        continue;
+      }
+      // A cluster (`-iu NAME`): flags, then at most one operand letter whose operand is the rest of the word or the
+      // next word.
+      let next = i + 1;
+      let splice: string | undefined;
+      for (let k = 1; k < w.length; k++) {
+        const c = w[k]!;
+        if (spec.operand?.includes(c)) {
+          const attached = w.slice(k + 1);
+          const operand = attached !== "" ? attached : words[i + 1];
+          if (operand === undefined) return undefined;
+          if (attached === "") next = i + 2;
+          if (spec.split && c === spec.split.short) splice = operand;
+          break;
+        }
+        if (!spec.flags?.includes(c)) return undefined;
+      }
+      if (splice !== undefined) {
+        if (!PLAIN_SPLIT.test(splice)) return undefined;
+        words.splice(i, next - i, ...splice.split(/\s+/).filter(Boolean));
+        continue;
+      }
+      i = next;
+      continue;
+    }
+    if (spec.assignments && ASSIGNMENT.test(w)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  for (let n = spec.positional ?? 0; n > 0; n--) {
+    if (i >= words.length) return undefined;
+    i++;
+  }
+  return i;
+}
 
 /**
  * Strings the launched process's command line must contain: the executable's basename, plus the next word when it is
- * a path. Leading wrappers (`env A=1`, `nohup`, `nice -n 5`, ...) and `VAR=value` words are skipped, since after they
- * exec the process shows only what follows.
+ * a path. Leading `VAR=value` words and wrappers (WRAPPERS: `env -u X A=1`, `nohup`, `nice -n 5`, `timeout -s KILL 5`,
+ * ...) are skipped with their operands, since after they exec the process shows only what follows.
+ *
+ * Returns [] when the command cannot be told apart from a wrapper's arguments (an unknown wrapper option, a quoted
+ * env -S string, nothing after the wrapper). That fails closed: close() then refuses to signal on needles (it needs
+ * every needle in the pid's command line, and none means no match), while a guessed needle like an option's operand
+ * could either never match (close skips our process) or match too much (only the start-time check would be left).
  */
 export function needlesFor(argv: string[]): string[] {
+  const words = [...argv];
   let i = 0;
-  while (i < argv.length) {
-    const word = argv[i]!;
+  while (i < words.length) {
+    const word = words[i]!;
+    const spec = Object.hasOwn(WRAPPERS, basename(word)) ? WRAPPERS[basename(word)] : undefined;
     if (ASSIGNMENT.test(word)) {
       i++;
-    } else if (WRAPPERS.has(basename(word))) {
-      i++;
-      while (i < argv.length && (WRAPPER_ARG.test(argv[i]!) || ASSIGNMENT.test(argv[i]!))) i++;
+    } else if (spec) {
+      const after = skipWrapper(spec, words, i);
+      if (after === undefined) return [];
+      i = after;
     } else {
       break;
     }
   }
-  const out = [basename(argv[i] ?? "")];
-  const next = argv[i + 1];
+  const out = [basename(words[i] ?? "")];
+  const next = words[i + 1];
   if (next && next.includes("/") && !next.startsWith("-")) out.push(basename(next));
   return out.filter((n) => n !== "");
 }

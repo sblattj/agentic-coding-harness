@@ -13,6 +13,13 @@ const HAVE_TMUX = spawnSync("tmux", ["-V"]).status === 0;
 const tmp = mkdtempSync(join(tmpdir(), "ach-desks-token-"));
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
+/** How a fake evaluates close()'s if-shell format: true when it names pane `id` and the pane's tag `tag`. */
+function fakeIfShellOwned(a: string[], id: string, tag: string | undefined): boolean {
+  const fmt = a[a.indexOf("-F") + 3] ?? "";
+  const m = /^#\{&&:#\{==:#\{s\/\^%\/\/:pane_id\},(\d+)\},#\{==:#\{@ach_run\},([^}]*)\}\}$/.exec(fmt);
+  return m !== null && `%${m[1]}` === id && tag !== undefined && tag === m[2] && a.at(-2) === `kill-pane -t ${id}`;
+}
+
 /** In-memory tmux server whose pane ids restart from %0 on restart(), like a real tmux server. */
 function fakeServer() {
   let n = 0;
@@ -40,6 +47,13 @@ function fakeServer() {
       case "kill-pane":
         if (!live.delete(t)) throw new Error(`tmux kill-pane failed: can't find pane: ${t}`);
         return "";
+      case "if-shell": {
+        // close()'s atomic check-and-kill, evaluated in one step like the real server.
+        if (!live.has(t)) throw new Error(`tmux if-shell failed: can't find pane: ${t}`);
+        if (!fakeIfShellOwned(a, t, live.get(t))) return "ach-not-owned\n"; // NOT_OWNED in tmux.ts
+        live.delete(t);
+        return "";
+      }
       default:
         return "";
     }

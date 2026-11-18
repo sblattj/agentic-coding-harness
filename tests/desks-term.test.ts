@@ -170,6 +170,13 @@ describe("TmuxDriver (private socket)", { skip: !HAVE_TMUX && "tmux not installe
   });
 });
 
+/** How a fake evaluates close()'s if-shell format: true when it names pane `id` and the pane's tag `tag`. */
+function fakeIfShellOwned(a: string[], id: string, tag: string | undefined): boolean {
+  const fmt = a[a.indexOf("-F") + 3] ?? "";
+  const m = /^#\{&&:#\{==:#\{s\/\^%\/\/:pane_id\},(\d+)\},#\{==:#\{@ach_run\},([^}]*)\}\}$/.exec(fmt);
+  return m !== null && `%${m[1]}` === id && tag !== undefined && tag === m[2] && a.at(-2) === `kill-pane -t ${id}`;
+}
+
 /** In-memory tmux: pane tags live in `tags`; `killed` records kill-pane targets. */
 function fakeTmux(tags: Map<string, string>, extra: Partial<Record<string, string>> = {}) {
   const calls: string[][] = [];
@@ -194,6 +201,15 @@ function fakeTmux(tags: Map<string, string>, extra: Partial<Record<string, strin
       case "kill-pane":
         killed.push(a[a.indexOf("-t") + 1]);
         return "";
+      case "if-shell": {
+        // close()'s atomic check-and-kill: `if-shell -F -t %N <format comparing @ach_run> <kill> <else>`.
+        const id = a[a.indexOf("-t") + 1];
+        if (fakeIfShellOwned(a, id, tags.get(id))) {
+          killed.push(id);
+          return "";
+        }
+        return "ach-not-owned\n"; // NOT_OWNED in tmux.ts
+      }
       default:
         return "";
     }

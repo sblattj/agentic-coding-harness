@@ -158,4 +158,65 @@ describe("needlesFor matches the executable after wrapper commands", () => {
     assert.deepEqual(needlesFor(["A=1", "timeout", "30s", "opencode", "/x/y"]), ["opencode", "y"]);
     assert.deepEqual(needlesFor(["env"]), []);
   });
+
+  // The class: wrapper options that take a SEPARATE operand word, and positional words a wrapper eats. The operand
+  // must never become the needle (then close() could never match our process, or would match on a generic word).
+  it("skips the operands of wrapper options, not only the option word", () => {
+    assert.deepEqual(needlesFor(["env", "-u", "NAME", "claude"]), ["claude"]);
+    assert.deepEqual(needlesFor(["env", "-uNAME", "claude"]), ["claude"]);
+    assert.deepEqual(needlesFor(["env", "--unset", "NAME", "claude"]), ["claude"]);
+    assert.deepEqual(needlesFor(["env", "--unset=NAME", "claude"]), ["claude"]);
+    assert.deepEqual(needlesFor(["env", "-iu", "NAME", "claude"]), ["claude"]);
+    assert.deepEqual(needlesFor(["env", "-C", "/some/dir", "node", "/opt/ach/pane.js"]), ["node", "pane.js"]);
+    assert.deepEqual(needlesFor(["nice", "-n", "10", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["nice", "-10", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["timeout", "-s", "KILL", "5", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["timeout", "--signal=KILL", "-k", "3", "5", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["timeout", "5s", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["timeout", "--", "5", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["stdbuf", "-o", "L", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["stdbuf", "-oL", "-e", "0", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["caffeinate", "-i", "-t", "600", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["exec", "-l", "opencode"]), ["opencode"]);
+    assert.deepEqual(needlesFor(["env", "--", "claude"]), ["claude"]);
+    assert.deepEqual(needlesFor(["env", "FOO=1", "nice", "-n", "5", "claude"]), ["claude"]);
+    assert.deepEqual(needlesFor(["env", "-u", "X", "A=1", "timeout", "-s", "TERM", "30", "node", "/opt/ach/pane.js"]), ["node", "pane.js"]);
+  });
+
+  it("env -S splits a plain operand into the command; a quoted one yields no needles", () => {
+    assert.deepEqual(needlesFor(["env", "-S", "node /opt/ach/pane.js"]), ["node", "pane.js"]);
+    assert.deepEqual(needlesFor(["env", "--split-string=-u X claude --flag"]), ["claude"]);
+    assert.deepEqual(needlesFor(["env", "-S", "node '/opt/a b/pane.js'"]), []);
+  });
+
+  // An option the table does not know may or may not take an operand, so the word after it could be either. Guessing
+  // risks a needle that is an operand; no needles makes close() refuse to signal (fail closed).
+  it("an unknown wrapper option, or a wrapper with nothing after it, yields no needles", () => {
+    assert.deepEqual(needlesFor(["env", "--frobnicate", "X", "claude"]), []);
+    assert.deepEqual(needlesFor(["nice", "-Q", "7", "claude"]), []);
+    assert.deepEqual(needlesFor(["timeout", "-s"]), []);
+    assert.deepEqual(needlesFor(["timeout", "-s", "KILL"]), []);
+    assert.deepEqual(needlesFor(["env", "-u", "NAME"]), []);
+    // exec -a renames argv[0]: the process shows "fakename", so "opencode" would be a wrong needle.
+    assert.deepEqual(needlesFor(["exec", "-a", "fakename", "opencode"]), []);
+  });
+
+  it("an operand needle never lets close() signal; with the right needle it does", async () => {
+    const run = async (argv: string[], cmd: string) => {
+      const dir = mkdtempSync(join(tmp, "needle-"));
+      const kills: number[] = [];
+      const d = new GhosttyDriver({
+        dir, settleMs: 0, isAlive: () => false, kill: (pid) => void kills.push(pid),
+        commandOf: () => cmd, startOf: () => Date.now() - 1000, osascript: async () => "T-N",
+      });
+      const id = await d.open({ mode: "window", name: "n", cwd: "/c", argv });
+      writeFileSync(pidfileFor(id, dir) as string, "6161\n");
+      await d.close(id);
+      return kills;
+    };
+    // The launched `claude` (after env -u NAME execs it) is recognised and closed.
+    assert.deepEqual(await run(["env", "-u", "NAME", "claude"], "claude --resume"), [6161]);
+    // An unknown option form: no needles, so even a matching-looking process is not signaled.
+    assert.deepEqual(await run(["env", "--frobnicate", "X", "claude"], "claude --resume"), []);
+  });
 });

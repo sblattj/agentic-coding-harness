@@ -45,15 +45,22 @@ describe("freeLanePort skips engine-port collisions", () => {
       }
     }
     assert.ok(base > 0, "found a free port block");
+    // lanes.ports is an inclusive [lo, hi] range (config.ts lanes.ports, freeLanePort's `off <= hi` loop): the
+    // candidates are base+10, base+11 and base+12, so base+11 is a real candidate below.
     const layout = parseLayout(`portBase: ${base}\nlanes: {ports: [10, 12]}\ndesks:\n  - {name: A, role: r}\n`, "t");
 
     // Control: nothing in the way, the first slot wins.
     assert.equal(await freeLanePort(layout, [], new Set()), base + 10);
 
-    // base+10 is an existing lane's opencode engine port (its engineUrl); base+11's engine port is bound by something else.
+    // base+10 is an existing lane's opencode engine port (its engineUrl): the next candidate, base+11, wins.
     const roster = [entry({ name: "L0", kind: "lane", port: base + 10 - ENGINE_PORT_OFFSET, engineUrl: `http://127.0.0.1:${base + 10}` })];
+    assert.equal(await freeLanePort(layout, roster, new Set()), base + 11, "base+11 is chosen while its engine port is free");
+
+    // Now something else binds base+11's engine port: base+11 itself is still free, so only the engine-port check
+    // can move the pick on to base+12.
     await listen(base + 11 + ENGINE_PORT_OFFSET);
-    assert.equal(await freeLanePort(layout, roster, new Set()), base + 12);
+    assert.equal(await portFree(base + 11), true, "base+11's own port is free");
+    assert.equal(await freeLanePort(layout, roster, new Set()), base + 12, "base+11 is skipped because its engine port is bound");
   });
 
   it("skips a lane port whose engine port is a roster entry's host port, and one that is a default engine port", async (t) => {

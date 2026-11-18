@@ -79,6 +79,12 @@ export function fmtEscape(s: string): string {
 /** Pane user option that marks a pane as opened by this driver. */
 export const OWNER_OPTION = "@ach_run";
 
+/** Shapes close() accepts before splicing them into tmux text: a %N pane id, and a token of the charset we issue. */
+const PANE_ID = /^%\d+$/;
+const OWNED_TOKEN = /^[A-Za-z0-9_-]+$/;
+/** What close()'s atomic if-shell prints when the pane does not carry our token (the kill branch prints nothing). */
+export const NOT_OWNED = "ach-not-owned";
+
 /** Bound on fresh panes tried when tmux hands out ids that older sidecars still name. */
 const MAX_ID_COLLISIONS = 32;
 
@@ -316,14 +322,22 @@ export class TmuxDriver implements TerminalDriver {
   }
 
   async close(id: string, token?: string): Promise<void> {
-    if (!(await this.owned(id, token))) {
+    const want = token ?? this.expectedToken(id);
+    // The ownership check and the kill run as ONE tmux server command (if-shell -F evaluates the format and runs
+    // kill-pane in the same server-side step), so no other client can kill %N and have it reused between them.
+    const notOurs = (): void => {
       // Gone, reused by another pane after a tmux restart, or opened before tagging existed: not ours to kill.
       process.stderr.write(`desks: tmux pane ${id} is not one we opened (gone, reused, or untagged); not killing it\n`);
       this.dropSidecar(id, token);
-      return;
-    }
+    };
+    // Both values are spliced into tmux command/format text: an id that is not %N or a token outside the charset we
+    // issue (randomUUID) is not one of ours, and could otherwise break or rewrite the format (`,`, `}`, `#`).
+    // An empty token would match an untagged pane, so it is never ours either.
+    if (!want || !OWNED_TOKEN.test(want) || !PANE_ID.test(id)) return notOurs();
+    const fmt = `#{&&:#{==:#{s/^%//:pane_id},${id.slice(1)}},#{==:#{${OWNER_OPTION}},${want}}}`;
+    let out: string;
     try {
-      await this.tmux(["kill-pane", "-t", id]);
+      out = await this.tmux(["if-shell", "-F", "-t", id, fmt, `kill-pane -t ${id}`, `display-message -p ${NOT_OWNED}`]);
     } catch (e) {
       const m = (e as Error).message;
       // Already gone (pane, window, or whole server): closing is idempotent.
@@ -333,6 +347,7 @@ export class TmuxDriver implements TerminalDriver {
       }
       throw e;
     }
+    if (out.includes(NOT_OWNED)) return notOurs();
     this.dropSidecar(id, token);
   }
 
