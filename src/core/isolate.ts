@@ -15,6 +15,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { sleepSync, withMkdirLock } from "./mkdir-lock.ts";
 import { HarnessError, type WorktreeRunInfo } from "./types.ts";
 
 export interface IsolateOptions {
@@ -65,6 +66,53 @@ function gitFailure(err: unknown): string {
   const e = err as { stderr?: Buffer | string; message?: string };
   const stderr = e.stderr === undefined ? "" : String(e.stderr).trim();
   return stderr !== "" ? stderr : (e.message ?? String(err));
+}
+
+// Every `git worktree add|remove|prune` and `git branch -D` walks all entries
+// under <common-dir>/worktrees/. git writes a new entry's files one by one and
+// deletes a removed one the same way, so a concurrent walk can hit a
+// half-made or half-deleted entry and die with "fatal: failed to read
+// .git/worktrees/<id>/commondir". Concurrent isolated runs in one repo
+// therefore take a per-repo lock around those calls, and retry the transient
+// error a few times in case some other tool (not ach) is racing them.
+
+/** A holder that outlives this is assumed wedged (a live owner pid is otherwise trusted). */
+const WORKTREE_LOCK_STALE_MS = 300_000;
+/** After this long waiting, run unlocked (the retry below still covers the race). */
+const WORKTREE_LOCK_WAIT_MS = 120_000;
+const TRANSIENT_ATTEMPTS = 4;
+const TRANSIENT_WORKTREE_ERROR = /failed to read \S*worktrees\/[^/\s]+\/(?:commondir|gitdir)/;
+
+function withWorktreeLock<T>(top: string, fn: () => T): T {
+  let common: string;
+  try {
+    common = path.resolve(top, git(top, ["rev-parse", "--git-common-dir"]));
+  } catch {
+    return fn();
+  }
+  return withMkdirLock(path.join(common, "ach-worktree.lock"), fn, {
+    staleMs: WORKTREE_LOCK_STALE_MS,
+    waitMs: WORKTREE_LOCK_WAIT_MS,
+    onTimeout: "run",
+  });
+}
+
+/** Runs `op`, retrying a transient worktree-metadata error; `undo` cleans up between attempts. */
+function retryTransient<T>(op: () => T, undo?: () => void): T {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return op();
+    } catch (err) {
+      if (attempt >= TRANSIENT_ATTEMPTS || !TRANSIENT_WORKTREE_ERROR.test(gitFailure(err))) throw err;
+      undo?.();
+      sleepSync(50 * attempt);
+    }
+  }
+}
+
+/** A git call that walks the worktree list: under the repo lock, transient errors retried. */
+function gitWorktree(top: string, args: string[]): string {
+  return withWorktreeLock(top, () => retryTransient(() => git(top, args)));
 }
 
 /** `ach/<runId>` with anything outside [a-z0-9-] folded to `-`. */
@@ -145,17 +193,17 @@ function dirtyPaths(top: string, ignore: string[]): string[] {
 
 function removeWorktree(top: string, wtPath: string, branch: string): void {
   try {
-    git(top, ["worktree", "remove", "--force", wtPath]);
+    gitWorktree(top, ["worktree", "remove", "--force", wtPath]);
   } catch {
     fs.rmSync(wtPath, { recursive: true, force: true });
     try {
-      git(top, ["worktree", "prune"]);
+      gitWorktree(top, ["worktree", "prune"]);
     } catch {
       /* best effort */
     }
   }
   try {
-    git(top, ["branch", "-D", branch]);
+    gitWorktree(top, ["branch", "-D", branch]);
   } catch {
     /* best effort */
   }
@@ -190,7 +238,20 @@ export function prepareIsolation(runId: string, cwd: string, opts: IsolateOption
   const branch = isolateBranchName(runId);
   fs.mkdirSync(path.dirname(wtPath), { recursive: true });
   try {
-    git(top, ["worktree", "add", wtPath, "-b", branch, baseSha]);
+    withWorktreeLock(top, () =>
+      retryTransient(
+        () => git(top, ["worktree", "add", wtPath, "-b", branch, baseSha]),
+        // A failed add can leave the branch (and the dir) it made; both are this run's own.
+        () => {
+          try {
+            git(top, ["branch", "-D", branch]);
+          } catch {
+            /* not created */
+          }
+          fs.rmSync(wtPath, { recursive: true, force: true });
+        },
+      ),
+    );
   } catch (err) {
     throw new HarnessError(`--isolate: git worktree add failed: ${gitFailure(err)}`, "ISOLATE_FAILED");
   }
@@ -288,7 +349,7 @@ export function finishIsolation(ws: IsolatedWorkspace): WorktreeRunInfo {
       info.cleanup.commit = git(ws.path, ["rev-parse", "HEAD"]);
     }
     if (ws.nodeModules !== undefined) fs.rmSync(path.join(ws.agentCwd, "node_modules"), { recursive: true, force: true });
-    git(ws.source, ["worktree", "remove", "--force", ws.path]);
+    gitWorktree(ws.source, ["worktree", "remove", "--force", ws.path]);
     info.cleanup.status = "removed";
   } catch (err) {
     info.cleanup = { status: "failed", error: gitFailure(err) };

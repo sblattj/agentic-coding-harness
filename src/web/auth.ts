@@ -8,9 +8,11 @@
 //   port). So a page opened once with ?token= keeps working: its same-origin fetch, EventSource
 //   and WebSocket calls carry the cookie without the page knowing the token.
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, constants, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
+
+import { withMkdirLock } from "../core/mkdir-lock.ts";
 
 /** Where `ach web` keeps its generated token. The macOS app reads the same path. */
 export function webTokenPath(stateDir: string): string {
@@ -64,40 +66,12 @@ function inode(file: string): number | null {
   return lstatSync(file, { throwIfNoEntry: false })?.ino ?? null;
 }
 
-const sleepMs = (ms: number): void => {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-};
-
 /** A lock left by a starter that died mid-replace is taken over after this long. */
 const LOCK_STALE_MS = 10_000;
 
 /** Runs `fn` holding `<file>.lock` (an atomic mkdir), waiting up to ~15 s for another holder. */
 function withReplaceLock<T>(file: string, fn: () => T): T {
-  const lock = `${file}.lock`;
-  for (let i = 0; ; i++) {
-    try {
-      mkdirSync(lock, { mode: 0o700 });
-      break;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const st = statSync(lock, { throwIfNoEntry: false });
-      if (st !== undefined && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-        try {
-          rmdirSync(lock);
-        } catch {
-          /* another starter took it over first */
-        }
-        continue;
-      }
-      if (i >= 1500) throw new Error(`timed out waiting for ${lock}`);
-      sleepMs(10);
-    }
-  }
-  try {
-    return fn();
-  } finally {
-    rmdirSync(lock);
-  }
+  return withMkdirLock(`${file}.lock`, fn, { staleMs: LOCK_STALE_MS, waitMs: 15_000 });
 }
 
 /**
