@@ -54,7 +54,7 @@ The default is your installed `ach`, because standalone ach builds lack bun-pty.
 ## API used
 
 Every request carries the token (Settings, else `<stateDir>/web/token`) both as
-`Authorization: Bearer <token>` and `?token=<token>`; without it every route answers 401. Shapes mirror `src/desks/types.ts`; unknown fields are ignored, optional fields
+`Authorization: Bearer <token>` and `?token=<token>`; without it the server answers 401 on token-gated routes. A server embedded with no token configured answers 403 instead on the privileged routes (`/api/pty`, `/ws/pty/*`, the POST routes) and serves the read-only GET routes openly. Shapes mirror `src/desks/types.ts`; unknown fields are ignored, optional fields
 are optional, and unknown stream kinds and event types are tolerated.
 
 | Route | Used for |
