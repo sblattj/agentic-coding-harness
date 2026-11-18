@@ -338,6 +338,30 @@ import Testing
     }
 }
 
+@Suite(.serialized) struct StreamConnectingOrderTests {
+    /// `.connecting` is reported before the task is resumed, so a fast open can never be followed by a late one.
+    /// The hook stalls the connecting thread for 300 ms right after the resume; the open lands during the stall.
+    @Test func connectingIsReportedBeforeConnectedEvenWhenTheOpenIsFast() async throws {
+        let server = try MockServer { req, _ in
+            guard req.path == "/api/desks/stream" else { return .json(404, "{}") }
+            return .sse(chunks: [(0, ": open\n\n")], close: false)
+        }
+        try await server.start()
+        defer { server.stop() }
+        let client = APIClient(config: ServerConfig(port: server.port))
+        let statuses = Box<StreamStatus>()
+        let s = SSEStreamClient(request: { try client.streamRequest() }, callbackQueue: DispatchQueue(label: "cb-order"))
+        s.afterResumeForTesting = { Thread.sleep(forTimeInterval: 0.3) }
+        s.onStatus = { statuses.append($0) }
+        s.start()
+        defer { s.stop() }
+        #expect(await eventually { statuses.items.contains(.connected) })
+        let seen = statuses.items
+        let k = seen.firstIndex(of: .connecting), c = seen.firstIndex(of: .connected)
+        #expect(k != nil && c != nil && k! < c!, "expected connecting before connected, got \(seen)")
+    }
+}
+
 private final class LockedBox<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var v: T

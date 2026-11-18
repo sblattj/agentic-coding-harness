@@ -170,15 +170,15 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
 
     private func connect() {
         var buildError: String?
-        let (req, gen): (URLRequest?, Int) = lock.withLock {
-            guard !stopped else { return (nil, generation) }
+        lock.withLock {
+            guard !stopped else { return }
             generation += 1
             parser.reset()
             var r: URLRequest
             do { r = try makeRequest() } catch {
                 stopped = true
                 buildError = "\(error)"
-                return (nil, generation)
+                return
             }
             if let last = parser.lastEventID { r.setValue(last, forHTTPHeaderField: "Last-Event-ID") }
             let cfg = URLSessionConfiguration.ephemeral
@@ -189,18 +189,18 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
             session = s
             let t = s.dataTask(with: r)
             task = t
+            // Report before resuming: a fast open can deliver .connected immediately, and the callback
+            // queue is ordered by enqueue time, so .connecting must already be queued.
+            emit(.connecting)
             t.resume()
-            return (r, generation)
         }
+        afterResumeForTesting?()
         if let msg = buildError {
             let cb = onRequestError
             callbackQueue.async { cb?(msg) }
             emit(.stopped)
             return
         }
-        guard req != nil else { return }
-        _ = gen
-        emit(.connecting)
     }
 
     private func emit(_ s: StreamStatus) {
@@ -217,6 +217,9 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
     }
 
     /// Internal seams for tests.
+    /// Runs on the connecting thread right after the task was resumed (and the lock released): lets a test
+    /// stall that thread so a fast open can overtake it.
+    var afterResumeForTesting: (() -> Void)?
     func ingestForTesting(_ chunk: String) { lock.withLock { _ = parser.feed(chunk) } }
     func lastEventIDForTesting() -> String? { lock.withLock { parser.lastEventID } }
     func nextReconnectDelayForTesting() -> TimeInterval { lock.withLock { nextReconnectDelayLocked() } }
