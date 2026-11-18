@@ -212,6 +212,14 @@ import Testing
         #expect(NewLaneBody.isValidName("lane1"))
     }
 
+    /// Same examples as tests/desks-roster.test.ts ("validName ... lane"), plus non-ASCII case folds:
+    /// JS /i without the u flag never folds U+212A (Kelvin) or U+017F (long s) onto ASCII, and neither may ICU here.
+    @Test func laneNameMatchesTheServerExamples() {
+        for n in ["lane-1", "L1", "9x", String(repeating: "a", count: 48)] { #expect(NewLaneBody.isValidName(n), "\(n)") }
+        for n in ["", "-a", "a b", String(repeating: "a", count: 49), "a/b"] { #expect(!NewLaneBody.isValidName(n), "\(n)") }
+        for n in ["\u{212A}ane1", "\u{017F}ane", "lane\u{212A}", "hum\u{212A}n"] { #expect(!NewLaneBody.isValidName(n), "\(n.unicodeScalars.map(\.value))") }
+    }
+
     @Test func suggestedNameSkipsNamesCaseInsensitively() {
         #expect(NewLaneBody.suggestedName(used: []) == "LANE1")
         #expect(NewLaneBody.suggestedName(used: ["lane1"]) == "LANE2")

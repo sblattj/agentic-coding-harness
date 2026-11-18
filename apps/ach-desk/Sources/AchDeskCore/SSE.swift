@@ -233,7 +233,17 @@ public final class SSEStreamClient: NSObject, URLSessionDataDelegate, @unchecked
             completionHandler(.cancel)
             return
         }
-        lock.withLock { backoff.reset() }
+        // A response from a task replaced by a reconnect (or cancelled by stop) is stale: it must not
+        // reset the backoff or report .connected for the current stream. Check and reset under one lock.
+        let current: Bool = lock.withLock {
+            guard self.task === dataTask else { return false }
+            backoff.reset()
+            return true
+        }
+        guard current else {
+            completionHandler(.cancel)
+            return
+        }
         emit(.connected)
         completionHandler(.allow)
     }

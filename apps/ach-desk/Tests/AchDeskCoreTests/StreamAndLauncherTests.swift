@@ -66,6 +66,45 @@ final class Box<T>: @unchecked Sendable {
         let fails = statuses.items.compactMap { st -> Int? in if case .disconnected(_, let f) = st { return f }; return nil }
         #expect(fails.contains(Backoff.pollingThreshold)) // the store switches to 2 s polling here
     }
+
+    /// A late response or chunk from a task a reconnect replaced must not reset the backoff, report .connected,
+    /// or emit items. MockServer cannot make URLSession deliver an old task's callback after a reconnect on cue,
+    /// so the live stream supplies the current task and a never-resumed task from a throwaway session plays the stale one.
+    @Test func staleTaskResponseAndDataAreIgnored() async throws {
+        let server = try MockServer { req, _ in
+            guard req.path == "/api/desks/stream" else { return .json(404, "{}") }
+            return .sse(chunks: [(0.01, ": open\n\n")], close: false)
+        }
+        try await server.start()
+        defer { server.stop() }
+        let client = APIClient(config: ServerConfig(port: server.port))
+        let cbq = DispatchQueue(label: "cb3")
+        let items = Box<StreamItem>()
+        let statuses = Box<StreamStatus>()
+        let s = SSEStreamClient(request: { try client.streamRequest() }, backoff: Backoff(base: 5, cap: 5), callbackQueue: cbq)
+        s.onItem = { items.append($0) }
+        s.onStatus = { statuses.append($0) }
+        s.start()
+        defer { s.stop() }
+        #expect(await eventually { statuses.items.contains(.connected) })
+        _ = s.nextReconnectDelayForTesting() // one counted failure, as after a dropped connection
+        try #require(s.failures == 1)
+        let connectedBefore = statuses.items.filter { $0 == .connected }.count
+
+        let otherSession = URLSession(configuration: .ephemeral)
+        defer { otherSession.invalidateAndCancel() }
+        let stale = otherSession.dataTask(with: try client.streamRequest())
+        let ok = HTTPURLResponse(url: stale.originalRequest!.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/event-stream"])!
+        let disposition = Box<URLSession.ResponseDisposition>()
+        s.urlSession(otherSession, dataTask: stale, didReceive: ok) { disposition.append($0) }
+        s.urlSession(otherSession, dataTask: stale, didReceive: Data("data: {\"kind\":\"futurekind\"}\n\n".utf8))
+        cbq.sync {} // drain callbacks queued so far
+
+        #expect(disposition.items == [.cancel])
+        #expect(s.failures == 1)
+        #expect(statuses.items.filter { $0 == .connected }.count == connectedBefore)
+        #expect(items.items.isEmpty)
+    }
 }
 
 @Suite(.serialized) struct LauncherTests {
@@ -198,7 +237,7 @@ final class Box<T>: @unchecked Sendable {
         #expect(!proc.isRunning)
     }
 
-    @Test func backendProcessStartsDetachedAndStopsCleanly() throws {
+    @Test func backendProcessStartsDetachedAndStopsCleanly() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ach-desk-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -210,13 +249,16 @@ final class Box<T>: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
         try p2.start(achPath: script, port: 9999, environment: ["PATH": "/usr/bin:/bin"])
         let pid = p2.process!.processIdentifier
-        Thread.sleep(forTimeInterval: 0.3)
+        let want = "fake ach web --port 9999 --no-open"
+        // Wait for the child to write its argv (a fixed sleep raced on a loaded machine).
+        let logged = await eventually(timeout: 10) { ((try? String(contentsOf: log, encoding: .utf8)) ?? "").contains(want) }
+        #expect(logged)
         #expect(p2.isRunning)
         p2.stop(grace: 2)
         #expect(!p2.isRunning)
         #expect(kill(pid, 0) != 0) // gone
         let logText = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
-        #expect(logText.contains("fake ach web --port 9999 --no-open"))
+        #expect(logText.contains(want))
     }
 
     private func fakeAch(_ dir: URL, body: String) throws -> String {

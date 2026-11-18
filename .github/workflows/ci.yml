@@ -133,3 +133,6 @@ jobs:
         run: |
           test -x "build/ach Desk.app/Contents/MacOS/AchDesk"
           test -f "build/ach Desk.app/Contents/Info.plist"
+          test "$(plutil -extract CFBundleExecutable raw "build/ach Desk.app/Contents/Info.plist")" = AchDesk
+          test "$(plutil -extract CFBundleIdentifier raw "build/ach Desk.app/Contents/Info.plist")" = dev.ach.desk
+          codesign -v "build/ach Desk.app"
