@@ -1,0 +1,53 @@
+# Default desks layout for `ach desk up` (built in; copy to ./desks.yaml or
+# ~/.config/ach/desks.yaml to customize). Search order: --layout F, ./desks.yaml,
+# ~/.config/ach/desks.yaml, then this file.
+
+# Desk i listens on 127.0.0.1:(portBase + 1 + i); lanes on portBase + lanes.ports.
+# The stack id (state subdir) is "default" for 4800, else "p<portBase>".
+portBase: 4800
+
+# Agent CLI every desk uses unless the desk sets its own: opencode | claude | codex | gemini | ...
+agent: opencode
+
+# Engine model id (e.g. provider/model for opencode). Left unset: the engine's own default.
+# model: provider/model
+
+# Extra directory of role prompts (common.md, <role>.md), searched before the built-in roles/.
+# rolesDir: ~/.config/ach/roles
+
+# Definitions for MCP names, only for engines that cannot read your own MCP config by name
+# (the driver engine). opencode resolves names from its own config.
+# mcpServers:
+#   tracker: {command: tracker-mcp, args: [--stdio]}
+
+desks:
+  # name: upper-case id, unique. role: prompt file <role>.md. mcps: MCP server names this desk gets
+  # (the ach desk tools are always added). pane: left | right-top | right-bottom | none.
+  - {name: ORCHESTRATOR, role: orchestrator, pane: left, mcps: []}
+  - {name: DECISIONS, role: decisions, pane: right-top, mcps: []}
+  - name: LISTENER
+    role: listener
+    pane: right-bottom
+    mcps: []
+    # Optional feed: a JSONL event source whose events become messages to this desk.
+    # The example below uses whosaid (optional, not required) for live call transcripts.
+    #   command: argv printing one JSON event per line, each with a string `type`
+    #   fullContext: argv printing the whole context so far, sent once on the first heartbeat
+    #   activeCheck: argv printing JSON with a boolean `active`
+    #   batchSeconds: batch window for ordinary events; immediate: event types delivered at once
+    # feed:
+    #   command: [whosaid, live, follow, --agent, --format, jsonl, --heartbeat, "3"]
+    #   fullContext: [whosaid, live, show]
+    #   activeCheck: [whosaid, live, status, --json]
+    #   batchSeconds: 10
+    #   immediate: [for_me, decision, call_started, call_ended]
+
+lanes:
+  # MCP names a lane gets when lane_new passes none.
+  defaultMcps: []
+  # Lane port offsets from portBase, inclusive. Must start after the desk ports.
+  ports: [10, 99]
+  # "decisions": lane_new from another desk waits for DECISIONS' approval. "none": launch at once.
+  approval: none
+  # Prefixed to every lane objective.
+  defaultGoalFlags: "--max-minutes 45"
