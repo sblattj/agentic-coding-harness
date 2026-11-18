@@ -550,8 +550,12 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
     const base = (this.#serverUrl ?? process.env.OPENCODE_SERVER_URL ?? DEFAULT_SERVER_URL).replace(/\/+$/, '');
     // One deadline for the whole run: every request is bounded by what is left of it (plus the abort controller).
     const deadline = Date.now() + this.#serverTimeoutMs;
-    const signalFor = (): AbortSignal =>
-      AbortSignal.any([controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
+    // A ref'd timer, not AbortSignal.timeout(): that timer is unref'd, so a stalled request with no live
+    // socket would let the event loop drain before the deadline fires. Cleared when the run settles.
+    const deadlineController = new AbortController();
+    const deadlineTimer = setTimeout(() => deadlineController.abort(new Error(`deadline ${this.#serverTimeoutMs} ms`)), this.#serverTimeoutMs);
+    const runSignal = AbortSignal.any([controller.signal, deadlineController.signal]);
+    const signalFor = (): AbortSignal => runSignal;
     const timeoutMessage = `opencode serve (${base}): turn did not finish within ${this.#serverTimeoutMs} ms`;
     const password = this.#serverPassword ?? process.env.OPENCODE_PASSWORD ?? process.env.OPENCODE_SERVER_PASSWORD;
     const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -701,6 +705,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         queue.push({ type: 'error', message });
         exitCode = 1;
       } finally {
+        clearTimeout(deadlineTimer);
         queue.close();
       }
     })();
