@@ -224,6 +224,11 @@ function setup(o:{ mcps?: string[]; model?: string; leakFirstBoot?: string } = {
 // ------------------------------------------------------------------ unit
 
 describe("opencode engine helpers", () => {
+  it("parseJsonc keeps a comma before a bracket inside a string", () => {
+    assert.deepEqual(parseJsonc('{ "a": "x, }", "b": ["y,]", "z",], }'), { a: "x, }", b: ["y,]", "z"] });
+    assert.deepEqual(parseJsonc('{ "c": "q\\\\", "d": 1, }'), { c: "q\\", d: 1 });
+  });
+
   it("parseJsonc strips comments and trailing commas but keeps // inside strings", () => {
     assert.deepEqual(parseJsonc('{ "a": "http://x", // c\n "b": [1,2,], /* d */ }'), { a: "http://x", b: [1, 2] });
   });

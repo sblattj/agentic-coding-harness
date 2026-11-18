@@ -91,10 +91,16 @@ export function parseJsonc(src: string): unknown {
       i += 2;
       continue;
     }
+    if (c === "}" || c === "]") {
+      // A trailing comma: the last non-space character written outside a string. Strings end in '"', so a comma
+      // inside one is never the last thing before a closing bracket here.
+      const body = out.trimEnd();
+      if (body.endsWith(",")) out = body.slice(0, -1) + out.slice(body.length);
+    }
     out += c;
     i++;
   }
-  return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"));
+  return JSON.parse(out);
 }
 
 /** Every opencode config file that may define MCPs for a serve started in `cwd`: global, $OPENCODE_CONFIG, project (cwd up to /). */
