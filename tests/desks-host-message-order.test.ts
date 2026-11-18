@@ -74,3 +74,38 @@ describe('desk host: message_in ordering', () => {
     }
   });
 });
+
+describe('desk host: pending queue cap', () => {
+  it('refuses a message past the cap with 429 and keeps the queue at the cap', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'ach-desks-host-'));
+    dirs.push(stateDir);
+    const spec: HostSpec = {
+      stack: 'fixq', stateDir, name: 'ALPHA', kind: 'desk', role: 'orchestrator', roleFiles: [], agent: 'claude',
+      engine: 'driver', mcps: [], port: 0, cwd: stateDir, runId: 'run_fixq_1', token: TOKEN,
+    };
+    let url = '';
+    const done = runHost(spec, {
+      createEngine: async () => new EchoEngine(600),
+      createHostMeter: () => nullMeter(),
+      installSignals: false,
+      queueCap: 2,
+      onReady: (i) => (url = i.url),
+    });
+    const t = { url: '', token: TOKEN };
+    try {
+      await waitFor(async () => url !== '' && (await hostHealth(url))?.state === 'idle', 'host idle');
+      t.url = url;
+      assert.equal((await hostSend(t, 'human', 'first')).delivered, 'now');
+      assert.equal((await hostSend(t, 'human', 'q1')).delivered, 'queued');
+      assert.equal((await hostSend(t, 'human', 'q2')).delivered, 'queued');
+      await assert.rejects(hostSend(t, 'human', 'q3'), /queue full|429/);
+      const h = await hostHealth(url);
+      assert.equal(h?.queueDepth, 2, 'queue length stays at the cap');
+      const ins = (await hostEvents(t, 0)).filter((e) => e.type === 'message_in');
+      assert.equal(ins.length, 3, 'the refused message is not recorded as accepted');
+    } finally {
+      if (t.url !== '') await hostStop(t);
+      assert.equal(await done, 0);
+    }
+  });
+});

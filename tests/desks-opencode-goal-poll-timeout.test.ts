@@ -56,3 +56,23 @@ describe('setOpencodeGoal poll timeout', () => {
     } finally { await close(server); }
   });
 });
+
+describe('setOpencodeGoal POST abort', () => {
+  it('aborts the goal POST when polling times out', async () => {
+    let postClosed = false;
+    let gets = 0;
+    const { url, server } = await serve((req, res) => {
+      if (req.method === 'POST') { req.socket.on('close', () => { postClosed = true; }); return; } // never answers
+      gets++;
+      res.end('[]');
+    });
+    try {
+      const r = await settleWithin(setOpencodeGoal({ baseUrl: url, sessionId: 's', objective: 'x', timeoutMs: 200, pollMs: 20 }), 3000);
+      assert.equal(r.outcome, 'rejected');
+      assert.ok(gets >= 1);
+      const deadline = Date.now() + 1000;
+      while (!postClosed && Date.now() < deadline) await new Promise((x) => setTimeout(x, 10));
+      assert.ok(postClosed, 'the POST connection was closed by the abort at the deadline');
+    } finally { await close(server); }
+  });
+});

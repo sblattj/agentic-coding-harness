@@ -2,7 +2,7 @@
 // against a real `opencode serve` (ACH_DESKS_LIVE=1).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ import {
   portIsOpen,
   rolePrompt,
   splitModel,
+  tailOf,
   type ServeProcess,
   type SpawnServe,
 } from "../src/desks/engines/opencode.ts";
@@ -804,6 +805,54 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     assert.equal(spawns, 2, "one lock retry, then the bad config is final");
     assert.match(r, /exited \(1\) before ready[\s\S]*bad config/);
     assert.doesNotMatch(r, /database is locked/, "the error shows only this boot's log");
+  });
+
+  it("start fails (and clears the serve) when the serve exits after ready but before start() finishes", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    const spawn: SpawnServe = () => {
+      fake.open();
+      let res!: (c: number | string | null) => void;
+      const exited = new Promise<number | string | null>((r) => (res = r));
+      // The serve dies while start() is answering GET /mcp: after ready, before `started`.
+      const mcp = fake.mcp;
+      Object.defineProperty(fake, "mcp", { get: () => (res(9), mcp) });
+      return { pid: 78, kill(sig) { if (sig === "SIGTERM" || sig === "SIGKILL") void fake.close().then(() => res(sig)); }, exited };
+    };
+    const eng = new OpenCodeEngine({ env, spawn, stopGraceMs: 500 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    try {
+      await assert.rejects(eng.start(spec), /serve exited \(9\) during start/);
+      assert.equal((eng as unknown as { proc?: unknown }).proc, undefined, "proc cleared");
+      assert.equal(events.filter((e) => e.type === "error").length, 0, "reported by the rejection, not a non-fatal event");
+    } finally {
+      await eng.stop();
+      await fake.close().catch(() => undefined);
+    }
+  });
+
+  it("tailOf reads only the tail: same result on a small log, and a log past 2 GiB (readFileSync's limit) still tails", () => {
+    const dir = tmp("ach-oce-tail-");
+    const small = join(dir, "small.log");
+    writeFileSync(small, "0123456789");
+    assert.equal(tailOf(small), "0123456789");
+    assert.equal(tailOf(small, 4), "6789");
+    assert.equal(tailOf(small, 100, 5), "56789");
+    assert.equal(tailOf(small, 100, 999), "0123456789", "from past EOF reads from 0");
+    const big = join(dir, "big.log");
+    const fd = openSync(big, "w");
+    try {
+      const from = 2 * 1024 ** 3 + 100;
+      ftruncateSync(fd, from + 1000);
+      writeSync(fd, "this boot failed: boom\n", from + 1000);
+      assert.match(tailOf(big, 2000, from), /this boot failed: boom\n$/);
+      assert.match(tailOf(big, 30, from), /^[\s\S]*boom\n$/);
+    } finally {
+      closeSync(fd);
+    }
   });
 
   it("serve dying mid-turn after ready: fatal error, then turn_end with an error marker", async () => {

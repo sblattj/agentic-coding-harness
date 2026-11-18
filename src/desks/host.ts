@@ -42,6 +42,8 @@ export const HOST_EXIT = { ok: 0, engineFailed: 1, portInUse: 3 } as const;
 
 /** Events kept in memory; the events file is always complete. */
 export const HOST_EVENT_MEMORY_CAP = 5000;
+/** Messages held while the engine is busy; the next one is refused (HTTP 429 on /send, an error event from the feed). */
+export const HOST_QUEUE_CAP = 1000;
 const HEARTBEAT_MS = 5_000;
 const SSE_KEEPALIVE_MS = 15_000;
 const GOAL_TIMEOUT_MS = 45_000;
@@ -60,6 +62,8 @@ export interface HostDeps {
   heartbeatMs?: number;
   /** In-memory event cap override (tests); default HOST_EVENT_MEMORY_CAP. */
   eventMemoryCap?: number;
+  /** Pending-message queue cap override (tests); default HOST_QUEUE_CAP. */
+  queueCap?: number;
 }
 
 export function newMessageId(): string {
@@ -238,6 +242,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   const feedStarter = deps.startFeed ?? realStartFeed;
   const installSignals = deps.installSignals ?? true;
   const memoryCap = Math.max(1, deps.eventMemoryCap ?? HOST_EVENT_MEMORY_CAP);
+  const queueCap = Math.max(1, deps.queueCap ?? HOST_QUEUE_CAP);
 
   const paths = deskPaths(spec.stateDir, spec.stack);
   const eventsFile = join(paths.events, `${spec.runId}.jsonl`);
@@ -348,6 +353,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   const acceptMessage = (from: Sender, text: string, header: boolean): DeskMessage => {
     const engineText = header ? peerHeader(from) + text : text;
     const delivered: "now" | "queued" = state === "idle" && queue.length === 0 ? "now" : "queued";
+    if (delivered === "queued" && queue.length >= queueCap) throw new HttpError(429, `message queue full (${queueCap} pending); retry when the engine is idle`);
     const message: DeskMessage = { id: newMessageId(), from, to: spec.name, text, at: Date.now(), delivered };
     record("message_in", { message });
     if (delivered === "now") startTurn(engineText);
@@ -662,7 +668,11 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     try {
       feed = feedStarter(spec.feed, async (text) => {
         if (stopping !== undefined || text.trim() === "") return;
-        acceptMessage("feed", text, false);
+        try {
+          acceptMessage("feed", text, false);
+        } catch (e) {
+          record("error", { error: `feed message refused: ${errText(e)}` });
+        }
       }, {
         cwd: spec.cwd,
         onNote: (note) => record("feed", { note }),

@@ -7,7 +7,7 @@
 // events come from the GET /event SSE stream (verified on opencode 1.19.0), reconciled against
 // GET /session/<sid>/message at every busy -> idle transition.
 import { spawn as nodeSpawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -206,11 +206,25 @@ export function portIsOpen(port: number, host = "127.0.0.1", timeoutMs = 500): P
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The last `max` chars of `file`, reading only bytes from offset `from` on (a shorter file reads from 0). */
-function tailOf(file: string, max = 2000, from = 0): string {
+export function tailOf(file: string, max = 2000, from = 0): string {
   try {
-    const buf = readFileSync(file);
-    const s = buf.subarray(buf.length >= from ? from : 0).toString("utf8");
-    return s.length > max ? s.slice(-max) : s;
+    const fd = openSync(file, "r");
+    try {
+      const size = fstatSync(fd).size;
+      // `max` chars are at most 4*max bytes of UTF-8; read no more than that (plus slack for a split char).
+      const start = Math.max(size >= from ? from : 0, size - (max * 4 + 4));
+      const buf = Buffer.alloc(size - start);
+      let got = 0;
+      while (got < buf.length) {
+        const n = readSync(fd, buf, got, buf.length - got, start + got);
+        if (n === 0) break;
+        got += n;
+      }
+      const s = buf.subarray(0, got).toString("utf8");
+      return s.length > max ? s.slice(-max) : s;
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return "";
   }
@@ -322,6 +336,8 @@ export class OpenCodeEngine implements Engine {
   private starting?: Promise<unknown>;
   /** start() returned: from now on a serve exit is fatal for the desk. */
   private started = false;
+  /** Set when the serve exits after ready but before start() finished; checkStop() then fails start(). */
+  private serveExitedDuringStart?: string;
   /** Fires at the end of send()'s grace so a turn that never showed busy is still ended. */
   private graceTimer?: ReturnType<typeof setTimeout>;
   private objective = "";
@@ -370,10 +386,12 @@ export class OpenCodeEngine implements Engine {
   /** Throws once stop() was called: every spawn window in start() checks this, so stop() during start leaves no serve. */
   private checkStop(): void {
     if (this.stopping) throw new Error(STOPPED_DURING_START);
+    if (this.serveExitedDuringStart) throw new Error(this.serveExitedDuringStart);
   }
 
   private async doStart(spec: HostSpec): Promise<{ sessionId?: string; engineUrl?: string; childPid?: number }> {
     this.spec = spec;
+    this.serveExitedDuringStart = undefined;
     this.port = spec.enginePort ?? spec.port + ENGINE_PORT_OFFSET;
     this.baseUrl = `http://127.0.0.1:${this.port}`;
     this.logFile = join(deskPaths(spec.stateDir, spec.stack).logs, `${spec.name}.opencode.log`);
@@ -483,7 +501,11 @@ export class OpenCodeEngine implements Engine {
       exitedWith = c;
       if (this.proc !== proc || this.stopping || booting) return;
       if (this.started) this.onServeDied(c);
-      else this.emit({ type: "error", data: { error: `opencode serve exited (${String(c)}); log ${this.logFile}` } });
+      else {
+        // Exit after ready but before start() finished: start() must fail (checkStop), not return a dead engine.
+        this.serveExitedDuringStart = `desks: opencode serve exited (${String(c)}) during start on port ${this.port}; log ${this.logFile}`;
+        this.proc = undefined;
+      }
     });
     const deadline = Date.now() + this.readyTimeoutMs;
     for (;;) {

@@ -62,8 +62,11 @@ export async function setOpencodeGoal(o: {
     });
 
   let postError: Error | undefined;
+  // Aborted when polling ends (success, timeout or error) so the blocked POST never outlives the call.
+  const postAbort = new AbortController();
   const post = fetch(`${base}/session/${sid}/command`, {
     method: "POST",
+    signal: postAbort.signal,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   })
@@ -76,7 +79,13 @@ export async function setOpencodeGoal(o: {
       postError = e instanceof Error ? e : new Error(String(e));
     });
   void post;
+  try {
+    await pollForMarker();
+  } finally {
+    postAbort.abort();
+  }
 
+  async function pollForMarker(): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last = "";
   for (;;) {
@@ -111,6 +120,7 @@ export async function setOpencodeGoal(o: {
   }
   if (postError) throw postError;
   throw new Error(`opencode goal not active after ${timeoutMs} ms; last messages: ${last.slice(-400)}`);
+  }
 }
 
 type Json = Record<string, unknown>;
