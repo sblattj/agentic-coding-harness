@@ -331,6 +331,9 @@ describe('opencode adapter', () => {
       const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
         const urlStr = String(url);
         calls.push({ url: urlStr, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (urlStr.endsWith('/api/info')) {
+          return new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+        }
         const isCreate = urlStr.endsWith('/session') && !urlStr.includes('/message');
         const json = isCreate ? { id: 'ses_srv_recorded_1' } : SERVER_MESSAGE_RESPONSE;
         return { ok: true, json: async () => json } as Response;
@@ -343,11 +346,12 @@ describe('opencode adapter', () => {
         preferServer: true,
       });
       const events = await collect(handle.events);
-      assert.equal(calls.length, 2);
-      assert.equal(calls[0]?.url, 'http://127.0.0.1:4399/session');
-      assert.equal(calls[0]?.method, 'POST');
-      assert.equal(calls[1]?.url, 'http://127.0.0.1:4399/session/ses_srv_recorded_1/message');
-      assert.deepEqual(calls[1]?.body, {
+      assert.equal(calls.length, 3);
+      assert.equal(calls[0]?.url, 'http://127.0.0.1:4399/api/info');
+      assert.equal(calls[1]?.url, 'http://127.0.0.1:4399/session');
+      assert.equal(calls[1]?.method, 'POST');
+      assert.equal(calls[2]?.url, 'http://127.0.0.1:4399/session/ses_srv_recorded_1/message');
+      assert.deepEqual(calls[2]?.body, {
         parts: [{ type: 'text', text: 'Reply with exactly: hi' }],
         model: { providerID: 'anthropic', modelID: 'claude-haiku-4-5' },
       });
@@ -371,22 +375,126 @@ describe('opencode adapter', () => {
       assert.equal(await handle.wait(), 1);
     });
 
-    test('v2 serve: HTML 200 body throws a clear unsupported-version error, never parsed as data', { timeout: 5000 }, async () => {
+    test('HTML 200 body on every route throws a non-JSON error, never parsed as data', { timeout: 5000 }, async () => {
       const fetchImpl = (async () =>
         new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
       const handle = new OpenCodeAdapter({ fetchImpl }).spawn({ prompt: 'p', preferServer: true });
       const events = await collect(handle.events);
       const last = events.at(-1);
       assert.equal(last?.type, 'error');
-      assert.match((last as { message: string }).message, /non-JSON body \(text\/html\).*opencode 2\.x/);
+      assert.match((last as { message: string }).message, /non-JSON body \(text\/html\)/);
+      assert.equal(await handle.wait(), 1);
+    });
+  });
+
+  describe('spawn (preferServer path, opencode 2.x, injected fetch)', () => {
+    const USER_ID = 'msg_user_1';
+    const v2Messages = (withIdle: boolean) => ({
+      data: [
+        { id: 'msg_old', type: 'user', text: 'earlier' },
+        { id: USER_ID, type: 'user', text: 'reply with the word ok' },
+        {
+          id: 'msg_asst_1',
+          type: 'assistant',
+          time: { created: 1, completed: 2 },
+          content: [
+            { type: 'reasoning', text: 'thinking' },
+            { type: 'text', text: 'ok' },
+          ],
+          cost: 0.5,
+          tokens: { input: 100, output: 2, reasoning: 14, cache: { read: 3, write: 4 } },
+        },
+        ...(withIdle ? [{ id: 'msg_idle_1', type: 'idle', outcome: 'succeeded' }] : []),
+      ],
+      cursor: {},
+    });
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+    test('happy path: detects v2, sends Basic auth, polls to idle, maps to canonical events', { timeout: 5000 }, async () => {
+      const calls: Array<{ url: string; method?: string; auth?: string; body?: unknown }> = [];
+      let polls = 0;
+      const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(url);
+        const headers = init?.headers as Record<string, string>;
+        calls.push({ url: u, method: init?.method, auth: headers?.authorization, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (u.endsWith('/api/info')) return json({ version: '2.3.2' });
+        if (u.endsWith('/api/session')) return json({ data: { id: 'ses_v2_1' } });
+        if (u.endsWith('/prompt')) return json({ data: { id: USER_ID } });
+        if (u.includes('/message')) return json(v2Messages(++polls >= 2));
+        throw new Error('unexpected ' + u);
+      }) as typeof fetch;
+      const adapter = new OpenCodeAdapter({ fetchImpl, serverUrl: 'http://127.0.0.1:4399', serverPassword: 'pw', serverPollMs: 1 });
+      const handle = adapter.spawn({ prompt: 'reply with the word ok', model: 'prov/some-model', preferServer: true });
+      const events = await collect(handle.events);
+      const want = 'Basic ' + Buffer.from('opencode:pw').toString('base64');
+      assert.ok(calls.every((c) => c.auth === want));
+      assert.equal(calls[1]?.url, 'http://127.0.0.1:4399/api/session');
+      assert.deepEqual(calls[1]?.body, { model: { id: 'some-model', providerID: 'prov' } });
+      assert.equal(calls[2]?.url, 'http://127.0.0.1:4399/api/session/ses_v2_1/prompt');
+      assert.deepEqual(calls[2]?.body, { text: 'reply with the word ok' });
+      assert.ok(polls >= 2);
+      assert.deepEqual(
+        events.map((e) => e.type),
+        ['session', 'step', 'message', 'usage'],
+      );
+      assert.deepEqual(events[2], { type: 'message', role: 'assistant', text: 'ok' });
+      assert.equal(await handle.wait(), 0);
+      const result = await handle.result();
+      assert.equal(result.sessionId, 'ses_v2_1');
+      assert.equal(result.cost, 0.5);
+      assert.equal(result.usage?.inputTokens, 100);
+      assert.equal(result.usage?.totalTokens, 123);
+    });
+
+    test('401 with no password names the password option', { timeout: 5000 }, async () => {
+      const saved = [process.env.OPENCODE_PASSWORD, process.env.OPENCODE_SERVER_PASSWORD];
+      delete process.env.OPENCODE_PASSWORD;
+      delete process.env.OPENCODE_SERVER_PASSWORD;
+      try {
+        const fetchImpl = (async () => json({ _tag: 'UnauthorizedError', message: 'Authentication required' }, 401)) as unknown as typeof fetch;
+        const handle = new OpenCodeAdapter({ fetchImpl }).spawn({ prompt: 'p', preferServer: true });
+        const events = await collect(handle.events);
+        const last = events.at(-1) as { type: string; message: string };
+        assert.equal(last.type, 'error');
+        assert.match(last.message, /401 unauthorized; set the serve password: pass the serverPassword adapter option, or export OPENCODE_PASSWORD/);
+        assert.equal(await handle.wait(), 1);
+      } finally {
+        if (saved[0] !== undefined) process.env.OPENCODE_PASSWORD = saved[0];
+        if (saved[1] !== undefined) process.env.OPENCODE_SERVER_PASSWORD = saved[1];
+      }
+    });
+
+    test('HTML 200 body from a v2 route throws, never parsed as data', { timeout: 5000 }, async () => {
+      const fetchImpl = (async (url: RequestInfo | URL) => {
+        if (String(url).endsWith('/api/info')) return json({ version: '2.2.5' });
+        return new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      }) as typeof fetch;
+      const handle = new OpenCodeAdapter({ fetchImpl, serverPassword: 'pw' }).spawn({ prompt: 'p', preferServer: true });
+      const events = await collect(handle.events);
+      const last = events.at(-1) as { type: string; message: string };
+      assert.equal(last.type, 'error');
+      assert.match(last.message, /POST \/api\/session returned a non-JSON body \(text\/html\)/);
       assert.equal(await handle.wait(), 1);
     });
 
-    test('v2 serve: 405 on POST /session names the 2.x API move', { timeout: 5000 }, async () => {
-      const fetchImpl = (async () => new Response('', { status: 405 })) as unknown as typeof fetch;
-      const handle = new OpenCodeAdapter({ fetchImpl }).spawn({ prompt: 'p', preferServer: true });
+    test('failed turn (idle outcome failed with assistant error) exits 1 with an error event', { timeout: 5000 }, async () => {
+      const fetchImpl = (async (url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.endsWith('/api/info')) return json({ version: '2.3.2' });
+        if (u.endsWith('/api/session')) return json({ data: { id: 'ses_v2_2' } });
+        if (u.endsWith('/prompt')) return json({ data: { id: USER_ID } });
+        return json({
+          data: [
+            { id: USER_ID, type: 'user' },
+            { id: 'msg_a', type: 'assistant', content: [], error: { message: 'provider exploded' } },
+            { id: 'msg_i', type: 'idle', outcome: 'failed' },
+          ],
+        });
+      }) as typeof fetch;
+      const handle = new OpenCodeAdapter({ fetchImpl, serverPassword: 'pw', serverPollMs: 1 }).spawn({ prompt: 'p', preferServer: true });
       const events = await collect(handle.events);
-      assert.match((events.at(-1) as { message: string }).message, /-> 405; this looks like opencode 2\.x/);
+      assert.equal((events.at(-1) as { message: string }).message, 'provider exploded');
       assert.equal(await handle.wait(), 1);
     });
   });

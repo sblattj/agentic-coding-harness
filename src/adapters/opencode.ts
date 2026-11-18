@@ -238,26 +238,65 @@ export function buildRunArgs(spec: OpencodeRunSpec): string[] {
   return args;
 }
 
-const SERVE_V2_HINT =
-  'this looks like opencode 2.x (its JSON API moved under /api/* behind HTTP Basic auth), ' +
-  'which the preferServer path does not support; only opencode 1.x `serve` is supported here. ' +
-  'Use the headless path (omit preferServer) instead';
+const PASSWORD_HINT =
+  'set the serve password: pass the serverPassword adapter option, or export OPENCODE_PASSWORD ' +
+  '(OPENCODE_SERVER_PASSWORD also works); the username is always "opencode"';
 
-function serveRouteError(base: string, route: string, status: number): string {
-  const v2 = status === 404 || status === 405 || status === 401 ? `; ${SERVE_V2_HINT}` : '';
-  return `opencode serve (${base}): ${route} -> ${status}${v2}`;
-}
-
-/** Parse a serve response as JSON; an HTML/non-JSON body (e.g. the 2.x web UI) throws, never parsed as data. */
+/** Parse a serve response as JSON; an HTML/non-JSON body (e.g. the web UI) throws, never parsed as data. */
 async function readServeJson(res: Response, base: string, route: string): Promise<unknown> {
   try {
     return await res.json();
   } catch {
     const ct = res.headers?.get('content-type') ?? 'unknown content-type';
-    throw new Error(
-      `opencode serve (${base}): ${route} returned a non-JSON body (${ct}); ${SERVE_V2_HINT}`,
-    );
+    throw new Error(`opencode serve (${base}): ${route} returned a non-JSON body (${ct}); not an opencode JSON API`);
   }
+}
+
+function serveRouteError(base: string, route: string, status: number): string {
+  if (status === 401) return `opencode serve (${base}): ${route} -> 401 unauthorized; ${PASSWORD_HINT}`;
+  return `opencode serve (${base}): ${route} -> ${status}`;
+}
+
+type ServeApi = 'v1' | 'v2';
+
+interface V2Message {
+  id?: string;
+  type?: string;
+  outcome?: string;
+  error?: unknown;
+  content?: Array<{ type?: string; text?: string }>;
+  cost?: number;
+  tokens?: OpencodeTokens;
+  time?: { completed?: number };
+}
+
+function v2ErrorText(err: unknown): string {
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    const e = err as { message?: unknown; name?: unknown; _tag?: unknown };
+    if (typeof e.message === 'string') return e.message;
+    return JSON.stringify(err).slice(0, 300);
+  }
+  return 'unknown error';
+}
+
+/**
+ * Map one opencode 2.x assistant message (flat {content:[text|reasoning|tool], tokens, cost})
+ * to canonical events: step, one message per text block, usage. The v1 part
+ * shapes differ (parts with step-start/step-finish), so this is a separate mapper
+ * that emits the same canonical events.
+ */
+function mapV2Assistant(m: V2Message): OpencodeEvent[] {
+  const events: OpencodeEvent[] = [{ type: 'step' }];
+  for (const c of m.content ?? []) {
+    if (c.type === 'text' && typeof c.text === 'string' && c.text !== '') {
+      events.push({ type: 'message', role: 'assistant', text: c.text });
+    }
+  }
+  if (m.tokens && m.time?.completed !== undefined) {
+    events.push({ type: 'usage', tokens: mapTokens(m.tokens, m.cost), cost: m.cost ?? 0 });
+  }
+  return events;
 }
 
 /** Split "provider/model" at the first slash (model ids may contain more). */
@@ -276,6 +315,16 @@ export interface OpenCodeAdapterOptions {
   command?: string;
   /** Base URL of a running `opencode serve`; default $OPENCODE_SERVER_URL or http://127.0.0.1:4096. */
   serverUrl?: string;
+  /**
+   * Basic-auth password (user "opencode") for a serve that has one. Default
+   * $OPENCODE_PASSWORD, then $OPENCODE_SERVER_PASSWORD. opencode 2.x serves always
+   * require it; for a serve ach did not start, the caller must supply it.
+   */
+  serverPassword?: string;
+  /** preferServer on 2.x: max wait for the turn to finish (ms). Default 600000. */
+  serverTimeoutMs?: number;
+  /** preferServer on 2.x: poll interval for the turn (ms). Default 500. */
+  serverPollMs?: number;
   /** Injectable spawn factory for tests. */
   spawnFn?: SpawnFn;
   /** Injectable fetch for the server path (tests). */
@@ -300,6 +349,9 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
 
   #command: string;
   #serverUrl: string | undefined;
+  #serverPassword: string | undefined;
+  #serverTimeoutMs: number;
+  #serverPollMs: number;
   #spawnFn: SpawnFn | undefined;
   #fetchImpl: typeof fetch;
   #current: { abort(): void } | null = null;
@@ -307,6 +359,9 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
   constructor(options: OpenCodeAdapterOptions = {}) {
     this.#command = options.command ?? 'opencode';
     this.#serverUrl = options.serverUrl;
+    this.#serverPassword = options.serverPassword;
+    this.#serverTimeoutMs = options.serverTimeoutMs ?? 600_000;
+    this.#serverPollMs = options.serverPollMs ?? 500;
     this.#spawnFn = options.spawnFn;
     this.#fetchImpl = options.fetchImpl ?? fetch;
   }
@@ -463,10 +518,12 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
   }
 
   /**
-   * Secondary path: POST to a running `opencode serve`. Creates a session,
-   * posts the message, and maps the returned parts (same shapes as the NDJSON
-   * stream) to canonical events. Non-streaming: the server returns the
-   * completed assistant message.
+   * Secondary path: talk to a running `opencode serve`. The API generation is
+   * detected from the server (GET /api/info: JSON with a 2.x version = v2; an HTML
+   * or 404 answer = v1). v1: create session, POST the message, map the returned
+   * parts. v2 (JSON under /api/*, Basic auth): create session, POST the prompt,
+   * poll the session's messages until its idle message, map assistant messages.
+   * Both yield the same canonical events.
    */
   #runViaServer(task: OpencodeRunSpec): OpencodeRunHandle {
     const queue = new EventQueue();
@@ -475,45 +532,148 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
     let exitCode = 0;
 
     const base = (this.#serverUrl ?? process.env.OPENCODE_SERVER_URL ?? DEFAULT_SERVER_URL).replace(/\/+$/, '');
-    const headers = { 'content-type': 'application/json' };
+    const password = this.#serverPassword ?? process.env.OPENCODE_PASSWORD ?? process.env.OPENCODE_SERVER_PASSWORD;
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (password) headers.authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
+    const note = (events: OpencodeEvent[]): void => {
+      for (const event of events) {
+        if (event.type === 'usage') {
+          state.usage = event.tokens;
+          state.cost = event.cost;
+        }
+      }
+      queue.push(...events);
+    };
+
+    const detect = async (): Promise<ServeApi> => {
+      const res = await this.#fetchImpl(`${base}/api/info`, { method: 'GET', headers, signal: controller.signal });
+      if (res.status === 401) throw new Error(serveRouteError(base, 'GET /api/info', 401));
+      if (!res.ok) return 'v1';
+      let info: unknown;
+      try {
+        info = await res.json();
+      } catch {
+        return 'v1'; // 1.x answers unknown paths with its web UI (HTML)
+      }
+      const version = (info as { version?: unknown } | null)?.version;
+      const major = typeof version === 'string' ? Number(version.split('.')[0]) : NaN;
+      return Number.isFinite(major) && major >= 2 ? 'v2' : 'v1';
+    };
+
+    const runV1 = async (): Promise<void> => {
+      const createRes = await this.#fetchImpl(`${base}/session`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+        signal: controller.signal,
+      });
+      if (!createRes.ok) throw new Error(serveRouteError(base, 'POST /session', createRes.status));
+      const session = (await readServeJson(createRes, base, 'POST /session')) as { id?: string };
+      if (!session.id) throw new Error('opencode serve: session response missing id');
+      state.sessionId = session.id;
+      queue.push({ type: 'session', sessionId: session.id });
+
+      const body: Record<string, unknown> = { parts: [{ type: 'text', text: task.prompt }] };
+      const model = task.model ? splitModelId(task.model) : undefined;
+      if (model) body.model = model;
+
+      const msgRes = await this.#fetchImpl(
+        `${base}/session/${encodeURIComponent(session.id)}/message`,
+        { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal },
+      );
+      if (!msgRes.ok) {
+        throw new Error(serveRouteError(base, 'POST /session/:id/message', msgRes.status));
+      }
+      const data = (await readServeJson(msgRes, base, 'POST /session/:id/message')) as { parts?: unknown[] };
+      for (const part of data.parts ?? []) {
+        const mapped = mapPart(part, state.sessionId, false);
+        if (mapped.sessionId) state.sessionId = mapped.sessionId;
+        note(mapped.events);
+      }
+    };
+
+    const v2Call = async (method: string, path: string, body?: unknown): Promise<unknown> => {
+      const res = await this.#fetchImpl(`${base}${path}`, {
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: controller.signal,
+      });
+      const route = `${method} ${path.replace(/ses_[^/?]+/, ':id')}`;
+      if (!res.ok) throw new Error(serveRouteError(base, route, res.status));
+      return readServeJson(res, base, route);
+    };
+
+    /** All messages of a session, oldest first, following the cursor. */
+    const v2Messages = async (sid: string): Promise<V2Message[]> => {
+      const out: V2Message[] = [];
+      let path = `/api/session/${encodeURIComponent(sid)}/message?order=asc&limit=200`;
+      for (let page = 0; page < 1000; page++) {
+        const r = (await v2Call('GET', path)) as { data?: unknown; cursor?: { next?: unknown } } | null;
+        if (!r || !Array.isArray(r.data)) throw new Error(`opencode serve (${base}): GET /api/session/:id/message returned no data[]`);
+        out.push(...(r.data as V2Message[]));
+        const next = r.cursor?.next;
+        if (typeof next !== 'string' || next === '' || r.data.length === 0) break;
+        path = `/api/session/${encodeURIComponent(sid)}/message?limit=200&cursor=${encodeURIComponent(next)}`;
+      }
+      return out;
+    };
+
+    let v2Session: string | undefined;
+    const runV2 = async (): Promise<void> => {
+      const createBody: Record<string, unknown> = {};
+      const model = task.model ? splitModelId(task.model) : undefined;
+      if (model) createBody.model = { id: model.modelID, providerID: model.providerID };
+      if (task.cwd) createBody.location = { directory: task.cwd };
+      const created = (await v2Call('POST', '/api/session', createBody)) as { data?: { id?: unknown } } | null;
+      const sid = created?.data?.id;
+      if (typeof sid !== 'string' || sid === '') throw new Error('opencode serve: session response missing data.id');
+      state.sessionId = sid;
+      v2Session = sid;
+      queue.push({ type: 'session', sessionId: sid });
+
+      const prompted = (await v2Call('POST', `/api/session/${encodeURIComponent(sid)}/prompt`, { text: task.prompt })) as {
+        data?: { id?: unknown };
+      } | null;
+      const userId = prompted?.data?.id;
+      if (typeof userId !== 'string' || userId === '') throw new Error('opencode serve: prompt response missing data.id');
+
+      const deadline = Date.now() + this.#serverTimeoutMs;
+      for (;;) {
+        if (Date.now() > deadline) {
+          await v2Call('POST', `/api/session/${encodeURIComponent(sid)}/interrupt`).catch(() => undefined);
+          throw new Error(`opencode serve (${base}): turn did not finish within ${this.#serverTimeoutMs} ms`);
+        }
+        const messages = await v2Messages(sid);
+        const at = messages.findIndex((m) => m.id === userId);
+        const after = at < 0 ? [] : messages.slice(at + 1);
+        const idle = after.find((m) => m.type === 'idle');
+        if (idle) {
+          for (const m of after) {
+            if (m.type !== 'assistant') continue;
+            note(mapV2Assistant(m));
+            if (m.error !== undefined && m.error !== null) queue.push({ type: 'error', message: v2ErrorText(m.error) });
+          }
+          if (idle.outcome !== 'succeeded') {
+            exitCode = 1;
+            if (!after.some((m) => m.type === 'assistant' && m.error != null)) {
+              const why = idle.error != null ? v2ErrorText(idle.error) : `turn ${idle.outcome ?? 'ended'}`;
+              queue.push({ type: 'error', message: why });
+            }
+          } else if (after.some((m) => m.type === 'assistant' && m.error != null)) {
+            exitCode = 1;
+          }
+          return;
+        }
+        await new Promise((r) => setTimeout(r, this.#serverPollMs));
+      }
+    };
 
     const run = (async () => {
       try {
-        const createRes = await this.#fetchImpl(`${base}/session`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({}),
-          signal: controller.signal,
-        });
-        if (!createRes.ok) throw new Error(serveRouteError(base, 'POST /session', createRes.status));
-        const session = (await readServeJson(createRes, base, 'POST /session')) as { id?: string };
-        if (!session.id) throw new Error('opencode serve: session response missing id');
-        state.sessionId = session.id;
-        queue.push({ type: 'session', sessionId: session.id });
-
-        const body: Record<string, unknown> = { parts: [{ type: 'text', text: task.prompt }] };
-        const model = task.model ? splitModelId(task.model) : undefined;
-        if (model) body.model = model;
-
-        const msgRes = await this.#fetchImpl(
-          `${base}/session/${encodeURIComponent(session.id)}/message`,
-          { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal },
-        );
-        if (!msgRes.ok) {
-          throw new Error(serveRouteError(base, 'POST /session/:id/message', msgRes.status));
-        }
-        const data = (await readServeJson(msgRes, base, 'POST /session/:id/message')) as { parts?: unknown[] };
-        for (const part of data.parts ?? []) {
-          const mapped = mapPart(part, state.sessionId, false);
-          if (mapped.sessionId) state.sessionId = mapped.sessionId;
-          for (const event of mapped.events) {
-            if (event.type === 'usage') {
-              state.usage = event.tokens;
-              state.cost = event.cost;
-            }
-          }
-          queue.push(...mapped.events);
-        }
+        const api = await detect();
+        if (api === 'v2') await runV2();
+        else await runV1();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         queue.push({ type: 'error', message });
@@ -526,7 +686,13 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
     return {
       events: queue as AsyncIterable<OpencodeEvent>,
       wait: () => run.then(() => exitCode),
-      abort: () => controller.abort(),
+      abort: () => {
+        controller.abort();
+        // v2: the turn keeps running server-side after the client drops; interrupt it (best effort).
+        if (v2Session) {
+          void this.#fetchImpl(`${base}/api/session/${encodeURIComponent(v2Session)}/interrupt`, { method: 'POST', headers }).catch(() => undefined);
+        }
+      },
       sessionId: () => run.then(() => state.sessionId),
       result: () => run.then(() => ({ exitCode, ...state })),
     };
