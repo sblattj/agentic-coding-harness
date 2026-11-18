@@ -715,7 +715,10 @@ describe("runDoctor — all-agents mode skips agents that are not installed (#21
     assert.equal(await defaultClaudeLogin(await home({ [C]: "{}" }), now), undefined, "no claudeAiOauth");
     assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "" }) }), now), undefined, "empty token");
     assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: 5 }) }), now), undefined, "non-string token");
-    assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: now - 1 }) }), now), undefined, "expired");
+    assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: now - 1 }) }), now), undefined, "expired, no refresh token");
+    assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: now - 1, refreshToken: "" }) }), now), undefined, "expired, blank refresh token");
+    assert.match((await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: now - 1, refreshToken: "r" }) }), now)) ?? "", /expired OAuth token with a refresh token/);
+    assert.equal(await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "", expiresAt: now + 1, refreshToken: "r" }) }), now), undefined, "refresh token alone is not enough");
     assert.match((await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: now + 60_000 }) }), now)) ?? "", /unexpired OAuth token/);
     assert.match((await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t" }) }), now)) ?? "", /OAuth token/, "no expiry field");
     const J = ".claude.json";
@@ -725,7 +728,7 @@ describe("runDoctor — all-agents mode skips agents that are not installed (#21
     assert.equal(await defaultClaudeLogin(await home({ [J]: '{"oauthAccount":{}}' }), now), undefined, "empty account");
     assert.equal(await defaultClaudeLogin(await home({ [J]: '{"oauthAccount":{"emailAddress":""}}' }), now), undefined, "blank email");
     assert.match((await defaultClaudeLogin(await home({ [J]: '{"oauthAccount":{"accountUuid":"u-1"}}' }), now)) ?? "", /OAuth account/);
-    // An expired token file does not mask a valid account record.
+    // An expired token file with no refresh token does not mask a valid account record.
     assert.match((await defaultClaudeLogin(await home({ [C]: tok({ accessToken: "t", expiresAt: 1 }), [J]: '{"oauthAccount":{"emailAddress":"a@b.c"}}' }), now)) ?? "", /OAuth account/);
   });
 

@@ -399,7 +399,7 @@ async function checkBinary(
 /**
  * Evidence of a USABLE /login in the default Claude config (#216 review), or undefined.
  * `~/.claude/.credentials.json` must parse and hold claudeAiOauth.accessToken as a
- * non-empty string, and when `expiresAt` (epoch ms) is present it must be in the future.
+ * non-empty string, and when `expiresAt` (epoch ms) is past it must also hold a non-empty refreshToken.
  * Otherwise `~/.claude.json` must hold oauthAccount with a non-empty string
  * accountUuid or emailAddress. An empty, malformed, expired or wrong-shape file is not a login.
  * Never returns a token value.
@@ -412,7 +412,10 @@ export async function defaultClaudeLogin(home: string, now: number = Date.now())
     const tokenOk = typeof o.accessToken === "string" && o.accessToken.trim() !== "";
     const exp = o.expiresAt;
     const expired = typeof exp === "number" && Number.isFinite(exp) && exp <= now;
+    // Access tokens last hours and the CLI refreshes them, so an expired one with a refresh token is still a login.
+    const refreshOk = typeof o.refreshToken === "string" && o.refreshToken.trim() !== "";
     if (tokenOk && !expired) return `${credsPath} holds an unexpired OAuth token`;
+    if (tokenOk && refreshOk) return `${credsPath} holds an expired OAuth token with a refresh token (the CLI refreshes it)`;
   }
   const cfg = await readJson(path.join(home, ".claude.json"));
   if (cfg?.ok && isObj(cfg.value) && isObj(cfg.value.oauthAccount)) {
