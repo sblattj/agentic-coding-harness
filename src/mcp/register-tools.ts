@@ -7,6 +7,7 @@ import { registerRunTools } from "./tools-run.ts";
 import { registerInspectTools } from "./tools-inspect.ts";
 import { registerJobTools } from "./tools-jobs.ts";
 import { registerPreflightTools } from "./tools-preflight.ts";
+import { registerDeskTools } from "./tools-desks.ts";
 import type { GatewayConfig } from "../serve/gateway.ts";
 
 export function registerHarnessTools(
@@ -17,4 +18,5 @@ export function registerHarnessTools(
   registerInspectTools(server, opts);
   registerJobTools(server, opts);
   registerPreflightTools(server, { ...(opts.gateway ? { gateway: opts.gateway } : {}) });
+  registerDeskTools(server, opts);
 }

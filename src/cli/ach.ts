@@ -92,6 +92,11 @@ import {
   baseCacheRatios,
   cwdIndex,
   branchIndex,
+  deskIndex,
+  deskByRunId,
+  runIdIndex,
+  branchLabel,
+  deskLabel,
   prIndex,
   loadProjectAliases,
   parseByDims,
@@ -126,6 +131,7 @@ import {
 } from "./time-window.ts";
 import { cmdReport } from "./report.ts";
 import { runContextRows } from "./context-stats.ts";
+import { cmdDesk, cmdLane } from "./desk.ts";
 import { scanRunRecords, skippedRunRecordsWarning } from "../core/registry.ts";
 import { cmdDash } from "./dash.ts";
 import { statsExtras } from "./usage-render.ts";
@@ -346,13 +352,14 @@ usage:
                  ageDays, stale, source; a snapshot older than
                  AGENTIC_CODING_HARNESS_PRICING_STALE_DAYS (default 180, 0 = silent)
                  prints a one-line [notice] on stderr)
-            [--by model|project|branch|pr]... [--merge-models] [--model-alias FROM=TO]...
+            [--by model|project|branch|pr|desk]... [--merge-models] [--model-alias FROM=TO]...
             [--project NAME] [--project-alias PATH=NAME]... [--project-aliases FILE.json]
                 (--by takes time granularities and dimensions together, e.g.
                  --by week,model; --by model: agent/model rows + model x day table;
                  --by branch: per-git-branch rollup (branch recorded at run start;
                  unattributed rows land in '(no branch)'); --by pr: per-PR rollup (PR recorded
-                 at run time via ach run --pr, env or branch name; no network; no PR = 'none'); --by project: repo-root rollup, aliases also via
+                 at run time via ach run --pr, env or branch name; no network; no PR = 'none'); --by desk: per desk/lane rollup
+                 as <stack>/<name> (desk host records and driver turn runs; others '(none)'); --by project: repo-root rollup, aliases also via
                  AGENTIC_CODING_HARNESS_PROJECT_ALIASES; every row shows
                  cacheHit = cacheRead/(input+cacheRead+cacheWrite))
             [--blocks] [--budget-usd N]
@@ -490,7 +497,9 @@ ${QUEUE_USAGE}
                   started within --recent (running runs always), and "load older" on
                   /grid pages back through the rest (config keys web.recent, web.pageSize);
                   token via --token
-                  or env AGENTIC_CODING_HARNESS_HTTP_TOKEN; --no-open skips the browser;
+                  or env AGENTIC_CODING_HARNESS_HTTP_TOKEN, else one generated and kept in
+                  <stateDir>/web/token (loopback only); the printed URL carries ?token=,
+                  which sets a cookie for the pages; --no-open skips the browser;
                   --source reads runs from an external http(s) feed instead of the
                   state dir — flags or env AGENTIC_CODING_HARNESS_SOURCE[_TOKEN|_MODE|
                   _POLL_MS|_MERGE]; --source-token falls back to --token;
@@ -505,12 +514,22 @@ ${QUEUE_USAGE}
   ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
               (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
                framing tolerated; same tools and gateway flags as \`ach serve\`)
+  ach desk up [--layout F] [--port-base N] [--term tmux|ghostty|none] [--tmux-session S] [--tmux-socket S] [--stack S] [--json]
+  ach desk down | attach [--term ...] | roster [--json] [--no-prune] | decisions [--state S] [--json] | costs [--json]
+  ach desk send <to> <text...> [--from NAME] | inbox [name] [--limit N] [--since <ms|10m>] [--json]
+  ach desk events <name> [--since SEQ] [--json] [--follow] | chat <name> | engine <name> <agent> [--model M]
+  ach desk answer <Dn> <text...> [--from NAME] | close <Dn> [--reason R]
+              (desks and lanes: one detached host process each, see docs/DESKS.md; every desk
+               subcommand takes --stack S, --from defaults to $ACH_DESK_NAME else "human";
+               "ach desk host --spec <file>" is internal)
+  ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N] [--brief TEXT]
+  ach lane status [name] [--json] | stop <name> | approve <Ln> | reject <Ln> [--reason R]
 ${CONFIG_USAGE}
 
 env:
   AGENTIC_CODING_HARNESS_CONFIG      config file path (same as --config; replaces the default search)
   AGENTIC_CODING_HARNESS_STATE_DIR   state root (default ~/.agentic-coding-harness)
-  AGENTIC_CODING_HARNESS_HTTP_TOKEN  default for serve --token (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_HTTP_TOKEN  default for serve/web --token (CLI flags win over env)
   AGENTIC_CODING_HARNESS_BUDGET_USD  default for --budget-usd (CLI flags win over env)
   AGENTIC_CODING_HARNESS_MAX_TURNS   default for --max-turns (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WALL_MS     default for --wall-ms (CLI flags win over env)
@@ -1518,6 +1537,12 @@ async function cmdStats(rest: string[]): Promise<number> {
   const pricer = createPricer();
   const probe = createPricer();
   const disagreements: string[] = [];
+  // Desk-host lines are per-message DELTAS (src/desks/host-metering.ts): an engine-priced message writes its whole
+  // reported cost on the line that first carries it and costUsd 0 on later lines that only add tokens. A per-line
+  // check would flag every such line (reported 0 vs computed > 0), so their figures are kept here (keyed by the
+  // shared `extra` object, which the record keeps) and compared per message once the records are filtered.
+  const clippedDeskMsgs = new Set<string>();
+  const deskDelta = new WeakMap<object, { key: string; label: string; reported?: number; computed?: number }>();
   const costFor = (
     r: Pick<StatRecord, "agent" | "sessionId" | "model" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cacheWrite1hTokens" | "extra">,
     reported: number | undefined,
@@ -1539,6 +1564,12 @@ async function cmdStats(rest: string[]): Promise<number> {
         { computedOnly: true },
       );
       if (!Number.isNaN(c)) computed = c;
+    }
+    const label = `${r.agent} session=${r.sessionId ?? "unknown"} model=${r.model ?? "unknown"}`;
+    const ex = r.extra;
+    if (ex && ex.source === "desk-host" && typeof ex.messageId === "string" && ex.messageId !== "") {
+      deskDelta.set(ex, { key: `${r.agent}\0${r.sessionId ?? ""}\0${String(ex.runId ?? "")}\0${ex.messageId}`, label, reported, computed });
+      return selectCost(costMode, reported, computed);
     }
     const d = costDisagreement(reported, computed);
     return { ...selectCost(costMode, reported, computed), ...(d ? { costDisagreement: formatDisagreement(`${r.agent} session=${r.sessionId ?? "unknown"} model=${r.model ?? "unknown"}`, d) } : {}) };
@@ -1585,20 +1616,36 @@ async function cmdStats(rest: string[]): Promise<number> {
   const stateRecords = [
     ...(await readAllRecords({ agent, sinceTs })),
     ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs }) : []),
-  ].filter((r) => inWindow(Date.parse(r.ts), window));
+  ].filter((r) => {
+    if (inWindow(Date.parse(r.ts), window)) return true;
+    // A desk message with a line outside the window is partial in-window: its reported cost can't be compared to the in-window tokens.
+    const ex = r.extra as Record<string, unknown> | undefined;
+    if (ex && ex.source === "desk-host" && typeof ex.messageId === "string" && ex.messageId !== "") {
+      clippedDeskMsgs.add(`${r.agent}\0${r.sessionId ?? ""}\0${String(ex.runId ?? "")}\0${ex.messageId}`);
+    }
+    return false;
+  });
   // One registry scan feeds both the cwd index and the run rollups; records
   // that fail to parse are counted (skippedRunRecords), never dropped silently.
   const registryScan = scanRunRecords(stateDir());
   const runCwd = cwdIndex(registryScan.records);
   const runBranch = branchIndex(registryScan.records);
   const runPr = prIndex(registryScan.records);
+  const runDesk = deskIndex(registryScan.records);
+  // Driver NDJSON usage lines carry no sessionId: look those up by run id first.
+  const cwdByRun = runIdIndex(registryScan.records, (r) => r.cwd ?? undefined);
+  const branchByRun = runIdIndex(registryScan.records, (r) => branchLabel(r));
+  const prByRun = runIdIndex(registryScan.records, (r) => r.pr ?? undefined);
+  const deskByRun = deskByRunId(registryScan.records);
   const originIndex = statsOriginIndex(registryScan.records);
   let records: (DimRecord & StatsProvenanceRecord & { costDisagreement?: string; source: "state" | "transcript"; origin?: StatsOrigin })[] = stateRecords.map((r) => ({
     source: "state",
     extra: r.extra,
-    cwd: runCwd(r.agent, r.sessionId),
-    branch: runBranch(r.agent, r.sessionId),
-    pr: runPr(r.agent, r.sessionId),
+    cwd: cwdByRun(r.runId) ?? runCwd(r.agent, r.sessionId),
+    branch: branchByRun(r.runId) ?? runBranch(r.agent, r.sessionId),
+    pr: prByRun(r.runId) ?? runPr(r.agent, r.sessionId),
+    // #204: the desk host stamps extra.desk on its own records; driver-engine turn runs map via the registry.
+    desk: deskLabel(r.extra?.desk) ?? deskByRun(r.runId) ?? runDesk(r.agent, r.sessionId),
     ts: r.ts,
     agent: r.agent,
     sessionId: r.sessionId,
@@ -1715,6 +1762,28 @@ async function cmdStats(rest: string[]): Promise<number> {
   for (const r of records) r.origin = originIndex.originOf(r);
   if (wantOrigin !== "all") records = records.filter((r) => r.origin === wantOrigin);
   disagreements.push(...records.flatMap((r) => r.costDisagreement ? [r.costDisagreement] : []));
+  {
+    // Per message: the sum of a desk message's reported deltas vs the price of the sum of its token deltas.
+    const msgs = new Map<string, { label: string; reported: number; anyReported: boolean; computed: number; priced: boolean }>();
+    for (const r of records) {
+      const m = r.extra ? deskDelta.get(r.extra) : undefined;
+      if (!m) continue;
+      const g = msgs.get(m.key) ?? { label: m.label, reported: 0, anyReported: false, computed: 0, priced: true };
+      if (m.reported !== undefined) {
+        g.reported += m.reported;
+        g.anyReported = true;
+      }
+      if (m.computed === undefined) g.priced = false;
+      else g.computed += m.computed;
+      msgs.set(m.key, g);
+    }
+    for (const [key, g] of msgs) {
+      // A message with a line outside the window is skipped (partial computed vs full reported). A reported message always sums above 0; a 0 sum means the window cut off the line that carried its cost.
+      if (!g.anyReported || !g.priced || g.reported === 0 || clippedDeskMsgs.has(key)) continue;
+      const d = costDisagreement(g.reported, g.computed);
+      if (d) disagreements.push(formatDisagreement(g.label, d));
+    }
+  }
   const agg = aggregate(records, { timeZone, by });
   // #142: codex parent/child reconciliation over the windowed codex rows —
   // which totals include child sessions, and which trees miss some.
@@ -1745,6 +1814,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     byProject: showProject,
     byBranch: dimsBy.has("branch"),
     byPr: dimsBy.has("pr"),
+    byDesk: dimsBy.has("desk"),
     projectAliases,
   });
   if (dims.unpricedModels.length > 0) {
@@ -1833,6 +1903,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
           ...(dims.byBranch ? { byBranch: dims.byBranch } : {}),
           ...(dims.byPr ? { byPr: dims.byPr } : {}),
+          ...(dims.byDesk ? { byDesk: dims.byDesk } : {}),
           // #142: codex token-accounting scope and completeness.
           ...(codexAccountingJson !== undefined ? { codexAccounting: codexAccountingJson } : {}),
           // #21: per-run context-window pressure from the run registry.
@@ -1881,7 +1952,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for (const m of Object.values(timeMaps)) {
       for (const [d, b] of Object.entries(m).sort()) process.stdout.write(line(d, view(b), prov.byDay[d] ?? prov.byWeek?.[d] ?? prov.byMonth?.[d]) + "\n");
     }
-    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject, branch: dimsBy.has("branch"), pr: dimsBy.has("pr") })) {
+    for (const l of renderDimsText(dims, { model: dimsBy.has("model"), project: showProject, branch: dimsBy.has("branch"), pr: dimsBy.has("pr"), desk: dimsBy.has("desk") })) {
       process.stdout.write(l + "\n");
     }
     if (outcomes !== undefined) {
@@ -2089,7 +2160,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc", "config", "attach",
+  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane",
 ]);
 
 /**
@@ -2184,6 +2255,10 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdServe(rest);
     case "web":
       return cmdWeb(rest);
+    case "desk":
+      return cmdDesk(rest);
+    case "lane":
+      return cmdLane(rest);
     case "mcp":
       return cmdMcp(rest);
     case "quota":

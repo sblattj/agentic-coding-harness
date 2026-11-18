@@ -275,7 +275,7 @@ describe('ach mcp (stdio subcommand, real subprocess)', () => {
       };
       assert.equal(result.protocolVersion, '2025-06-18');
       assert.equal(result.serverInfo.name, 'agentic-coding-harness');
-      assert.match(result.serverInfo.version, /^\d+\.\d+\.\d+$/);
+      assert.match(result.serverInfo.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
 
       // Contract: the initialized notification (no id) gets no response. Send
       // it, then a ping with a fresh id: the ONLY new stdout line must be the

@@ -204,7 +204,16 @@ records power the compare path: `web/compare.ts` rolls `hub.snapshotRuns()` into
 (`experiment`×`variant` or `workflow`×`agent`) exposed as `GET /api/compare?by=…` (rows carry
 `runs`, `avgTotalTokens`, `avgCostUsd`, `avgDurationMs`, `successRate`) and rendered by the
 `GET /compare` view. PTY attach stays local-only — `POST /api/pty` and `/ws/pty/*` reject
-external runs with `409` because no local process exists to attach to.
+external runs with `409` because no local process exists to attach to. `ach web` always has a
+token (`--token`, the env var, else one generated into `<stateDir>/web/token`; `web/auth.ts`), and
+every privileged route needs it as `?token=`, `Authorization: Bearer` or the `HttpOnly`,
+`SameSite=Strict` cookie a valid `?token=` sets: `/api/pty` (spawn, list, kill), `/ws/pty/*`
+(including typing into a live run), `POST /api/live/<runId>/continue` and `/api/desks`. A server
+embedded via `startWebServer` without a token answers those with `403`. Before any route, `web/request-guard.ts` refuses a foreign `Host`
+(421: on a loopback bind anything but the loopback names with the bound port; on a non-loopback bind any
+DNS name that is not localhost, the `--host` name or this machine's hostname; names in env
+`AGENTIC_CODING_HARNESS_WEB_ALLOWED_HOSTS` always pass), a cross-site `Origin` (403, WebSocket upgrades included) and a non-JSON body on `/api/*`
+writes (415).
 
 ## 2. Token taps
 

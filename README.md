@@ -16,6 +16,7 @@
 - **One CLI, six agents (plus the Kiro IDE)** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` adapters (plus `copilot` for GitHub Copilot CLI, `cursor` for the Cursor CLI agent, and `kiro-ide`, which drives the Kiro desktop app over CDP) normalize six different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
 - **Cost math you can defend** — cache-aware accounting verified against each CLI's own ground truth (Claude session JSONL, Kiro session files, provider-reported `costUSD`); LiteLLM pricing, and unpriced models are marked unavailable rather than silently assigned a price.
 - **Live agent runs dashboard** — `ach dash` redraws 2×/s in the terminal; `ach web` (port 8399) grids every run with a browser terminal you can type into — PTY per run, vendored xterm.js, zero CDN.
+  Typing and every other privileged route sit behind a per-server token, like Jupyter's `?token=` URL.
 - **Terminal replay** — every run renders to an asciinema-format `.cast`, so you can scrub what the agent did and when.
 - **Run registry** — every run persists to `<stateDir>/runs/<runId>.json` with atomic writes; survives kills, dumps as `--json` for tools.
 - **10 MCP tools** — launch runs and read usage from any MCP client over stdio, or streamable HTTP on port 8398 (`ach serve`).
@@ -98,7 +99,9 @@ ach run --agent claude --claude-default-config "add a --dry-run flag to scripts/
 ```
 
 Dashboard: `ach web` keeps running, so start it in its own terminal. It opens
-http://localhost:8399 in your browser (`--no-open` skips that):
+`http://127.0.0.1:8399/?token=<token>` in your browser and prints that URL (`--no-open` skips
+the browser). The token is generated on first start and kept in `<stateDir>/web/token`, so the
+URL keeps working across restarts; see [Auth](#ach-web-the-browser-dashboard-in-detail).
 
 ```sh
 ach web                                        # live dashboard on :8399; leave it running
@@ -648,8 +651,8 @@ ach run --agent claude --model claude-sonnet-5-5 --interactive --budget-usd 0.50
   install". Not combinable with `--repeat`, `--parallel` or `--resume` yet.
 - **Where the PTY is published**: a per-user Unix socket (`/tmp/ach-live-<uid>/`, or
   `AGENTIC_CODING_HARNESS_LIVE_SOCKET_DIR`) named in `<stateDir>/live/<runId>.json` while the
-  run is live. `/api/live` and `/api/live/<runId>` list them (token-gated when `ach web` has a
-  token).
+  run is live. `/api/live` and `/api/live/<runId>` list them; they, typing into the run
+  (`/ws/pty/run:<runId>`) and `POST /api/live/<runId>/continue` all need the `ach web` token.
 
 The browser terminal is xterm.js. `ghostty-web` (libghostty in WASM with an xterm.js-compatible
 API) could give closer parity with a native Ghostty tab later; it has not been evaluated, and
@@ -1013,7 +1016,19 @@ const { result } = await runToDirectory({
 
 ## `ach web`: the browser dashboard in detail
 
-`ach web` (default port 8399) serves a same-origin browser dashboard over the same state dir:
+`ach web` (default port 8399) serves a same-origin browser dashboard over the same state dir.
+
+**Auth.** `ach web` always has a token: `--token`, else `AGENTIC_CODING_HARNESS_HTTP_TOKEN`,
+else a random 256-bit token generated on first start and kept in `<stateDir>/web/token` (file
+0600, dir 0700; an empty value counts as unset). With the generated token the server binds
+loopback only, whatever `--host` says. It prints and opens `http://127.0.0.1:<port>/?token=<t>`;
+a request with a valid `?token=` gets an `HttpOnly`, `SameSite=Strict` cookie (one per port,
+30 days), and from then on the pages work without the token in the URL. Clients without
+cookies send `Authorization: Bearer <t>` or `?token=<t>`. Everything that can run a command or
+change state needs the token (401 without it): `/api/pty` (spawn, list, kill), `/ws/pty/*`
+(typing into a new PTY or a live run), `POST /api/live/<runId>/continue`, and every
+`/api/desks` route; so do `/ws`, `/api/live` and `/api/queues`. Pages and the read-only JSON
+API (`/api/runs`, `/api/stats`, `/api/compare`, `/health`) stay open on the loopback bind.
 
 - **`/`** — one run in full: a structured live feed built from the persisted `AgentEvent` rows
   (text, expandable tool-call/result cards, warnings, usage, exit status), streamed over `/ws?runId=`.
@@ -1051,7 +1066,7 @@ const { result } = await runToDirectory({
   header, so interrupted, still-running and `unavailable` runs have no verdict and are left out,
   with `noVerdict` / `unavailable` counts on a row when above 0).
 - **`/queues`** (+ `GET /api/queues`) — queued / running / done per slice for every `ach queue run`
-  queue that is running or ended in the last 24 h ([docs/QUEUE.md](docs/QUEUE.md)). Token-gated when `--token` is set.
+  queue that is running or ended in the last 24 h ([docs/QUEUE.md](docs/QUEUE.md)). Token-gated.
 - **`GET /api/stats`** — global totals across every recorded run, also shown as the stats bar at the
   top of the main dashboard: `totalRuns`, `activeRuns`, `tokens` (input / output / cacheRead /
   cacheWrite / total), `costUsd` (priced runs only; `unpricedRuns` counted separately, never as $0),
@@ -1059,8 +1074,8 @@ const { result } = await runToDirectory({
   tokens, cost), `byStatus` / `byExitStatus` counts, and `perRun` avg / p50 / p95 of duration,
   tokens and cost. A run's model is the observed model (`+`-joined if several), else the requested
   one, else `unknown`. Computed on request from the in-memory run snapshot.
-- **`GET /api/runs`**: the run list. Unauthenticated like the rest of the JSON API (the token only
-  gates `/ws` and `/api/queues`). With no query, `ach web` returns page one of the bounded list
+- **`GET /api/runs`**: the run list. Unauthenticated like the rest of the read-only JSON API (see
+  **Auth** above for what the token gates). With no query, `ach web` returns page one of the bounded list
   (see [Bounded run list](#live-dashboards-terminal-ach-dash-and-web-ach-web)):
   `{"records", "total", "nextOffset", "window": {"recentMs", "pageSize"}}`, with `total` also in
   the `x-total-count` header. List records are slim: `verify.outputTail` (also on `regrades`),
@@ -1102,7 +1117,7 @@ The PTY relay is `POST /api/pty` (spawn) / `GET /api/pty` (list) / `POST /api/pt
 `ach run` process; `GET /api/live`, `GET /api/live/<runId>` and `POST /api/live/<runId>/continue`
 list live interactive runs, report `--then` state and release a `--pause-between` step.
 Agents in a new-session pane are spawned with their non-interactive flags so the pane does not die on a trust prompt.
-`--token` gates every websocket and PTY route. All assets are vendored under `/vendor/` — no CDN.
+`--token` gates every websocket and every `/api/pty` route. Every request (WebSocket upgrades too) must carry a loopback `Host` with the bound port and, if it has an `Origin`, a same-origin one; `/api` writes with a body must be JSON. All assets are vendored under `/vendor/` — no CDN.
 PTY attach is local-only by construction: runs arriving from an external feed (`--source`) are
 refused with `409` and their tiles show no LIVE button, since there is no local process to attach to.
 
@@ -1169,6 +1184,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
+- [Desks and lanes (`ach desk`, `ach lane`)](docs/DESKS.md): long-lived role agents plus goal-driven lanes that message each other, with per-desk cost.
 - [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — adapter pattern (headless / ACP / tmux lanes),
   token taps, canonical token record, ATIF, OTel transport, state manifests, data-flow diagram.
