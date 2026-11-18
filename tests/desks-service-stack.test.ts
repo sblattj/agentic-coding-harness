@@ -110,6 +110,7 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', { skip:
     socketPath = tmux('display-message', '-p', '#{socket_path}').trim();
     const before = new Set(allPanes());
     let entries: RosterEntry[] = [];
+    const startedLanes: RosterEntry[] = [];
     try {
       for (const p of [5801, 5802, 5803, 5810]) assert.equal(await portFree(p), true, `port ${p} free before`);
 
@@ -167,6 +168,7 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', { skip:
       assert.equal((pend as { pending: PendingLane }).pending.id, 'L1');
       await msgIn('DECISIONS', /^Lane request L1: audit-x/, 'ORCHESTRATOR');
       const lane = await laneApprove({ stateDir: sd, stack, id: 'L1', by: 'DECISIONS' });
+      startedLanes.push(lane); // tracked right away so the finally kills the detached lane host if a later assert fails
       await msgIn('ORCHESTRATOR', /Lane request L1 \(audit-x\) approved/, 'DECISIONS');
       assert.equal(lane.kind, 'lane');
       assert.equal(lane.port, 5810);
@@ -237,7 +239,7 @@ describe('desk service: real stack (3 fake-engine hosts, private tmux)', { skip:
       assert.equal(rv.rows.length, 0);
       assert.ok(readFileSync(join(sd, 'desks', stack, 'lanes.log'), 'utf8').includes('"stop"'));
     } finally {
-      for (const e of entries) {
+      for (const e of [...entries, ...startedLanes]) {
         try {
           process.kill(e.pid, 'SIGKILL');
         } catch {

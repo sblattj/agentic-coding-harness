@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { GhosttyDriver, pidfileFor, startMatchesPidfile, surfaceCommand } from "../src/desks/term/ghostty.ts";
 import { paneCommand } from "../src/desks/term/tmux.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "term-quote-enter-"));
+after(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe("shell path is quoted in launch commands", () => {
   const shell = { path: "/opt/my shells/z$sh", flags: ["-lic"], bareFlags: ["-fc"] };

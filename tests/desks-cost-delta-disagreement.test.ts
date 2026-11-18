@@ -46,9 +46,9 @@ function sample(over: Partial<UsageSample> = {}): UsageSample {
   return { model: "claude-sonnet-5-5", inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, at: Date.now(), ...over };
 }
 
-function stats(state: string, mode = "auto"): { total: Record<string, number>; stderr: string } {
+function stats(state: string, mode = "auto", extra: string[] = []): { total: Record<string, number>; stderr: string } {
   const bun = Boolean((process.versions as { bun?: string }).bun);
-  const r = spawnSync(process.execPath, bun ? [cli, "stats", "--json", "--state-only"] : ["--import", "tsx", cli, "stats", "--json", "--state-only"], {
+  const r = spawnSync(process.execPath, bun ? [cli, "stats", "--json", "--state-only", ...extra] : ["--import", "tsx", cli, "stats", "--json", "--state-only", ...extra], {
     encoding: "utf8",
     timeout: 60000,
     env: { ...process.env, HOME: state, AGENTIC_CODING_HARNESS_STATE_DIR: state, AGENTIC_CODING_HARNESS_COST_MODE: mode, AGENTIC_CODING_HARNESS_TZ: "UTC", AGENTIC_CODING_HARNESS_PROJECT_ALIASES: "" },
@@ -96,5 +96,20 @@ describe("cost disagreements on desk delta lines", () => {
     const { total, stderr } = stats(state);
     assert.equal(total.costDisagreements, 1, `one per message; stderr: ${stderr}`);
     assert.match(stderr, /cost disagreement: opencode session=ses_fixG_2/);
+  });
+
+  it("a window that cuts a message after its cost line (later token-delta lines excluded): no false disagreement", () => {
+    const state = mkState();
+    const m = createHostMeter(mkSpec(state));
+    m.begin({ sessionId: "ses_fixG_3", pid: 1 });
+    const t0 = Date.parse("2026-03-10T12:00:00Z");
+    // Cost line carries the full engine figure for 2000 tokens; the later delta lines add the rest of the tokens.
+    m.usage(sample({ messageId: "m1", costUsd: price, inputTokens: 1000, outputTokens: 100, at: t0 }));
+    m.usage(sample({ messageId: "m1", costUsd: price, inputTokens: 2000, outputTokens: 100, at: t0 + 3_600_000 }));
+    // Control: the whole message in the window and a 2x figure is still flagged (covered above); here the window ends between the lines.
+    const { stderr, total } = stats(state, "auto", ["--since", "2026-03-10T00:00:00Z", "--until", "2026-03-10T12:30:00Z"]);
+    assert.ok(total.costUsd! > 0, "precondition: the cost line is inside the window");
+    assert.equal(total.costDisagreements, 0, `partial message must not warn; stderr: ${stderr}`);
+    assert.doesNotMatch(stderr, /cost disagreement/);
   });
 });

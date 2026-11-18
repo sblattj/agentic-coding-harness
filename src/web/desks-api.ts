@@ -527,6 +527,8 @@ function done(res: ServerResponse, status: number, body: unknown): true {
 export const STREAM_POLL_MS = 500;
 export const STREAM_ROSTER_DEBOUNCE_MS = 250;
 export const STREAM_KEEPALIVE_MS = 15_000;
+/** A slow client may have at most this many bytes queued on its response; past it the stream is destroyed and the browser reconnects (it resyncs from /events?since=). */
+export const STREAM_MAX_BUFFERED_BYTES = 1024 * 1024;
 
 let openStreams = 0;
 /** Live /api/desks/stream connections (tests assert cleanup with it). */
@@ -615,14 +617,22 @@ async function openStream(req: IncomingMessage, res: ServerResponse, stateDir: s
   /** key name|runId|url -> unsubscribe (null while the subscription is being set up). */
   const subs = new Map<string, (() => void) | null>();
 
-  const send = (obj: unknown): void => {
+  /** Every stream write goes through here: a client that does not drain is cut off at the cap instead of growing the buffer without bound. */
+  const write = (chunk: string): void => {
     if (closed) return;
     try {
-      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+      res.write(chunk);
     } catch {
       cleanup();
+      return;
+    }
+    if (res.writableLength > STREAM_MAX_BUFFERED_BYTES) {
+      cleanup();
+      res.destroy(); // drops the queued bytes now (end() would keep them until the slow client reads)
     }
   };
+
+  const send = (obj: unknown): void => write(`data: ${JSON.stringify(obj)}\n\n`);
 
   const syncSubs = (rows: RosterRow[]): void => {
     const wanted = new Map<string, RosterRow>();
@@ -667,11 +677,7 @@ async function openStream(req: IncomingMessage, res: ServerResponse, stateDir: s
       syncSubs(view.rows);
     } catch (e) {
       if (!closed) {
-        try {
-          res.write(`: roster error ${String(e instanceof Error ? e.message : e).replace(/\s+/g, " ").slice(0, 300)}\n\n`);
-        } catch {
-          /* closed */
-        }
+        write(`: roster error ${String(e instanceof Error ? e.message : e).replace(/\s+/g, " ").slice(0, 300)}\n\n`);
       }
     } finally {
       refreshing = false;
@@ -740,12 +746,7 @@ async function openStream(req: IncomingMessage, res: ServerResponse, stateDir: s
     check();
   }, STREAM_POLL_MS);
   const keepAlive = setInterval(() => {
-    if (closed) return;
-    try {
-      res.write(": keep-alive\n\n");
-    } catch {
-      cleanup();
-    }
+    write(": keep-alive\n\n");
   }, STREAM_KEEPALIVE_MS);
 
   function cleanup(): void {

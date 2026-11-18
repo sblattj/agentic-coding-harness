@@ -1,13 +1,21 @@
 import "./support/no-network.mjs";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { builtinRolesDir, defaultLayout, deskPort, loadLayout, parseLayout, roleFiles } from "../src/desks/config.ts";
 import type { Layout } from "../src/desks/types.ts";
 
-const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), "desks-config-")));
+const tmpRoots: string[] = [];
+const tmp = () => {
+  const d = realpathSync(mkdtempSync(join(tmpdir(), "desks-config-")));
+  tmpRoots.push(d);
+  return d;
+};
+after(() => {
+  for (const d of tmpRoots) rmSync(d, { recursive: true, force: true });
+});
 const msgOf = (fn: () => unknown): string => {
   try {
     fn();

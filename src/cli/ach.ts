@@ -1541,6 +1541,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   // reported cost on the line that first carries it and costUsd 0 on later lines that only add tokens. A per-line
   // check would flag every such line (reported 0 vs computed > 0), so their figures are kept here (keyed by the
   // shared `extra` object, which the record keeps) and compared per message once the records are filtered.
+  const clippedDeskMsgs = new Set<string>();
   const deskDelta = new WeakMap<object, { key: string; label: string; reported?: number; computed?: number }>();
   const costFor = (
     r: Pick<StatRecord, "agent" | "sessionId" | "model" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cacheWrite1hTokens" | "extra">,
@@ -1615,7 +1616,15 @@ async function cmdStats(rest: string[]): Promise<number> {
   const stateRecords = [
     ...(await readAllRecords({ agent, sinceTs })),
     ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs }) : []),
-  ].filter((r) => inWindow(Date.parse(r.ts), window));
+  ].filter((r) => {
+    if (inWindow(Date.parse(r.ts), window)) return true;
+    // A desk message with a line outside the window is partial in-window: its reported cost can't be compared to the in-window tokens.
+    const ex = r.extra as Record<string, unknown> | undefined;
+    if (ex && ex.source === "desk-host" && typeof ex.messageId === "string" && ex.messageId !== "") {
+      clippedDeskMsgs.add(`${r.agent}\0${r.sessionId ?? ""}\0${String(ex.runId ?? "")}\0${ex.messageId}`);
+    }
+    return false;
+  });
   // One registry scan feeds both the cwd index and the run rollups; records
   // that fail to parse are counted (skippedRunRecords), never dropped silently.
   const registryScan = scanRunRecords(stateDir());
@@ -1768,9 +1777,9 @@ async function cmdStats(rest: string[]): Promise<number> {
       else g.computed += m.computed;
       msgs.set(m.key, g);
     }
-    for (const g of msgs.values()) {
-      // A reported message always sums above 0; a 0 sum means the window cut off the line that carried its cost.
-      if (!g.anyReported || !g.priced || g.reported === 0) continue;
+    for (const [key, g] of msgs) {
+      // A message with a line outside the window is skipped (partial computed vs full reported). A reported message always sums above 0; a 0 sum means the window cut off the line that carried its cost.
+      if (!g.anyReported || !g.priced || g.reported === 0 || clippedDeskMsgs.has(key)) continue;
       const d = costDisagreement(g.reported, g.computed);
       if (d) disagreements.push(formatDisagreement(g.label, d));
     }

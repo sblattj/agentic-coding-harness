@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { GhosttyDriver, pidfileFor, startMatchesPidfile } from "../src/desks/term/ghostty.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "ghostty-identity-"));
+after(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe("GhosttyDriver close requires this open's identity, not only the command line", () => {
   const argv = ["/usr/local/bin/node", "/opt/ach/pane.js"];
@@ -88,6 +89,28 @@ describe("GhosttyDriver close sends Enter only after the process is gone", () =>
     const t = await run("slow", "SIGTERM");
     assert.deepEqual(t.events, ["SIGTERM", "enter-after-exit"]);
     assert.ok(t.polls > 3);
+  });
+  it("sends no SIGKILL when the pid's identity changed during the wait (reused pid)", async () => {
+    const dir = join(tmp, "reused-during-wait");
+    const kills: string[] = [];
+    let reused = false;
+    const d = new GhosttyDriver({
+      dir,
+      settleMs: 0,
+      exitWaitMs: 100,
+      kill: (_pid, sig) => void kills.push(sig),
+      isAlive: () => {
+        reused = true; // the original exits and an unrelated process takes the pid while we wait
+        return true;
+      },
+      commandOf: () => (reused ? "/bin/sleep 1000" : "/usr/local/bin/node /opt/ach/pane.js"),
+      startOf: () => (reused ? Date.now() + 3_600_000 : Date.now() - 5_000),
+      osascript: async () => "T-1",
+    });
+    const id = await d.open({ mode: "window", name: "n", cwd: "/c", argv });
+    writeFileSync(pidfileFor(id, dir) as string, "5150\n");
+    await d.close(id);
+    assert.deepEqual(kills, ["SIGTERM"]);
   });
   it("escalates to SIGKILL when SIGTERM is ignored, then sends Enter", async () => {
     const t = await run("stubborn", "SIGKILL");

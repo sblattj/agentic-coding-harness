@@ -255,10 +255,21 @@ export class GhosttyDriver implements TerminalDriver {
         if (this.settleMs > 0) await sleep(this.settleMs);
         // Enter goes to the program if it is still running: wait for it to exit, escalating to SIGKILL.
         if (!(await this.waitGone(pid, this.exitWaitMs))) {
-          try {
-            this.kill(pid, "SIGKILL");
-          } catch {
-            /* ESRCH: already dead */
+          // The wait can last seconds: the pid may have exited and been reused meanwhile, so recheck identity (same
+          // command-line and start-time checks as above) right before the SIGKILL.
+          const cmdNow = this.commandOf(pid);
+          const stillOurs =
+            cmdNow !== undefined &&
+            (cmdNow.includes(pidfile) || (needles !== undefined && needles.length > 0 && needles.every((n) => cmdNow.includes(n)))) &&
+            startMatchesPidfile(this.startOf(pid), pidfileMtime);
+          if (stillOurs) {
+            try {
+              this.kill(pid, "SIGKILL");
+            } catch {
+              /* ESRCH: already dead */
+            }
+          } else {
+            process.stderr.write(`desks: ghostty pid ${pid} changed identity while waiting; not sending SIGKILL\n`);
           }
           await this.waitGone(pid, 1_000);
         }

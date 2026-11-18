@@ -321,14 +321,14 @@ table.costs td.num, table.costs th.num { text-align: right; }
     };
     api("GET", "/" + encodeURIComponent(row.name) + "/events?since=0").then(function (r) {
       c.loading = false;
-      c.loaded = true;
+      c.loaded = true; // only a successful fetch marks the history loaded; a failure leaves it retryable
       var evs = (r.events || []).slice(-MAX_EVENTS);
       for (var i = 0; i < evs.length; i++) addEvent(evs[i], true);
       renderAllChatNodes(row.name);
       renderFeeds();
       drain();
       if (es && es.readyState === 1) resyncChats(); // the stream may have opened while history loaded
-    }).catch(function (e) { c.loading = false; c.loaded = true; showErr(e); drain(); });
+    }).catch(function (e) { c.loading = false; showErr(e); drain(); }); // loaded stays false: the next loadHistory retries
   }
   function eventNode(name, ev) {
     var d = ev.data || {};

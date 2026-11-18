@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, get as httpGet, request as httpRequest, type IncomingMessage, type Server } from 'node:http';
+import { createServer, get as httpGet, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,7 @@ import {
   handleDesksApi,
   listDeskMcps,
   openDesksStreamCount,
+  STREAM_MAX_BUFFERED_BYTES,
   probeEngines,
   statusForError,
   type DesksApiDeps,
@@ -110,7 +111,7 @@ interface Harness {
   autoToken?: string;
 }
 
-async function harness(stateDir: string, token?: string, autoAuth = false): Promise<Harness> {
+async function harness(stateDir: string, token?: string, autoAuth = false, wrapRes?: (res: ServerResponse) => void): Promise<Harness> {
   const calls: Call[] = [];
   const st: Harness['st'] = { view: viewOf([row('ORCH')]) };
   const subs: Harness['subs'] = [];
@@ -137,6 +138,7 @@ async function harness(stateDir: string, token?: string, autoAuth = false): Prom
   };
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    wrapRes?.(res);
     void handleDesksApi(req, res, url, { stateDir, ...(token !== undefined ? { token } : {}) }, deps).then((handled) => {
       if (!handled) res.writeHead(418).end();
     });
@@ -561,6 +563,39 @@ describe('desks web api: routes', () => {
     assert.match(html, /f\.kind === "roster"\) \{[\s\S]*?if \(resyncOnSnapshot\)/);
   });
 
+  it('desks.html retries a failed chat-history fetch: loaded is set only on success, and an in-flight load is not duplicated', async () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const src = /function chatOf[\s\S]*?\n  function eventNode/.exec(html)?.[0]?.replace(/function eventNode$/, '');
+    assert.ok(src, 'chatOf + loadHistory found in the page script');
+    let calls = 0;
+    let failNext = true;
+    const ctx = createContext({
+      chats: {}, MAX_EVENTS: 300, es: null, errs: 0,
+      api: () => {
+        calls++;
+        return failNext ? Promise.reject(new Error('boom')) : Promise.resolve({ events: [] });
+      },
+      addEvent: () => {}, renderAllChatNodes: () => {}, renderFeeds: () => {}, resyncChats: () => {},
+      showErr: () => { (ctx as any).errs++; },
+    });
+    runInContext(`${src}; this.loadHistory = loadHistory;`, ctx);
+    const row = { name: 'A', runId: 'r1' };
+    (ctx as any).loadHistory(row);
+    (ctx as any).loadHistory(row); // in flight: no second fetch
+    assert.equal(calls, 1, 'concurrent load guarded');
+    await new Promise((r) => setTimeout(r, 10));
+    const c = (ctx as any).chats.A;
+    assert.equal(c.loaded, false, 'a failed fetch leaves the chat unloaded');
+    assert.equal(c.loading, false);
+    failNext = false;
+    (ctx as any).loadHistory(row);
+    assert.equal(calls, 2, 'retried after the failure');
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(c.loaded, true, 'success marks it loaded');
+    (ctx as any).loadHistory(row);
+    assert.equal(calls, 2, 'a loaded chat is not refetched');
+  });
+
   it('desks.html places each desk by its roster pane, falling back to port order', () => {
     const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
     const src = /var SLOTS = [\s\S]*?\n  function deskSlots[\s\S]*?\n  }\n/.exec(html)?.[0];
@@ -706,6 +741,51 @@ describe('desks web api: stream', () => {
     assert.ok(Date.now() - t0 < 1000);
     s.close();
     await until(() => openDesksStreamCount() === 0);
+  });
+
+  it('a client that never drains is cut off at the buffer cap: queued bytes stay bounded and later events are not written', async () => {
+    const sd = tmp('stream-slow');
+    let queued = 0; // what a non-draining client leaves queued on the response (the stub's writableLength)
+    let writesAfterDestroy = 0;
+    let destroyed = false;
+    let writeFalse = 0;
+    const slow = await harness(sd, undefined, false, (res) => {
+      const realWrite = res.write.bind(res) as (...a: unknown[]) => boolean;
+      (res as unknown as { write: (c: unknown, ...r: unknown[]) => boolean }).write = (c, ...r) => {
+        if (destroyed) writesAfterDestroy++;
+        queued += Buffer.byteLength(String(c));
+        realWrite(c, ...r);
+        writeFalse++;
+        return false; // backpressure: the client is not reading
+      };
+      Object.defineProperty(res, 'writableLength', { get: () => (destroyed ? 0 : queued) });
+      const realDestroy = res.destroy.bind(res);
+      res.destroy = ((e?: Error) => {
+        destroyed = true;
+        return realDestroy(e);
+      }) as typeof res.destroy;
+    });
+    try {
+      const s = await openSse(`${slow.base}/api/desks/stream?stack=${STACK}`);
+      await s.waitFor((f) => f.kind === 'roster');
+      await until(() => slow.subs.length === 1);
+      const big = 'x'.repeat(64 * 1024);
+      let peak = 0;
+      for (let i = 0; i < 80; i++) {
+        slow.subs[0]!.emit({ seq: 10 + i, at: i, runId: 'run-ORCH', name: 'ORCH', type: 'text', data: { text: big } });
+        peak = Math.max(peak, queued);
+      }
+      assert.ok(destroyed, 'the response was destroyed once the buffer passed the cap');
+      assert.ok(writeFalse > 0, 'precondition: write() returned false');
+      assert.equal(writesAfterDestroy, 0, 'nothing is written after the cut');
+      assert.ok(peak <= STREAM_MAX_BUFFERED_BYTES + 128 * 1024, `queued bytes stayed bounded (peak ${peak}, cap ${STREAM_MAX_BUFFERED_BYTES})`);
+      assert.ok(peak < 80 * big.length, 'far less than all 80 events were queued');
+      await until(() => openDesksStreamCount() === 0);
+      assert.ok(slow.subs[0]!.unsubscribed, 'host subscription released');
+      s.close();
+    } finally {
+      await closeHarness(slow);
+    }
   });
 });
 
