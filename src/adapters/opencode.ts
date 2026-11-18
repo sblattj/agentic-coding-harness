@@ -252,7 +252,10 @@ async function readServeJson(res: Response, base: string, route: string): Promis
   }
 }
 
-function serveRouteError(base: string, route: string, status: number): string {
+function serveRouteError(base: string, route: string, status: number, sentPassword = false): string {
+  if (status === 401 && sentPassword) {
+    return `opencode serve (${base}): ${route} -> 401 unauthorized; the serve rejected the password that was sent (check serverPassword / OPENCODE_PASSWORD matches the serve's OPENCODE_PASSWORD)`;
+  }
   if (status === 401) return `opencode serve (${base}): ${route} -> 401 unauthorized; ${PASSWORD_HINT}`;
   return `opencode serve (${base}): ${route} -> ${status}`;
 }
@@ -547,7 +550,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
 
     const detect = async (): Promise<ServeApi> => {
       const res = await this.#fetchImpl(`${base}/api/info`, { method: 'GET', headers, signal: controller.signal });
-      if (res.status === 401) throw new Error(serveRouteError(base, 'GET /api/info', 401));
+      if (res.status === 401) throw new Error(serveRouteError(base, 'GET /api/info', 401, !!password));
       if (!res.ok) return 'v1';
       let info: unknown;
       try {
@@ -567,7 +570,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         body: JSON.stringify({}),
         signal: controller.signal,
       });
-      if (!createRes.ok) throw new Error(serveRouteError(base, 'POST /session', createRes.status));
+      if (!createRes.ok) throw new Error(serveRouteError(base, 'POST /session', createRes.status, !!password));
       const session = (await readServeJson(createRes, base, 'POST /session')) as { id?: string };
       if (!session.id) throw new Error('opencode serve: session response missing id');
       state.sessionId = session.id;
@@ -582,7 +585,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal },
       );
       if (!msgRes.ok) {
-        throw new Error(serveRouteError(base, 'POST /session/:id/message', msgRes.status));
+        throw new Error(serveRouteError(base, 'POST /session/:id/message', msgRes.status, !!password));
       }
       const data = (await readServeJson(msgRes, base, 'POST /session/:id/message')) as { parts?: unknown[] };
       for (const part of data.parts ?? []) {
@@ -600,7 +603,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         signal: controller.signal,
       });
       const route = `${method} ${path.replace(/ses_[^/?]+/, ':id')}`;
-      if (!res.ok) throw new Error(serveRouteError(base, route, res.status));
+      if (!res.ok) throw new Error(serveRouteError(base, route, res.status, !!password));
       return readServeJson(res, base, route);
     };
 

@@ -465,6 +465,63 @@ describe('opencode adapter', () => {
       }
     });
 
+    test('wrong password (401 even with the header) says it was rejected, not "set the password"', { timeout: 5000 }, async () => {
+      const fetchImpl = (async () => json({ _tag: 'UnauthorizedError', message: 'Authentication required' }, 401)) as unknown as typeof fetch;
+      const handle = new OpenCodeAdapter({ fetchImpl, serverPassword: 'wrong' }).spawn({ prompt: 'p', preferServer: true });
+      const events = await collect(handle.events);
+      const last = events.at(-1) as { type: string; message: string };
+      assert.equal(last.type, 'error');
+      assert.match(last.message, /rejected the password that was sent/);
+      assert.doesNotMatch(last.message, /set the serve password/);
+      assert.equal(await handle.wait(), 1);
+    });
+
+    test('timeout: a turn that never goes idle errors, exits 1 and is interrupted on the server', { timeout: 5000 }, async () => {
+      const calls: Array<{ url: string; method?: string; auth?: string }> = [];
+      const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(url);
+        calls.push({ url: u, method: init?.method, auth: (init?.headers as Record<string, string>)?.authorization });
+        if (u.endsWith('/api/info')) return json({ version: '2.3.2' });
+        if (u.endsWith('/api/session')) return json({ data: { id: 'ses_v2_t' } });
+        if (u.endsWith('/prompt')) return json({ data: { id: USER_ID } });
+        if (u.endsWith('/interrupt')) return json({ interrupted: true });
+        return json({ data: [{ id: USER_ID, type: 'user' }] });
+      }) as typeof fetch;
+      const handle = new OpenCodeAdapter({ fetchImpl, serverPassword: 'pw', serverTimeoutMs: 50, serverPollMs: 5 }).spawn({ prompt: 'p', preferServer: true });
+      const events = await collect(handle.events);
+      const last = events.at(-1) as { type: string; message: string };
+      assert.equal(last.type, 'error');
+      assert.match(last.message, /did not finish within 50 ms/);
+      assert.equal(await handle.wait(), 1);
+      const interrupt = calls.find((c) => c.url.endsWith('/api/session/ses_v2_t/interrupt'));
+      assert.equal(interrupt?.method, 'POST');
+      assert.equal(interrupt?.auth, 'Basic ' + Buffer.from('opencode:pw').toString('base64'));
+    });
+
+    test('abort() ends the run and posts /interrupt with the auth header', { timeout: 5000 }, async () => {
+      const calls: Array<{ url: string; method?: string; auth?: string }> = [];
+      const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(url);
+        calls.push({ url: u, method: init?.method, auth: (init?.headers as Record<string, string>)?.authorization });
+        if (u.endsWith('/api/info')) return json({ version: '2.3.2' });
+        if (u.endsWith('/api/session')) return json({ data: { id: 'ses_v2_a' } });
+        if (u.endsWith('/prompt')) return json({ data: { id: USER_ID } });
+        if (u.endsWith('/interrupt')) return json({ interrupted: true });
+        if (init?.signal?.aborted) throw new Error('aborted');
+        return json({ data: [{ id: USER_ID, type: 'user' }] });
+      }) as typeof fetch;
+      const handle = new OpenCodeAdapter({ fetchImpl, serverPassword: 'pw', serverPollMs: 5 }).spawn({ prompt: 'p', preferServer: true });
+      const seen: OpencodeEvent[] = [];
+      for await (const e of handle.events) {
+        seen.push(e);
+        if (e.type === 'session') setTimeout(() => handle.abort(), 30);
+      }
+      assert.equal(await handle.wait(), 1);
+      const interrupt = calls.find((c) => c.url.endsWith('/api/session/ses_v2_a/interrupt'));
+      assert.equal(interrupt?.method, 'POST');
+      assert.equal(interrupt?.auth, 'Basic ' + Buffer.from('opencode:pw').toString('base64'));
+    });
+
     test('HTML 200 body from a v2 route throws, never parsed as data', { timeout: 5000 }, async () => {
       const fetchImpl = (async (url: RequestInfo | URL) => {
         if (String(url).endsWith('/api/info')) return json({ version: '2.2.5' });
