@@ -13,10 +13,10 @@
 // Every JSON call fails closed: an HTML or non-JSON body is an "unsupported opencode API" error, never data.
 import { execFile, spawn as nodeSpawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { deskPaths } from "../roster.ts";
 import { desksMcpDef } from "../self.ts";
 import type { Engine, EngineEvent, GoalStatus, HostSpec, McpServerDef } from "../types.ts";
@@ -182,6 +182,45 @@ function mcpNamesOf(cfg: unknown): string[] {
   const servers = (mcp as { servers?: unknown }).servers;
   if (servers && typeof servers === "object") names.push(...Object.keys(servers));
   return names;
+}
+
+/**
+ * Where the user's opencode config defines its own `goal` command: `command.goal` in a config file or in an inherited
+ * $OPENCODE_CONFIG_CONTENT, or a `goal.md` in a command directory. opencode 2 has no way to remove a command, and a
+ * config command replaces the built-in opencode.goal one, so a lane goal sent as `/goal` would run that template instead.
+ */
+export function configuredGoalCommands(cwd: string, env: NodeJS.ProcessEnv = process.env, api: OpencodeApi = "v2"): string[] {
+  const found: string[] = [];
+  const hasGoal = (cfg: unknown) => {
+    const cmd = cfg && typeof cfg === "object" ? (cfg as { command?: unknown }).command : undefined;
+    return !!cmd && typeof cmd === "object" && Object.prototype.hasOwnProperty.call(cmd, "goal");
+  };
+  const files = opencodeConfigFiles(cwd, env, api);
+  for (const f of files) {
+    if (!existsSync(f)) continue;
+    try {
+      if (hasGoal(parseJsonc(readFileSync(f, "utf8")))) found.push(`${f} (command.goal)`);
+    } catch {
+      // unreadable configs fail the serve itself
+    }
+  }
+  if (env.OPENCODE_CONFIG_CONTENT && env.OPENCODE_CONFIG_CONTENT !== "") {
+    try {
+      if (hasGoal(parseJsonc(env.OPENCODE_CONFIG_CONTENT))) found.push("$OPENCODE_CONFIG_CONTENT (command.goal)");
+    } catch {
+      // ditto
+    }
+  }
+  // Command directories sit next to the config files: the global and system opencode dirs, $OPENCODE_CONFIG_DIR, and each .opencode.
+  const cfgDir = env.OPENCODE_CONFIG_DIR && env.OPENCODE_CONFIG_DIR !== "" ? resolve(env.OPENCODE_CONFIG_DIR) : "";
+  for (const dir of new Set(files.map((f) => dirname(f)))) {
+    if (basename(dir) !== "opencode" && basename(dir) !== ".opencode" && dir !== cfgDir) continue;
+    for (const sub of ["command", "commands"]) {
+      const md = join(dir, sub, "goal.md");
+      if (existsSync(md)) found.push(md);
+    }
+  }
+  return [...new Set(found)];
 }
 
 /** Names of every MCP server the user's opencode configs define (union over opencodeConfigFiles). Unreadable files are skipped. */
@@ -426,11 +465,33 @@ function textKey(messageId: string, text: string): string {
   return `${messageId}:text:${text.length}:${h >>> 0}`;
 }
 
+/**
+ * `bin` as the absolute file the engine's PATH resolves it to; unchanged when it is not on that PATH. A pane runs
+ * the attach command in the user's login shell, whose PATH can find a different opencode than the one ach probed
+ * and served (a 1.x `opencode` rejects opencode 2's `--server`), so attach names the probed binary by path.
+ */
+export function resolveBin(bin: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (bin.includes("/")) return resolve(bin);
+  for (const dir of (env.PATH ?? "").split(":")) {
+    if (dir === "") continue;
+    const p = join(dir, bin);
+    try {
+      accessSync(p, fsConstants.X_OK);
+      if (statSync(p).isFile()) return p;
+    } catch {
+      // not here
+    }
+  }
+  return bin;
+}
+
 export class OpenCodeEngine implements Engine {
   readonly kind = "opencode" as const;
 
   private readonly env: NodeJS.ProcessEnv;
   private readonly bin: string;
+  /** The probed opencode as an absolute path, for attach commands that run under another PATH. */
+  private attachBin = "";
   private readonly spawnServe: SpawnServe;
   private readonly goals: OpenCodeGoalsBridge;
   private readonly readyTimeoutMs: number;
@@ -534,6 +595,7 @@ export class OpenCodeEngine implements Engine {
 
     // Which HTTP API to speak: opencode 2 moved everything under /api/* behind auth (#217).
     const picked = opencodeApiFor(this.fixedVersion ?? (await this.probeVersion(this.bin, this.env)));
+    this.attachBin = resolveBin(this.bin, this.env);
     this.api = picked.api;
     this.version = picked.version;
     this.checkStop();
@@ -884,6 +946,12 @@ export class OpenCodeEngine implements Engine {
    */
   private async setGoalV2(objective: string): Promise<void> {
     const text = objective.trim();
+    const shadows = configuredGoalCommands(this.spec!.cwd, this.env, "v2");
+    if (shadows.length > 0) {
+      throw new Error(
+        `desks: opencode ${this.version}: a "goal" command in ${shadows.join(", ")} replaces opencode's built-in goal plugin, so /goal would run that command instead of arming a goal; rename or remove it to use lane goals`,
+      );
+    }
     const sent = Date.now();
     await this.http("POST", `/api/session/${this.sessionId}/command`, { name: "goal", text }, this.goalTimeoutMs);
     // The built-in plugin writes the goal before the command returns; allow a short settle, not the whole timeout.
@@ -892,13 +960,20 @@ export class OpenCodeEngine implements Engine {
       const g = await this.goalStateV2();
       if (g && g.status === "active" && g.objective === text && (g.updatedAt ?? 0) >= sent - 2000) return;
       if (Date.now() > deadline) {
-        // A `goal` command from the user config (`command.goal`) or a plugin replaces the built-in one, and its goals never
-        // reach the opencode.goal RPC: name it instead of reporting a bare timeout.
+        // Not armed: a plugin's own `goal` command (the config scan above cannot see plugins) may have run the objective
+        // as a prompt. Stop that turn, then quote the command opencode lists so the cause is visible.
+        try {
+          await this.http("POST", `/api/session/${this.sessionId}/interrupt`, undefined, 3000);
+        } catch {
+          // best effort
+        }
         let who = "";
         try {
           const cmds = (await this.http("GET", `/api/command?location[directory]=${encodeURIComponent(this.spec!.cwd)}`)) as { data?: Array<{ name?: string; description?: string }> } | null;
           const goalCmd = cmds?.data?.find((c) => c.name === "goal");
-          if (goalCmd) who = `; the session's /goal command is ${JSON.stringify(goalCmd.description ?? "")} (a "goal" command from the opencode config or another plugin replaces the built-in opencode.goal plugin, which this engine drives)`;
+          who = goalCmd
+            ? `; the session's /goal command is described as ${JSON.stringify(goalCmd.description ?? "")}: if that is not opencode's built-in goal command, a plugin's "goal" command replaces it`
+            : `; the session lists no /goal command`;
         } catch {
           // diagnostics only
         }
@@ -957,9 +1032,9 @@ export class OpenCodeEngine implements Engine {
     if (this.api === "v2") {
       // opencode 2 has no `attach`: the TUI connects with --server/--session and reads the password from
       // OPENCODE_PASSWORD (cli/src/services/server-connection.ts). The password stays in a 0600 file, not argv.
-      return ["/bin/sh", "-c", 'OPENCODE_PASSWORD="$(cat "$1")" exec "$0" --server "$2" --session "$3"', this.bin, this.passwordFile, this.baseUrl, this.sessionId];
+      return ["/bin/sh", "-c", 'OPENCODE_PASSWORD="$(cat "$1")" exec "$0" --server "$2" --session "$3"', this.attachBin, this.passwordFile, this.baseUrl, this.sessionId];
     }
-    return [this.bin, "attach", this.baseUrl, "--session", this.sessionId];
+    return [this.attachBin, "attach", this.baseUrl, "--session", this.sessionId];
   }
 
   onEvent(cb: (e: EngineEvent) => void): void {

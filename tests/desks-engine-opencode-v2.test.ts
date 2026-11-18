@@ -1,7 +1,7 @@
 // OpenCodeEngine against opencode 2's API (#217): version selection, the v2 routes and Basic auth, the
 // MCP leak check on the v2 config form, and the fail-closed paths (an HTML body is never data).
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { after, describe, it } from "node:test";
 import {
   OpenCodeEngine,
   buildOpencodeConfig,
+  configuredGoalCommands,
   configuredMcpNames,
   opencodeApiFor,
   opencodeConfigFiles,
@@ -343,6 +344,11 @@ describe("OpenCodeEngine against a fake opencode 2 serve", () => {
     const v2 = new FakeV2();
     const port = await v2.serve.listen();
     const { env, spec, cwd, stateDir } = setup({ model: "prov/model-x" });
+    // The probed opencode is first on the engine's PATH; a pane's login shell may find another one.
+    const binDir = tmp("ach-oc2-bin-");
+    writeFileSync(join(binDir, "opencode"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(binDir, "opencode"), 0o755);
+    env.PATH = `${binDir}:${env.PATH ?? ""}`;
     spec.enginePort = port;
     const calls: SpawnCall[] = [];
     const eng = new OpenCodeEngine({ version: "2.2.5", env, spawn: v2.spawn(calls), stopGraceMs: 300, sendGraceMs: 100, mcpSettleMs: 3000 });
@@ -369,6 +375,7 @@ describe("OpenCodeEngine against a fake opencode 2 serve", () => {
       // attach: the TUI form with the password in a 0600 file, never in argv.
       const argv = eng.attachCommand();
       assert.deepEqual(argv.slice(0, 2), ["/bin/sh", "-c"]);
+      assert.equal(argv[3], join(binDir, "opencode"), "attach names the probed opencode by absolute path");
       assert.equal(argv.slice(3).includes(calls[0]!.env.OPENCODE_PASSWORD!), false);
       assert.deepEqual(argv.slice(5), [`http://127.0.0.1:${port}`, v2.sid]);
       const pwFile = argv[4]!;
@@ -484,7 +491,7 @@ describe("OpenCodeEngine against a fake opencode 2 serve", () => {
     await assert.rejects(eng.start(spec), /reports 1\.19\.0 on GET \/api\/info/);
   });
 
-  it("v2 setGoal names a /goal command that shadows the built-in goal plugin instead of a bare timeout", async () => {
+  it("v2 setGoal names a /goal command it cannot see in config (a plugin's) and interrupts the turn it may have started", async () => {
     const v2 = new FakeV2();
     v2.goalShadowed = true;
     const port = await v2.serve.listen();
@@ -493,10 +500,35 @@ describe("OpenCodeEngine against a fake opencode 2 serve", () => {
     const eng = new OpenCodeEngine({ version: "2.2.5", env, spawn: v2.spawn([]), stopGraceMs: 300, goalTimeoutMs: 600 });
     try {
       await eng.start(spec);
-      await assert.rejects(eng.setGoal("ship it"), /did not confirm the goal \(opencode\.goal state: null\); the session's \/goal command is "my own goal template"/);
+      await assert.rejects(eng.setGoal("ship it"), /did not confirm the goal \(opencode\.goal state: null\); the session's \/goal command is described as "my own goal template"/);
       assert.equal(v2.serve.of("POST", `/api/session/${v2.sid}/command`).length, 1);
+      assert.equal(v2.serve.of("POST", `/api/session/${v2.sid}/interrupt`).length, 1, "the template turn is interrupted");
     } finally {
       await eng.stop();
     }
+  });
+
+  it("v2 setGoal refuses before posting when the opencode config defines its own goal command", async () => {
+    const v2 = new FakeV2();
+    const port = await v2.serve.listen();
+    const { env, spec, home, cwd } = setup();
+    const gcfg = join(home, ".config", "opencode", "opencode.json");
+    writeFileSync(gcfg, JSON.stringify({ command: { goal: { template: "$ARGUMENTS", description: "mine" } } }));
+    spec.enginePort = port;
+    const eng = new OpenCodeEngine({ version: "2.2.5", env, spawn: v2.spawn([]), stopGraceMs: 300, goalTimeoutMs: 600 });
+    try {
+      await eng.start(spec);
+      await assert.rejects(eng.setGoal("ship it"), (e: Error) => e.message.includes(`a "goal" command in ${gcfg} (command.goal) replaces opencode's built-in goal plugin`));
+      assert.equal(v2.serve.of("POST", `/api/session/${v2.sid}/command`).length, 0, "nothing is posted");
+    } finally {
+      await eng.stop();
+    }
+    // Command directories count too, and a config without one finds nothing.
+    writeFileSync(gcfg, "{}");
+    assert.deepEqual(configuredGoalCommands(cwd, env), []);
+    mkdirSync(join(cwd, ".opencode", "commands"), { recursive: true });
+    writeFileSync(join(cwd, ".opencode", "commands", "goal.md"), "$ARGUMENTS\n");
+    assert.deepEqual(configuredGoalCommands(cwd, env), [join(cwd, ".opencode", "commands", "goal.md")]);
+    assert.deepEqual(configuredGoalCommands(cwd, { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ command: { goal: { template: "x" } } }) }).length, 2);
   });
 });

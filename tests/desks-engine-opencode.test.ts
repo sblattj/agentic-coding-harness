@@ -2,7 +2,7 @@
 // against a real `opencode serve` (ACH_DESKS_LIVE=1).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -274,6 +274,12 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
     const fake = new FakeOpencode();
     const port = await fake.listen();
     const { env, spec, cwd } = setup({ model: "ferry/super-flash" });
+    // attach names the opencode found on the engine's PATH by absolute path (a pane's login shell may find another).
+    const binDir = join(cwd, "bin");
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, "opencode"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(binDir, "opencode"), 0o755);
+    env.PATH = binDir;
     spec.enginePort = port;
     const calls: SpawnCall[] = [];
     const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, calls), stopGraceMs: 500 });
@@ -304,7 +310,7 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
         model: { providerID: "ferry", modelID: "super-flash" },
         parts: [{ type: "text", text: "You are ORCH.\n\nRole body for ORCH." }],
       });
-      assert.deepEqual(eng.attachCommand(), ["opencode", "attach", `http://127.0.0.1:${port}`, "--session", "ses_fake1"]);
+      assert.deepEqual(eng.attachCommand(), [join(binDir, "opencode"), "attach", `http://127.0.0.1:${port}`, "--session", "ses_fake1"]);
       assert.deepEqual(await eng.mcpStatus(), { desks: "connected" });
     } finally {
       await eng.stop();
@@ -1022,7 +1028,9 @@ describe("OpenCodeEngine live (real opencode serve, ferry/super-flash)", { skip:
       assert.ok(texts.join(" ").includes("PONG"), "assistant text contains PONG");
       assert.ok(usage.length >= 1, "a usage event was emitted");
       assert.ok(Number(usage[0]!.data.inputTokens) > 0);
-      assert.deepEqual(eng.attachCommand(), ["opencode", "attach", `http://127.0.0.1:${LIVE_PORT}`, "--session", r.sessionId]);
+      const attach = eng.attachCommand();
+      assert.match(attach[0]!, /(^|\/)opencode$/);
+      assert.deepEqual(attach.slice(1), ["attach", `http://127.0.0.1:${LIVE_PORT}`, "--session", r.sessionId]);
     } finally {
       await eng.stop();
     }
