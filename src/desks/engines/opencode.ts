@@ -659,7 +659,8 @@ export class OpenCodeEngine implements Engine {
       // (role-sent.ts), so an edited role or an upgraded ach's built-in roles reach a reloaded desk.
       const prompt = rolePrompt(spec);
       const sid = this.sessionId;
-      if (prompt !== "" && (!resumed || roleNeedsRefresh(spec, sid, prompt))) {
+      // A removed role (empty prompt) is a refresh too, when this session was given one: it is told the old one no longer applies.
+      if (resumed ? roleNeedsRefresh(spec, sid, prompt) : prompt !== "") {
         await this.note(resumed ? roleRefreshNote(prompt) : prompt);
         writeRoleSent(spec, sid, prompt);
       }

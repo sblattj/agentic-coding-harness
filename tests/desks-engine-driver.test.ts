@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import { readRunRecord } from '../src/core/registry.ts';
 import type { AgentAdapter, AgentEvent, AgentHandle, RunSpec } from '../src/core/types.ts';
 import { DriverEngine, roleContext } from '../src/desks/engines/driver.ts';
-import { writeRoleSent } from '../src/desks/role-sent.ts';
+import { readRoleSent, roleHash, writeRoleSent } from '../src/desks/role-sent.ts';
 import type { GoalLoopHandle, GoalLoopOptions } from '../src/desks/engines/goal-loop.ts';
 import type { EngineEvent, GoalStatus, HostSpec } from '../src/desks/types.ts';
 
@@ -144,6 +144,28 @@ describe('DriverEngine (fake adapter through the real core driver)', () => {
     await e2.send('three');
     await idle(e2);
     assert.doesNotMatch(fake2.specs[0]!.prompt, /NEWRULE-214|role prompt changed/, 'unchanged since the refresh: not resent');
+  });
+
+  it('desk reload, non-claude: the role prompt was removed since the session got one -> the next turn says it no longer applies, once, and that is recorded', async () => {
+    const spec = hostSpec({ resumeSessionId: 'prior-sess' });
+    writeRoleSent(spec, 'prior-sess', roleContext(spec)); // a non-empty role delivered before the reload
+    for (const f of spec.roleFiles) writeFileSync(f, ''); // the role is removed before the reload
+    const fake = new FakeAdapter();
+    const engine = new DriverEngine({ adapters: { fake }, env: ENV });
+    await engine.start(spec);
+    await engine.send('one');
+    await idle(engine);
+    await engine.send('two');
+    await idle(engine);
+    assert.match(fake.specs[0]!.prompt, /no longer applies/, 'turn 1 after the reload retracts the old role');
+    assert.doesNotMatch(fake.specs[1]!.prompt, /no longer applies|role prompt changed/, 'only once');
+    assert.equal(readRoleSent(spec)?.sha256, roleHash(''), 'the empty prompt is recorded for the session');
+    const fake2 = new FakeAdapter();
+    const e2 = new DriverEngine({ adapters: { fake: fake2 }, env: ENV });
+    await e2.start({ ...spec, runId: 'desk-run-2' });
+    await e2.send('three');
+    await idle(e2);
+    assert.doesNotMatch(fake2.specs[0]!.prompt, /no longer applies|role prompt changed/, 'still empty since: not resent');
   });
 
   it('desk reload, claude: a resumed session gets the CURRENT role file text as --append-system-prompt (no refresh note needed)', async () => {

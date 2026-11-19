@@ -378,7 +378,8 @@ export class DriverEngine implements Engine {
       result = await driver.run(spec.agent, runSpec);
       if (result.sessionId) this.#sessionId = result.sessionId;
       // The role rode this turn's prompt (first turn or refresh): record it, so a reload resends it only after a change.
-      if (role !== undefined && this.#role !== "" && this.#sessionId !== undefined && result.exitStatus === "success") {
+      // A refresh for a removed role records the empty prompt, so it is said once.
+      if (role !== undefined && role !== "" && this.#sessionId !== undefined && result.exitStatus === "success") {
         writeRoleSent(spec, this.#sessionId, this.#role);
         if (refresh) this.#roleRefresh = false;
       }

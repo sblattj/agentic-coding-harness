@@ -20,7 +20,7 @@ import {
   type ServeProcess,
   type SpawnServe,
 } from "../src/desks/engines/opencode.ts";
-import { writeRoleSent } from "../src/desks/role-sent.ts";
+import { readRoleSent, roleHash, writeRoleSent } from "../src/desks/role-sent.ts";
 import type { EngineEvent, GoalStatus, HostSpec } from "../src/desks/types.ts";
 
 /** Fake-backed engines speak the v1 API (no `opencode --version` probe). */
@@ -612,6 +612,36 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
           assert.match(b.parts[0]!.text, /Role body v2 for ORCH: NEWRULE-214\./, "the CURRENT role text, $DESK_NAME expanded");
         } else {
           assert.equal(notes.length, 0, "round 2 (unchanged since round 1): no note");
+        }
+      } finally {
+        await eng.stop();
+      }
+    }
+  });
+
+  it("desk reload: the role prompt was removed since the session got one -> the resumed session gets a note that it no longer applies, once, recorded", async () => {
+    const S = "ses_fake1";
+    const msgs = [{ info: { id: "m0", role: "user" }, parts: [{ id: "p0", type: "text", text: "role" }] }];
+    const { env, spec } = setup();
+    writeRoleSent(spec, S, rolePrompt(spec)); // a non-empty role delivered at desk up
+    for (const f of spec.roleFiles) writeFileSync(f, ""); // the role is removed before the reload
+    spec.resumeSessionId = S;
+    for (const round of [1, 2]) {
+      const fake = new FakeOpencode();
+      spec.enginePort = await fake.listen();
+      fake.messages = [...msgs];
+      const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+      try {
+        assert.equal((await eng.start(spec)).sessionId, S);
+        const notes = fake.of("POST", `/session/${S}/message`);
+        if (round === 1) {
+          assert.equal(notes.length, 1, "round 1: one note retracting the old role");
+          const b = notes[0]!.body as { noReply?: boolean; parts: { text: string }[] };
+          assert.equal(b.noReply, true);
+          assert.match(b.parts[0]!.text, /no longer applies/);
+          assert.equal(readRoleSent(spec)?.sha256, roleHash(""), "the empty prompt is recorded for the session");
+        } else {
+          assert.equal(notes.length, 0, "round 2 (still empty): no note");
         }
       } finally {
         await eng.stop();

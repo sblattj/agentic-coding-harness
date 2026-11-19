@@ -51,14 +51,25 @@ export function writeRoleSent(w: Who, sessionId: string, prompt: string): void {
   }
 }
 
-/** True when resumed session `sessionId` may hold another role prompt than `prompt` (or none recorded). */
+/**
+ * True when resumed session `sessionId` may hold another role prompt than `prompt` (or none recorded).
+ * An empty current prompt (the role was removed) needs a refresh only when the record says this
+ * session got a non-empty one: then the session must be told it no longer applies. With no record
+ * for this session there is nothing known to retract.
+ */
 export function roleNeedsRefresh(w: Who, sessionId: string, prompt: string): boolean {
-  if (prompt === "") return false;
   const r = readRoleSent(w);
+  if (prompt === "") return r !== null && r.sessionId === sessionId && r.sha256 !== roleHash("");
   return r === null || r.sessionId !== sessionId || r.sha256 !== roleHash(prompt);
 }
 
-/** The note a resumed session gets when its role prompt changed: the full current prompt, marked as replacing the old one. */
+/**
+ * The note a resumed session gets when its role prompt changed: the full current prompt, marked as
+ * replacing the old one, or (empty prompt, the role was removed) word that the earlier one no longer applies.
+ */
 export function roleRefreshNote(prompt: string): string {
+  if (prompt === "") {
+    return "[ach: your role prompt was removed since this session started. The earlier role prompt in this conversation no longer applies; you have no role prompt now. No reply needed.]";
+  }
   return `[ach: your role prompt changed since this session started. The text below is the current one; it replaces the earlier role prompt in this conversation. No reply needed.]\n\n${prompt}`;
 }
