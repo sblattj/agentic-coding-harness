@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { LivePty, loadBunPty, NEEDS_BUN_PTY, type PtyLike } from '../src/interactive/live-pty.ts';
+import { holdUntilSubscribed, LivePty, loadBunPty, NEEDS_BUN_PTY, type PtyLike } from '../src/interactive/live-pty.ts';
 import { confirmLive, connectLive, continueLive, frameReader, listConfirmedLiveRuns, MAX_CLIENT_BACKLOG, PendingInput, probeLive, startLiveServer, type StepState } from '../src/interactive/live-socket.ts';
 import { listLiveRuns, liveSocketPath, readLiveInfo, removeLiveInfo, resolveLiveRun, writeLiveInfo } from '../src/interactive/live-registry.ts';
 import { StepController } from '../src/interactive/steps.ts';
@@ -123,6 +123,38 @@ describe('LivePty', () => {
     assert.equal(await gone, 'SIGKILL');
     assert.equal(readFileSync(marker, 'utf8'), 'SIGINT\nSIGTERM\n');
     assert.equal(fake.killed, 1, 'the PTY handle is closed on the last step');
+  });
+});
+
+describe('holdUntilSubscribed', () => {
+  // bun-pty fires each chunk only to the listeners present when it reads; the
+  // wrapper keeps what arrives before LivePty subscribes (the TUI banner).
+  it('hands output and exit from before the first subscriber to it, in order, then streams', async () => {
+    const fake = new FakePty();
+    const term = holdUntilSubscribed(fake);
+    fake.emit('BANNER ');
+    fake.emit('prompt');
+    const live = new LivePty(term, { cols: 80, rows: 24 });
+    assert.equal(live.scrollback(), 'BANNER prompt', 'early output reaches the scrollback');
+    fake.emit(' later');
+    assert.equal(live.scrollback(), 'BANNER prompt later');
+    const second: string[] = [];
+    term.onData((d) => second.push(d));
+    fake.emit('!');
+    assert.deepEqual(second, ['!'], 'only the first subscriber gets the held output');
+    fake.exit(3);
+    assert.equal(await live.exited, 3);
+  });
+
+  it('an exit before anyone subscribed is still reported', async () => {
+    const fake = new FakePty();
+    const term = holdUntilSubscribed(fake);
+    fake.emit('bye');
+    fake.exit(0);
+    const live = new LivePty(term, { cols: 80, rows: 24 });
+    assert.equal(await live.exited, 0);
+    assert.equal(live.scrollback(), 'bye');
+    assert.equal(live.alive, false);
   });
 });
 

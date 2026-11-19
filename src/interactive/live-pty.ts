@@ -56,15 +56,78 @@ export async function loadBunPty(): Promise<PtyFactory> {
     throw why(`bun-pty failed to load: ${err instanceof Error ? err.message : String(err)}`);
   }
   return async (req) => {
+    let term: PtyLike;
     try {
-      return spawn(req.command, req.args, { name: "xterm-256color", cols: req.cols, rows: req.rows, cwd: req.cwd, env: req.env }) as unknown as PtyLike;
+      term = spawn(req.command, req.args, { name: "xterm-256color", cols: req.cols, rows: req.rows, cwd: req.cwd, env: req.env }) as unknown as PtyLike;
     } catch (err) {
       throw new HarnessError(`pty spawn failed for '${req.command}': ${err instanceof Error ? err.message : String(err)}`, "SPAWN");
     }
+    // Subscribe in the same tick as spawn(): bun-pty reads in a microtask and
+    // drops whatever it reads before the first listener exists.
+    return holdUntilSubscribed(term);
   };
 }
 
 const SCROLLBACK_CAP = 256 * 1024;
+
+/**
+ * Wrap a PTY so output and exit that happen before anyone subscribes are
+ * kept and handed to the first subscriber, instead of being lost.
+ *
+ * bun-pty starts its read loop in a microtask queued by spawn() and fires
+ * each chunk only to the listeners present then. LivePty subscribes after
+ * the async factory resolves, so a process that stalls between spawn() and
+ * that first read (a loaded CI runner) read the TUI's first bytes, its
+ * banner, with nobody listening: they never reached the scrollback, the
+ * cast or any viewer. Call this synchronously right after spawn().
+ */
+export function holdUntilSubscribed(term: PtyLike): PtyLike {
+  let early: string[] | null = [];
+  let earlyLen = 0;
+  const dataCbs = new Set<(d: string) => void>();
+  let exitEvent: { exitCode: number; signal?: number | string } | null = null;
+  const exitCbs = new Set<(e: { exitCode: number; signal?: number | string }) => void>();
+  term.onData((d: string) => {
+    if (early !== null) {
+      early.push(d);
+      earlyLen += d.length;
+      while (earlyLen > SCROLLBACK_CAP && early.length > 1) earlyLen -= early.shift()!.length;
+      return;
+    }
+    for (const cb of [...dataCbs]) cb(d);
+  });
+  term.onExit((e) => {
+    exitEvent = e;
+    for (const cb of [...exitCbs]) cb(e);
+  });
+  return {
+    get pid() {
+      return term.pid;
+    },
+    write: (data) => term.write(data),
+    resize: (cols, rows) => term.resize(cols, rows),
+    kill: (signal) => term.kill(signal),
+    onData(cb) {
+      dataCbs.add(cb);
+      if (early !== null) {
+        // The first subscriber gets the held output, oldest first, before any later chunk.
+        const held = early;
+        early = null;
+        earlyLen = 0;
+        for (const d of held) cb(d);
+      }
+      return { dispose: () => dataCbs.delete(cb) };
+    },
+    onExit(cb) {
+      if (exitEvent !== null) {
+        cb(exitEvent);
+        return { dispose: () => {} };
+      }
+      exitCbs.add(cb);
+      return { dispose: () => exitCbs.delete(cb) };
+    },
+  };
+}
 
 export interface LivePtyOptions {
   cols: number;

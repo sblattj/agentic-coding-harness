@@ -22,6 +22,7 @@ const CLI = new URL('../src/cli/ach.ts', import.meta.url).pathname;
 const FAKE = new URL('./helpers/fake-claude-tui.ts', import.meta.url).pathname;
 const WEB_RUNNER = new URL('./helpers/web-server-runner.ts', import.meta.url).pathname;
 const ATTACH_PROBE = new URL('./helpers/attach-probe.ts', import.meta.url).pathname;
+const EARLY_PROBE = new URL('./helpers/early-output-probe.ts', import.meta.url).pathname;
 const SKIP = isBun ? false : 'bun not on PATH';
 // `--import tsx` resolves from the child's cwd, so tsx children run from the repo root.
 const REPO = new URL('..', import.meta.url).pathname;
@@ -117,6 +118,19 @@ function sumTokens(tokens: Array<{ inputTokens: number; outputTokens: number; ca
 }
 
 describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, () => {
+  // The flake behind "timed out: scrollback frame" / "scrollback replays the
+  // banner" on macOS CI: the run process stalled between bun-pty's spawn()
+  // and its first read, the TUI's banner was read before LivePty subscribed,
+  // and bun-pty dropped it. The probe forces that stall.
+  it('output the TUI writes before LivePty subscribes still reaches the scrollback (run process stalls after spawn)', () => {
+    const probe = spawnSync('bun', [EARLY_PROBE, '600'], { cwd: REPO, encoding: 'utf8', timeout: 30_000 });
+    const line = probe.stdout.split('\n').find((l) => l.startsWith('EARLY_PROBE '));
+    assert.ok(line, probe.stdout + probe.stderr);
+    const r = JSON.parse(line.slice('EARLY_PROBE '.length)) as { scrollback: string; code: number };
+    assert.equal(r.code, 0);
+    assert.equal(r.scrollback, 'EARLY-OUTPUTLATE-OUTPUT');
+  });
+
   it('runs the TUI with the run flags, types --then steps, takes input over the socket, meters from the transcript', async () => {
     const sb = sandbox();
     const run = startRun(sb, ['--model', 'claude-sonnet-4-5', '--permission-mode', 'bypassPermissions', '--allowed-tools', 'Read', '--then', 'second step', 'first prompt']);
@@ -181,6 +195,8 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     children.push(web);
     let webOut = '';
     web.stdout!.setEncoding('utf8').on('data', (c: string) => (webOut += c));
+    let webErr = '';
+    web.stderr!.setEncoding('utf8').on('data', (c: string) => (webErr += c));
     const port = Number(await waitFor('web READY', () => /READY (\d+)/.exec(webOut)?.[1]));
     const base = `http://127.0.0.1:${port}`;
     // #212 review: live-run PTY input and continue are privileged, like /api/pty.
@@ -213,7 +229,7 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
       ws.once('open', r);
       ws.once('error', j);
     });
-    await waitFor('scrollback frame', () => frames.join('').includes('FAKE CLAUDE TUI'));
+    await waitFor('scrollback frame', () => frames.join('').includes('FAKE CLAUDE TUI'), 20_000, () => `frames=${JSON.stringify(frames)}\n--- run stderr\n${run.stderr()}\n--- web stderr\n${webErr}`);
     ws.send('from-web');
     await new Promise((r) => setTimeout(r, 120));
     ws.send('\r');
@@ -258,7 +274,7 @@ describe('ach run --interactive (bun-pty + fake claude TUI)', { skip: SKIP }, ()
     const live = await waitFor('live file', () => liveFiles(sb.state)[0], 20_000, run.stderr);
     const probe = spawnSync('bun', [ATTACH_PROBE, CLI, live.runId.slice(0, 8)], { cwd: sb.work, env: sb.env, encoding: 'utf8', timeout: 60_000 });
     const line = probe.stdout.split('\n').find((l) => l.startsWith('PROBE_RESULT ') || l.startsWith('PROBE_FAIL'));
-    assert.ok(line?.startsWith('PROBE_RESULT '), `${line ?? ''}\n${probe.stderr}`);
+    assert.ok(line?.startsWith('PROBE_RESULT '), `${line ?? ''}\n${probe.stderr}\n--- run stderr\n${run.stderr()}`);
     const r = JSON.parse(line!.slice('PROBE_RESULT '.length));
     assert.deepEqual(r, { sawBanner: true, sawEcho: true, exitCode: 0, detachedMsg: true });
     assert.equal(liveFiles(sb.state).length, 1, 'the run keeps going after detach');
