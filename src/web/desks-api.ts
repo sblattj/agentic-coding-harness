@@ -139,9 +139,10 @@ function stackLayout(stateDir: string, stack: string): Layout | null {
 export async function listDeskMcps(stateDir: string, stack: string, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
   const names = new Set<string>();
   const layout = stackLayout(stateDir, stack);
-  // Only the agents the layout/roster actually use. "opencode" is the implicit default engine
-  // (src/desks/service.ts: `agent ?? d.agent ?? layout.agent ?? "opencode"`), so it counts only
-  // where nothing names an agent: a desk or lane with no agent of its own and no layout.agent.
+  // Only the agents the layout/roster actually use, resolved the way src/desks/service.ts does:
+  // a desk runs `d.agent ?? layout.agent ?? "opencode"`, a new lane `lanes.agent ?? layout.agent ??
+  // "opencode"`. So layout.agent (or the implicit opencode) counts only through a desk or the lane
+  // default that falls back to it.
   const agents = new Set<string>();
   if (layout !== null) {
     for (const n of layout.lanes?.defaultMcps ?? []) names.add(n);
@@ -150,14 +151,13 @@ export async function listDeskMcps(stateDir: string, stack: string, env: NodeJS.
       agents.add(d.agent ?? layout.agent ?? "opencode");
     }
     for (const n of Object.keys(layout.mcpServers ?? {})) names.add(n);
-    if (layout.agent) agents.add(layout.agent);
-    if (layout.lanes?.agent) agents.add(layout.lanes.agent);
+    agents.add(layout.lanes?.agent ?? layout.agent ?? "opencode"); // the lane form lists these names
   }
   for (const r of Object.values(safeRoster(stateDir, stack)?.entries ?? {})) {
     for (const n of r.mcps ?? []) names.add(n);
     agents.add(r.agent);
   }
-  if (agents.size === 0) agents.add("opencode"); // nothing named an agent: the default engine
+  if (agents.size === 0) agents.add("opencode"); // no layout and no roster: the default engine
   const cwd = layout?.cwd ?? homedir();
   for (const a of agents) {
     if (!(AGENTS as readonly string[]).includes(a)) continue;

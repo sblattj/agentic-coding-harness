@@ -966,6 +966,21 @@ describe('desks web api: mcps only scan the agents in use', () => {
     const { dir, env } = seed({ portBase: 4800, desks: [{ name: 'A', role: 'a' }], lanes: { ports: [10, 99] } });
     assert.deepEqual(await listDeskMcps(dir, 's', env), ['sentry']);
   });
+
+  it('skips layout.agent when every desk and the lane default name another agent', async () => {
+    const { dir, env } = seed({ portBase: 4800, agent: 'opencode', desks: [{ name: 'A', role: 'a', agent: 'claude' }], lanes: { agent: 'claude', ports: [10, 99] } });
+    assert.deepEqual(await listDeskMcps(dir, 's', env), []);
+  });
+
+  it('keeps layout.agent when every desk overrides it but lanes fall back to it', async () => {
+    const { dir, env } = seed({ portBase: 4800, agent: 'opencode', desks: [{ name: 'A', role: 'a', agent: 'claude' }], lanes: { ports: [10, 99] } });
+    assert.deepEqual(await listDeskMcps(dir, 's', env), ['sentry']);
+  });
+
+  it('scans opencode for lanes when desks all name another agent and nothing names a lane agent', async () => {
+    const { dir, env } = seed({ portBase: 4800, desks: [{ name: 'A', role: 'a', agent: 'claude' }], lanes: { ports: [10, 99] } });
+    assert.deepEqual(await listDeskMcps(dir, 's', env), ['sentry']);
+  });
 });
 
 describe('desks page via ach web', () => {
