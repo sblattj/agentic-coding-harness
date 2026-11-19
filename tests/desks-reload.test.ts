@@ -12,7 +12,7 @@ import { after, describe, it } from 'node:test';
 import { cmdDesk } from '../src/cli/desk.ts';
 import { hostHealth } from '../src/desks/host-client.ts';
 import { deskPaths, readHostToken, readRoster, updateRoster } from '../src/desks/roster.ts';
-import { deskDown, deskInbox, deskReload, deskReloadStale, deskSend, deskSwitchEngine, deskUp, laneNew } from '../src/desks/service.ts';
+import { deskDown, deskEvents, deskInbox, deskReload, deskReloadStale, deskSend, deskSwitchEngine, deskUp, laneNew } from '../src/desks/service.ts';
 import type { HostHealth, HostSpec, RosterEntry } from '../src/desks/types.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
@@ -77,12 +77,20 @@ function health(sd: string, stack: string, e: RosterEntry): Promise<HostHealth |
   return hostHealth({ url: e.url, token: readHostToken(sd, stack, e.name, e.runId) }, 2000);
 }
 
-async function waitIdle(sd: string, stack: string, e: RosterEntry): Promise<HostHealth> {
+/**
+ * Wait for real evidence that the turn `text` started was answered: its message_in event, a turn_end
+ * after it, then the host idle with nothing queued and a session id. A bare state === "idle" read can
+ * pass before the message reaches the engine and capture an undefined session id.
+ */
+async function turnDone(sd: string, stack: string, e: RosterEntry, text: string): Promise<HostHealth> {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    const h = await health(sd, stack, e);
-    if (h !== null && h.state === 'idle' && h.queueDepth === 0) return h;
-    if (Date.now() > deadline) throw new Error(`${e.name} never went idle: ${JSON.stringify(h)}`);
+    const ev = await deskEvents({ stateDir: sd, stack, name: e.name });
+    const at = ev.findIndex((x) => x.type === 'message_in' && (x.data.message as { text?: string } | undefined)?.text === text);
+    const ended = at >= 0 && ev.slice(at + 1).some((x) => x.type === 'turn_end');
+    const h = ended ? await health(sd, stack, e) : null;
+    if (h !== null && h.runId === e.runId && h.state === 'idle' && h.queueDepth === 0 && h.sessionId !== undefined) return h;
+    if (Date.now() > deadline) throw new Error(`${e.name} never finished the turn for ${JSON.stringify(text)}: ${JSON.stringify(h)}`);
     await new Promise((r) => setTimeout(r, 100));
   }
 }
@@ -116,7 +124,7 @@ describe('desk reload on fake-engine hosts', () => {
       const before = readRoster(sd, stack).entries.ORCHESTRATOR!;
       const marker = `MARKER-${Date.now()}`;
       await deskSend({ stateDir: sd, stack, from: 'human', to: 'ORCHESTRATOR', text: marker });
-      const h0 = await waitIdle(sd, stack, before);
+      const h0 = await turnDone(sd, stack, before, marker);
       assert.equal(h0.sessionId, `echo-${before.runId}`, 'fake engine session before the reload');
 
       // A roster goal the spec does not carry (set after the desk started) survives the reload.
@@ -149,7 +157,7 @@ describe('desk reload on fake-engine hosts', () => {
       assert.ok(inbox.some((m) => m.text === marker), 'marker message kept');
       // The desk still takes turns after the reload.
       await deskSend({ stateDir: sd, stack, from: 'human', to: 'ORCHESTRATOR', text: 'after' });
-      await waitIdle(sd, stack, after);
+      await turnDone(sd, stack, after, 'after');
       const other = readRoster(sd, stack).entries.DECISIONS!;
       assert.equal((await health(sd, stack, other))?.runId, other.runId, 'the other desk untouched');
     } finally {

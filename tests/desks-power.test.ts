@@ -10,6 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
+import { getEventListeners } from 'node:events';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createMcpServer } from '../src/mcp/server.ts';
@@ -49,7 +50,7 @@ function setActive(sd: string, active: boolean): void {
   writeFileSync(join(sd, 'active.json'), JSON.stringify({ active }));
 }
 
-function layoutFile(sd: string, portBase: number): string {
+function layoutFile(sd: string, portBase: number, activeCheck: string[] = ['/bin/cat', join(sd, 'active.json')]): string {
   setActive(sd, false);
   const f = join(sd, 'desks.yaml');
   writeFileSync(
@@ -60,7 +61,7 @@ function layoutFile(sd: string, portBase: number): string {
       desks: [
         { name: 'ORCHESTRATOR', role: 'orchestrator', mcps: [] },
         { name: 'DECISIONS', role: 'decisions', mcps: [] },
-        { name: 'LISTENER', role: 'listener', mcps: [], feed: { command: FEED, activeCheck: ['/bin/cat', join(sd, 'active.json')] } },
+        { name: 'LISTENER', role: 'listener', mcps: [], feed: { command: FEED, activeCheck } },
       ],
       lanes: { defaultMcps: [], ports: [10, 14], approval: 'none' },
     }),
@@ -87,6 +88,24 @@ async function until(what: string, pred: () => boolean | Promise<boolean>, ms = 
   for (;;) {
     if (await pred()) return Date.now() - t0;
     if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/**
+ * Wait for real evidence that the turn `text` started was answered: its message_in event, a turn_end
+ * after it, then the host idle with nothing queued and a session id. A bare state === "idle" read can
+ * pass before the message reaches the engine and capture an undefined session id.
+ */
+async function turnDone(sd: string, stack: string, e: RosterEntry, text: string): Promise<HostHealth> {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const ev = await svc.deskEvents({ stateDir: sd, stack, name: e.name });
+    const at = ev.findIndex((x) => x.type === 'message_in' && (x.data.message as { text?: string } | undefined)?.text === text);
+    const ended = at >= 0 && ev.slice(at + 1).some((x) => x.type === 'turn_end');
+    const h = ended ? await health(sd, stack, e) : null;
+    if (h !== null && h.runId === e.runId && h.state === 'idle' && h.queueDepth === 0 && h.sessionId !== undefined) return h;
+    if (Date.now() > deadline) throw new Error(`${e.name} never finished the turn for ${JSON.stringify(text)}: ${JSON.stringify(h)}`);
     await new Promise((r) => setTimeout(r, 100));
   }
 }
@@ -203,8 +222,7 @@ describe('desk power on fake-engine hosts', () => {
       const first = readRoster(sd, stack).entries.LISTENER!;
       const feed1 = await feedPidOf(sd, stack);
       await svc.deskSend({ stateDir: sd, stack, from: 'human', to: 'LISTENER', text: 'turn' });
-      await until('a session', async () => (await health(sd, stack, first))?.state === 'idle');
-      const session = (await health(sd, stack, first))?.sessionId;
+      const session = (await turnDone(sd, stack, first, 'turn')).sessionId;
       await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'off' });
 
       const on = await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'toggle' });
@@ -356,6 +374,38 @@ describe('desk power on fake-engine hosts', () => {
     } finally {
       await svc.deskDown({ stateDir: sd, stack });
       await svc.deskDown({ stateDir: sd2, stack: stack2 });
+    }
+  });
+
+  it('the auto watcher backs off on a failing check (one log line per state change) and keeps no abort listener per poll', { timeout: 60_000 }, async () => {
+    const sd = tmpDir();
+    const stack = 'p6400';
+    const runs = join(sd, 'check-runs');
+    const missing = join(sd, 'missing.json'); // cat fails until it exists
+    // Hosts run the same activeCheck (auto reload); only runs from this process (the watcher) count.
+    const check = ['/bin/sh', '-c', `[ -z "$ACH_TEST_WATCHER_RUN" ] || echo x >> '${runs}'; cat '${missing}'`];
+    await svc.deskUp({ stateDir: sd, stack, layoutFile: layoutFile(sd, 6400, check), term: 'none' });
+    process.env.ACH_TEST_WATCHER_RUN = '1'; // set after deskUp, so the hosts do not inherit it
+    const ac = new AbortController();
+    const lines: string[] = [];
+    const watcher = S.runDeskWatcher!({ stateDir: sd, stack, name: 'LISTENER', pollMs: 100, graceMs: 600_000, signal: ac.signal, log: (l: string) => void lines.push(l) });
+    try {
+      await new Promise((r) => setTimeout(r, 2500));
+      const listeners = getEventListeners(ac.signal, 'abort').length;
+      const checks = readFileSync(runs, 'utf8').trim().split('\n').length;
+      assert.ok(listeners <= 1, `abort listeners after ${checks} polls: ${listeners} (one per poll leaks)`);
+      // 100 ms polls for 2.5 s is ~20 checks without backoff; doubling from 200 ms gives at most 5.
+      assert.ok(checks <= 6, `a failing check backs off: ${checks} checks in 2.5 s`);
+      const failing = lines.filter((l) => /check failing since /.test(l));
+      assert.equal(failing.length, 1, `one line when the check starts failing:\n${lines.join('\n')}`);
+      assert.equal(lines.filter((l) => /call state unknown/.test(l)).length, 0, 'no line per failed poll');
+      writeFileSync(missing, JSON.stringify({ active: true }));
+      await until('check recovered line', () => lines.some((l) => /check recovered after \d+ failed checks/.test(l)), 10_000);
+    } finally {
+      ac.abort();
+      await watcher;
+      delete process.env.ACH_TEST_WATCHER_RUN;
+      await svc.deskDown({ stateDir: sd, stack });
     }
   });
 

@@ -1372,6 +1372,8 @@ async function reloadDesk(stateDir: string, stack: string, old: RosterEntry, ses
 export const DESK_AUTO_POLL_MS = 30_000;
 /** Auto mode: how long a desk stays on after its call ended, so the end-of-call handoff finishes. */
 export const DESK_AUTO_GRACE_MS = 300_000;
+/** While a desk's activeCheck keeps failing, the auto watcher doubles its poll interval up to this cap (or pollMs, if larger). */
+export const DESK_AUTO_FAIL_BACKOFF_CAP_MS = 120_000;
 /** A desk turning itself off: its host stops this long after the reply, from a detached process. */
 export const DESK_SELF_OFF_DELAY_MS = 3_000;
 /** A watcher may be mid-switch (a host start) when asked to stop: wait this long before SIGKILL. */
@@ -1810,8 +1812,11 @@ export async function deskAuto(o: StackOpts & { name: string; stop?: boolean; po
 /**
  * The auto loop (`ach desk watch`, internal): every pollMs run the desk feed's activeCheck. Live and the
  * desk off: turn it on. No call and the desk on: after graceMs without a call, turn it off; a call
- * that comes back first cancels the timer. A failed check changes nothing. Ends on signal, when the
- * desk leaves the roster (`desk down`), or when its auto record names another pid (`auto --stop`).
+ * that comes back first cancels the timer. A failed check changes nothing; while checks keep failing
+ * the interval doubles up to DESK_AUTO_FAIL_BACKOFF_CAP_MS, with one log line when the check starts
+ * failing and one when it recovers. It never exits on failures (a watcher lives all day, and a feed
+ * script can break and come back): it ends on signal, when the desk leaves the roster (`desk down`),
+ * or when its auto record names another pid (`auto --stop`).
  */
 export async function runDeskWatcher(o: StackOpts & { name: string; pollMs: number; graceMs: number; signal?: AbortSignal; log?: (line: string) => void; now?: () => number; /** The token the auto record must carry; another token means a newer watcher took over. */ token?: string }): Promise<void> {
   const { stateDir, stack } = ctx(o);
@@ -1821,11 +1826,21 @@ export async function runDeskWatcher(o: StackOpts & { name: string; pollMs: numb
   const started = now();
   log(`watching ${name} in stack ${stack}: poll ${pollMs} ms, grace ${graceMs} ms`);
   let idleSince: number | undefined;
+  const backoffCapMs = Math.max(pollMs, DESK_AUTO_FAIL_BACKOFF_CAP_MS);
+  let failingSince: number | undefined;
+  let failures = 0;
   const pause = (ms: number): Promise<void> =>
     new Promise((resolve) => {
       if (o.signal?.aborted) return resolve();
-      const t = setTimeout(resolve, ms);
-      o.signal?.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
+      const onAbort = (): void => {
+        clearTimeout(t);
+        resolve();
+      };
+      const t = setTimeout(() => {
+        o.signal?.removeEventListener("abort", onAbort); // one listener per poll would pile up all day
+        resolve();
+      }, ms);
+      o.signal?.addEventListener("abort", onAbort, { once: true });
     });
   for (;;) {
     if (o.signal?.aborted) {
@@ -1845,7 +1860,18 @@ export async function runDeskWatcher(o: StackOpts & { name: string; pollMs: numb
     const call = await callLive(stateDir, stack, name);
     if (o.signal?.aborted) continue;
     if (call.live === null) {
-      log(`call state unknown (${call.note ?? "?"}); no change`);
+      failures++;
+      if (failingSince === undefined) {
+        failingSince = now();
+        log(`check failing since ${new Date(failingSince).toISOString()} (${call.note ?? "?"}); no change, retrying with backoff up to ${Math.round(backoffCapMs / 1000)}s`);
+      }
+    } else if (failingSince !== undefined) {
+      log(`check recovered after ${failures} failed checks (failing since ${new Date(failingSince).toISOString()})`);
+      failingSince = undefined;
+      failures = 0;
+    }
+    if (call.live === null) {
+      /* unknown: no change */
     } else if (call.live) {
       if (idleSince !== undefined) log("call live again, grace cancelled");
       idleSince = undefined;
@@ -1876,7 +1902,7 @@ export async function runDeskWatcher(o: StackOpts & { name: string; pollMs: numb
     } else {
       idleSince = undefined;
     }
-    await pause(pollMs);
+    await pause(failures > 0 ? Math.min(pollMs * 2 ** Math.min(failures, 20), backoffCapMs) : pollMs);
   }
 }
 
