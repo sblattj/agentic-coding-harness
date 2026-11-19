@@ -99,7 +99,7 @@ export const DESK_USAGE = `usage:
   ach desk close <Dn> [--reason R] [--from NAME]
   ach desk engine <name> <agent> [--model M]
   ach desk reload <name>|--all [--force] [--json] (restart a desk's host: same port, engine and session; lanes never)
-  ach desk reload --stale [--json]                (reload idle desks whose host runs an older ach than this one)
+  ach desk reload --stale [--force] [--json]                (reload idle desks whose host runs an older ach than this one)
   ach desk status <name> [--json]                 (on/off, feed pid, pane, call live, auto watcher)
   ach desk on <name> [--resume] [--json]          (start an off desk: same port, fresh session; --resume keeps the old one)
   ach desk off <name> [--force] [--from NAME]     (stop host, feed and pane; refused while a call is live unless --force)
@@ -537,10 +537,10 @@ async function runDesk(sub: string, args: string[], d: DeskDeps): Promise<void> 
       const p = o({ all: { type: "boolean" }, force: { type: "boolean" }, stale: { type: "boolean" } });
       const all = p.values.all === true;
       const stale = p.values.stale === true;
-      need(stale ? p.positionals.length === 0 && !all && p.values.force !== true : all ? p.positionals.length === 0 : p.positionals.length === 1, "usage: ach desk reload <name>|--all [--force] | --stale");
+      need(stale ? p.positionals.length === 0 && !all : all ? p.positionals.length === 0 : p.positionals.length === 1, "usage: ach desk reload <name>|--all [--force] | --stale [--force]");
       const c = ctxOf(p);
       const me = d.env.ACH_DESK_NAME;
-      const rs = stale ? await svc.deskReloadStale(compact({ stack: c.stack, by: me !== undefined && me !== "" ? me : "human" })) : await svc.deskReload(compact({
+      const rs = stale ? await svc.deskReloadStale(compact({ stack: c.stack, by: me !== undefined && me !== "" ? me : "human", force: p.values.force === true ? true : undefined })) : await svc.deskReload(compact({
         stack: c.stack, name: all ? undefined : (p.positionals[0] as string), all: all ? true : undefined,
         force: p.values.force === true ? true : undefined, by: me !== undefined && me !== "" ? me : "human",
       }));

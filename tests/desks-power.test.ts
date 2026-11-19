@@ -17,7 +17,7 @@ import { handleDesksApi } from '../src/web/desks-api.ts';
 import { registerDeskTools } from '../src/mcp/tools-desks.ts';
 import { cmdDesk } from '../src/cli/desk.ts';
 import { hostHealth } from '../src/desks/host-client.ts';
-import { readHostToken, readMessages, readRoster, updateRoster } from '../src/desks/roster.ts';
+import { deskPaths, readHostToken, readMessages, readRoster, updateRoster } from '../src/desks/roster.ts';
 import * as svc from '../src/desks/service.ts';
 import type { HostHealth, RosterEntry } from '../src/desks/types.ts';
 import { VERSION } from '../src/version.ts';
@@ -225,6 +225,26 @@ describe('desk power on fake-engine hosts', () => {
       await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'on', resume: true });
       const third = readRoster(sd, stack).entries.LISTENER!;
       assert.equal((await health(sd, stack, third))?.sessionId, sess2, '--resume continues the saved session');
+    } finally {
+      await svc.deskDown({ stateDir: sd, stack });
+    }
+  });
+
+  it('on re-resolves the role files like reload does (a saved path from an older install is replaced)', { timeout: 120_000 }, async () => {
+    const sd = tmpDir();
+    const stack = 'p6480';
+    await svc.deskUp({ stateDir: sd, stack, layoutFile: layoutFile(sd, 6480), term: 'none' });
+    try {
+      const specFile = join(deskPaths(sd, stack).specs, 'LISTENER.json');
+      const current = JSON.parse(readFileSync(specFile, 'utf8')).roleFiles as string[];
+      assert.ok(current.length > 0);
+      await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'off' });
+      const oldDir = join(tmpDir(), 'old-install', 'roles');
+      const stale = { ...JSON.parse(readFileSync(specFile, 'utf8')), roleFiles: [join(oldDir, 'common.md'), join(oldDir, 'listener.md')] };
+      writeFileSync(specFile, JSON.stringify(stale));
+      const on = await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'on' });
+      assert.equal(on.status.state, 'on', JSON.stringify(on));
+      assert.deepEqual(JSON.parse(readFileSync(specFile, 'utf8')).roleFiles, current, 'the host turned on gets the roles this ach resolves');
     } finally {
       await svc.deskDown({ stateDir: sd, stack });
     }

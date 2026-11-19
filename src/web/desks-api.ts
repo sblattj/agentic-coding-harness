@@ -505,7 +505,7 @@ export async function handleDesksApi(
       const force = body.force === true ? { force: true } : {};
       if (body.stale !== undefined && typeof body.stale !== "boolean") throw new HttpError(400, "stale must be a boolean");
       // POST /api/desks/all/reload {stale: true}: only the idle desks on an older ach build.
-      if (a === "all" && body.stale === true) return done(res, 200, { results: await svc.deskReloadStale({ ...so, by: "human" }) });
+      if (a === "all" && body.stale === true) return done(res, 200, { results: await svc.deskReloadStale({ ...so, ...force, by: "human" }) });
       // POST /api/desks/all/reload reloads every desk, never lanes (desk names are upper case, so "all" is never a desk).
       const target = a === "all" ? { all: true } : { name: a! };
       return done(res, 200, { results: await svc.deskReload({ ...so, ...target, ...force, by: "human" }) });

@@ -149,13 +149,13 @@ export function registerDeskTools(
   server.registerTool({
     name: "desk_reload",
     description:
-      "Restart a desk's host on the same port, engine and agent session (history kept), so it picks up a newer ach build and new desk tools. Give `name`, or `all: true` for every desk (lanes are never reloaded), or `stale: true` for the idle desks whose host runs an older ach than the installed one (busy ones are skipped, newer ones never touched). A busy desk is refused unless `force: true` (force cuts its turn and drops its queued messages). Off desks are skipped (they start on fresh code when turned on). You cannot reload yourself; under `all`/`stale` you are skipped. Each result says whether the session was resumed.",
+      "Restart a desk's host on the same port, engine and agent session (history kept), so it picks up a newer ach build and new desk tools. Give `name`, or `all: true` for every desk (lanes are never reloaded), or `stale: true` for the idle desks whose host runs an older ach than the installed one (busy ones and ones with a live call are skipped, newer ones never touched). A busy desk or one whose feed reports a live call is refused unless `force: true` (force cuts its turn and drops its queued messages, or the call; under `stale` it overrides only the live-call skip). Off desks are skipped (they start on fresh code when turned on). You cannot reload yourself; under `all`/`stale` you are skipped. Each result says whether the session was resumed.",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Desk to reload (see desk_roster)" },
         all: { type: "boolean", description: "Reload every desk except you; lanes never" },
-        force: { type: "boolean", description: "Reload even when the desk is busy" },
+        force: { type: "boolean", description: "Reload even when the desk is busy or a call is live on its feed" },
         stale: { type: "boolean", description: "Reload the idle desks running an older ach build than the installed one" },
       },
     },
@@ -165,8 +165,9 @@ export function registerDeskTools(
       const force = args.force;
       if (args.stale !== undefined && typeof args.stale !== "boolean") throw new Error("stale must be a boolean");
       if (args.stale === true) {
-        if ((name !== undefined && name !== "") || all === true || force === true) throw new Error("desk_reload: stale takes no name, all or force");
-        return { results: await svc.deskReloadStale({ ...base, by: me }) };
+        if ((name !== undefined && name !== "") || all === true) throw new Error("desk_reload: stale takes no name or all");
+        if (force !== undefined && typeof force !== "boolean") throw new Error("force must be a boolean");
+        return { results: await svc.deskReloadStale({ ...base, by: me, ...(force === true ? { force: true } : {}) }) };
       }
       if (all !== undefined && typeof all !== "boolean") throw new Error("all must be a boolean");
       if (force !== undefined && typeof force !== "boolean") throw new Error("force must be a boolean");

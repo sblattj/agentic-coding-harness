@@ -519,7 +519,7 @@ ${QUEUE_USAGE}
   ach desk send <to> <text...> [--from NAME] | inbox [name] [--limit N] [--since <ms|10m>] [--json]
   ach desk events <name> [--since SEQ] [--json] [--follow] | chat <name> | engine <name> <agent> [--model M]
   ach desk answer <Dn> <text...> [--from NAME] | close <Dn> [--reason R]
-  ach desk reload <name>|--all [--force] | reload --stale
+  ach desk reload <name>|--all [--force] | reload --stale [--force]
   ach desk status <name> | on <name> [--resume] | off <name> [--force] | toggle <name>
   ach desk auto <name> [--poll S] [--grace S] | auto <name> --stop
   ach listener status | on | off | toggle | auto [--stop]   (the same, for the LISTENER desk)

@@ -1055,6 +1055,7 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
         engine,
         runId: randomUUID(),
         port: old.port,
+        roleFiles: currentRoleFiles(stateDir, stack, base),
       }
     : deskHostSpec(stateDir, stack, layout, d!, old.port, o.agent, model);
   if (model !== undefined) spec.model = model;
@@ -1178,7 +1179,9 @@ export interface DeskReloadResult {
  * place. A busy desk (turn running, starting, or messages queued) is refused unless force: a reload
  * cuts its turn and drops its queue. `by` names the caller: a desk cannot reload itself, because
  * its own host runs the call. With `all`, every desk is reloaded in turn (the caller is skipped) and
- * lanes never are; per-desk refusals and failures come back as results instead of throwing.
+ * lanes never are; per-desk refusals and failures come back as results instead of throwing (a desk with a
+ * live call on its feed is skipped, not failed). A live call on the desk feed (feedCallLive) is refused
+ * like a busy desk unless force.
  */
 export async function deskReload(o: StackOpts & { name?: string; all?: boolean; force?: boolean; by?: Sender }): Promise<DeskReloadResult[]> {
   const { stateDir, stack } = ctx(o);
@@ -1203,13 +1206,18 @@ export async function deskReload(o: StackOpts & { name?: string; all?: boolean; 
     try {
       out.push(await reloadMarked(stateDir, stack, d.name, o.force === true, o.by));
     } catch (e) {
-      out.push({ name: d.name, ok: false, resumed: false, error: errText(e) });
+      const m = errText(e);
+      out.push(CALL_LIVE_REFUSAL.test(m) ? { name: d.name, ok: false, resumed: false, skipped: m } : { name: d.name, ok: false, resumed: false, error: m });
     }
   }
   return out;
 }
 
-async function reloadMarked(stateDir: string, stack: string, name: string, force: boolean, by: Sender | undefined): Promise<DeskReloadResult> {
+/** The refusal a reload gives while the desk feed reports a live call (--all and --stale turn it into a skip). */
+const CALL_LIVE_REFUSAL = /^refused: a call is live on /;
+
+/** `forceCall` (default: force) overrides only the live-call refusal; `--stale --force` never cuts a busy desk. */
+async function reloadMarked(stateDir: string, stack: string, name: string, force: boolean, by: Sender | undefined, forceCall: boolean = force): Promise<DeskReloadResult> {
   const old = readRoster(stateDir, stack).entries[name];
   if (!old) throw new Error(`desks: unknown desk "${name}" in stack "${stack}"`);
   if (old.kind !== "desk") throw new Error(`desks: ${name} is a lane; only desks reload (stop the lane and start a new one)`);
@@ -1220,6 +1228,10 @@ async function reloadMarked(stateDir: string, stack: string, name: string, force
   const h = await hostHealth(entryTarget(stateDir, stack, old), 2000);
   if (h === null || h.runId !== old.runId) throw new Error(`desks: ${name} is not running; \`ach desk up\` starts the stack`);
   if (!force && (h.state !== "idle" || h.queueDepth > 0)) throw reloadBusy(name, h.state, h.queueDepth);
+  // A reload cuts the feed process with the host: never during a live call (same check as desk off).
+  if (!forceCall && (await callLive(stateDir, stack, name)).live === true) {
+    throw new Error(`refused: a call is live on ${name}; pass --force to reload anyway`);
+  }
   // Same shield as an engine switch: a roster prune must not drop the entry while its host is down.
   const marker = switchingMarker(stateDir, stack, name);
   mkdirSync(dirname(marker), { recursive: true });
@@ -1237,6 +1249,20 @@ function reloadBusy(name: string, state: string, queued: number): Error {
   );
 }
 
+/**
+ * The role files THIS ach resolves for a saved spec's role (reload, desk on, desk engine): the saved paths can
+ * name an older install's built-in roles (a versioned install dir), so a restart after an upgrade
+ * reads the new roles. Falls back to the saved paths when the role cannot be resolved.
+ */
+function currentRoleFiles(stateDir: string, stack: string, base: HostSpec): string[] {
+  try {
+    if (base.role !== undefined && base.role !== "") return roleFiles(stackLayout(stateDir, stack), base.role);
+  } catch {
+    /* keep the saved paths */
+  }
+  return base.roleFiles;
+}
+
 async function reloadDesk(stateDir: string, stack: string, old: RosterEntry, sessionId: string | undefined, force: boolean): Promise<DeskReloadResult> {
   const name = old.name;
   let base: HostSpec | null = null;
@@ -1247,14 +1273,7 @@ async function reloadDesk(stateDir: string, stack: string, old: RosterEntry, ses
   }
   let spec: HostSpec;
   if (base) {
-    spec = { ...base, runId: randomUUID(), port: old.port };
-    // Role files are resolved again by THIS ach: the saved paths can name an older install's
-    // built-in roles (a versioned install dir), so a reload after an upgrade reads the new roles.
-    try {
-      if (base.role !== undefined && base.role !== "") spec.roleFiles = roleFiles(stackLayout(stateDir, stack), base.role);
-    } catch {
-      /* keep the saved paths */
-    }
+    spec = { ...base, runId: randomUUID(), port: old.port, roleFiles: currentRoleFiles(stateDir, stack, base) };
   } else {
     const layout = stackLayout(stateDir, stack);
     const d = layout.desks.find((x) => x.name === name);
@@ -1585,7 +1604,7 @@ async function turnDeskOn(stateDir: string, stack: string, name: string, resume:
     } catch {
       base = null;
     }
-    if (base) spec = { ...base, runId: randomUUID(), port: old.port };
+    if (base) spec = { ...base, runId: randomUUID(), port: old.port, roleFiles: currentRoleFiles(stateDir, stack, base) };
     else {
       const layout = stackLayout(stateDir, stack);
       const d = layout.desks.find((x) => x.name === name);
@@ -1857,19 +1876,26 @@ export function staleDesks(entries: RosterEntry[], by?: Sender): RosterEntry[] {
 
 /**
  * `ach desk reload --stale` (MCP desk_reload {stale: true}): reload each idle desk whose host runs an
- * older ach than the installed one, so new desk tools and role prompts reach it. Busy desks are
- * skipped (run it again once they are idle); a desk on a NEWER ach (another install) is never
+ * older ach than the installed one, so new desk tools and role prompts reach it. Busy desks and desks
+ * with a live call on their feed are skipped (run it again once they are idle; `force` overrides only the
+ * live-call skip, never a busy desk); a desk on a NEWER ach (another install) is never
  * touched, so two installs cannot ping-pong. Off desks start on the current ach when turned on.
  */
-export async function deskReloadStale(o: StackOpts & { by?: Sender } = {}): Promise<DeskReloadResult[]> {
+export async function deskReloadStale(o: StackOpts & { by?: Sender; force?: boolean } = {}): Promise<DeskReloadResult[]> {
   const { stateDir, stack } = ctx(o);
   const out: DeskReloadResult[] = [];
   for (const d of staleDesks(Object.values(readRoster(stateDir, stack).entries), o.by)) {
     try {
-      out.push(await reloadMarked(stateDir, stack, d.name, false, o.by));
+      out.push(await reloadMarked(stateDir, stack, d.name, false, o.by, o.force === true));
     } catch (e) {
       const m = errText(e);
-      out.push(/ is busy \(state/.test(m) ? { name: d.name, ok: false, resumed: false, skipped: `busy; run \`ach desk reload --stale\` again once it is idle` } : { name: d.name, ok: false, resumed: false, error: m });
+      out.push(
+        / is busy \(state/.test(m)
+          ? { name: d.name, ok: false, resumed: false, skipped: `busy; run \`ach desk reload --stale\` again once it is idle` }
+          : CALL_LIVE_REFUSAL.test(m)
+            ? { name: d.name, ok: false, resumed: false, skipped: m }
+            : { name: d.name, ok: false, resumed: false, error: m },
+      );
     }
   }
   return out;

@@ -236,7 +236,7 @@ ach desk decisions [--state open|answered|closed] [--json]
 ach desk close <Dn> [--reason R] [--from NAME]
 ach desk engine <name> <agent> [--model M]
 ach desk reload <name>|--all [--force] [--json]
-ach desk reload --stale [--json]
+ach desk reload --stale [--force] [--json]
 ach desk status <name> [--json]
 ach desk on <name> [--resume] [--json]
 ach desk off <name> [--force] [--from NAME] [--json]
@@ -264,10 +264,10 @@ Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else 
 - `-h` or `--help` is help only as the first argument after the subcommand; inside message text it is sent like any other word.
 - Only the human or the stack's decisions desk (the desk with role `decisions`) may `lane approve` or `lane reject`, from the CLI, MCP tools and web API alike (the web API answers 403 otherwise).
 - `desk events --follow` and `desk chat` look the host up again on every reconnect, so they keep streaming across an engine switch (new host token and run; the new run's events start at seq 1).
-- `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions. An agent name ach does not know (the list `GET /api/desks/engines` shows) is refused before the running host is stopped. When the new engine fails to start, the desk is restarted on its previous agent on the same port (with a new run id) and the start error is returned.
+- `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions. An agent name ach does not know (the list `GET /api/desks/engines` shows) is refused before the running host is stopped. When the new engine fails to start, the desk is restarted on its previous agent on the same port (with a new run id) and the start error is returned. Role files are resolved again by the running ach, as `desk reload` and `desk on` do, so the new host reads the current built-in roles rather than paths an older install saved.
 - `desk reload` restarts a running desk's host so it picks up a new ach build (for example a tool added to the desks MCP server): same port, same engine and model, same roster slot, message history and decisions, and the same agent session, so the conversation continues where it was. The host gets a new run id and token. The roster's terminal, feed and goal fields are kept.
-  - A busy desk (a turn running or messages queued) is refused, because the restart would cut its turn; `--force` reloads it anyway. A desk that is not running is refused too (use `desk up`). The host itself makes the last idle check (`POST /stop-if-idle`) and accepts no message after it, so a message that arrives while the reload starts is refused with an error (the sender sees it) rather than cut off; a host from before that route gets only the reload's own `/health` check.
-  - `--all` reloads every desk of the stack, one by one, in port order; lanes are never reloaded (a lane by name is refused). One desk that fails does not stop the others, and the exit status is 1 when any desk was not reloaded.
+  - A busy desk (a turn running or messages queued) is refused, because the restart would cut its turn; `--force` reloads it anyway. A desk whose feed reports a live call (the feed's `activeCheck`, the same check `desk off` uses) is refused too, because the restart would cut the call: `refused: a call is live on <NAME>; pass --force to reload anyway`; `--force` overrides that as well. A desk without an `activeCheck`, or a check that fails, is not held back by this rule. A desk that is not running is refused too (use `desk up`). The host itself makes the last idle check (`POST /stop-if-idle`) and accepts no message after it, so a message that arrives while the reload starts is refused with an error (the sender sees it) rather than cut off; a host from before that route gets only the reload's own `/health` check.
+  - `--all` reloads every desk of the stack, one by one, in port order; lanes are never reloaded (a lane by name is refused). A desk with a live call is skipped with that message and the rest are reloaded. One desk that fails does not stop the others, and the exit status is 1 when any desk was not reloaded.
   - A desk cannot reload itself (its own MCP server runs inside the host being restarted): `desk reload <own name>` from inside a desk is refused, and `--all` from inside a desk skips the caller and says so.
   - Each result says whether the session was kept (`resumed`). OpenCode adopts the old session on the new `opencode serve` (no new session, old parts are not counted again); driver engines resume it on the next turn when the agent supports resume. When the engine cannot continue it (an agent without resume, an OpenCode session that is gone), the desk starts a new session and the result carries a `note`.
   - Role prompts: the reloading ach resolves the desk's role files again (so an upgrade's new built-in roles count, not the paths the old install saved). The resumed session gets the current role prompt once, as a note marked as replacing the earlier one, only when it differs from the one the session last got (ach records a hash per desk in `<stateDir>/desks/<stack>/role-sent/<name>.json`; a session with no record gets it once). A role removed since (an empty prompt) gets a note, once, saying the earlier role prompt no longer applies, when the record shows this session got one. OpenCode sends it as a no-reply note; non-claude driver agents get it ahead of the next turn's prompt; claude needs nothing extra, because it gets the current role as its system prompt on every turn.
@@ -298,7 +298,7 @@ Registered on `ach mcp` for every desk and lane session (identity from `ACH_DESK
 | `desk_roster` | none | `me` plus peers with role, busy/idle/dead/off, tools, goal |
 | `desk_send` | `to, text` | refuses self and unknown names; an off desk fails with `desk_off: ...` (do not retry); returns at once; do not wait or poll |
 | `desk_inbox` | `limit?, since_minutes?` | recent messages to or from the caller |
-| `desk_reload` | `name?` or `all: true` or `stale: true`, `force?` | restart desks on a fresh host, keeping port, engine and session (see `desk reload`); refuses the caller and lanes; `all` and `stale` skip the caller; returns `{results}` |
+| `desk_reload` | `name?` or `all: true` or `stale: true`, `force?` | restart desks on a fresh host, keeping port, engine and session (see `desk reload`); refuses the caller and lanes, and a desk with a live call or a busy desk unless `force`; `all` and `stale` skip the caller and skip live-call desks; returns `{results}` |
 | `desk_power` | `name, action` (`status`, `on`, `off`, `toggle`, `auto`, `auto_stop`), `resume?`, `pollSeconds?`, `graceSeconds?` | switch a desk on or off (see Desk power); never forces, so off is refused during a live call; a desk turning itself off gets `pending: true` |
 | `lane_new` | `name, goal, mcps?, cwd?, agent?, model?, budget_usd?, brief?` | start a lane, or `{pending}` when approval applies |
 | `lane_status` | `name?` | goal state, verified plan actions, evidence |
@@ -373,8 +373,8 @@ POST /api/desks/lanes {name, goal, mcps?, cwd?, agent?, model?, budgetUsd?} -> R
 POST /api/desks/lanes/:name/stop        {now?: true} -> {}   (body optional; now skips the busy-lane grace wait)
 POST /api/desks/pending/:id/approve     -> RosterEntry ; /reject {reason?} -> PendingLane
 POST /api/desks/:name/engine {agent, model?} -> RosterEntry
-POST /api/desks/:name/reload {force?}  -> {results: DeskReloadResult[]}   (name `all` reloads every desk, never lanes; 409 busy or not running)
-POST /api/desks/all/reload {stale: true} -> {results: DeskReloadResult[]}  (only idle desks on an older ach build)
+POST /api/desks/:name/reload {force?}  -> {results: DeskReloadResult[]}   (name `all` reloads every desk, never lanes; 409 busy, live call or not running)
+POST /api/desks/all/reload {stale: true} -> {results: DeskReloadResult[]}  (only idle desks on an older ach build; {force} reloads live-call desks too)
 POST /api/desks/:name/power {action: status|on|off|toggle, resume?, force?} -> DeskPowerResult   (409: a call is live, or the desk is a lane)
 POST /api/desks/:name/auto {stop?, pollMs?, graceMs?} -> DeskPowerResult   (409: no feed activeCheck)
 GET  /api/desks/:name/events?since=<seq> -> {events: HostEvent[]}

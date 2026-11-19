@@ -283,10 +283,13 @@ describe("desk_reload", () => {
 });
 
 describe("desk_reload stale and desk_power", () => {
-  it("desk_reload stale: true calls deskReloadStale with me as by, and refuses mixing it with name/all/force", async () => {
+  it("desk_reload stale: true calls deskReloadStale with me as by (force passes through), and refuses mixing it with name/all", async () => {
     const t = setup(DESK_ENV);
     assert.deepEqual((await t.ok("desk_reload", { stale: true })).results, []);
     assert.deepEqual(t.calls.at(-1), { fn: "deskReloadStale", o: { stateDir: "/tmp/state-x", stack: "s1", by: "ORCHESTRATOR" } });
+    await t.ok("desk_reload", { stale: true, force: true });
+    assert.deepEqual(t.calls.at(-1), { fn: "deskReloadStale", o: { stateDir: "/tmp/state-x", stack: "s1", by: "ORCHESTRATOR", force: true } });
+    assert.match((await t.call("desk_reload", { stale: true, force: "yes" })).error!.message, /force must be a boolean/);
     assert.match((await t.call("desk_reload", { stale: true, all: true })).error!.message, /stale takes no name/);
     assert.match((await t.call("desk_reload", { stale: "yes" })).error!.message, /stale must be a boolean/);
   });

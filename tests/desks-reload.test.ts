@@ -12,7 +12,7 @@ import { after, describe, it } from 'node:test';
 import { cmdDesk } from '../src/cli/desk.ts';
 import { hostHealth } from '../src/desks/host-client.ts';
 import { deskPaths, readHostToken, readRoster, updateRoster } from '../src/desks/roster.ts';
-import { deskDown, deskInbox, deskReload, deskSend, deskUp, laneNew } from '../src/desks/service.ts';
+import { deskDown, deskInbox, deskReload, deskReloadStale, deskSend, deskSwitchEngine, deskUp, laneNew } from '../src/desks/service.ts';
 import type { HostHealth, HostSpec, RosterEntry } from '../src/desks/types.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
@@ -44,6 +44,28 @@ function layoutFile(sd: string, portBase: number): string {
       desks: [
         { name: 'ORCHESTRATOR', role: 'orchestrator', mcps: [] },
         { name: 'DECISIONS', role: 'decisions', mcps: [] },
+      ],
+      lanes: { defaultMcps: [], ports: [10, 14], approval: 'none' },
+    }),
+  );
+  return f;
+}
+
+const FEED = [process.execPath, '-e', 'setInterval(() => process.stdout.write(JSON.stringify({ type: "alive" }) + "\\n"), 300)'];
+
+/** Like layoutFile plus a LISTENER whose feed activeCheck reads <sd>/active.json (a call is live). */
+function liveLayoutFile(sd: string, portBase: number): string {
+  writeFileSync(join(sd, 'active.json'), JSON.stringify({ active: true }));
+  const f = join(sd, 'desks.yaml');
+  writeFileSync(
+    f,
+    JSON.stringify({
+      portBase,
+      agent: 'opencode',
+      desks: [
+        { name: 'ORCHESTRATOR', role: 'orchestrator', mcps: [] },
+        { name: 'DECISIONS', role: 'decisions', mcps: [] },
+        { name: 'LISTENER', role: 'listener', mcps: [], feed: { command: FEED, activeCheck: ['/bin/cat', join(sd, 'active.json')] } },
       ],
       lanes: { defaultMcps: [], ports: [10, 14], approval: 'none' },
     }),
@@ -148,6 +170,68 @@ describe('desk reload on fake-engine hosts', () => {
       const [r] = await deskReload({ stateDir: sd, stack, name: 'ORCHESTRATOR' });
       assert.equal(r?.ok, true, JSON.stringify(r));
       assert.deepEqual(spec(sd, stack, 'ORCHESTRATOR').roleFiles, current, 'the reloaded host gets the roles this ach resolves');
+    } finally {
+      await deskDown({ stateDir: sd, stack });
+    }
+  });
+
+  it('desk engine resolves the role files again with this ach (a saved path from an older install is replaced), like reload and desk on', { timeout: 120_000 }, async () => {
+    const sd = tmpDir();
+    const stack = 'p6380';
+    await deskUp({ stateDir: sd, stack, layoutFile: layoutFile(sd, 6380), term: 'none' });
+    try {
+      const current = spec(sd, stack, 'ORCHESTRATOR').roleFiles;
+      const oldDir = join(tmpDir(), 'old-install', 'roles');
+      const stale = { ...spec(sd, stack, 'ORCHESTRATOR'), roleFiles: [join(oldDir, 'common.md'), join(oldDir, 'orchestrator.md')] };
+      writeFileSync(join(deskPaths(sd, stack).specs, 'ORCHESTRATOR.json'), JSON.stringify(stale));
+      const e = await deskSwitchEngine({ stateDir: sd, stack, name: 'ORCHESTRATOR', agent: 'claude' });
+      assert.equal(e.agent, 'claude');
+      assert.deepEqual(spec(sd, stack, 'ORCHESTRATOR').roleFiles, current, 'the switched host gets the roles this ach resolves');
+    } finally {
+      await deskDown({ stateDir: sd, stack });
+    }
+  });
+
+  it('a live call on the desk feed refuses reload (name, --all, --stale) unless forced; the other desks still reload', { timeout: 240_000 }, async () => {
+    const sd = tmpDir();
+    const stack = 'p6385';
+    await deskUp({ stateDir: sd, stack, layoutFile: liveLayoutFile(sd, 6385), term: 'none' });
+    try {
+      const before = readRoster(sd, stack).entries.LISTENER!;
+      const refused = /refused: a call is live on LISTENER; pass --force to reload anyway/;
+      await assert.rejects(deskReload({ stateDir: sd, stack, name: 'LISTENER' }), refused);
+      assert.equal((await health(sd, stack, before))?.runId, before.runId, 'old host untouched');
+
+      await updateRoster(sd, stack, (ro) => {
+        for (const e of Object.values(ro.entries)) e.achVersion = '0.0.1';
+      });
+      const stale = await deskReloadStale({ stateDir: sd, stack, by: 'human' });
+      const ls = stale.find((r) => r.name === 'LISTENER');
+      assert.match(ls?.skipped ?? '', refused, JSON.stringify(stale));
+      assert.ok(stale.filter((r) => r.name !== 'LISTENER').every((r) => r.ok), JSON.stringify(stale));
+      assert.equal(readRoster(sd, stack).entries.LISTENER!.runId, before.runId, 'stale: LISTENER not reloaded');
+
+      const all = await deskReload({ stateDir: sd, stack, all: true });
+      const la = all.find((r) => r.name === 'LISTENER');
+      assert.match(la?.skipped ?? '', refused, JSON.stringify(all));
+      assert.ok(all.filter((r) => r.name !== 'LISTENER').every((r) => r.ok), JSON.stringify(all));
+      assert.equal(readRoster(sd, stack).entries.LISTENER!.runId, before.runId, 'all: LISTENER not reloaded');
+
+      const [r] = await deskReload({ stateDir: sd, stack, name: 'LISTENER', force: true });
+      assert.equal(r?.ok, true, JSON.stringify(r));
+      const mid = readRoster(sd, stack).entries.LISTENER!;
+      assert.notEqual(mid.runId, before.runId, 'forced: reloaded');
+
+      await updateRoster(sd, stack, (ro) => {
+        ro.entries.LISTENER!.achVersion = '0.0.1';
+      });
+      const forcedStale = await deskReloadStale({ stateDir: sd, stack, by: 'human', force: true });
+      assert.equal(forcedStale.find((x) => x.name === 'LISTENER')?.ok, true, JSON.stringify(forcedStale));
+      assert.notEqual(readRoster(sd, stack).entries.LISTENER!.runId, mid.runId, 'forced stale: reloaded');
+
+      writeFileSync(join(sd, 'active.json'), JSON.stringify({ active: false }));
+      const [r2] = await deskReload({ stateDir: sd, stack, name: 'LISTENER' });
+      assert.equal(r2?.ok, true, 'no call: reloads without force');
     } finally {
       await deskDown({ stateDir: sd, stack });
     }

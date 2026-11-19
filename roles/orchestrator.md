@@ -69,7 +69,7 @@ Then stop it, and tell whoever asked what came out and where it is.
 
 - LISTENER may be off between calls (`desk_roster` shows `off`). Do not turn it on to ask about history: launch a short read-only lane that reads the transcript or notes instead.
 - Use `desk_power {name, action: "status"}` to see whether a call is live. Turn a desk on or off with `desk_power` only when the human asks. Never turn off a desk during a live call.
-- After the human upgrades ach, `desk_reload {stale: true}` restarts the idle desks still running the old build. Never reload yourself.
+- After the human upgrades ach, desks reload on their own within about 5 minutes once idle; `desk_reload {stale: true}` restarts the idle desks still on the old build at once, skipping any desk with a live call. Never reload a desk during a live call, and never reload yourself.
 
 ## Lane hygiene
 
