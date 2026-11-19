@@ -97,6 +97,38 @@ describe('withMkdirLock stale takeover', () => {
     assert.deepEqual(readdirSync(join(lock, '..')), []);
   });
 
+  it('release leaves a successor lock alone when ours was taken over while fn ran', () => {
+    const lock = join(scratch(), 'x.lock');
+    withMkdirLock(
+      lock,
+      () => {
+        rmSync(lock, { recursive: true, force: true }); // our lock taken over (we outlived staleMs)
+        plant(lock, process.ppid, 'successor');
+      },
+      { staleMs: 60_000, waitMs: 2_000 },
+    );
+    assert.equal(ownerToken(lock), 'successor');
+    assert.deepEqual(readdirSync(join(lock, '..')), ['x.lock'], 'takeover guard left behind');
+  });
+
+  for (const [label, pid, ageMs] of [
+    ['live owner, old', () => process.ppid, 120_000],
+    ['dead owner, young', deadPid, 0],
+  ] as const) {
+    it(`a takeover guard (${label}) is not cleared: the waiter times out and the stale lock stays`, () => {
+      const lock = join(scratch(), 'x.lock');
+      plant(lock, deadPid(), 'l1');
+      plant(`${lock}.takeover`, pid(), 'g');
+      if (ageMs) {
+        const old = new Date(Date.now() - ageMs);
+        utimesSync(`${lock}.takeover`, old, old);
+      }
+      assert.throws(() => withMkdirLock(lock, () => 'ran', { staleMs: 60_000, waitMs: 200 }), /timed out waiting/);
+      assert.equal(ownerToken(lock), 'l1');
+      assert.equal(ownerToken(`${lock}.takeover`), 'g');
+    });
+  }
+
   it('six processes contending for a dead-owner lock never overlap inside fn (10 rounds)', async () => {
     const mod = new URL('../src/core/mkdir-lock.ts', import.meta.url).pathname;
     const bun = Boolean((process.versions as { bun?: string }).bun);
