@@ -22,6 +22,9 @@ function fakeService(calls: Call[], overrides: Partial<Record<string, () => unkn
     deskSend: mk("deskSend", { id: "m1", delivered: "now" }),
     deskInbox: mk("deskInbox", []),
     deskReload: mk("deskReload", [{ name: "X", ok: true, resumed: true }]),
+    deskReloadStale: mk("deskReloadStale", []),
+    deskPower: mk("deskPower", { name: "LISTENER", action: "status", changed: false, message: "m", status: { state: "on" } }),
+    deskAuto: mk("deskAuto", { name: "LISTENER", action: "auto", changed: true, message: "m", status: { state: "on" } }),
     laneNew: mk("laneNew", { name: "x" }),
     laneStatus: mk("laneStatus", []),
     laneStop: mk("laneStop", { stopped: "x" }),
@@ -57,7 +60,7 @@ function setup(env: Record<string, string | undefined>, overrides: Partial<Recor
 
 const DESK_ENV = { ACH_DESK_NAME: "ORCHESTRATOR", ACH_DESK_STACK: "s1" };
 const ALL = [
-  "desk_roster", "desk_send", "desk_inbox", "desk_reload", "lane_new", "lane_status", "lane_stop",
+  "desk_roster", "desk_send", "desk_inbox", "desk_reload", "desk_power", "lane_new", "lane_status", "lane_stop",
   "lane_approve", "lane_reject", "decision_open", "decision_list", "decision_close",
 ];
 
@@ -276,5 +279,33 @@ describe("desk_reload", () => {
     assert.match((await t.call("desk_reload", { name: "DECISIONS", force: "yes" })).error!.message, /force must be a boolean/);
     assert.match((await t.call("desk_reload", { all: "yes" })).error!.message, /all must be a boolean/);
     assert.equal(t.calls.filter((c) => c.fn === "deskReload").length, 0);
+  });
+});
+
+describe("desk_reload stale and desk_power", () => {
+  it("desk_reload stale: true calls deskReloadStale with me as by, and refuses mixing it with name/all/force", async () => {
+    const t = setup(DESK_ENV);
+    assert.deepEqual((await t.ok("desk_reload", { stale: true })).results, []);
+    assert.deepEqual(t.calls.at(-1), { fn: "deskReloadStale", o: { stateDir: "/tmp/state-x", stack: "s1", by: "ORCHESTRATOR" } });
+    assert.match((await t.call("desk_reload", { stale: true, all: true })).error!.message, /stale takes no name/);
+    assert.match((await t.call("desk_reload", { stale: "yes" })).error!.message, /stale must be a boolean/);
+  });
+  it("desk_power maps actions to deskPower/deskAuto with me as by and never passes force", async () => {
+    const t = setup(DESK_ENV);
+    for (const action of ["status", "on", "off", "toggle"]) {
+      await t.ok("desk_power", { name: "LISTENER", action });
+      assert.deepEqual(t.calls.at(-1), { fn: "deskPower", o: { stateDir: "/tmp/state-x", stack: "s1", name: "LISTENER", action, by: "ORCHESTRATOR" } });
+    }
+    await t.ok("desk_power", { name: "LISTENER", action: "on", resume: true, force: true });
+    assert.deepEqual(t.calls.at(-1)!.o, { stateDir: "/tmp/state-x", stack: "s1", name: "LISTENER", action: "on", by: "ORCHESTRATOR", resume: true });
+    await t.ok("desk_power", { name: "LISTENER", action: "auto", pollSeconds: 10, graceSeconds: 60 });
+    assert.deepEqual(t.calls.at(-1), { fn: "deskAuto", o: { stateDir: "/tmp/state-x", stack: "s1", name: "LISTENER", by: "ORCHESTRATOR", pollMs: 10_000, graceMs: 60_000 } });
+    await t.ok("desk_power", { name: "LISTENER", action: "auto_stop" });
+    assert.deepEqual(t.calls.at(-1), { fn: "deskAuto", o: { stateDir: "/tmp/state-x", stack: "s1", name: "LISTENER", by: "ORCHESTRATOR", stop: true } });
+    const n = t.calls.length;
+    assert.match((await t.call("desk_power", { name: "LISTENER", action: "explode" })).error!.message, /action must be/);
+    assert.match((await t.call("desk_power", { name: "LISTENER", action: "off", pollSeconds: 5 })).error!.message, /only apply to auto/);
+    assert.match((await t.call("desk_power", { action: "off" })).error!.message, /name is required/);
+    assert.equal(t.calls.length, n, "refused calls never reach the service");
   });
 });

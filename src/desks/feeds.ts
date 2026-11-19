@@ -353,3 +353,24 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
   spawnChild();
   return handle;
 }
+
+/**
+ * Run a feed's activeCheck once (outside a feed: desk power status, the auto watcher, the
+ * live-call refusal of `off`). Resolves with `active === true` from its JSON stdout; rejects when
+ * the command fails, times out or prints no JSON object, so callers can tell "no call" from
+ * "unknown".
+ */
+export async function runActiveCheck(argv: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<boolean> {
+  if (argv.length === 0) throw new Error("activeCheck is empty");
+  const live = new Set<ChildProcess>();
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+  const out = await run(argv, opts.cwd, env, opts.timeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS, live);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(out);
+  } catch {
+    throw new Error(`activeCheck printed no JSON: ${out.trim().slice(0, 200)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`activeCheck printed no JSON object: ${out.trim().slice(0, 200)}`);
+  return (parsed as { active?: unknown }).active === true;
+}

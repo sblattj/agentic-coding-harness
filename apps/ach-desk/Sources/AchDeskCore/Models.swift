@@ -100,7 +100,7 @@ public struct GoalStatus: Codable, Equatable, Sendable {
 /// RosterRow extends RosterEntry in TS; here the entry fields are decoded from the same object.
 public struct RosterRow: Decodable, Equatable, Sendable, Identifiable {
     public var entry: RosterEntry
-    public var state: String // HostState | "dead"
+    public var state: String // HostState | "dead" | "off" (desk switched off: host, feed and pane stopped)
     public var queueDepth: Int
     public var goalStatus: GoalStatus?
     public var costUsd: Double?
@@ -109,7 +109,8 @@ public struct RosterRow: Decodable, Equatable, Sendable, Identifiable {
     public var id: String { entry.name }
     public var name: String { entry.name }
     public var isLane: Bool { entry.isLane }
-    public var isAlive: Bool { state != "dead" }
+    public var isAlive: Bool { state != "dead" && state != "off" }
+    public var isOff: Bool { state == "off" }
 
     enum CodingKeys: String, CodingKey { case state, queueDepth, goalStatus, costUsd, treeCostUsd }
 

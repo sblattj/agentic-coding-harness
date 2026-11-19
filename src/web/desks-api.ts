@@ -44,6 +44,9 @@ export type DesksService = Pick<
   | "deskEvents"
   | "deskSwitchEngine"
   | "deskReload"
+  | "deskReloadStale"
+  | "deskPower"
+  | "deskAuto"
   | "laneNew"
   | "laneApprove"
   | "laneReject"
@@ -299,12 +302,12 @@ const SERVER_FAILURE =
   /not implemented|layout file not found|invalid layout|cannot parse layout|corrupt (layout|roster)|roles\/common\.md not found|role file .* not found|invalid role name|the layout has no desks|did not become idle|timed out after|no spec or layout entry|^desk host |spawnHost:|ACH_SELF_ARGV/i;
 const FORBIDDEN = /only the human or the decisions desk/i;
 const BAD_INPUT =
-  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid (lane|stack|desk or lane) name|invalid run id|cannot send to yourself|unknown agent|reload takes a desk name or all/i;
+  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid (lane|stack|desk or lane) name|invalid run id|cannot send to yourself|unknown agent|reload takes a desk name or all|unknown power action|auto (poll|grace) must be/i;
 const MISSING_RESOURCE =
   /\bunknown (desk|lane|decision|pending)\b|\bno pending lane\b|\bno decision\b|\bno such\b|does not exist|\b(desk|lane|decision|pending)\b[^\n]* not found/i;
 
 const CONFLICT =
-  /is already (up|pending approval|approving|approved|rejected)|already in use|still busy|is busy \(state|is not running( \(dead\)|;)|is a (lane|desk)\b|is closed|no free lane port/i;
+  /is already (up|pending approval|approving|approved|rejected)|already in use|still busy|is busy \(state|is not running( \(dead\)|;)|is a (lane|desk)\b|is closed|no free lane port|^desk_off: |\bis off\b|refused: a call is live|has no feed activeCheck|changed while it was being switched|port \d+ of \S+ is in use/i;
 
 export function statusForError(e: unknown): number {
   if (e instanceof HttpError) return e.status;
@@ -500,9 +503,36 @@ export async function handleDesksApi(
       const body = await jsonBody(req);
       if (body.force !== undefined && typeof body.force !== "boolean") throw new HttpError(400, "force must be a boolean");
       const force = body.force === true ? { force: true } : {};
+      if (body.stale !== undefined && typeof body.stale !== "boolean") throw new HttpError(400, "stale must be a boolean");
+      // POST /api/desks/all/reload {stale: true}: only the idle desks on an older ach build.
+      if (a === "all" && body.stale === true) return done(res, 200, { results: await svc.deskReloadStale({ ...so, by: "human" }) });
       // POST /api/desks/all/reload reloads every desk, never lanes (desk names are upper case, so "all" is never a desk).
       const target = a === "all" ? { all: true } : { name: a! };
       return done(res, 200, { results: await svc.deskReload({ ...so, ...target, ...force, by: "human" }) });
+    }
+    if (n === 2 && b === "power") {
+      // POST /api/desks/:name/power {action: status|on|off|toggle, resume?, force?} -> DeskPowerResult
+      want("POST");
+      const body = await jsonBody(req);
+      const action = reqStr(body, "action");
+      if (!["status", "on", "off", "toggle"].includes(action)) throw new HttpError(400, "action must be one of status, on, off, toggle");
+      for (const k of ["resume", "force"]) if (body[k] !== undefined && typeof body[k] !== "boolean") throw new HttpError(400, `${k} must be a boolean`);
+      return done(res, 200, await svc.deskPower({
+        ...so, name: a!, action: action as realService.DeskPowerAction, by: "human",
+        ...(body.resume === true ? { resume: true } : {}), ...(body.force === true ? { force: true } : {}),
+      }));
+    }
+    if (n === 2 && b === "auto") {
+      // POST /api/desks/:name/auto {stop?, pollMs?, graceMs?} -> DeskPowerResult
+      want("POST");
+      const body = await jsonBody(req);
+      if (body.stop !== undefined && typeof body.stop !== "boolean") throw new HttpError(400, "stop must be a boolean");
+      const pollMs = optNum(body, "pollMs");
+      const graceMs = optNum(body, "graceMs");
+      return done(res, 200, await svc.deskAuto({
+        ...so, name: a!, by: "human", ...(body.stop === true ? { stop: true } : {}),
+        ...(pollMs !== undefined ? { pollMs } : {}), ...(graceMs !== undefined ? { graceMs } : {}),
+      }));
     }
     if (n === 2 && b === "attach") {
       want("GET");
@@ -510,6 +540,7 @@ export async function handleDesksApi(
       const entry = view.rows.find((r) => r.name === a);
       if (entry === undefined) throw new HttpError(404, `unknown desk or lane ${a} (known: ${view.rows.map((r) => r.name).join(", ") || "none"})`);
       if (entry.state === "dead") throw new HttpError(409, `${a} is not running (dead)`);
+      if (entry.state === "off") throw new HttpError(409, `${a} is off; turn it on first (POST /api/desks/${a}/power {"action": "on"})`);
       return done(res, 200, { argv: await deps.hostAttach(hostTarget(entry.url, readHostToken(opts.stateDir, view.stack, entry.name, entry.runId))) });
     }
     if (n === 2 && b === "events") {
@@ -650,7 +681,7 @@ async function openStream(req: IncomingMessage, res: ServerResponse, stateDir: s
 
   const syncSubs = (rows: RosterRow[]): void => {
     const wanted = new Map<string, RosterRow>();
-    for (const r of rows) if (r.state !== "dead" && r.url) wanted.set(`${r.name}|${r.runId}|${r.url}`, r);
+    for (const r of rows) if (r.state !== "dead" && r.state !== "off" && r.url) wanted.set(`${r.name}|${r.runId}|${r.url}`, r);
     for (const [key, unsub] of subs) {
       if (wanted.has(key)) continue;
       subs.delete(key);

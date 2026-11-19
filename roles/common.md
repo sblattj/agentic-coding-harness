@@ -29,6 +29,8 @@ You talk to the team only through these tools. Never use a shell, curl or files 
 - `desk_inbox {limit}`: recent messages to or from you. Use it to catch up after your context was compacted.
 - `lane_new`, `lane_status`, `lane_stop`, `lane_approve`: lane control. Only desks that need them use them (see your role).
 - `decision_open`, `decision_list`, `decision_close`: the queue of questions for the human (see your role).
+- `desk_reload {name}` or `{all: true}` or `{stale: true}`: restart a desk on a new ach build, same session. Never yourself. Only when the human or your role asks for it.
+- `desk_power {name, action}`: `status`, `on`, `off`, `toggle`, `auto` or `auto_stop` for a desk. Only when the human or your role asks for it. Off is refused while a call is live.
 
 ## Who is talking
 
@@ -42,6 +44,7 @@ You talk to the team only through these tools. Never use a shell, curl or files 
 - No acknowledgement-only replies ("ok", "thanks", "got it"). Reply only with a result, a question or a refusal. Two desks acknowledging each other loops forever.
 - Keep messages short and self-contained: what you need, what you already know, what you will do next.
 - If a peer is dead, say so to ORCHESTRATOR or the human instead of retrying.
+- A desk can be switched off (`desk_roster` shows it as `off`). A `desk_send` to it fails with `desk_off:`. Do not retry. Questions about what was said on a call while LISTENER is off go to a short read-only lane, or ask the human to turn LISTENER on.
 
 ## Tools and scope
 

@@ -5,6 +5,20 @@ import Testing
 @Suite struct DecodingTests {
     let dec = JSONDecoder()
 
+    @Test func offDeskRowDecodesAndIsNotAlive() throws {
+        let json = """
+        {"name": "LISTENER", "kind": "desk", "role": "listener", "agent": "opencode", "engine": "opencode",
+         "mcps": [], "port": 4802, "url": "http://127.0.0.1:4802", "pid": 1, "runId": "run-l",
+         "cwd": "/tmp", "startedAt": 1763290000000, "off": {"at": 1763380000000, "by": "human"},
+         "achVersion": "0.31.0", "state": "off", "queueDepth": 0, "costUsd": 0.5, "treeCostUsd": 0.5}
+        """
+        let row = try dec.decode(RosterRow.self, from: Data(json.utf8))
+        #expect(row.state == "off")
+        #expect(row.isOff)
+        #expect(!row.isAlive)
+        #expect(row.entry.terminal == nil)
+    }
+
     @Test func rosterViewDecodesDeskLanePendingAndDecision() throws {
         let v = try dec.decode(RosterView.self, from: Fixtures.data(Fixtures.rosterView))
         #expect(v.version == desksAPIVersion)

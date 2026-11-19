@@ -206,7 +206,10 @@ Under `<stateDir>/desks/<stack>/`:
 | `layout.json` | the resolved layout `desk up` used |
 | `terminal.json` | the terminal the panes live on (`kind`, tmux session and socket), so later commands reach the same tmux server |
 | `specs/<name>.pid` | the launcher pid; `desk down` waits on it and on the host pid |
-| `specs/<name>.switching` | present while `desk engine` restarts that desk, so a roster prune skips it |
+| `specs/<name>.switching` | present while `desk engine`, `desk reload` or `desk on/off` switches that desk, so a roster prune skips it |
+| `auto/<name>.json` | the desk's auto watcher: `{pid, token, pollMs, graceMs, startedAt}` (`desk auto`) |
+| `logs/<name>-auto.log` | the auto watcher's log, one line per poll decision, each starting with an ISO time |
+| `logs/<name>-power.log` | output of the detached `desk off` a desk runs when it turns itself off |
 | `lanes.log` | one JSON line per lane start and stop |
 
 The stack name is `--stack`, else `$ACH_DESK_STACK`, else `<stateDir>/desks/active-stack`, else `default`.
@@ -233,6 +236,14 @@ ach desk decisions [--state open|answered|closed] [--json]
 ach desk close <Dn> [--reason R] [--from NAME]
 ach desk engine <name> <agent> [--model M]
 ach desk reload <name>|--all [--force] [--json]
+ach desk reload --stale [--json]
+ach desk status <name> [--json]
+ach desk on <name> [--resume] [--json]
+ach desk off <name> [--force] [--from NAME] [--json]
+ach desk toggle <name> [--force] [--resume] [--json]
+ach desk auto <name> [--poll S] [--grace S] [--json]
+ach desk auto <name> --stop
+ach listener status|on|off|toggle|auto ...   same as ach desk <sub> LISTENER
 ach desk costs [--json]
 ach desk host --spec <file>              internal: the per-desk host process
 ach desk chat <name> [--from NAME]       attach REPL for engines without a native TUI
@@ -263,6 +274,16 @@ Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else 
   - **tmux:** the pane stays. Before the host stops, the pane gets `remain-on-exit on`, so the attach command exiting does not close it; the pane is then respawned in place (`respawn-pane -k`, same `%N` id, new process) and the option is unset again. Only panes ach opened (tagged `@ach_run`) are respawned.
   - **Ghostty:** a Ghostty window cannot be respawned in place, so the old window is closed and a new one opened on the reloaded desk (a new terminal id).
   - **Automatic after an ach upgrade:** every desk host (never a lane) checks the installed ach version every 5 minutes, by running `ach --version` from the same path it was started from (the npm or Homebrew link, or the binary), so it sees an upgrade while still running the old code. When the installed version is newer than the one the host runs, the desk is reloaded once it is idle (no turn running, nothing queued, no active goal) and has stayed idle for a second after its last turn, whether the check found it idle or it went idle later; a busy desk is never cut off, it waits. The host spawns a detached `ach desk reload <name>` (the new ach does the reload, like a manual one), and logs it in the desk's host log (`<stateDir>/desks/<stack>/logs/<name>.log`, lines starting `auto-reload:`), with the reload's own output in `logs/<name>.auto-reload.log`. Each desk is reloaded once per installed version (`<stateDir>/desks/<stack>/auto-reload/<name>.json`): the new host never triggers again for the same version, and a host whose reload was refused or failed retries after a minute, up to 3 times. An older or equal installed version (another install, a downgrade) changes nothing. `ACH_DESK_VERSION_POLL_MS` sets the interval (`0` turns the check off). A manual `ach desk reload --all` still works at any time.
+  - `--stale` reloads only the desks whose host runs an older ach than the installed one. Each host reports its version in `/health` (`achVersion`), and the roster records it at start. A busy desk is skipped (run it again later), an off desk is skipped (it starts on the current build when turned on), and a desk on a NEWER version is never touched. It runs only when asked: a reload from every roster read would make two installs of different versions restart each other's desks back and forth.
+- **Desk power** (`desk status|on|off|toggle|auto`, MCP `desk_power`, `POST /api/desks/:name/power`). A desk that is not needed (LISTENER between calls) can be switched off and back on without `desk down`.
+  - `off` keeps the desk in the roster with `off: {at, by}` (row state `off`), closes its pane (only panes ach opened), stops its host and with it the feed process. The engine session id is kept for `on --resume`. Off is refused while the desk feed's `activeCheck` reports a live call (`refused: a call is live, <NAME> stays on`); `--force` (CLI and web only, never from a desk) overrides it.
+  - `on` starts a new host on the same port from the desk's last spec: fresh run id, token and engine session (`--resume` continues the session saved at off; when that fails it starts fresh and says so), a new feed (it starts with the full call context on its first heartbeat), and a new pane in the `desks` window placed by the desk's layout slot.
+  - `toggle` is `off` for a desk that is on, else `on`. `on` of an on desk and `off` of an off desk change nothing and say so.
+  - `status` prints `<NAME> on feed=<pid> pane=<id>` (or `off`, or `dead`), then `call: live|none|unknown` from the `activeCheck`, then `auto: on (pid N, ...)|off`.
+  - While a desk is off, `desk_send` to it fails with an error starting `desk_off:` that says not to retry; `desk reload` and `desk engine` refuse it; `desk attach`, the roster prune and the web stream leave it alone; `desk down` removes it.
+  - A desk may turn itself off (`desk_power {name: <own name>, action: "off"}`): the call answers at once with `pending: true`, and a detached `ach desk off` stops its host 3 s later, so the reply is never cut.
+  - Every switch is a line in `messages.jsonl` (`<by> -> <NAME>: desk_power: off`, marked `power: true`); it is never delivered to a session.
+  - `auto` starts a detached watcher (`ach desk watch`, one per desk) that polls the desk feed's `activeCheck` every `--poll` seconds (default 30). A live call while the desk is off turns it on. With the desk on and no call for `--grace` seconds (default 300, so the end-of-call handoff finishes), it turns the desk off; a call that comes back first cancels the countdown. A failed or timed-out check counts as unknown and changes nothing. `auto --stop` ends the watcher; `desk down` ends every watcher of the stack. A desk without a feed `activeCheck` is refused. The watcher log is `logs/<NAME>-auto.log`.
 - `lane stop` refuses desk names. A busy lane gets up to 15 s to finish its turn, plus about 2 s for the goal verdict, so a lane that just sent DONE is judged before it dies; `--now` skips the wait (emergency stops; `desk down` always stops at once). It closes the pane, stops the host and removes the roster entry.
 - `ach lane status <name>` also answers for a lane that already ended: the roster has forgotten it, so the row is rebuilt from `lanes.log` with `state: "stopped"` and `goalState` (the final goal state, taken from the lane's last `goal` event so a verdict reported while the host was stopping counts). A lane whose host crashed gets the same row: the roster prune writes its stop line (`by: "prune"`). Without a name only live lanes are listed.
 - `--json` prints the `RosterView` (stack, `portBase`, rows with state, queue depth, goal status and cost, pending lanes, open decisions). Without it, a table.
@@ -273,10 +294,11 @@ Registered on `ach mcp` for every desk and lane session (identity from `ACH_DESK
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `desk_roster` | none | `me` plus peers with role, busy/idle/dead, tools, goal |
-| `desk_send` | `to, text` | refuses self and unknown names; returns at once; do not wait or poll |
+| `desk_roster` | none | `me` plus peers with role, busy/idle/dead/off, tools, goal |
+| `desk_send` | `to, text` | refuses self and unknown names; an off desk fails with `desk_off: ...` (do not retry); returns at once; do not wait or poll |
 | `desk_inbox` | `limit?, since_minutes?` | recent messages to or from the caller |
-| `desk_reload` | `name?` or `all: true`, `force?` | restart desks on a fresh host, keeping port, engine and session (see `desk reload`); refuses the caller and lanes; `all` skips the caller; returns `{results}` |
+| `desk_reload` | `name?` or `all: true` or `stale: true`, `force?` | restart desks on a fresh host, keeping port, engine and session (see `desk reload`); refuses the caller and lanes; `all` and `stale` skip the caller; returns `{results}` |
+| `desk_power` | `name, action` (`status`, `on`, `off`, `toggle`, `auto`, `auto_stop`), `resume?`, `pollSeconds?`, `graceSeconds?` | switch a desk on or off (see Desk power); never forces, so off is refused during a live call; a desk turning itself off gets `pending: true` |
 | `lane_new` | `name, goal, mcps?, cwd?, agent?, model?, budget_usd?, brief?` | start a lane, or `{pending}` when approval applies |
 | `lane_status` | `name?` | goal state, verified plan actions, evidence |
 | `lane_stop` | `name, now?` | refuses desk names; waits up to 15 s for a busy lane to finish its turn and for its goal verdict, unless `now: true` |
@@ -351,8 +373,11 @@ POST /api/desks/lanes/:name/stop        {now?: true} -> {}   (body optional; now
 POST /api/desks/pending/:id/approve     -> RosterEntry ; /reject {reason?} -> PendingLane
 POST /api/desks/:name/engine {agent, model?} -> RosterEntry
 POST /api/desks/:name/reload {force?}  -> {results: DeskReloadResult[]}   (name `all` reloads every desk, never lanes; 409 busy or not running)
+POST /api/desks/all/reload {stale: true} -> {results: DeskReloadResult[]}  (only idle desks on an older ach build)
+POST /api/desks/:name/power {action: status|on|off|toggle, resume?, force?} -> DeskPowerResult   (409: a call is live, or the desk is a lane)
+POST /api/desks/:name/auto {stop?, pollMs?, graceMs?} -> DeskPowerResult   (409: no feed activeCheck)
 GET  /api/desks/:name/events?since=<seq> -> {events: HostEvent[]}
-GET  /api/desks/:name/attach            -> {argv: string[]}   (the command that attaches a terminal to the desk or lane; 404 unknown, 409 dead)
+GET  /api/desks/:name/attach            -> {argv: string[]}   (the command that attaches a terminal to the desk or lane; 404 unknown, 409 dead or off)
 GET  /api/desks/costs                   -> {rows: DeskCostRow[]}
 GET  /api/desks/engines                 -> {engines: {agent, found, path?, auth?}[]}
 GET  /api/desks/mcps                    -> {names: string[]}

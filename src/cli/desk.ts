@@ -3,7 +3,10 @@
 //   ach desk down | attach [--term ...] | send <to> <text> | roster [--json] | inbox [name] [--json]
 //   ach desk answer <Dn> <text> | decisions [--json] | engine <name> <agent> [--model M]
 //   ach desk reload <name>|--all [--force]   (new host, same port, engine and agent session)
+//   ach desk on|off|toggle|status <name> | auto <name> [--stop]   (desk power, issue 1)
 //   ach desk host --spec <file>        (internal: the per-desk host process)
+//   ach desk watch <name> ...          (internal: the auto watcher)
+//   ach listener on|off|toggle|status|auto   (the same, for the LISTENER desk)
 //   ach desk chat <name>               (attach REPL for engines without a native TUI)
 //   ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N]
 //   ach lane status [name] [--json] | stop <name> | approve <Ln> | reject <Ln> [--reason R]
@@ -96,9 +99,18 @@ export const DESK_USAGE = `usage:
   ach desk close <Dn> [--reason R] [--from NAME]
   ach desk engine <name> <agent> [--model M]
   ach desk reload <name>|--all [--force] [--json] (restart a desk's host: same port, engine and session; lanes never)
+  ach desk reload --stale [--json]                (reload idle desks whose host runs an older ach than this one)
+  ach desk status <name> [--json]                 (on/off, feed pid, pane, call live, auto watcher)
+  ach desk on <name> [--resume] [--json]          (start an off desk: same port, fresh session; --resume keeps the old one)
+  ach desk off <name> [--force] [--from NAME]     (stop host, feed and pane; refused while a call is live unless --force)
+  ach desk toggle <name> [--force] [--resume]
+  ach desk auto <name> [--poll S] [--grace S] | auto <name> --stop
+                                                  (on when the feed's activeCheck sees a call, off --grace S after it ends;
+                                                   defaults poll 30 s, grace 300 s)
   ach desk costs [--json]
   ach desk chat <name>                            (attach REPL for engines without a native TUI)
   ach desk host --spec <file>                     (internal: the per-desk host process)
+  ach listener on|off|toggle|status|auto ...      (shorthand for the LISTENER desk)
   every subcommand takes [--stack S]; --json prints the service result as JSON
   --from defaults to $ACH_DESK_NAME, else "human"`;
 
@@ -187,6 +199,20 @@ export function formatRoster(view: RosterView): string {
     for (const d of view.openDecisions) out += `  ${d.id}  from ${d.askedBy}  ${clip(d.question, 80)}\n`;
   }
   return out;
+}
+
+/** `ach desk status`: `LISTENER on feed=<pid> pane=<id>`, then `call: ...` and `auto: ...` lines. */
+export function formatPowerStatus(st: ServiceModule.DeskPowerStatus): string {
+  const head =
+    st.state === "on"
+      ? `${st.name} on feed=${st.feedPid ?? "-"} pane=${st.pane?.id ?? "-"}`
+      : st.state === "off"
+        ? `${st.name} off${st.off !== undefined ? ` (by ${st.off.by} at ${new Date(st.off.at).toISOString()})` : ""}`
+        : `${st.name} dead (in the roster, its host does not answer)`;
+  const call = st.callLive === true ? "call: live" : st.callLive === false ? "call: none" : `call: unknown${st.callNote !== undefined ? ` (${st.callNote})` : ""}`;
+  const a = st.auto;
+  const auto = a.running ? `auto: on (pid ${a.pid ?? "?"}, poll ${(a.pollMs ?? 0) / 1000}s, grace ${(a.graceMs ?? 0) / 1000}s)` : "auto: off";
+  return `${head}\n${call}\n${auto}`;
 }
 
 export function formatLaneStatus(rows: RosterRow[]): string {
@@ -321,6 +347,7 @@ async function entryUrl(c: Ctx, name: string): Promise<HostTarget> {
   const row = view.rows.find((r) => r.name === name);
   if (row === undefined) throw new Error(`unknown desk or lane '${name}' (known: ${view.rows.map((r) => r.name).join(", ") || "none"})`);
   if (row.state === "dead") throw new Error(`'${name}' is dead (its host is not running)`);
+  if (row.state === "off") throw new Error(`'${name}' is off; turn it on first (ach desk on ${name})`);
   // Injected test services may not provide deskHostTarget; then the bare url is used.
   if (typeof c.d.service.deskHostTarget !== "function") return row.url;
   return c.d.service.deskHostTarget(compact({ stack: c.stack, name, url: row.url, runId: row.runId }));
@@ -507,12 +534,13 @@ async function runDesk(sub: string, args: string[], d: DeskDeps): Promise<void> 
       return;
     }
     case "reload": {
-      const p = o({ all: { type: "boolean" }, force: { type: "boolean" } });
+      const p = o({ all: { type: "boolean" }, force: { type: "boolean" }, stale: { type: "boolean" } });
       const all = p.values.all === true;
-      need(all ? p.positionals.length === 0 : p.positionals.length === 1, "usage: ach desk reload <name>|--all [--force]");
+      const stale = p.values.stale === true;
+      need(stale ? p.positionals.length === 0 && !all && p.values.force !== true : all ? p.positionals.length === 0 : p.positionals.length === 1, "usage: ach desk reload <name>|--all [--force] | --stale");
       const c = ctxOf(p);
       const me = d.env.ACH_DESK_NAME;
-      const rs = await svc.deskReload(compact({
+      const rs = stale ? await svc.deskReloadStale(compact({ stack: c.stack, by: me !== undefined && me !== "" ? me : "human" })) : await svc.deskReload(compact({
         stack: c.stack, name: all ? undefined : (p.positionals[0] as string), all: all ? true : undefined,
         force: p.values.force === true ? true : undefined, by: me !== undefined && me !== "" ? me : "human",
       }));
@@ -523,7 +551,7 @@ async function runDesk(sub: string, args: string[], d: DeskDeps): Promise<void> 
           else if (!r.ok) d.stdout(`${r.name}: not reloaded: ${r.error ?? "unknown error"}\n`);
           else d.stdout(`${r.name}: reloaded on port ${r.entry?.port ?? "?"}, ${r.resumed ? `session ${r.sessionId} kept` : "NEW session"}${r.note !== undefined ? ` (${r.note})` : ""}\n`);
         }
-        if (rs.length === 0) d.stdout("no desks to reload\n");
+        if (rs.length === 0) d.stdout(stale ? "no stale desks (every desk that is on runs this ach or a newer one)\n" : "no desks to reload\n");
       }
       const failed = rs.filter((r) => !r.ok && r.skipped === undefined).map((r) => r.name);
       if (failed.length > 0) throw new Error(`desks: not reloaded: ${failed.join(", ")}`);
@@ -555,6 +583,59 @@ async function runDesk(sub: string, args: string[], d: DeskDeps): Promise<void> 
       rows.forEach((r) => walk(r, 0));
       d.stdout(rows.length === 0 ? "no costs yet\n" : pad(t));
       if (lost > 0) d.stdout(`warning: ${lost} token record(s) could not be written; these totals undercount\n`);
+      return;
+    }
+    case "status":
+    case "on":
+    case "off":
+    case "toggle": {
+      const p = o({ force: { type: "boolean" }, resume: { type: "boolean" }, from: { type: "string" }, "delay-ms": { type: "string" } });
+      need(p.positionals.length === 1, `usage: ach desk ${sub} <name>${sub === "status" ? "" : sub === "on" ? " [--resume]" : sub === "off" ? " [--force]" : " [--force] [--resume]"}`);
+      need(p.values.force !== true || sub === "off" || sub === "toggle", `ach desk ${sub}: --force only applies to off and toggle`);
+      need(p.values.resume !== true || sub === "on" || sub === "toggle", `ach desk ${sub}: --resume only applies to on and toggle`);
+      const c = ctxOf(p);
+      const r = await svc.deskPower(compact({
+        stack: c.stack, name: p.positionals[0] as string, action: sub, by: fromName(p.values.from, d.env),
+        force: p.values.force === true ? true : undefined, resume: p.values.resume === true ? true : undefined,
+        delayMs: intFlag(p.values["delay-ms"], "--delay-ms", 0),
+      }));
+      if (c.json) emitJson(c, r);
+      else d.stdout(sub === "status" ? `${formatPowerStatus(r.status)}\n` : `${r.message}\n${formatPowerStatus(r.status)}\n`);
+      return;
+    }
+    case "auto": {
+      const p = o({ stop: { type: "boolean" }, poll: { type: "string" }, grace: { type: "string" }, from: { type: "string" } });
+      need(p.positionals.length === 1, "usage: ach desk auto <name> [--poll S] [--grace S] | --stop");
+      const stop = p.values.stop === true;
+      need(!stop || (p.values.poll === undefined && p.values.grace === undefined), "ach desk auto: --stop takes no --poll/--grace");
+      const c = ctxOf(p);
+      const poll = intFlag(p.values.poll, "--poll", 1);
+      const grace = intFlag(p.values.grace, "--grace", 0);
+      const r = await svc.deskAuto(compact({
+        stack: c.stack, name: p.positionals[0] as string, by: fromName(p.values.from, d.env), stop: stop ? true : undefined,
+        pollMs: poll === undefined ? undefined : poll * 1000, graceMs: grace === undefined ? undefined : grace * 1000,
+      }));
+      if (c.json) emitJson(c, r);
+      else d.stdout(`${r.message}\n${formatPowerStatus(r.status)}\n`);
+      return;
+    }
+    case "watch": {
+      const p = o({ "poll-ms": { type: "string" }, "grace-ms": { type: "string" }, token: { type: "string" } });
+      need(p.positionals.length === 1, "usage: ach desk watch <name> --poll-ms N --grace-ms N (internal: run by ach desk auto)");
+      const c = ctxOf(p);
+      const ac = new AbortController();
+      const onSig = (): void => ac.abort();
+      process.on("SIGTERM", onSig);
+      process.on("SIGINT", onSig);
+      try {
+        await svc.runDeskWatcher(compact({
+          stack: c.stack, name: p.positionals[0] as string, signal: ac.signal, log: (l: string) => d.stdout(`${l}\n`), token: p.values.token as string | undefined,
+          pollMs: intFlag(p.values["poll-ms"], "--poll-ms", 100) ?? 30_000, graceMs: intFlag(p.values["grace-ms"], "--grace-ms", 0) ?? 300_000,
+        }));
+      } finally {
+        process.off("SIGTERM", onSig);
+        process.off("SIGINT", onSig);
+      }
       return;
     }
     case "chat": {
@@ -671,6 +752,27 @@ export async function cmdDesk(rest: string[], deps?: Partial<DeskDeps>): Promise
   if (rest[0] === "host") return cmdDeskHost(rest.slice(1));
   return dispatch("desk", rest, deps);
 }
+
+/** `ach listener <on|off|toggle|status|auto> [flags]`: `ach desk <sub> LISTENER [flags]`. */
+export async function cmdListener(rest: string[], deps?: Partial<DeskDeps>): Promise<number> {
+  const [sub, ...args] = rest;
+  const errOut = deps?.stderr ?? ((s: string) => void process.stderr.write(s));
+  const outOut = deps?.stdout ?? ((s: string) => void process.stdout.write(s));
+  const subs = ["on", "off", "toggle", "status", "auto"];
+  if (sub === "-h" || sub === "--help") {
+    outOut(`${LISTENER_USAGE}\n`);
+    return 0;
+  }
+  if (sub === undefined || !subs.includes(sub)) {
+    errOut(`${LISTENER_USAGE}\n`);
+    return 2;
+  }
+  return dispatch("desk", [sub, "LISTENER", ...args], deps);
+}
+
+export const LISTENER_USAGE = `usage:
+  ach listener status | on [--resume] | off [--force] | toggle | auto [--poll S] [--grace S] | auto --stop   [--stack S] [--json]
+  (the LISTENER desk; same as ach desk <sub> LISTENER)`;
 
 export async function cmdLane(rest: string[], deps?: Partial<DeskDeps>): Promise<number> {
   return dispatch("lane", rest, deps);

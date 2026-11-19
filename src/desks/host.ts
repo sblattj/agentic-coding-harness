@@ -519,6 +519,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     ...(goal !== undefined ? { goal } : {}),
     ...(feed !== undefined ? { feedPid: feed.pid } : {}),
     lastSeq: seq,
+    achVersion: VERSION,
   });
 
   const needEngine = (): Engine => {

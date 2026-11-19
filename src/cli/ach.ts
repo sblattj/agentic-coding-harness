@@ -131,7 +131,7 @@ import {
 } from "./time-window.ts";
 import { cmdReport } from "./report.ts";
 import { runContextRows } from "./context-stats.ts";
-import { cmdDesk, cmdLane } from "./desk.ts";
+import { cmdDesk, cmdLane, cmdListener } from "./desk.ts";
 import { scanRunRecords, skippedRunRecordsWarning } from "../core/registry.ts";
 import { cmdDash } from "./dash.ts";
 import { statsExtras } from "./usage-render.ts";
@@ -519,6 +519,10 @@ ${QUEUE_USAGE}
   ach desk send <to> <text...> [--from NAME] | inbox [name] [--limit N] [--since <ms|10m>] [--json]
   ach desk events <name> [--since SEQ] [--json] [--follow] | chat <name> | engine <name> <agent> [--model M]
   ach desk answer <Dn> <text...> [--from NAME] | close <Dn> [--reason R]
+  ach desk reload <name>|--all [--force] | reload --stale
+  ach desk status <name> | on <name> [--resume] | off <name> [--force] | toggle <name>
+  ach desk auto <name> [--poll S] [--grace S] | auto <name> --stop
+  ach listener status | on | off | toggle | auto [--stop]   (the same, for the LISTENER desk)
               (desks and lanes: one detached host process each, see docs/DESKS.md; every desk
                subcommand takes --stack S, --from defaults to $ACH_DESK_NAME else "human";
                "ach desk host --spec <file>" is internal)
@@ -2160,7 +2164,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane",
+  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane", "listener",
 ]);
 
 /**
@@ -2259,6 +2263,8 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdDesk(rest);
     case "lane":
       return cmdLane(rest);
+    case "listener":
+      return cmdListener(rest);
     case "mcp":
       return cmdMcp(rest);
     case "quota":

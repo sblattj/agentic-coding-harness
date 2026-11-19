@@ -89,6 +89,9 @@ function fakeService(calls: Call[], st: { view: RosterView; throwFor?: Record<st
     deskEvents: rec('deskEvents', () => [{ seq: 1, at: 1, runId: 'r', name: 'A', type: 'text', data: { text: 'x' } }]),
     deskSwitchEngine: rec('deskSwitchEngine', (a) => ({ ...row(a.name as string), agent: a.agent })),
     deskReload: rec('deskReload', (a) => [{ name: (a.name as string | undefined) ?? 'ALL', ok: true, resumed: true }]),
+    deskReloadStale: rec('deskReloadStale', () => [{ name: 'OLD', ok: true, resumed: true }]),
+    deskPower: rec('deskPower', (a) => ({ name: a.name, action: a.action, changed: true, message: 'm', status: { name: a.name, state: 'off', callLive: false, auto: { running: false } } })),
+    deskAuto: rec('deskAuto', (a) => ({ name: a.name, action: a.stop ? 'auto_stop' : 'auto', changed: true, message: 'm', status: { name: a.name, state: 'on', callLive: null, auto: { running: !a.stop } } })),
     laneNew: rec('laneNew', (a) => (a.name === 'needs-ok' ? { pending: { id: 'L1', request: a, requestedAt: 1, state: 'pending' } } : row(a.name as string, { kind: 'lane' }))),
     laneApprove: rec('laneApprove', () => row('lane1', { kind: 'lane' })),
     laneReject: rec('laneReject', (a) => ({ id: a.id, request: { name: 'x', goal: 'g', launchedBy: 'ORCH' }, requestedAt: 1, state: 'rejected', decidedBy: a.by, reason: a.reason })),
@@ -392,6 +395,39 @@ describe('desks web api: routes', () => {
     const busy = await call(h, 'POST', '/api/desks/ORCH/reload', '{}');
     h.st.throwFor = undefined;
     assert.equal(busy.status, 409);
+  });
+
+  it('POST /:name/power and /:name/auto map to the service as human; live call and desk_off are 409; all/reload {stale} reloads stale desks', async () => {
+    const r = await call(h, 'POST', '/api/desks/LISTENER/power', JSON.stringify({ action: 'off' }));
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.status.state, 'off');
+    const c = lastCall(h, 'deskPower');
+    assert.deepEqual([c.arg.name, c.arg.action, c.arg.by, c.arg.force, c.arg.resume], ['LISTENER', 'off', 'human', undefined, undefined]);
+    await call(h, 'POST', '/api/desks/LISTENER/power', JSON.stringify({ action: 'on', resume: true }));
+    assert.equal(lastCall(h, 'deskPower').arg.resume, true);
+    assert.equal((await call(h, 'POST', '/api/desks/LISTENER/power', JSON.stringify({ action: 'explode' }))).status, 400);
+    assert.equal((await call(h, 'POST', '/api/desks/LISTENER/power', JSON.stringify({ action: 'on', resume: 'yes' }))).status, 400);
+    assert.equal((await call(h, 'GET', '/api/desks/LISTENER/power')).status, 405);
+    h.st.throwFor = { deskPower: new Error('refused: a call is live, LISTENER stays on') };
+    assert.equal((await call(h, 'POST', '/api/desks/LISTENER/power', JSON.stringify({ action: 'off' }))).status, 409);
+    h.st.throwFor = { deskSend: new Error('desk_off: LISTENER is off in stack "s". Do not retry: turn it on, or start a short lane for the work.') };
+    assert.equal((await call(h, 'POST', '/api/desks/send', JSON.stringify({ to: 'LISTENER', text: 'x' }))).status, 409);
+    h.st.throwFor = undefined;
+    const a = await call(h, 'POST', '/api/desks/LISTENER/auto', JSON.stringify({ pollMs: 1000, graceMs: 5000 }));
+    assert.equal(a.status, 200);
+    assert.deepEqual([lastCall(h, 'deskAuto').arg.pollMs, lastCall(h, 'deskAuto').arg.graceMs, lastCall(h, 'deskAuto').arg.stop], [1000, 5000, undefined]);
+    await call(h, 'POST', '/api/desks/LISTENER/auto', JSON.stringify({ stop: true }));
+    assert.equal(lastCall(h, 'deskAuto').arg.stop, true);
+    const st = await call(h, 'POST', '/api/desks/all/reload', JSON.stringify({ stale: true }));
+    assert.deepEqual(st.json.results, [{ name: 'OLD', ok: true, resumed: true }]);
+    assert.equal(lastCall(h, 'deskReloadStale').arg.by, 'human');
+  });
+
+  it('GET /:name/attach of an off desk is 409', async () => {
+    h.st.view = viewOf([row('LISTENER', { state: 'off' as RosterRow['state'] })]);
+    const r = await call(h, 'GET', '/api/desks/LISTENER/attach');
+    assert.equal(r.status, 409);
+    assert.match(r.json.error, /is off/);
   });
 
   it('GET /:name/events?since= -> {events}', async () => {
@@ -769,6 +805,18 @@ describe('desks web api: routes', () => {
     }
   });
 
+  it('desks.html shows an off desk: power button turns it on, its input is disabled', () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const src = /function powerButton[\s\S]*?\n  }\n/.exec(html)?.[0];
+    assert.ok(src, 'powerButton found in the page script');
+    const ctx = createContext({});
+    runInContext(`${src}; this.powerButton = powerButton;`, ctx);
+    assert.equal((ctx as any).powerButton({ name: 'LISTENER', state: 'off' }).action, 'on');
+    assert.equal((ctx as any).powerButton({ name: 'LISTENER', state: 'idle' }).action, 'off');
+    assert.match(html, /\.badge\.s-off/);
+    assert.match(html, /if \(row\.state === "off"\) inp\.disabled = true;/);
+  });
+
   it('desks.html places each desk by its roster pane, falling back to port order', () => {
     const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
     const src = /var SLOTS = [\s\S]*?\n  function deskSlots[\s\S]*?\n  }\n/.exec(html)?.[0];
@@ -1056,7 +1104,7 @@ describe('desks page via ach web', () => {
     assert.equal(scripts.length, 1);
     assert.doesNotThrow(() => new Script(scripts[0]!, { filename: 'desks.html' }));
     assert.ok(!/innerHTML/.test(scripts[0]!), 'agent text must go in as textContent');
-    for (const route of ['/stream', '/send', '/decisions/', '/lanes', '/pending/', '/costs', '/engines', '/mcps', '/events?since=', '/engine', '/up', '/down']) {
+    for (const route of ['/stream', '/send', '/decisions/', '/lanes', '/pending/', '/costs', '/engines', '/mcps', '/events?since=', '/engine', '/up', '/down', '/power']) {
       assert.ok(scripts[0]!.includes(route), `page never calls ${route}`);
     }
     assert.ok(scripts[0]!.includes('data.active'), 'the live feed uses feed data.active');

@@ -101,6 +101,7 @@ func stateColor(_ s: String) -> Color {
     case "stopping", "stopped": return .gray
     case "error", "blocked": return .orange
     case "dead": return .red
+    case "off": return .gray
     default: return .secondary
     }
 }

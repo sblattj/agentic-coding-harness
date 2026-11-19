@@ -164,6 +164,14 @@ export interface RosterEntry {
   feedPid?: number;
   terminal?: TerminalRef;
   budgetUsd?: number;
+  /** ach version the host runs (HostHealth.achVersion at start); `ach desk reload --stale` compares it with the installed one. */
+  achVersion?: string;
+  /**
+   * Desks only: set while the desk is switched off (`ach desk off`, MCP desk_power). Its host, feed and
+   * pane are gone; the entry keeps the slot (port, pane slot, last sessionId for `on --resume`) and
+   * its runId/pid/url name the stopped run. Roster rows show state "off"; desk_send gets desk_off.
+   */
+  off?: { at: number; by: Sender };
 }
 
 export interface Roster {
@@ -194,6 +202,8 @@ export interface DeskMessage {
   at: number;
   /** "now": the target was idle and started a turn; "queued": it was busy. */
   delivered: "now" | "queued";
+  /** Set on a power switch line (`<by> -> <name>: <action>`); nothing was delivered to a session. */
+  power?: true;
 }
 
 /** Header prepended to every peer message as delivered to the target engine. Human messages get none. */
@@ -347,6 +357,8 @@ export interface HostHealth {
   goal?: GoalStatus;
   feedPid?: number;
   lastSeq: number;
+  /** ach version of the host process (src/version.ts). Absent from hosts older than desk power. */
+  achVersion?: string;
 }
 
 /**
@@ -426,8 +438,8 @@ export interface TerminalDriver {
 // ---------------------------------------------------------------------------
 
 export interface RosterRow extends RosterEntry {
-  /** "stopped": a lane that ended (read from lanes.log by laneStatus <name>), no longer in the roster. */
-  state: HostState | "dead" | "stopped";
+  /** "stopped": a lane that ended (read from lanes.log by laneStatus <name>), no longer in the roster. "off": a desk switched off (RosterEntry.off). */
+  state: HostState | "dead" | "stopped" | "off";
   queueDepth: number;
   goalStatus?: GoalStatus;
   /** Stopped lanes: the final goal state recorded at stop (from the lane's last goal event), or "dead"/"none". */
@@ -476,8 +488,11 @@ export interface DeskCostRow {
  *   POST /api/desks/lanes/:name/stop        -> {}
  *   POST /api/desks/pending/:id/approve     -> RosterEntry ; /reject {reason?} -> PendingLane
  *   POST /api/desks/:name/engine {agent, model?} -> RosterEntry   (restart that desk on another engine; roster + history kept)
+ *   POST /api/desks/:name/reload {force?}  -> {results: DeskReloadResult[]}   (`all`: every desk; `all` + {stale: true}: idle desks on an older ach)
+ *   POST /api/desks/:name/power {action: status|on|off|toggle, resume?, force?} -> DeskPowerResult
+ *   POST /api/desks/:name/auto {stop?, pollMs?, graceMs?} -> DeskPowerResult
  *   GET  /api/desks/:name/events?since=<seq> -> {events: HostEvent[]}
- *   GET  /api/desks/:name/attach            -> {argv: string[]}   (the host's GET /attach; 404 for an unknown or dead name)
+ *   GET  /api/desks/:name/attach            -> {argv: string[]}   (the host's GET /attach; 404 unknown, 409 dead or off)
  *   GET  /api/desks/costs                   -> {rows: DeskCostRow[]}
  *   GET  /api/desks/engines                 -> {engines: {agent: string, found: boolean, path?: string, auth?: string}[]}
  *   GET  /api/desks/mcps                    -> {names: string[]}   MCP names available to desks

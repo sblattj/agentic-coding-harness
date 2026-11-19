@@ -10,9 +10,9 @@
 //                  no term options) reach the same tmux server. Absent = no panes.
 //   lanes.log      one JSON line per lane start/stop.
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { listRunRecords, type RunRecord } from "../core/registry.ts";
@@ -20,6 +20,9 @@ import { AGENTS, isKnownAgent } from "../core/types.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { loadLayout, deskPort, roleFiles } from "./config.ts";
 import { engineKindFor } from "./engines/index.ts";
+import { runActiveCheck } from "./feeds.ts";
+import { achSelfArgv } from "./self.ts";
+import { VERSION } from "../version.ts";
 import { hostAttach, hostEvents, hostHealth, hostRecord, hostSend, hostStop, hostStopIfIdle, hostTarget, type HostTarget } from "./host-client.ts";
 import { spawnHost } from "./host.ts";
 import {
@@ -457,6 +460,7 @@ function entryFrom(s: Started, extra: Partial<RosterEntry>): RosterEntry {
     ...(spec.launchedBy !== undefined ? { launchedBy: spec.launchedBy } : {}),
     ...(health.feedPid !== undefined ? { feedPid: health.feedPid } : {}),
     ...(spec.budgetUsd !== undefined ? { budgetUsd: spec.budgetUsd } : {}),
+    ...(health.achVersion !== undefined ? { achVersion: health.achVersion } : {}),
     ...extra,
   };
   return e;
@@ -653,7 +657,8 @@ export async function deskUp(o: UpOpts = {}): Promise<RosterView> {
   if (layout.desks.length === 0) throw new Error("desks: the layout has no desks");
 
   const cur = readRoster(stateDir, stack);
-  const alive = await Promise.all(Object.values(cur.entries).map(async (e) => ((await isEntryAlive(e)) ? e.name : null)));
+  // An off desk has no host (its recorded pid may belong to someone else by now): never "alive".
+  const alive = await Promise.all(Object.values(cur.entries).map(async (e) => (e.off === undefined && (await isEntryAlive(e)) ? e.name : null)));
   const live = alive.filter((n): n is string => n !== null);
   if (live.length > 0) throw new Error(`desks: stack "${stack}" is already up (alive: ${live.join(", ")}); run \`ach desk down\` first`);
 
@@ -720,6 +725,8 @@ export async function deskDown(o: StackOpts = {}): Promise<{ stopped: string[] }
   const { stateDir, stack } = ctx(o);
   const t = readStackTerminal(stateDir, stack);
   const stopped: string[] = [];
+  // Auto watchers first, so none turns a desk back on while the stack goes down.
+  await stopAllWatchers(stateDir, stack);
   const entries = Object.values(readRoster(stateDir, stack).entries);
   const errors: string[] = [];
   for (const l of entries.filter((e) => e.kind === "lane")) {
@@ -741,8 +748,10 @@ export async function deskDown(o: StackOpts = {}): Promise<{ stopped: string[] }
   const desks = entries.filter((e) => e.kind === "desk");
   await Promise.all(
     desks.map(async (d) => {
-      await closePane(t, d.terminal);
-      await stopEntry(stateDir, stack, d);
+      if (d.off === undefined) {
+        await closePane(t, d.terminal);
+        await stopEntry(stateDir, stack, d);
+      }
       await removeEntry(stateDir, stack, d.name);
       stopped.push(d.name);
     }),
@@ -764,7 +773,7 @@ export async function deskDown(o: StackOpts = {}): Promise<{ stopped: string[] }
 export async function deskAttach(o: StackOpts & { term?: TerminalKind; tmuxSession?: string; tmuxSocket?: string } = {}): Promise<RosterView> {
   const { stateDir, stack } = ctx(o);
   const old = readStackTerminal(stateDir, stack);
-  const entries = Object.values((await deskRoster({ stack, stateDir })).rows).filter((r) => r.state !== "dead");
+  const entries = Object.values((await deskRoster({ stack, stateDir })).rows).filter((r) => r.state !== "dead" && r.state !== "off");
   for (const e of entries) await closePane(old, e.terminal);
   const kind: TerminalKind = o.term ?? old?.kind ?? "tmux";
   const sameKind = old?.kind === kind;
@@ -796,11 +805,12 @@ export async function deskSend(o: StackOpts & { from: Sender; to: string; text: 
   if (typeof o.text !== "string" || o.text.trim() === "") throw new Error("desks: message text must not be empty");
   const roster = readRoster(stateDir, stack);
   const entries = Object.values(roster.entries);
-  const aliveFlags = await Promise.all(entries.map((e) => isEntryAlive(e)));
+  const aliveFlags = await Promise.all(entries.map((e) => e.off === undefined && isEntryAlive(e)));
   const live = entries.filter((_, i) => aliveFlags[i]).map((e) => e.name);
   const target = roster.entries[o.to];
   const known = live.length > 0 ? live.join(", ") : "(none)";
   if (!target) throw new Error(`desks: unknown desk or lane "${o.to}" in stack "${stack}"; live: ${known}`);
+  if (target.off !== undefined) throw new DeskOffError(o.to, stack);
   if (!live.includes(o.to)) throw new Error(`desks: ${o.to} is not running (dead) in stack "${stack}"; live: ${known}`);
   const r = await hostSend(entryTarget(stateDir, stack, target), o.from, o.text);
   const message: DeskMessage = { id: r.id, from: o.from, to: o.to, text: o.text, at: Date.now(), delivered: r.delivered };
@@ -837,6 +847,12 @@ async function rowsFor(stateDir: string, stack: string, entries: RosterEntry[], 
   walk(costs);
   return Promise.all(
     entries.map(async (e): Promise<RosterRow> => {
+      const c0 = flat.get(e.runId);
+      if (e.off !== undefined) {
+        // No host to ask: an off desk is listed, never probed (its port may be someone else's now).
+        const { feedPid: _f, terminal: _t, ...rest } = e;
+        return { ...rest, state: "off", queueDepth: 0, costUsd: c0?.costUsd ?? null, treeCostUsd: c0 ? treeCost(c0) : null };
+      }
       const h = await hostHealth(e.url, 1500);
       const ok = h !== null && h.runId === e.runId;
       const c = flat.get(e.runId);
@@ -860,7 +876,7 @@ export async function deskRoster(o: StackOpts & { me?: string; prune?: boolean }
   let roster = readRoster(stateDir, stack);
   if (o.prune !== false) {
     const entries = Object.values(roster.entries);
-    const flags = await Promise.all(entries.map((e) => isEntryAlive(e)));
+    const flags = await Promise.all(entries.map((e) => e.off !== undefined || isEntryAlive(e)));
     const unhealthy = entries.filter((e, i) => !flags[i] && !isSwitching(stateDir, stack, e.name));
     // No /health answer is not proof of death (a slow host misses one probe): prune only when no
     // recorded pid is still our host process. A wedged host stays listed as dead until `desk down`.
@@ -878,7 +894,7 @@ export async function deskRoster(o: StackOpts & { me?: string; prune?: boolean }
       const removed: RosterEntry[] = [];
       roster = await updateRoster(stateDir, stack, (r) => {
         for (const d of dead) {
-          if (r.entries[d.name]?.runId !== d.runId) continue;
+          if (r.entries[d.name]?.runId !== d.runId || r.entries[d.name]?.off !== undefined) continue;
           delete r.entries[d.name];
           removed.push(d);
         }
@@ -1013,6 +1029,7 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
   const old = readRoster(stateDir, stack).entries[o.name];
   if (!old) throw new Error(`desks: unknown desk "${o.name}" in stack "${stack}"`);
   if (old.kind !== "desk") throw new Error(`desks: ${o.name} is a lane; only desks switch engines`);
+  if (old.off !== undefined) throw new Error(`desks: ${o.name} is off; turn it on first (\`ach desk on ${o.name}\`)`);
   if (typeof o.agent !== "string" || o.agent.trim() === "") throw new Error("desks: agent must be a non-empty string");
   // engineKindFor maps any name to the driver engine: refuse a typo here, before the running host is stopped.
   if (!isKnownAgent(o.agent)) throw new Error(`desks: unknown agent "${o.agent}"; known: ${AGENTS.join(", ")}`);
@@ -1178,6 +1195,10 @@ export async function deskReload(o: StackOpts & { name?: string; all?: boolean; 
       out.push({ name: d.name, ok: false, resumed: false, skipped: "a desk cannot reload itself (its own host runs this call)" });
       continue;
     }
+    if (d.off !== undefined) {
+      out.push({ name: d.name, ok: false, resumed: false, skipped: "the desk is off (it starts on fresh code when turned on)" });
+      continue;
+    }
     try {
       out.push(await reloadMarked(stateDir, stack, d.name, o.force === true, o.by));
     } catch (e) {
@@ -1191,6 +1212,7 @@ async function reloadMarked(stateDir: string, stack: string, name: string, force
   const old = readRoster(stateDir, stack).entries[name];
   if (!old) throw new Error(`desks: unknown desk "${name}" in stack "${stack}"`);
   if (old.kind !== "desk") throw new Error(`desks: ${name} is a lane; only desks reload (stop the lane and start a new one)`);
+  if (old.off !== undefined) throw new Error(`desks: ${name} is off; \`ach desk on ${name}\` starts it on the current ach`);
   if (by !== undefined && by === name) {
     throw new Error(`desks: ${name} cannot reload itself (its own host runs this call and would stop with it); ask another desk or the human`);
   }
@@ -1321,6 +1343,553 @@ async function reloadDesk(stateDir: string, stack: string, old: RosterEntry, ses
     ...(newSession !== undefined ? { sessionId: newSession } : {}),
     ...(note !== undefined ? { note } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Power: on / off / toggle / status / auto (issue 1)
+// ---------------------------------------------------------------------------
+
+/** Auto mode: how often the feed's activeCheck is polled. */
+export const DESK_AUTO_POLL_MS = 30_000;
+/** Auto mode: how long a desk stays on after its call ended, so the end-of-call handoff finishes. */
+export const DESK_AUTO_GRACE_MS = 300_000;
+/** A desk turning itself off: its host stops this long after the reply, from a detached process. */
+export const DESK_SELF_OFF_DELAY_MS = 3_000;
+/** A watcher may be mid-switch (a host start) when asked to stop: wait this long before SIGKILL. */
+const WATCHER_STOP_MS = HOST_START_TIMEOUT_MS + 15_000;
+
+/** `desk_send` to a desk that is switched off. `code` is "desk_off"; the message starts with "desk_off:". */
+export class DeskOffError extends Error {
+  readonly code = "desk_off" as const;
+  constructor(
+    readonly desk: string,
+    stack: string,
+  ) {
+    super(
+      `desk_off: ${desk} is off in stack "${stack}". Do not retry: turn it on (desk_power {name: "${desk}", action: "on"}, or \`ach desk on ${desk}\`), or start a short lane for the work.`,
+    );
+    this.name = "DeskOffError";
+  }
+}
+
+export type DeskPowerAction = "status" | "on" | "off" | "toggle";
+
+export interface DeskAutoStatus {
+  running: boolean;
+  pid?: number;
+  pollMs?: number;
+  graceMs?: number;
+  startedAt?: number;
+}
+
+export interface DeskPowerStatus {
+  name: string;
+  /** "dead": in the roster and not off, but its host does not answer. */
+  state: "on" | "off" | "dead";
+  runId?: string;
+  feedPid?: number;
+  pane?: TerminalRef;
+  sessionId?: string;
+  /** From the desk feed's activeCheck; null when it has none or the check failed (see callNote). */
+  callLive: boolean | null;
+  callNote?: string;
+  auto: DeskAutoStatus;
+  off?: { at: number; by: Sender };
+}
+
+export interface DeskPowerResult {
+  name: string;
+  action: DeskPowerAction | "auto" | "auto_stop";
+  /** False when the desk already was in the asked state (nothing was touched). */
+  changed: boolean;
+  /** A desk turning itself off: the reply comes first, the host stops DESK_SELF_OFF_DELAY_MS later. */
+  pending?: boolean;
+  message: string;
+  status: DeskPowerStatus;
+}
+
+/** The desk's feed: from its last spec (what the host ran), else the stack layout. */
+function deskFeed(stateDir: string, stack: string, name: string): { feed?: HostSpec["feed"]; cwd?: string } {
+  try {
+    const spec = JSON.parse(readFileSync(specFileOf(stateDir, stack, name), "utf8")) as HostSpec;
+    return { feed: spec.feed, cwd: spec.cwd };
+  } catch {
+    /* no spec: the layout */
+  }
+  try {
+    const layout = stackLayout(stateDir, stack);
+    const d = layout.desks.find((x) => x.name === name);
+    return { feed: d?.feed, cwd: d?.cwd ?? layout.cwd };
+  } catch {
+    return {};
+  }
+}
+
+async function callLive(stateDir: string, stack: string, name: string): Promise<{ live: boolean | null; note?: string }> {
+  const { feed, cwd } = deskFeed(stateDir, stack, name);
+  const argv = feed?.activeCheck;
+  if (argv === undefined || argv.length === 0) return { live: null, note: "no feed activeCheck" };
+  try {
+    return { live: await runActiveCheck(argv, { ...(cwd !== undefined && existsSync(cwd) ? { cwd } : {}) }) };
+  } catch (e) {
+    return { live: null, note: `activeCheck failed: ${errText(e).split("\n")[0]}` };
+  }
+}
+
+/** A power switch in the stack's message log: `<by> -> <name>: desk_power: <what>` (never delivered to a session). */
+function powerLog(stateDir: string, stack: string, by: Sender, name: string, what: string): void {
+  try {
+    appendMessage(stateDir, stack, { id: `power-${randomUUID().slice(0, 8)}`, from: by, to: name, text: `desk_power: ${what}`, at: Date.now(), delivered: "now", power: true });
+  } catch {
+    /* the log is best effort; the switch happened */
+  }
+}
+
+function powerEntry(stateDir: string, stack: string, name: string): RosterEntry {
+  const e = readRoster(stateDir, stack).entries[name];
+  if (!e) throw new Error(`desks: unknown desk "${name}" in stack "${stack}"`);
+  if (e.kind !== "desk") throw new Error(`desks: ${name} is a lane; only desks switch on and off (lane_stop ends a lane)`);
+  return e;
+}
+
+async function powerStatus(stateDir: string, stack: string, name: string): Promise<DeskPowerStatus> {
+  const e = powerEntry(stateDir, stack, name);
+  const [call, auto] = await Promise.all([callLive(stateDir, stack, name), autoStatus(stateDir, stack, name)]);
+  const common = { name, callLive: call.live, ...(call.note !== undefined ? { callNote: call.note } : {}), auto };
+  if (e.off !== undefined) return { ...common, state: "off", off: e.off, ...(e.sessionId !== undefined ? { sessionId: e.sessionId } : {}) };
+  const h = await hostHealth(entryTarget(stateDir, stack, e), 1500);
+  const up = h !== null && h.runId === e.runId;
+  const sessionId = (up ? h.sessionId : undefined) ?? e.sessionId;
+  return {
+    ...common,
+    state: up ? "on" : "dead",
+    runId: e.runId,
+    ...(up && h.feedPid !== undefined && h.feedPid > 0 ? { feedPid: h.feedPid } : {}),
+    ...(e.terminal !== undefined && e.terminal.id !== "" ? { pane: e.terminal } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+  };
+}
+
+/**
+ * Switch a desk on or off (`ach desk on|off|toggle|status`, MCP desk_power, POST /api/desks/:name/power).
+ * off: the roster keeps the desk with `off` set (row state "off"), then its pane closes (only panes ach
+ * opened) and its host stops, which stops its feed. on: a new host on the same port with a fresh
+ * session (resume: the session saved at off), a new feed and a new pane in the desks window.
+ * Turning off is refused while the feed's activeCheck reports a live call, unless force. A desk
+ * turning itself off (by === name) gets its answer at once; a detached `ach desk off` stops its host
+ * DESK_SELF_OFF_DELAY_MS later, so the call never kills its own host mid-reply. `delayMs`: wait, then
+ * switch in this process (what that detached process runs). Every switch is logged as a message line.
+ */
+export async function deskPower(o: StackOpts & { name: string; action: DeskPowerAction; by?: Sender; resume?: boolean; force?: boolean; delayMs?: number }): Promise<DeskPowerResult> {
+  const { stateDir, stack } = ctx(o);
+  assertDeskOrLaneName(o.name);
+  const { name, action } = o;
+  if (!["status", "on", "off", "toggle"].includes(action)) throw new Error(`desks: unknown power action "${String(action)}"; use status, on, off or toggle`);
+  const by = o.by ?? "human";
+  if (o.delayMs !== undefined && o.delayMs > 0) await sleep(o.delayMs);
+  const st = await powerStatus(stateDir, stack, name);
+  if (action === "status") return { name, action, changed: false, message: describePower(st), status: st };
+  const turnOff = action === "off" || (action === "toggle" && st.state !== "off");
+  if (turnOff) {
+    if (st.state === "off") return { name, action, changed: false, message: `${name} is already off`, status: st };
+    if (o.force !== true && st.callLive === true) throw new Error(`refused: a call is live, ${name} stays on`);
+    if (by === name && o.delayMs === undefined) {
+      scheduleSelfOff(stateDir, stack, name, DESK_SELF_OFF_DELAY_MS);
+      return { name, action, changed: true, pending: true, message: `${name} turns itself off in ${DESK_SELF_OFF_DELAY_MS / 1000} s (no reply follows)`, status: st };
+    }
+    await turnDeskOff(stateDir, stack, name, by);
+    return { name, action, changed: true, message: `${name} is off`, status: await powerStatus(stateDir, stack, name) };
+  }
+  if (st.state === "on") return { name, action, changed: false, message: `${name} is already on`, status: st };
+  const note = await turnDeskOn(stateDir, stack, name, o.resume === true);
+  powerLog(stateDir, stack, by, name, o.resume === true ? "on (resume)" : "on");
+  return { name, action, changed: true, message: `${name} is on${note !== undefined ? ` (${note})` : ""}`, status: await powerStatus(stateDir, stack, name) };
+}
+
+function describePower(st: DeskPowerStatus): string {
+  const head =
+    st.state === "on"
+      ? `${st.name} on feed=${st.feedPid ?? "-"} pane=${st.pane?.id ?? "-"}`
+      : st.state === "off"
+        ? `${st.name} off${st.off !== undefined ? ` (by ${st.off.by})` : ""}`
+        : `${st.name} dead (in the roster, host not answering)`;
+  const call = st.callLive === true ? "call: live" : st.callLive === false ? "call: none" : `call: unknown (${st.callNote ?? "no activeCheck"})`;
+  const a = st.auto;
+  const auto = a.running ? `auto: on (pid ${a.pid ?? "?"}, poll ${(a.pollMs ?? 0) / 1000}s, grace ${(a.graceMs ?? 0) / 1000}s)` : "auto: off";
+  return `${head}\n${call}\n${auto}`;
+}
+
+/** Spawn `ach <args>` fully detached, output appended to logFile. Returns its pid. */
+function spawnSelfDetached(args: string[], logFile: string, stateDir: string): number {
+  const [cmd, ...pre] = [...achSelfArgv(), ...args];
+  mkdirSync(dirname(logFile), { recursive: true });
+  const fd = openSync(logFile, "a");
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env, AGENTIC_CODING_HARNESS_STATE_DIR: stateDir };
+    delete env.ACH_DESK_NAME; // the child acts for the stack, its sender is passed explicitly
+    delete env.ACH_DESK_STACK;
+    const child = spawn(cmd as string, pre, { detached: true, stdio: ["ignore", fd, fd], env });
+    child.on("error", (e) => process.stderr.write(`desks: ${cmd}: ${errText(e)}\n`));
+    child.unref();
+    if (child.pid === undefined) throw new Error(`desks: could not start ${cmd}`);
+    return child.pid;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function scheduleSelfOff(stateDir: string, stack: string, name: string, delayMs: number): void {
+  const log = join(deskPaths(stateDir, stack).logs, `${name}-power.log`);
+  spawnSelfDetached(["desk", "off", name, "--stack", stack, "--from", name, "--delay-ms", String(delayMs)], log, stateDir);
+}
+
+/** Mark off first (a concurrent prune must not drop the entry), then close the pane, then stop the host (and its feed). */
+async function turnDeskOff(stateDir: string, stack: string, name: string, by: Sender): Promise<void> {
+  const marker = switchingMarker(stateDir, stack, name);
+  mkdirSync(dirname(marker), { recursive: true });
+  writeFileSync(marker, `${process.pid}\n`);
+  try {
+    const e = powerEntry(stateDir, stack, name);
+    const h = await hostHealth(entryTarget(stateDir, stack, e), 1500);
+    const sessionId = (h !== null && h.runId === e.runId ? h.sessionId : undefined) ?? e.sessionId;
+    let marked = false;
+    await updateRoster(stateDir, stack, (r) => {
+      const x = r.entries[name];
+      if (!x || x.runId !== e.runId || x.off !== undefined) return;
+      x.off = { at: Date.now(), by };
+      if (sessionId !== undefined) x.sessionId = sessionId;
+      delete x.terminal; // a later %N may be someone else's pane
+      delete x.feedPid;
+      marked = true;
+    });
+    if (!marked) throw new Error(`desks: ${name} changed while it was being switched off; check \`ach desk status ${name}\``);
+    powerLog(stateDir, stack, by, name, "off"); // before the host stops: whoever sees it gone finds the line
+    await closePane(readStackTerminal(stateDir, stack), e.terminal);
+    await stopEntry(stateDir, stack, e);
+  } finally {
+    rmSync(marker, { force: true });
+  }
+}
+
+/** Start an off (or dead) desk on its old port from its last spec; returns a note when resume fell back to a new session. */
+async function turnDeskOn(stateDir: string, stack: string, name: string, resume: boolean): Promise<string | undefined> {
+  const marker = switchingMarker(stateDir, stack, name);
+  mkdirSync(dirname(marker), { recursive: true });
+  writeFileSync(marker, `${process.pid}\n`);
+  try {
+    const old = powerEntry(stateDir, stack, name);
+    if (old.off === undefined) {
+      // dead: clear what is left of the old run first
+      await closePane(readStackTerminal(stateDir, stack), old.terminal);
+      await stopEntry(stateDir, stack, old);
+    }
+    let spec: HostSpec;
+    let base: HostSpec | null = null;
+    try {
+      base = JSON.parse(readFileSync(specFileOf(stateDir, stack, name), "utf8")) as HostSpec;
+    } catch {
+      base = null;
+    }
+    if (base) spec = { ...base, runId: randomUUID(), port: old.port };
+    else {
+      const layout = stackLayout(stateDir, stack);
+      const d = layout.desks.find((x) => x.name === name);
+      if (!d) throw new Error(`desks: no spec or layout entry for ${name}`);
+      spec = deskHostSpec(stateDir, stack, layout, d, old.port, old.agent, old.model);
+    }
+    delete spec.resumeSessionId;
+    if (resume && old.sessionId !== undefined && old.sessionId !== "") spec.resumeSessionId = old.sessionId;
+    if (!(await waitPortFree(old.port, 5000))) throw new Error(`desks: port ${old.port} of ${name} is in use; free it and run \`ach desk on ${name}\` again`);
+    let s: Started;
+    let note: string | undefined;
+    try {
+      s = await startHost(stateDir, stack, spec);
+    } catch (e) {
+      if (spec.resumeSessionId === undefined) throw e;
+      const fresh: HostSpec = { ...spec, runId: randomUUID() };
+      delete fresh.resumeSessionId;
+      writeFileSync(marker, `${process.pid}\n`);
+      await waitPortFree(old.port, 5000);
+      s = await startHost(stateDir, stack, fresh);
+      note = `resuming session ${spec.resumeSessionId} failed (${errText(e).split("\n")[0]}); ${name} started on a new session`;
+    }
+    writeSpawnPid(stateDir, stack, name, s.spawnPid);
+    const entry = entryFrom(s, {
+      ...(old.pane !== undefined ? { pane: old.pane } : {}),
+      ...(old.goal !== undefined && s.spec.goal === undefined ? { goal: old.goal } : {}),
+    });
+    await putEntry(stateDir, stack, entry);
+    try {
+      const ref = await openDeskPane(stateDir, stack, entry);
+      if (ref !== undefined) {
+        await updateRoster(stateDir, stack, (r) => {
+          const x = r.entries[name];
+          if (x && x.runId === entry.runId) x.terminal = ref;
+        });
+      }
+    } catch (e) {
+      note = `${note !== undefined ? `${note}; ` : ""}pane not opened (${errText(e)}); run \`ach desk attach\``;
+    }
+    return note;
+  } finally {
+    rmSync(marker, { force: true });
+  }
+}
+
+/** One desk pane back in the desks window, by its layout slot: a right-column desk goes under the last right pane, others right of the left one. */
+async function openDeskPane(stateDir: string, stack: string, entry: RosterEntry): Promise<TerminalRef | undefined> {
+  const t = readStackTerminal(stateDir, stack);
+  const drv = await driverFor(t);
+  if (!drv) return undefined;
+  const layout = stackLayout(stateDir, stack);
+  const slotFor = (n: string): PaneSlot | "extra" => {
+    const i = layout.desks.findIndex((d) => d.name === n);
+    return i >= 0 ? slotOf(layout.desks[i]!, i) : "extra";
+  };
+  const slot = slotFor(entry.name);
+  if (slot === "none") return undefined;
+  const others: { slot: PaneSlot | "extra"; id: string }[] = [];
+  for (const e of Object.values(readRoster(stateDir, stack).entries)) {
+    if (e.name === entry.name || e.kind !== "desk" || e.off !== undefined || e.terminal?.kind !== drv.kind || e.terminal.id === "") continue;
+    if (!(await drv.alive(e.terminal.id))) continue;
+    others.push({ slot: slotFor(e.name), id: e.terminal.id });
+  }
+  const argv = await attachArgv(entry, { stateDir, stack });
+  const base = { name: entry.name, cwd: entry.cwd, argv };
+  let id: string;
+  if (others.length === 0) id = await drv.open({ ...base, mode: "window", name: "desks" });
+  else {
+    const rank = (s: PaneSlot | "extra"): number => (s === "right-top" ? 0 : s === "right-bottom" ? 1 : 2);
+    const rights = others.filter((x) => x.slot !== "left" && x.slot !== "none").sort((a, b) => rank(a.slot) - rank(b.slot));
+    const left = others.find((x) => x.slot === "left") ?? others[0]!;
+    const lastRight = rights[rights.length - 1];
+    id = slot !== "left" && lastRight !== undefined ? await drv.open({ ...base, mode: "down", of: lastRight.id }) : await drv.open({ ...base, mode: "right", of: left.id });
+  }
+  return { kind: drv.kind, id };
+}
+
+// --- auto watcher -----------------------------------------------------------
+
+interface AutoRecord {
+  pid: number;
+  /** Passed to the watcher as --token: the pid may be a wrapper (tsx) whose child runs the loop. */
+  token: string;
+  pollMs: number;
+  graceMs: number;
+  startedAt: number;
+}
+
+function autoFile(stateDir: string, stack: string, name: string): string {
+  return join(deskPaths(stateDir, stack).root, "auto", `${name}.json`);
+}
+
+function readAuto(stateDir: string, stack: string, name: string): AutoRecord | null {
+  try {
+    const v = JSON.parse(readFileSync(autoFile(stateDir, stack, name), "utf8")) as AutoRecord;
+    return Number.isInteger(v.pid) && v.pid > 0 && typeof v.token === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when pid runs `... desk watch <name> --stack <stack> ... --token <token>` (ours, not a reused pid). */
+function isOurWatcher(rec: AutoRecord, stack: string, name: string): Promise<boolean> {
+  const pid = rec.pid;
+  if (!pidAlive(pid)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    execFile("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 }, (err, stdout) => {
+      resolve(!err && stdout.includes(`desk watch ${name} `) && stdout.includes(`--stack ${stack} `) && stdout.includes(`--token ${rec.token}`));
+    });
+  });
+}
+
+async function autoStatus(stateDir: string, stack: string, name: string): Promise<DeskAutoStatus> {
+  const rec = readAuto(stateDir, stack, name);
+  if (rec === null || !(await isOurWatcher(rec, stack, name))) return { running: false };
+  return { running: true, pid: rec.pid, pollMs: rec.pollMs, graceMs: rec.graceMs, startedAt: rec.startedAt };
+}
+
+async function stopWatcher(stateDir: string, stack: string, name: string): Promise<boolean> {
+  const rec = readAuto(stateDir, stack, name);
+  rmSync(autoFile(stateDir, stack, name), { force: true });
+  if (rec === null || !(await isOurWatcher(rec, stack, name))) return false;
+  kill(rec.pid, "SIGTERM");
+  // A watcher in the middle of a switch finishes it first (a host it started must reach the roster).
+  if (!(await waitUntil(() => !pidAlive(rec.pid), WATCHER_STOP_MS))) kill(rec.pid, "SIGKILL");
+  return true;
+}
+
+async function stopAllWatchers(stateDir: string, stack: string): Promise<void> {
+  let names: string[] = [];
+  try {
+    names = readdirSync(join(deskPaths(stateDir, stack).root, "auto"))
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => f.slice(0, -".json".length))
+      .filter((n) => validName(n, "desk"));
+  } catch {
+    return;
+  }
+  await Promise.all(names.map((n) => stopWatcher(stateDir, stack, n)));
+}
+
+/**
+ * Start or stop a desk's auto watcher (`ach desk auto <NAME> [--stop]`, MCP desk_power auto/auto_stop).
+ * The watcher is a detached `ach desk watch` process (one per desk, pid in <stack>/auto/<NAME>.json,
+ * log logs/<NAME>-auto.log) running runDeskWatcher. Needs the desk's feed activeCheck.
+ */
+export async function deskAuto(o: StackOpts & { name: string; stop?: boolean; pollMs?: number; graceMs?: number; by?: Sender }): Promise<DeskPowerResult> {
+  const { stateDir, stack } = ctx(o);
+  assertDeskOrLaneName(o.name);
+  const name = o.name;
+  powerEntry(stateDir, stack, name);
+  const by = o.by ?? "human";
+  if (o.stop === true) {
+    const was = await stopWatcher(stateDir, stack, name);
+    if (was) powerLog(stateDir, stack, by, name, "auto stop");
+    return { name, action: "auto_stop", changed: was, message: was ? `auto watcher of ${name} stopped` : `no auto watcher was running for ${name}`, status: await powerStatus(stateDir, stack, name) };
+  }
+  const { feed } = deskFeed(stateDir, stack, name);
+  if (feed?.activeCheck === undefined || feed.activeCheck.length === 0) {
+    throw new Error(`desks: ${name} has no feed activeCheck; auto mode needs one (desks.yaml: feed.activeCheck, a command printing JSON {"active": bool})`);
+  }
+  const pollMs = o.pollMs ?? DESK_AUTO_POLL_MS;
+  const graceMs = o.graceMs ?? DESK_AUTO_GRACE_MS;
+  if (!Number.isFinite(pollMs) || pollMs < 100) throw new Error("desks: auto poll must be at least 100 ms");
+  if (!Number.isFinite(graceMs) || graceMs < 0) throw new Error("desks: auto grace must be >= 0");
+  const cur = await autoStatus(stateDir, stack, name);
+  if (cur.running) {
+    return { name, action: "auto", changed: false, message: `auto watcher of ${name} is already running (pid ${cur.pid})`, status: await powerStatus(stateDir, stack, name) };
+  }
+  const log = join(deskPaths(stateDir, stack).logs, `${name}-auto.log`);
+  const token = randomUUID().slice(0, 12);
+  const f = autoFile(stateDir, stack, name);
+  mkdirSync(dirname(f), { recursive: true });
+  const pid = spawnSelfDetached(["desk", "watch", name, "--stack", stack, "--poll-ms", String(pollMs), "--grace-ms", String(graceMs), "--token", token], log, stateDir);
+  writeFileSync(f, `${JSON.stringify({ pid, token, pollMs, graceMs, startedAt: Date.now() } satisfies AutoRecord)}\n`);
+  powerLog(stateDir, stack, by, name, "auto");
+  // The record names the pid now; the watcher's command line shows up once it has exec'd.
+  await waitUntil(() => pidAlive(pid), 2000);
+  let status = await powerStatus(stateDir, stack, name);
+  for (let i = 0; i < 20 && !status.auto.running && pidAlive(pid); i++) {
+    await sleep(100);
+    status = { ...status, auto: await autoStatus(stateDir, stack, name) };
+  }
+  return { name, action: "auto", changed: true, message: `auto watcher of ${name} started (pid ${pid}, poll ${pollMs / 1000}s, grace ${graceMs / 1000}s)`, status };
+}
+
+/**
+ * The auto loop (`ach desk watch`, internal): every pollMs run the desk feed's activeCheck. Live and the
+ * desk off: turn it on. No call and the desk on: after graceMs without a call, turn it off; a call
+ * that comes back first cancels the timer. A failed check changes nothing. Ends on signal, when the
+ * desk leaves the roster (`desk down`), or when its auto record names another pid (`auto --stop`).
+ */
+export async function runDeskWatcher(o: StackOpts & { name: string; pollMs: number; graceMs: number; signal?: AbortSignal; log?: (line: string) => void; now?: () => number; /** The token the auto record must carry; another token means a newer watcher took over. */ token?: string }): Promise<void> {
+  const { stateDir, stack } = ctx(o);
+  const { name, pollMs, graceMs } = o;
+  const now = o.now ?? Date.now;
+  const log = (l: string): void => (o.log ?? ((s: string) => void process.stdout.write(`${s}\n`)))(`${new Date(now()).toISOString()} ${l}`);
+  const started = now();
+  log(`watching ${name} in stack ${stack}: poll ${pollMs} ms, grace ${graceMs} ms`);
+  let idleSince: number | undefined;
+  const pause = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      if (o.signal?.aborted) return resolve();
+      const t = setTimeout(resolve, ms);
+      o.signal?.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
+    });
+  for (;;) {
+    if (o.signal?.aborted) {
+      log("stopped");
+      return;
+    }
+    const rec = readAuto(stateDir, stack, name);
+    if ((rec === null && now() - started > 5000) || (rec !== null && o.token !== undefined && rec.token !== o.token)) {
+      log("auto record gone or taken over; exiting");
+      return;
+    }
+    const e = readRoster(stateDir, stack).entries[name];
+    if (!e) {
+      log(`${name} left the roster (desk down); exiting`);
+      return;
+    }
+    const call = await callLive(stateDir, stack, name);
+    if (o.signal?.aborted) continue;
+    if (call.live === null) {
+      log(`call state unknown (${call.note ?? "?"}); no change`);
+    } else if (call.live) {
+      if (idleSince !== undefined) log("call live again, grace cancelled");
+      idleSince = undefined;
+      if (e.off !== undefined) {
+        log("call live -> on");
+        try {
+          const r = await deskPower({ stack, stateDir, name, action: "on", by: "auto" });
+          log(`on: ${r.message.split("\n")[0]}`);
+        } catch (x) {
+          log(`on failed: ${errText(x).split("\n")[0]}`);
+        }
+      }
+    } else if (e.off === undefined) {
+      if (idleSince === undefined) {
+        idleSince = now();
+        log(`no call; off in ${Math.round(graceMs / 1000)}s unless a call starts`);
+      }
+      const idle = now() - idleSince;
+      if (idle >= graceMs) {
+        try {
+          const r = await deskPower({ stack, stateDir, name, action: "off", by: "auto" });
+          log(`no call for ${Math.round(idle / 1000)}s -> off${r.changed ? "" : ` (${r.message})`}`);
+        } catch (x) {
+          log(`off failed: ${errText(x).split("\n")[0]}`);
+        }
+        idleSince = undefined;
+      }
+    } else {
+      idleSince = undefined;
+    }
+    await pause(pollMs);
+  }
+}
+
+// --- reload after an ach upgrade ----------------------------------------------
+
+/** -1, 0, 1 comparing dotted numeric versions (a pre-release tag after "-" is ignored). */
+export function compareVersions(a: string, b: string): number {
+  const parts = (v: string): number[] => v.split("-")[0]!.split(".").map((x) => Number.parseInt(x, 10) || 0);
+  const pa = parts(a);
+  const pb = parts(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+/** Desks (on, not the caller) whose host runs an ach older than this one (no recorded version = older). */
+export function staleDesks(entries: RosterEntry[], by?: Sender): RosterEntry[] {
+  return entries
+    .filter((e) => e.kind === "desk" && e.off === undefined && e.name !== by)
+    .filter((e) => e.achVersion === undefined || compareVersions(e.achVersion, VERSION) < 0)
+    .sort((a, b) => a.port - b.port);
+}
+
+/**
+ * `ach desk reload --stale` (MCP desk_reload {stale: true}): reload each idle desk whose host runs an
+ * older ach than the installed one, so new desk tools and role prompts reach it. Busy desks are
+ * skipped (run it again once they are idle); a desk on a NEWER ach (another install) is never
+ * touched, so two installs cannot ping-pong. Off desks start on the current ach when turned on.
+ */
+export async function deskReloadStale(o: StackOpts & { by?: Sender } = {}): Promise<DeskReloadResult[]> {
+  const { stateDir, stack } = ctx(o);
+  const out: DeskReloadResult[] = [];
+  for (const d of staleDesks(Object.values(readRoster(stateDir, stack).entries), o.by)) {
+    try {
+      out.push(await reloadMarked(stateDir, stack, d.name, false, o.by));
+    } catch (e) {
+      const m = errText(e);
+      out.push(/ is busy \(state/.test(m) ? { name: d.name, ok: false, resumed: false, skipped: `busy; run \`ach desk reload --stale\` again once it is idle` } : { name: d.name, ok: false, resumed: false, error: m });
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

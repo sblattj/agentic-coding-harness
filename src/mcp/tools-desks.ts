@@ -1,4 +1,4 @@
-// Desk tools on `ach mcp` (#204): desk_roster, desk_send, desk_inbox, desk_reload, lane_new,
+// Desk tools on `ach mcp` (#204): desk_roster, desk_send, desk_inbox, desk_reload, desk_power, lane_new,
 // lane_status, lane_stop, lane_approve, lane_reject, decision_open, decision_list,
 // decision_close.
 // Identity comes from $ACH_DESK_NAME (+ $ACH_DESK_STACK), never from arguments.
@@ -15,6 +15,9 @@ export type DeskToolService = Pick<
   | "deskSend"
   | "deskInbox"
   | "deskReload"
+  | "deskReloadStale"
+  | "deskPower"
+  | "deskAuto"
   | "laneNew"
   | "laneStatus"
   | "laneStop"
@@ -146,25 +149,68 @@ export function registerDeskTools(
   server.registerTool({
     name: "desk_reload",
     description:
-      "Restart a desk's host on the same port, engine and agent session (history kept), so it picks up a newer ach build and new desk tools. Give `name`, or `all: true` for every desk (lanes are never reloaded). A busy desk is refused unless `force: true` (force cuts its turn and drops its queued messages). You cannot reload yourself; under `all` you are skipped. Each result says whether the session was resumed.",
+      "Restart a desk's host on the same port, engine and agent session (history kept), so it picks up a newer ach build and new desk tools. Give `name`, or `all: true` for every desk (lanes are never reloaded), or `stale: true` for the idle desks whose host runs an older ach than the installed one (busy ones are skipped, newer ones never touched). A busy desk is refused unless `force: true` (force cuts its turn and drops its queued messages). Off desks are skipped (they start on fresh code when turned on). You cannot reload yourself; under `all`/`stale` you are skipped. Each result says whether the session was resumed.",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Desk to reload (see desk_roster)" },
         all: { type: "boolean", description: "Reload every desk except you; lanes never" },
         force: { type: "boolean", description: "Reload even when the desk is busy" },
+        stale: { type: "boolean", description: "Reload the idle desks running an older ach build than the installed one" },
       },
     },
     handler: async (args) => {
       const name = str(args, "name", false);
       const all = args.all;
       const force = args.force;
+      if (args.stale !== undefined && typeof args.stale !== "boolean") throw new Error("stale must be a boolean");
+      if (args.stale === true) {
+        if ((name !== undefined && name !== "") || all === true || force === true) throw new Error("desk_reload: stale takes no name, all or force");
+        return { results: await svc.deskReloadStale({ ...base, by: me }) };
+      }
       if (all !== undefined && typeof all !== "boolean") throw new Error("all must be a boolean");
       if (force !== undefined && typeof force !== "boolean") throw new Error("force must be a boolean");
       if ((name === undefined || name === "") === (all !== true)) throw new Error("desk_reload: give either name or all: true");
       if (name === me) throw new Error(`desk_reload: you cannot reload yourself (your own host runs this call); ask another desk or the human`);
       if (all === true) return { results: await svc.deskReload({ ...base, all: true, by: me, ...(force === true ? { force: true } : {}) }) };
       return { results: await svc.deskReload({ ...base, name: name as string, by: me, ...(force === true ? { force: true } : {}) }) };
+    },
+  });
+
+  server.registerTool({
+    name: "desk_power",
+    description:
+      "Switch a desk on or off. `status`: on/off, feed pid, pane, whether a call is live (from the desk feed's activeCheck), auto watcher. `off`: stops the desk's host, feed and pane; the roster keeps it as `off` and desk_send to it fails with `desk_off:` (do not retry; turn it on or start a lane). Off is refused while a call is live. `on`: same port, fresh session and feed. `toggle`: off if on, else on. `auto`: a watcher turns the desk on when a call starts and off `graceSeconds` (default 300) after it ends, polling every `pollSeconds` (default 30); `auto_stop` ends it. A desk may turn itself off: the answer comes first, its host stops a few seconds later.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Desk to switch (see desk_roster), e.g. LISTENER" },
+        action: { type: "string", enum: ["status", "on", "off", "toggle", "auto", "auto_stop"] },
+        resume: { type: "boolean", description: "on/toggle: continue the session saved when it was turned off" },
+        pollSeconds: { type: "number", description: "auto: activeCheck interval (default 30)" },
+        graceSeconds: { type: "number", description: "auto: stay on this long after a call ends (default 300)" },
+      },
+      required: ["name", "action"],
+    },
+    handler: async (args) => {
+      const name = str(args, "name") as string;
+      const action = str(args, "action") as string;
+      if (args.resume !== undefined && typeof args.resume !== "boolean") throw new Error("resume must be a boolean");
+      const poll = num(args, "pollSeconds");
+      const grace = num(args, "graceSeconds");
+      if (action === "auto" || action === "auto_stop") {
+        if (action === "auto_stop" && (poll !== undefined || grace !== undefined)) throw new Error("desk_power: auto_stop takes no pollSeconds/graceSeconds");
+        return svc.deskAuto({
+          ...base, name, by: me,
+          ...(action === "auto_stop" ? { stop: true } : {}),
+          ...(poll !== undefined ? { pollMs: Math.round(poll * 1000) } : {}),
+          ...(grace !== undefined ? { graceMs: Math.round(grace * 1000) } : {}),
+        });
+      }
+      if (!["status", "on", "off", "toggle"].includes(action)) throw new Error(`desk_power: action must be status, on, off, toggle, auto or auto_stop (got "${action}")`);
+      if (poll !== undefined || grace !== undefined) throw new Error("desk_power: pollSeconds/graceSeconds only apply to auto");
+      // never force from a desk: a live call is only cut by the human (`ach desk off --force`)
+      return svc.deskPower({ ...base, name, action: action as realService.DeskPowerAction, by: me, ...(args.resume === true ? { resume: true } : {}) });
     },
   });
 

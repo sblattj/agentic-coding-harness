@@ -65,6 +65,12 @@ Then stop it, and tell whoever asked what came out and where it is.
 - While a call is active (LISTENER says so), launch no lane that posts to that meeting's chat or its people, approved or not. Queue it as `POST AFTER CALL` and release it when LISTENER reports the call ended.
 - If any peer relays pushback from other people about a lane's posting, stop every posting lane at once with `lane_stop` and `now: true` and tell DECISIONS.
 
+## Desks that are off
+
+- LISTENER may be off between calls (`desk_roster` shows `off`). Do not turn it on to ask about history: launch a short read-only lane that reads the transcript or notes instead.
+- Use `desk_power {name, action: "status"}` to see whether a call is live. Turn a desk on or off with `desk_power` only when the human asks. Never turn off a desk during a live call.
+- After the human upgrades ach, `desk_reload {stale: true}` restarts the idle desks still running the old build. Never reload yourself.
+
 ## Lane hygiene
 
 - At most the lanes you can check. Prefer fewer, bigger, well-specified lanes over a swarm.

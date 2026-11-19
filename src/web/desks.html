@@ -110,6 +110,9 @@ section.panel > h2 .count { color: var(--amber); }
 .badge.s-busy { color: var(--amber); border-color: color-mix(in oklab, var(--amber) 50%, var(--line2)); }
 .badge.s-starting, .badge.s-stopping { color: var(--blue); }
 .badge.s-error, .badge.s-dead { color: var(--red); }
+.badge.s-off { color: var(--faint); border-style: dashed; }
+.desk.off .chat { opacity: .5; }
+.dhead .pw { padding: 0 6px; font-size: 10px; }
 .badge.s-active { color: var(--amber); }
 .badge.s-achieved { color: var(--green); }
 .badge.s-blocked, .badge.s-stopped { color: var(--red); }
@@ -441,6 +444,19 @@ table.costs td.num, table.costs th.num { text-align: right; }
     if (row.queueDepth) h.appendChild(el("span", "qd", "q " + row.queueDepth));
     h.appendChild(el("span", "cost", fmtCost(row.kind === "desk" && row.treeCostUsd != null ? row.treeCostUsd : row.costUsd)));
     h.appendChild(el("span", "badge s-" + row.state, row.state));
+    if (row.kind === "desk") {
+      var pw = powerButton(row);
+      var pb = el("button", "btn pw" + (pw.action === "off" ? " warn" : ""), pw.label);
+      pb.type = "button";
+      pb.title = pw.title;
+      pb.addEventListener("click", function () {
+        if (pw.action === "off" && !confirm("Turn " + row.name + " off? Its host, feed and pane stop; messages to it are refused until it is on again.")) return;
+        pb.disabled = true;
+        api("POST", "/" + encodeURIComponent(row.name) + "/power", { action: pw.action }).then(function () { fetchRoster(); }).catch(showErr).then(function () { pb.disabled = false; });
+      });
+      h.appendChild(pb);
+    }
+    if (row.state === "off") card.classList.add("off");
     card.appendChild(h);
     var box = el("div", "chat");
     box.setAttribute("data-chat", row.name);
@@ -451,7 +467,8 @@ table.costs td.num, table.costs th.num { text-align: right; }
     loadHistory(row);
     var f = el("form", "send");
     var inp = el("input");
-    inp.placeholder = "message " + row.name;
+    inp.placeholder = row.state === "off" ? row.name + " is off (turn it on to message it)" : "message " + row.name;
+    if (row.state === "off") inp.disabled = true;
     inp.setAttribute("aria-label", "message " + row.name);
     f.appendChild(inp);
     var b = el("button", "btn", "send");
@@ -470,6 +487,11 @@ table.costs td.num, table.costs th.num { text-align: right; }
     card.appendChild(f);
     if (row.kind === "desk") card.appendChild(engineFoot(row));
     return card;
+  }
+  /* the desk power button: "off" for a desk that is on (or dead), "on" for one that is off */
+  function powerButton(row) {
+    if (row.state === "off") return { action: "on", label: "turn on", title: "start " + row.name + " again: same port, fresh session and feed" };
+    return { action: "off", label: "turn off", title: "stop " + row.name + "'s host, feed and pane; refused while a call is live" };
   }
   function engineFoot(row) {
     var foot = el("div", "dfoot");
@@ -555,7 +577,7 @@ table.costs td.num, table.costs th.num { text-align: right; }
 
   /* ===== lane strip ===== */
   function laneStatus(row) {
-    if (row.state === "dead" || row.state === "error") return row.state;
+    if (row.state === "dead" || row.state === "error" || row.state === "off") return row.state;
     if (row.goalStatus && row.goalStatus.state && row.goalStatus.state !== "none") return row.goalStatus.state;
     return row.state;
   }
