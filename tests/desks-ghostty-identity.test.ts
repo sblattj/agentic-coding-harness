@@ -54,7 +54,14 @@ describe("GhosttyDriver close requires this open's identity, not only the comman
 
 describe("GhosttyDriver close sends Enter only after the process is gone", () => {
   const argv = ["/usr/local/bin/node", "/opt/ach/pane.js"];
-  const run = async (name: string, deadAfterSignals: "SIGTERM" | "SIGKILL" | "never") => {
+  // The fake exits on its 4th liveness poll, while the driver's budget is wall-clock time. A case that expects
+  // the process to exit inside the budget gets a budget far above the fake's exit (which does not wait it out),
+  // so a loaded runner stretching the 50 ms poll sleeps cannot turn the slow exit into a SIGKILL.
+  const run = async (
+    name: string,
+    deadAfterSignals: "SIGTERM" | "SIGKILL" | "never",
+    { exitWaitMs = 200, pollStallMs = 0 }: { exitWaitMs?: number; pollStallMs?: number } = {},
+  ) => {
     const dir = join(tmp, name);
     const events: string[] = [];
     let dead = false;
@@ -62,13 +69,15 @@ describe("GhosttyDriver close sends Enter only after the process is gone", () =>
     const d = new GhosttyDriver({
       dir,
       settleMs: 0,
-      exitWaitMs: 200,
+      exitWaitMs,
       kill: (_pid, sig) => {
         events.push(sig);
         if (sig === deadAfterSignals && sig === "SIGKILL") dead = true;
       },
       isAlive: () => {
         polls++;
+        const until = Date.now() + pollStallMs; // a loaded runner: each poll costs pollStallMs of wall time
+        while (Date.now() < until) { /* busy */ }
         if (deadAfterSignals === "SIGTERM" && polls > 3) dead = true; // exits a few polls after SIGTERM
         return !dead;
       },
@@ -86,7 +95,12 @@ describe("GhosttyDriver close sends Enter only after the process is gone", () =>
   };
 
   it("waits for a slow-exiting process, then sends Enter (no SIGKILL)", async () => {
-    const t = await run("slow", "SIGTERM");
+    const t = await run("slow", "SIGTERM", { exitWaitMs: 10_000 });
+    assert.deepEqual(t.events, ["SIGTERM", "enter-after-exit"]);
+    assert.ok(t.polls > 3);
+  });
+  it("a slow exit on a loaded runner (each poll costs 80 ms) still gets no SIGKILL", async () => {
+    const t = await run("slow-loaded", "SIGTERM", { exitWaitMs: 10_000, pollStallMs: 80 });
     assert.deepEqual(t.events, ["SIGTERM", "enter-after-exit"]);
     assert.ok(t.polls > 3);
   });
