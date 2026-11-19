@@ -22,6 +22,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync
 import { dirname, join } from "node:path";
 import { deskPaths } from "./roster.ts";
 import { achSelfArgv } from "./self.ts";
+import { compareVersions } from "./versions.ts";
 import type { HostSpec } from "./types.ts";
 
 export const DEFAULT_VERSION_POLL_MS = 300_000;
@@ -31,18 +32,6 @@ export const MAX_AUTO_RELOAD_ATTEMPTS = 3;
 const IDLE_SETTLE_MS = 1000;
 /** A spawned reload normally replaces the host within seconds; only after this long is it tried again. */
 const RETRY_AFTER_MS = 60_000;
-
-/** -1, 0, 1 comparing dotted numeric versions (a pre-release tag after "-" is ignored). */
-export function compareVersions(a: string, b: string): number {
-  const parts = (v: string): number[] => v.split("-")[0]!.split(".").map((x) => Number.parseInt(x, 10) || 0);
-  const pa = parts(a);
-  const pb = parts(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (d !== 0) return d < 0 ? -1 : 1;
-  }
-  return 0;
-}
 
 /** The poll interval from env (ms); 0 = off. */
 export function versionPollMs(env: NodeJS.ProcessEnv): number {

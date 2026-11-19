@@ -10,7 +10,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { createMcpServer } from '../src/mcp/server.ts';
+import { handleDesksApi } from '../src/web/desks-api.ts';
 import { registerDeskTools } from '../src/mcp/tools-desks.ts';
 import { cmdDesk } from '../src/cli/desk.ts';
 import { hostHealth } from '../src/desks/host-client.ts';
@@ -151,6 +154,31 @@ describe('desk power on fake-engine hosts', () => {
       const sent = await call('desk_send', { to: 'LISTENER', text: 'hi' });
       assert.match(sent.error?.message ?? '', /^desk_off: /, 'the MCP tool surfaces the typed error');
 
+      // Callers that deliver to an off desk as a side effect still work.
+      const dq = await svc.decisionOpen({ stateDir: sd, stack, question: 'q?', options: [{ label: 'yes' }], askedBy: 'LISTENER', openedBy: 'DECISIONS' });
+      const ans = await svc.decisionAnswer({ stateDir: sd, stack, id: dq.id, text: 'yes', by: 'human' });
+      assert.equal(ans.state, 'answered', 'answering a decision asked by an off desk records the answer');
+      // The web page loads history for every card, the off one too: 200 from the events file.
+      const web = createServer((req, res) => {
+        const u = new URL(req.url ?? '/', 'http://127.0.0.1');
+        void handleDesksApi(req, res, u, { stateDir: sd }).then((h) => {
+          if (!h) res.writeHead(404).end();
+        });
+      });
+      await new Promise<void>((r) => web.listen(0, '127.0.0.1', () => r()));
+      try {
+        const port = (web.address() as AddressInfo).port;
+        const ev = await fetch(`http://127.0.0.1:${port}/api/desks/LISTENER/events?since=0&stack=${stack}`);
+        const body = (await ev.json()) as { events?: unknown[] };
+        assert.equal(ev.status, 200, JSON.stringify(body));
+        assert.ok(Array.isArray(body.events) && body.events.length > 0, 'the off desk history comes from its events file');
+        const at = await fetch(`http://127.0.0.1:${port}/api/desks/LISTENER/attach?stack=${stack}`);
+        assert.equal(at.status, 409, 'attach to an off desk is a conflict');
+        await at.text();
+      } finally {
+        await new Promise<void>((r) => web.close(() => r()));
+      }
+
       const off2 = await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'off' });
       assert.equal(off2.changed, false);
       assert.match(off2.message, /already off/);
@@ -259,11 +287,11 @@ describe('desk power on fake-engine hosts', () => {
       const flipped = Date.now();
       await until('auto on', () => /call live -> on/.test(readFileSync(logFile, 'utf8')), 20_000);
       const onLine = readFileSync(logFile, 'utf8').split('\n').find((l) => /call live -> on/.test(l))!;
-      // The switch starts within one poll of the flip (the line is written once the desk is up).
+      // The switch starts within one poll of the flip: the line is written when the live call is seen, before the host starts.
       const startedAt = Date.parse(onLine.split(' ')[0]!);
       assert.ok(Number.isFinite(startedAt), onLine);
       await until('roster on', async () => (await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'status' })).status.state === 'on', 20_000);
-      assert.ok(startedAt - flipped < POLL + 15_000, `on line ${startedAt - flipped} ms after the flip`);
+      assert.ok(startedAt - flipped < 2 * POLL + 1500, `on line ${startedAt - flipped} ms after the flip`);
 
       setActive(sd, false);
       const ended = Date.now();
@@ -273,13 +301,18 @@ describe('desk power on fake-engine hosts', () => {
 
       // A call that resumes inside the grace period cancels the timer.
       setActive(sd, true);
-      await until('auto on again', () => readFileSync(logFile, 'utf8').split('call live -> on').length === 3, 30_000);
+      // Wait on the watcher's own log lines, not fixed sleeps: under a loaded suite the switch on can
+      // outlast a fixed window, and a watcher still starting the host never sees the call drop.
+      const count = (s: string) => readFileSync(logFile, 'utf8').split(s).length - 1;
+      await until('auto on again', () => count('call live -> on') === 2, 30_000);
+      await until('on again finished', () => count('on: LISTENER is on') === 2, 30_000);
       setActive(sd, false);
-      await new Promise((r) => setTimeout(r, POLL * 2));
+      await until('grace timer started', () => count('no call; off in') === 2, 30_000);
       setActive(sd, true);
+      await until('grace cancelled', () => /call live again, grace cancelled/.test(readFileSync(logFile, 'utf8')), 30_000);
       await new Promise((r) => setTimeout(r, GRACE + POLL * 2));
       assert.equal(readRoster(sd, stack).entries.LISTENER?.off, undefined, 'a resumed call keeps it on');
-      assert.match(readFileSync(logFile, 'utf8'), /call live again, grace cancelled/);
+      assert.equal(count('-> off'), 1, 'no second off after the resumed call');
 
       const stop = await S.deskAuto!({ stateDir: sd, stack, name: 'LISTENER', stop: true });
       assert.equal(stop.status.auto.running, false);
@@ -435,6 +468,19 @@ describe('desk power with tmux panes', { skip: hasTmux ? false : 'tmux not insta
       assert.equal(win(now.terminal!.id), win(before.DECISIONS!.terminal!.id), 'back in the desks window');
       await new Promise((r) => setTimeout(r, 3000));
       assert.equal(tm('display-message', '-p', '-t', now.terminal!.id, '#{pane_dead}').trim(), '0', 'the new pane runs its attach');
+
+      // Neighbors whose stored refs no longer match their panes' ownership tokens are not ours to
+      // split: `on` opens its own window instead of placing a pane in someone else's.
+      assert.ok(now.terminal?.token, 'the reopened pane ref carries its ownership token');
+      await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'off' });
+      assert.ok(!panes().includes(now.terminal!.id), 'off closes the pane that on opened');
+      await updateRoster(sd, stack, (ro) => {
+        for (const n of ['ORCHESTRATOR', 'DECISIONS']) ro.entries[n]!.terminal = { ...ro.entries[n]!.terminal!, token: 'not-ours' };
+      });
+      await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'on' });
+      const again = readRoster(sd, stack).entries.LISTENER!;
+      assert.match(again.terminal?.id ?? '', /^%\d+$/, 'a new pane');
+      assert.notEqual(win(again.terminal!.id), win(before.DECISIONS!.terminal!.id), 'not split into a pane ach does not own');
     } finally {
       process.env.AGENTIC_CODING_HARNESS_STATE_DIR = ENV_STATE;
       await svc.deskDown({ stateDir: sd, stack });

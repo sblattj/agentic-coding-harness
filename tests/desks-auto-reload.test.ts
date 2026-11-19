@@ -9,13 +9,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { autoReloadMarkFile, compareVersions, probeInstalledVersion, readAutoReloadMark, startVersionWatcher } from '../src/desks/auto-reload.ts';
+import { autoReloadMarkFile, probeInstalledVersion, readAutoReloadMark, startVersionWatcher } from '../src/desks/auto-reload.ts';
 import { runHost, type HostDeps } from '../src/desks/host.ts';
 import { hostHealth, hostSend, hostStop } from '../src/desks/host-client.ts';
 import { deskPaths, readHostToken, readRoster } from '../src/desks/roster.ts';
 import { deskDown, deskUp, laneNew } from '../src/desks/service.ts';
 import type { Engine, EngineEvent, GoalStatus, HostSpec, RosterEntry } from '../src/desks/types.ts';
 import { VERSION } from '../src/version.ts';
+import { compareVersions } from '../src/desks/versions.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const TOKEN = 'e'.repeat(64);

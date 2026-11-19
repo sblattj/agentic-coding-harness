@@ -22,6 +22,7 @@ import { loadLayout, deskPort, roleFiles } from "./config.ts";
 import { engineKindFor } from "./engines/index.ts";
 import { runActiveCheck } from "./feeds.ts";
 import { achSelfArgv } from "./self.ts";
+import { compareVersions } from "./versions.ts";
 import { VERSION } from "../version.ts";
 import { hostAttach, hostEvents, hostHealth, hostRecord, hostSend, hostStop, hostStopIfIdle, hostTarget, type HostTarget } from "./host-client.ts";
 import { spawnHost } from "./host.ts";
@@ -1651,7 +1652,7 @@ async function openDeskPane(stateDir: string, stack: string, entry: RosterEntry)
   const others: { slot: PaneSlot | "extra"; id: string }[] = [];
   for (const e of Object.values(readRoster(stateDir, stack).entries)) {
     if (e.name === entry.name || e.kind !== "desk" || e.off !== undefined || e.terminal?.kind !== drv.kind || e.terminal.id === "") continue;
-    if (!(await drv.alive(e.terminal.id))) continue;
+    if (!(await paneAlive(drv, e.terminal))) continue;
     others.push({ slot: slotFor(e.name), id: e.terminal.id });
   }
   const argv = await attachArgv(entry, { stateDir, stack });
@@ -1665,7 +1666,7 @@ async function openDeskPane(stateDir: string, stack: string, entry: RosterEntry)
     const lastRight = rights[rights.length - 1];
     id = slot !== "left" && lastRight !== undefined ? await drv.open({ ...base, mode: "down", of: lastRight.id }) : await drv.open({ ...base, mode: "right", of: left.id });
   }
-  return { kind: drv.kind, id };
+  return refOf(drv, id);
 }
 
 // --- auto watcher -----------------------------------------------------------
@@ -1851,18 +1852,6 @@ export async function runDeskWatcher(o: StackOpts & { name: string; pollMs: numb
 }
 
 // --- reload after an ach upgrade ----------------------------------------------
-
-/** -1, 0, 1 comparing dotted numeric versions (a pre-release tag after "-" is ignored). */
-export function compareVersions(a: string, b: string): number {
-  const parts = (v: string): number[] => v.split("-")[0]!.split(".").map((x) => Number.parseInt(x, 10) || 0);
-  const pa = parts(a);
-  const pb = parts(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (d !== 0) return d < 0 ? -1 : 1;
-  }
-  return 0;
-}
 
 /** Desks (on, not the caller) whose host runs an ach older than this one (no recorded version = older). */
 export function staleDesks(entries: RosterEntry[], by?: Sender): RosterEntry[] {
