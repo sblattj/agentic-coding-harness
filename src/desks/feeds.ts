@@ -1,5 +1,6 @@
 // JSONL feed runner (#204, guide section 7). Owner: feeds seat.
 import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { FeedSpec } from "./types.ts";
 
 export interface FeedHandle {
@@ -373,4 +374,19 @@ export async function runActiveCheck(argv: string[], opts: { cwd?: string; timeo
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`activeCheck printed no JSON object: ${out.trim().slice(0, 200)}`);
   return (parsed as { active?: unknown }).active === true;
+}
+
+/**
+ * Is a call live on this desk feed? The one check behind `desk status`, the live-call refusal of
+ * `desk off`, the auto watcher and the host's automatic reload after an upgrade: `live` is the
+ * activeCheck's answer, or null (with a note) when the feed has no activeCheck or the check failed.
+ */
+export async function feedCallLive(feed: FeedSpec | undefined, cwd?: string): Promise<{ live: boolean | null; note?: string }> {
+  const argv = feed?.activeCheck;
+  if (argv === undefined || argv.length === 0) return { live: null, note: "no feed activeCheck" };
+  try {
+    return { live: await runActiveCheck(argv, { ...(cwd !== undefined && existsSync(cwd) ? { cwd } : {}) }) };
+  } catch (e) {
+    return { live: null, note: `activeCheck failed: ${(e instanceof Error ? e.message : String(e)).split("\n")[0]}` };
+  }
 }

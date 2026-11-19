@@ -120,6 +120,12 @@ export interface VersionWatcherOpts {
   pollMs: number;
   /** True when the desk may be reloaded now: idle, nothing queued, no active goal, not stopping. */
   isIdle: () => boolean;
+  /**
+   * Is a call live on the desk feed (feeds.ts feedCallLive)? Only supplied for a feed with an
+   * activeCheck. `false` lets the reload go; `true` (a call) and null (the check failed or timed out)
+   * hold it back, as `desk auto` treats an unknown answer as "change nothing".
+   */
+  callLive?: () => Promise<boolean | null>;
   probe: () => Promise<string | null>;
   spawn: () => number | undefined;
   log: (line: string) => void;
@@ -147,6 +153,8 @@ export function startVersionWatcher(o: VersionWatcherOpts): VersionWatcher {
   /** Versions this host already logged a final word about (done or given up). */
   const settled = new Set<string>();
   let waitingLogged: string | undefined;
+  let callLogged: string | undefined;
+  let callFailedLogged: string | undefined;
   let lastSpawnAt: number | undefined;
   let settleTimer: NodeJS.Timeout | undefined;
   /** When the desk last went idle (nudge); undefined = idle since this host started, no turn yet. */
@@ -195,10 +203,34 @@ export function startVersionWatcher(o: VersionWatcherOpts): VersionWatcher {
     // Idle, but a turn ended less than settleMs ago (a poll can land right after it, before any
     // nudge timer fires): wait out the rest of the window, as nudge() does, so a message that lands
     // in it is served first.
-    const wait = idleSince === undefined ? 0 : settleMs - (Date.now() - idleSince);
+    const settleWait = (): number => (idleSince === undefined ? 0 : settleMs - (Date.now() - idleSince));
+    const wait = settleWait();
     if (wait > 0) {
       pending = installed;
       armSettle(wait);
+      return;
+    }
+    // A live call is never cut by a reload: wait (no attempt spent) and try again on the next poll.
+    // An unknown answer (the check failed or timed out) waits too, like a call.
+    const live = o.callLive !== undefined ? await o.callLive() : false;
+    if (live === null) {
+      pending = installed;
+      if (callFailedLogged !== installed) {
+        callFailedLogged = installed;
+        o.log(`auto-reload: call check failed, waiting`);
+      }
+      return;
+    }
+    if (live === true) {
+      pending = installed;
+      if (callLogged !== installed) {
+        callLogged = installed;
+        o.log(`auto-reload: installed ach ${installed} is newer than this host's ${o.running}; a call is live on ${o.spec.name}'s feed, reloading once it ends`);
+      }
+      return;
+    }
+    if (stopped || !o.isIdle() || settleWait() > 0) {
+      pending = installed; // a turn started (or ended) while the call was checked
       return;
     }
     pending = undefined;

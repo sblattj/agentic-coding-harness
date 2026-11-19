@@ -87,17 +87,20 @@ interface InProc {
   spec: HostSpec;
 }
 
-async function startHost(o: { stateDir?: string; kind?: 'desk' | 'lane'; runId?: string; installed: () => string }): Promise<InProc> {
+async function startHost(o: { stateDir?: string; kind?: 'desk' | 'lane'; runId?: string; installed: () => string; feed?: HostSpec['feed'] }): Promise<InProc> {
   const stateDir = o.stateDir ?? tmpDir();
   const spec: HostSpec = {
     stack: 'auto', stateDir, name: o.kind === 'lane' ? 'scout' : 'ALPHA', kind: o.kind ?? 'desk', role: 'orchestrator', roleFiles: [],
     agent: 'claude', engine: 'driver', mcps: [], port: 0, cwd: stateDir, runId: o.runId ?? 'run-a', token: TOKEN,
+    ...(o.feed !== undefined ? { feed: o.feed } : {}),
   };
   const engine = new TurnEngine();
   const spawns: number[] = [];
   let url = '';
   const deps: HostDeps = {
     createEngine: async () => engine,
+    // The feed process itself is not under test (its messages would start turns): only spec.feed.activeCheck is.
+    startFeed: () => ({ pid: 4343, stop: async () => {} }),
     createHostMeter: () => ({ begin() {}, usage() {}, heartbeat() {}, overBudget: () => false, finish() {}, totals: () => ({ costUsd: null, inputTokens: 0, outputTokens: 0 }) }),
     installSignals: false,
     onReady: (i) => (url = i.url),
@@ -224,6 +227,51 @@ describe('auto reload after an ach upgrade: host watcher (in-process)', () => {
       await sleep(300);
       assert.equal(h.spawns.length, 1);
     } finally {
+      await stop(h);
+    }
+  });
+
+  it('a desk whose feed reports a live call is not reloaded until the call ends, then once idle (one spawn, attempt 1)', async () => {
+    const sd = tmpDir();
+    const active = join(sd, 'active.json');
+    writeFileSync(active, JSON.stringify({ active: true }));
+    const h = await startHost({ stateDir: sd, installed: () => '1.1.0', feed: { command: ['/bin/cat'], activeCheck: ['/bin/cat', active] } });
+    try {
+      await sleep(600); // ~12 polls with the call live and the desk idle
+      assert.equal(h.spawns.length, 0, 'call live: not reloaded');
+      assert.equal(readAutoReloadMark(h.spec), null, 'call live: no attempt spent');
+      writeFileSync(active, JSON.stringify({ active: false })); // the call ends
+      await waitFor(() => h.spawns.length > 0, 'reload once the call ended');
+      await sleep(300);
+      assert.equal(h.spawns.length, 1, 'spawned once');
+      assert.deepEqual({ ...readAutoReloadMark(h.spec), at: 0 }, { version: '1.1.0', runId: 'run-a', attempts: 1, at: 0 });
+    } finally {
+      await stop(h);
+    }
+  });
+
+  it('a failed activeCheck (unknown call state) holds the reload back like a live call: logged once, no attempt spent, reloads once the check answers', async () => {
+    const sd = tmpDir();
+    const active = join(sd, 'missing.json'); // cat fails until it exists
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+      lines.push(String(chunk));
+      return (orig as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stderr.write;
+    const h = await startHost({ stateDir: sd, installed: () => '1.1.0', feed: { command: ['/bin/cat'], activeCheck: ['/bin/cat', active] } });
+    try {
+      await sleep(600); // ~12 polls with the call state unknown
+      assert.equal(h.spawns.length, 0, 'call check failed: not reloaded');
+      assert.equal(readAutoReloadMark(h.spec), null, 'call check failed: no attempt spent');
+      assert.equal(lines.filter((l) => l.includes('auto-reload: call check failed, waiting')).length, 1, 'logged once per pending reload');
+      writeFileSync(active, JSON.stringify({ active: false })); // the check answers: no call
+      await waitFor(() => h.spawns.length > 0, 'reload once the check answers');
+      await sleep(300);
+      assert.equal(h.spawns.length, 1, 'spawned once');
+      assert.equal(readAutoReloadMark(h.spec)?.attempts, 1);
+    } finally {
+      process.stderr.write = orig;
       await stop(h);
     }
   });

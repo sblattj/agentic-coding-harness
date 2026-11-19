@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { probeInstalledVersion, spawnAutoReload, startVersionWatcher, versionPollMs, type VersionWatcher, type VersionWatcherOpts } from "./auto-reload.ts";
 import { boundaryForTool } from "./boundaries.ts";
 import { createEngine as realCreateEngine } from "./engines/index.ts";
-import { startFeed as realStartFeed, type FeedHandle } from "./feeds.ts";
+import { feedCallLive, startFeed as realStartFeed, type FeedHandle } from "./feeds.ts";
 import { createHostMeter as realCreateHostMeter, type HostMeter, type UsageSample } from "./host-metering.ts";
 import { deskPaths } from "./roster.ts";
 import { achSelfArgv } from "./self.ts";
@@ -728,6 +728,8 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
       running: vw.running ?? VERSION,
       pollMs,
       isIdle: () => state === "idle" && queue.length === 0 && stopping === undefined && !intakeClosed && goal?.state !== "active",
+      // The same activeCheck desk off and desk auto use: no reload while the desk feed reports a live call.
+      ...(spec.feed?.activeCheck !== undefined && spec.feed.activeCheck.length > 0 ? { callLive: async () => (await feedCallLive(spec.feed, spec.cwd)).live } : {}),
       probe: vw.probe ?? (() => probeInstalledVersion(env)),
       spawn: vw.spawn ?? (() => spawnAutoReload(spec, env)),
       log: (line) => process.stderr.write(`desk host ${spec.name}: ${line}\n`),

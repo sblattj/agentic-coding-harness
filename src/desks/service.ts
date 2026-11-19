@@ -20,7 +20,7 @@ import { AGENTS, isKnownAgent } from "../core/types.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { loadLayout, deskPort, roleFiles } from "./config.ts";
 import { engineKindFor } from "./engines/index.ts";
-import { runActiveCheck } from "./feeds.ts";
+import { feedCallLive } from "./feeds.ts";
 import { achSelfArgv } from "./self.ts";
 import { compareVersions } from "./versions.ts";
 import { VERSION } from "../version.ts";
@@ -1428,13 +1428,7 @@ function deskFeed(stateDir: string, stack: string, name: string): { feed?: HostS
 
 async function callLive(stateDir: string, stack: string, name: string): Promise<{ live: boolean | null; note?: string }> {
   const { feed, cwd } = deskFeed(stateDir, stack, name);
-  const argv = feed?.activeCheck;
-  if (argv === undefined || argv.length === 0) return { live: null, note: "no feed activeCheck" };
-  try {
-    return { live: await runActiveCheck(argv, { ...(cwd !== undefined && existsSync(cwd) ? { cwd } : {}) }) };
-  } catch (e) {
-    return { live: null, note: `activeCheck failed: ${errText(e).split("\n")[0]}` };
-  }
+  return feedCallLive(feed, cwd);
 }
 
 /** A power switch in the stack's message log: `<by> -> <name>: desk_power: <what>` (never delivered to a session). */
