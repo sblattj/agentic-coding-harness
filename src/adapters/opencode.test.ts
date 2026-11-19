@@ -521,6 +521,64 @@ describe('opencode adapter', () => {
       assert.ok(calls.some((c) => c.endsWith('/api/session/ses_v2_s/interrupt')));
     });
 
+    // setTimeout runs on the monotonic clock, the deadline check on Date.now(): the two can disagree by a
+    // millisecond or more (truncation, wall-clock slew), so the deadline timer may fire while Date.now() is
+    // still short of the deadline. Lag Date.now() to make that ordering deterministic.
+    test('timeout: deadline timer firing before Date.now() reaches the deadline still reports the timeout and posts /interrupt', { timeout: 5000 }, async () => {
+      const calls: string[] = [];
+      const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(url);
+        calls.push(u);
+        if (u.endsWith('/api/info')) return json({ version: '2.3.2' });
+        if (u.endsWith('/api/session')) return json({ data: { id: 'ses_v2_k' } });
+        if (u.endsWith('/prompt')) return json({ data: { id: USER_ID } });
+        if (u.endsWith('/interrupt')) return json({ interrupted: true });
+        return new Promise<Response>((_res, rej) => {
+          init?.signal?.addEventListener('abort', () => rej(new Error('stalled request aborted')));
+        });
+      }) as typeof fetch;
+      const realNow = Date.now;
+      try {
+        const handle = new OpenCodeAdapter({ fetchImpl, serverPassword: 'pw', serverTimeoutMs: 50, serverPollMs: 5 }).spawn({ prompt: 'p', preferServer: true });
+        Date.now = () => realNow() - 1000; // wall clock lags the timer clock
+        const events = await collect(handle.events);
+        const last = events.at(-1) as { type: string; message: string };
+        assert.equal(last.type, 'error');
+        assert.match(last.message, /did not finish within 50 ms/);
+        assert.equal(await handle.wait(), 1);
+        assert.ok(calls.some((c) => c.endsWith('/api/session/ses_v2_k/interrupt')));
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    test('timeout: Date.now() passing the deadline before the timer fires still reports the timeout and posts /interrupt', { timeout: 5000 }, async () => {
+      const calls: string[] = [];
+      const fetchImpl = (async (url: RequestInfo | URL) => {
+        const u = String(url);
+        calls.push(u);
+        if (u.endsWith('/api/info')) return json({ version: '2.3.2' });
+        if (u.endsWith('/api/session')) return json({ data: { id: 'ses_v2_j' } });
+        if (u.endsWith('/prompt')) return json({ data: { id: USER_ID } });
+        if (u.endsWith('/interrupt')) return json({ interrupted: true });
+        return json({ data: [{ id: USER_ID, type: 'user' }] });
+      }) as typeof fetch;
+      const realNow = Date.now;
+      try {
+        // the timer is minutes away; only the wall clock crosses the deadline
+        const handle = new OpenCodeAdapter({ fetchImpl, serverPassword: 'pw', serverTimeoutMs: 300_000, serverPollMs: 5 }).spawn({ prompt: 'p', preferServer: true });
+        Date.now = () => realNow() + 600_000; // wall clock runs ahead of the timer clock
+        const events = await collect(handle.events);
+        const last = events.at(-1) as { type: string; message: string };
+        assert.equal(last.type, 'error');
+        assert.match(last.message, /did not finish within 300000 ms/);
+        assert.equal(await handle.wait(), 1);
+        assert.ok(calls.some((c) => c.endsWith('/api/session/ses_v2_j/interrupt')));
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
     test('abort() ends the run and posts /interrupt with the auth header', { timeout: 5000 }, async () => {
       const calls: Array<{ url: string; method?: string; auth?: string }> = [];
       const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {

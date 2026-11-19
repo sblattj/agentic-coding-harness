@@ -552,8 +552,15 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
     const deadline = Date.now() + this.#serverTimeoutMs;
     // A ref'd timer, not AbortSignal.timeout(): that timer is unref'd, so a stalled request with no live
     // socket would let the event loop drain before the deadline fires. Cleared when the run settles.
+    // The timer runs on the monotonic clock and Date.now() on the wall clock; they can disagree by a millisecond
+    // or more, so the timer firing is itself proof the deadline passed (`timedOut`), whatever Date.now() says.
+    let timedOut = false;
+    const pastDeadline = (): boolean => timedOut || Date.now() >= deadline;
     const deadlineController = new AbortController();
-    const deadlineTimer = setTimeout(() => deadlineController.abort(new Error(`deadline ${this.#serverTimeoutMs} ms`)), this.#serverTimeoutMs);
+    const deadlineTimer = setTimeout(() => {
+      timedOut = true;
+      deadlineController.abort(new Error(`deadline ${this.#serverTimeoutMs} ms`));
+    }, this.#serverTimeoutMs);
     const runSignal = AbortSignal.any([controller.signal, deadlineController.signal]);
     const signalFor = (): AbortSignal => runSignal;
     const timeoutMessage = `opencode serve (${base}): turn did not finish within ${this.#serverTimeoutMs} ms`;
@@ -664,7 +671,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
       if (typeof userId !== 'string' || userId === '') throw new Error('opencode serve: prompt response missing data.id');
 
       for (;;) {
-        if (Date.now() > deadline) throw new Error(timeoutMessage);
+        if (pastDeadline()) throw new Error(timeoutMessage);
         const messages = await v2Messages(sid);
         const at = messages.findIndex((m) => m.id === userId);
         const after = at < 0 ? [] : messages.slice(at + 1);
@@ -697,7 +704,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
         else await runV1();
       } catch (err) {
         let message = err instanceof Error ? err.message : String(err);
-        if (!controller.signal.aborted && Date.now() >= deadline) {
+        if (!controller.signal.aborted && pastDeadline()) {
           // Deadline hit (possibly mid-request): report the timeout and stop the turn server-side.
           message = timeoutMessage;
           if (v2Session) await this.#interrupt(base, v2Session, headers);
