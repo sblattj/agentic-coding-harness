@@ -122,11 +122,6 @@ export function summaryRecipient(summary: string): string | null {
 }
 
 /**
- * The boundary warning for one tool call by a desk, or null when the call is
- * inside the desk's role. `desk.role` is the layout role name (spec.role); a
- * lane (`kind: "lane"`) is never classified.
- */
-/**
  * The string `to` of a tool call's input (an object, or a JSON string of one), else undefined.
  * Engines copy it onto `tool` events as `data.to`, so the human-send check does not depend on
  * the summary (opencode puts the tool's title there when it has one).
@@ -141,7 +136,12 @@ export function inputRecipient(input: unknown): string | undefined {
   return typeof to === "string" ? to : undefined;
 }
 
-/** `boundaryForTool`'s `recipient` (from `data.to`) wins over the summary; the summary is read only when the engine sent none. */
+/**
+ * The boundary warning for one tool call by a desk, or null when the call is
+ * inside the desk's role. `desk.role` is the layout role name (spec.role); a
+ * lane (`kind: "lane"`) is never classified. `recipient` (the event's `data.to`)
+ * wins over the summary; the summary is read only when the engine sent none.
+ */
 export function boundaryForTool(desk: { kind: DeskKind; role: string }, tool: string, summary = "", recipient?: string): BoundaryWarning | null {
   if (desk.kind !== "desk") return null;
   const role = desk.role.trim().toLowerCase();
