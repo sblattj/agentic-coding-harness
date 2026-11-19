@@ -4,10 +4,25 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-19
+
 ### Added
 
-- Desks: hard role boundaries. Every built-in role file (`roles/orchestrator.md`, `decisions.md`, `listener.md`, `lane.md`) opens with a "Your role, and only this" block, and `roles/common.md` states the division of labor: LISTENER hears (read-only, the single inbound channel), DECISIONS steers (runs, researches and drafts nothing), ORCHESTRATOR orchestrates (forwards every open call to DECISIONS as `open: <call> | context | asked by`, never asks the human directly), lanes do the work.
-- Desks: the host records a `boundary` warning event `{rule, detail, tool}` when a desk acts outside its role: DECISIONS or LISTENER calling an edit, write or shell tool (or `lane_new`), or ORCHESTRATOR calling `decision_open` or `desk_send` to the human. Nothing is blocked. Warnings show in `ach desk events`, `ach desk chat`, the web desks page and the macOS app. See docs/DESKS.md "Roles".
+- Desks: `ach desk off | on | toggle | status | auto <NAME>` turn any desk fully off and on again (host, feed and the panes ach opened), with `ach listener on|off|toggle|status|auto` as shorthand for LISTENER. `auto` follows the desk feed's `activeCheck`: a live call turns the desk on, and no call for `--grace` seconds (default 300) turns it off. An off desk stays in the roster as `off`, and `desk_send` to it returns a typed `desk_off` error. `off` is refused while a call is live, and a desk may turn itself off after its end-of-call handoff. A failing or timed-out check, or one that prints no boolean `active`, counts as unknown and changes nothing; the watcher backs off up to 120 s and logs when the check starts failing and when it recovers. New MCP tool `desk_power`; the web desks page and the macOS app show off desks. Fixes #214. (#229)
+- Desks: `ach desk reload <NAME>` (and `--all`, `--stale`) restarts a desk's host on the current build while keeping its session, pane and marker, so new tools and role prompt changes reach a running desk. A busy desk is refused unless `--force`, and so is a desk on a live call. Desk hosts also reload themselves after an upgrade, once the desk is idle and no call is live. Fixes #214. (#223, #229)
+- Desks: hard role boundaries. Every built-in role file (`roles/orchestrator.md`, `decisions.md`, `listener.md`, `lane.md`) opens with a "Your role, and only this" block, and `roles/common.md` states the division of labor: LISTENER hears (read-only, the single inbound channel), DECISIONS steers (runs, researches and drafts nothing), ORCHESTRATOR orchestrates (forwards every open call to DECISIONS as `open: <call> | context | asked by`, never asks the human directly), lanes do the work. Fixes #214. (#224)
+- Desks: the host records a `boundary` warning event `{rule, detail, tool}` when a desk acts outside its role: DECISIONS or LISTENER calling an edit, write or shell tool (or `lane_new`), or ORCHESTRATOR calling `decision_open` or `desk_send` to the human. Nothing is blocked. Warnings show in `ach desk events`, `ach desk chat`, the web desks page and the macOS app. See docs/DESKS.md "Roles". (#224)
+
+### Fixed
+
+- `ach desk up` works with opencode 2.x serves (`GET /mcp` now returns the web UI there, which was read as thousands of leaked MCPs), and fails closed on an HTML answer. The opencode adapter's `preferServer` mode supports 2.x serves too. Fixes #217. (#219, #220)
+- `ach doctor` no longer exits 1 on a healthy machine when optional agents are not installed, and an expired claude access token with a refresh token still counts as a login. Fixes #216. (#218)
+- Desks: follow-ups to the 0.30.0 review warnings: `/mcps` counts `layout.agent` only through a desk or lane that uses it, bodyless non-GET `/api` requests pass the content-type check, and the macOS app ignores stale boot completions and refreshes from the previous server. (#221)
+- `--isolate`: concurrent runs no longer read a half-made git worktree entry, and a stale-lock takeover can no longer delete a successor's lock. (#222)
+- Desks: a feed that exits now flushes the events queued behind an in-flight active check. (#225)
+- opencode adapter: the deadline timer firing now always counts as the timeout, so a stalled poll reports the timeout and interrupts the run. (#226)
+- Interactive runs: PTY output written before ach subscribes (the TUI's banner on a loaded machine) is no longer lost from the scrollback, the cast, `ach web` and `ach attach`. (#228)
+- Tests: de-flaked the Ghostty slow-exit close test. (#227)
 
 ## [0.30.0] - 2026-11-18
 
