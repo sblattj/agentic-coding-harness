@@ -310,6 +310,7 @@ export type HostEventType =
   | "status" // {state: HostState}
   | "goal" // {goal: GoalStatus}
   | "feed" // feed lifecycle {note}
+  | "boundary" // a desk acted outside its role (src/desks/boundaries.ts) {rule, detail, tool?}; a warning, nothing is blocked
   | "error"; // {error}
 
 export interface HostEvent {

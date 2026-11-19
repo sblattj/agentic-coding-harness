@@ -4,6 +4,11 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Added
+
+- Desks: hard role boundaries. Every built-in role file (`roles/orchestrator.md`, `decisions.md`, `listener.md`, `lane.md`) opens with a "Your role, and only this" block, and `roles/common.md` states the division of labor: LISTENER hears (read-only, the single inbound channel), DECISIONS steers (runs, researches and drafts nothing), ORCHESTRATOR orchestrates (forwards every open call to DECISIONS as `open: <call> | context | asked by`, never asks the human directly), lanes do the work.
+- Desks: the host records a `boundary` warning event `{rule, detail, tool}` when a desk acts outside its role: DECISIONS or LISTENER calling an edit, write or shell tool (or `lane_new`), or ORCHESTRATOR calling `decision_open` or `desk_send` to the human. Nothing is blocked. Warnings show in `ach desk events`, `ach desk chat`, the web desks page and the macOS app. See docs/DESKS.md "Roles".
+
 ## [0.30.0] - 2026-11-18
 
 ### Added

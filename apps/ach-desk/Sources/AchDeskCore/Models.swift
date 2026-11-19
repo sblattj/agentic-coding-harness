@@ -296,6 +296,7 @@ public struct HostEvent: Codable, Equatable, Sendable, Identifiable {
         case "status": return data["state"]?.stringValue.map { "status: \($0)" }
         case "feed": return data["note"]?.stringValue.map { "feed: \($0)" }
         case "error": return data["error"]?.stringValue.map { "error: \($0)" }
+        case "boundary": return (data["detail"]?.stringValue ?? data["rule"]?.stringValue).map { "boundary: \($0)" }
         case "goal":
             if let g = data["goal"], let st = g["state"]?.stringValue { return "goal: \(st)" }
             return nil

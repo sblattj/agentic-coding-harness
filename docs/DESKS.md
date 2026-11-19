@@ -67,6 +67,8 @@ Every route except `GET /health` needs `Authorization: Bearer <token>` (401 with
 
 Identity comes from the environment (`ACH_DESK_NAME`, `ACH_DESK_STACK`), never from tool arguments, so a desk's MCP tools cannot send as someone else. The CLI takes its sender from `--from`, else `$ACH_DESK_NAME`, else `human`, and refuses a `--from` that differs from `$ACH_DESK_NAME` (inside a desk or lane session). That is not a hard boundary: the token stops HTTP callers that cannot read the spec file, but any process running as the same OS user can read `specs/<name>.json` and call a host with any `from`. Self-send is refused. Every message is a `message_in` event in the target's run and a `message_out` event in the sender's, so replay shows the conversation.
 
+Event types in `events/<runId>.jsonl` (`HostEventType`): `message_in`, `message_out`, `turn_start`, `turn_end`, `text`, `tool` (`{tool, summary}`), `usage`, `status`, `goal`, `feed`, `error`, and `boundary` (`{rule, detail, tool}`, a role boundary warning; see Roles).
+
 ### Message rules
 
 - Sends are fire and forget. Tool descriptions and the role prompts tell agents never to wait or poll for a reply.
@@ -76,6 +78,27 @@ Identity comes from the environment (`ACH_DESK_NAME`, `ACH_DESK_STACK`), never f
 ## Roles
 
 Each host loads `roles/common.md` plus `roles/<role>.md` as instructions, with `$DESK_NAME` replaced by the desk's name. The built-in roles live in `roles/`: `common`, `orchestrator`, `decisions`, `listener`, `lane`. To override one, put a file of the same name in `rolesDir` (searched first). The standalone binary and the PyPI package carry no `roles/` or `desks.default.yaml` on disk, so on first use they write embedded copies to `<state dir>/desks/builtin/<version>/` and read them from there. After editing `roles/` or `desks.default.yaml`, run `npm run gen:desks-assets` (a test fails while the embedded copy is stale).
+
+Every built-in role file opens with a `## Your role, and only this` block, and `roles/common.md` states the division of labor every desk enforces:
+
+- **LISTENER hears.** The single inbound channel from the team (meeting transcripts, team chat, mail and calendar). Read-only, always. Routes asks and decisions to DECISIONS, action items to ORCHESTRATOR, pushback to both. Never posts, decides or works items.
+- **DECISIONS steers.** Ownership, yes or no, which option, anything for the human. Runs, researches and drafts nothing: work goes to ORCHESTRATOR, "what did the team say" goes to LISTENER (or a short read-only lane when LISTENER is off).
+- **ORCHESTRATOR orchestrates.** Launches, briefs, steers and stops lanes. Forwards every open call to DECISIONS as `open: <call> | context | asked by` and waits for the decision id. Never decides ownership, asks the human directly, or does lane work.
+- **Lanes do the work.**
+
+Each desk's reply is limited to its own output kinds (DECISIONS: a decision, a question for the human, or a relay; ORCHESTRATOR: a lane launched, steered or stopped, a call forwarded, a result relayed; LISTENER: what it heard and where it routed it; a lane: `DONE`, `BLOCKED`, or a question to DECISIONS).
+
+**Boundary warnings.** The host checks every `tool` event of a desk against its role (`src/desks/boundaries.ts`, keyed on the layout `role`, never the desk name) and records one `boundary` event `{rule, detail, tool}` right after the tool event when the desk stepped outside it. Nothing is blocked. The rules:
+
+| rule | fires when |
+|---|---|
+| `decisions-does-work` | a `decisions` desk calls a work tool or `lane_new` |
+| `listener-does-work` | a `listener` desk calls a work tool or `lane_new` |
+| `orchestrator-asks-human` | an `orchestrator` desk calls `decision_open`, or `desk_send` whose arguments say `"to": "human"` |
+
+Work tools are the edit, write and shell tools of the supported engines, by name after any `mcp__<server>__` prefix: `bash`, `shell`, `local_shell`, `shell_command`, `exec_command`, `run_shell_command`, `edit`, `multiedit`, `write`, `patch`, `apply_patch`, `notebookedit`, `notebook_edit`, `str_replace_editor`, `str_replace_based_edit_tool`, `replace`, `write_file`, `edit_file`, `create_file`. Read-only tools (read, grep, web fetch, MCP search tools) never warn, so LISTENER can search transcripts. Desk tools match with or without the engine's MCP prefix (`desk_send`, `desks_desk_send`, `mcp__desks__desk_send`). The `desk_send` to the human check reads the tool summary, so it only fires when the engine reports the call's arguments there (the driver engine does; opencode reports a title instead when the tool sets one). Lanes and custom roles get no warnings. Warnings show in `ach desk events` (`boundary  <rule>  <detail>`), in `ach desk chat` (`[boundary] <detail>`), on the web desks page and in the macOS app.
+
+Custom role files in `rolesDir` still override the built-ins, block and all; the warnings depend only on the role name.
 
 - **orchestrator**: launches lanes with standalone goals that carry a no-posting clause. Sends every action item to DECISIONS before any lane. Turns `probe D<n>: <check>` requests into 10 minute read-only `probe-d<n>` lanes. Checks lane evidence before `lane_stop`.
 - **decisions**: the ownership rule. Anything we can do that is not confirmed owned by someone else is ours. Confirmed means evidence (a tracker assignee, a named person saying "I'll do it" with time and speaker, an open PR by someone else). "Can" means a probe proved the specific permission. Outcomes are one line each: `OWNED by <human>`, `OWNED by <person>` (watch only) or `ASK <HUMAN>` (opened with `decision_open`). Posting externally stays an ASK item unless approved.

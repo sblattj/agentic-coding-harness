@@ -1,6 +1,6 @@
 import "./support/no-network.mjs";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -183,6 +183,15 @@ describe("roleFiles / builtinRolesDir / deskPort", () => {
     writeFileSync(join(d, "custom.md"), "x");
     writeFileSync(join(d, "common.md"), "c");
     assert.deepEqual(roleFiles(layoutWith(d), "custom"), [join(d, "common.md"), join(d, "custom.md")]);
+  });
+
+  it("a custom decisions.md in rolesDir overrides the built-in one (boundary block and all)", () => {
+    const d = tmp();
+    writeFileSync(join(d, "decisions.md"), "# Role: DECISIONS\n\nmy own rules\n");
+    const files = roleFiles(layoutWith(d), "decisions");
+    assert.deepEqual(files, [join(builtinRolesDir(), "common.md"), join(d, "decisions.md")]);
+    assert.equal(readFileSync(files[1] as string, "utf8"), "# Role: DECISIONS\n\nmy own rules\n");
+    assert.match(readFileSync(roleFiles(layoutWith(), "decisions")[1] as string, "utf8"), /^# Role: DECISIONS\n\n## Your role, and only this\n/);
   });
 
   it("falls back to builtin common.md when rolesDir has none (needs roles/common.md from the roles seat)", (t) => {

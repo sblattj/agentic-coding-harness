@@ -70,6 +70,10 @@ class FakeEngine implements Engine {
     this.busy = true;
     this.emit({ type: 'turn_start', data: {} });
   }
+  /** An engine-reported tool call (what opencode/driver emit as a `tool` event). */
+  tool(tool: string, summary = ''): void {
+    this.emit({ type: 'tool', data: { tool, summary } });
+  }
   finishTurn(reply = 'ok'): void {
     this.emit({ type: 'text', data: { text: reply } });
     this.emit({ type: 'usage', data: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 1, cacheWriteTokens: 2, costUsd: this.usageCost, messageId: `msg${this.sent.length}` } });
@@ -731,5 +735,55 @@ describe('desk host: real child process via spawnHost', () => {
     await waitFor(() => got.some((x) => x.type === 'turn_end'), 'echo turn_end');
     assert.deepEqual(got.map((x) => x.type), ['turn_start', 'text', 'usage', 'turn_end']);
     assert.equal(got[1]?.data.text, 'echo: hi');
+  });
+});
+
+describe('desk host: role boundary warnings', () => {
+  const boundaries = async (s: Started): Promise<HostEvent[]> => (await hostEvents(s.t, 0)).filter((e) => e.type === 'boundary');
+
+  it('a DECISIONS desk calling an edit tool yields exactly one boundary event naming the tool', async () => {
+    const s = await start({ name: 'DECISIONS', role: 'decisions' });
+    try {
+      s.engine.tool('edit', '{"filePath":"/tmp/x.ts"}');
+      s.engine.tool('desks_desk_send', '{"to":"ORCHESTRATOR","text":"D1 OWNED by us"}');
+      await waitFor(async () => (await hostEvents(s.t, 0)).filter((e) => e.type === 'tool').length === 2, 'two tool events');
+      const evs = await hostEvents(s.t, 0);
+      const b = evs.filter((e) => e.type === 'boundary');
+      assert.equal(b.length, 1, 'one warning, none for desk_send');
+      assert.equal(b[0]?.data.tool, 'edit');
+      assert.equal(b[0]?.data.rule, 'decisions-does-work');
+      assert.match(String(b[0]?.data.detail), /edit/);
+      const toolSeq = evs.find((e) => e.type === 'tool' && e.data.tool === 'edit')?.seq ?? -1;
+      assert.equal(b[0]?.seq, toolSeq + 1, 'recorded right after the tool event');
+      assert.equal(s.engine.sent.length, 0, 'nothing is blocked or injected into the engine');
+    } finally {
+      await stopAndWait(s);
+    }
+  });
+
+  it('an ORCHESTRATOR desk_send to the human yields one boundary event; lane tools yield none', async () => {
+    const s = await start({ name: 'ORCHESTRATOR', role: 'orchestrator' });
+    try {
+      s.engine.tool('desks_lane_new', '{"name":"fix-login","goal":"..."}');
+      s.engine.tool('desks_desk_send', '{"to":"human","text":"should I launch it?"}');
+      await waitFor(async () => (await hostEvents(s.t, 0)).filter((e) => e.type === 'tool').length === 2, 'two tool events');
+      const b = await boundaries(s);
+      assert.equal(b.length, 1);
+      assert.equal(b[0]?.data.rule, 'orchestrator-asks-human');
+      assert.equal(b[0]?.data.tool, 'desks_desk_send');
+    } finally {
+      await stopAndWait(s);
+    }
+  });
+
+  it('a lane calling an edit tool yields no boundary event', async () => {
+    const s = await start({ name: 'fix-login', kind: 'lane', role: 'lane' });
+    try {
+      s.engine.tool('edit', '{}');
+      await waitFor(async () => (await hostEvents(s.t, 0)).some((e) => e.type === 'tool'), 'tool event');
+      assert.equal((await boundaries(s)).length, 0);
+    } finally {
+      await stopAndWait(s);
+    }
   });
 });

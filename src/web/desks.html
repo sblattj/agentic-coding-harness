@@ -122,6 +122,7 @@ section.panel > h2 .count { color: var(--amber); }
 .ev .who { color: var(--dim); font-size: 10.5px; display: block; }
 .ev.tool { color: var(--faint); font-size: 11px; }
 .ev.err { color: var(--red); }
+.ev.bnd { color: var(--amber); border-left: 2px solid currentColor; padding-left: 6px; }
 .ev.hl { outline: 1px solid var(--cyan); }
 .send { display: flex; gap: 6px; padding: 6px; border-top: 1px solid var(--line); }
 .send input { flex: 1; min-width: 0; }
@@ -343,6 +344,7 @@ table.costs td.num, table.costs th.num { text-align: right; }
       if (m.id) n.setAttribute("data-mid", m.id);
     } else if (ev.type === "tool") n = el("div", "ev tool", "→ " + (d.tool || "tool") + (d.summary ? " " + d.summary : ""));
     else if (ev.type === "error") n = el("div", "ev err", "error: " + (d.error || JSON.stringify(d)));
+    else if (ev.type === "boundary") n = el("div", "ev bnd", "boundary: " + (d.detail || d.rule || JSON.stringify(d)));
     else if (ev.type === "feed" && d.note) n = el("div", "ev tool", "feed: " + d.note);
     if (n) n.setAttribute("data-seq", String(ev.seq));
     return n;

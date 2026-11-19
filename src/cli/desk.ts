@@ -226,6 +226,7 @@ export function formatEventLine(e: HostEvent): string {
     case "tool": body = `${str(d.tool)} ${clip(str(d.summary), 200)}`; break;
     case "status": body = str(d.state); break;
     case "error": body = clip(str(d.error), 300); break;
+    case "boundary": body = `${str(d.rule)}  ${clip(str(d.detail), 300)}`; break;
     case "message_in": body = `from ${str(msg.from)}: ${clip(str(msg.text), 300)}`; break;
     case "message_out": body = `to ${str(msg.to)}: ${clip(str(msg.text), 300)}`; break;
     case "feed": body = clip(str(d.note), 200); break;
@@ -256,6 +257,8 @@ export function formatChatEvent(e: HostEvent, opts: { echoHuman?: boolean } = {}
       return `  [status] ${str(d.state)}`;
     case "error":
       return `  [error] ${clip(str(d.error), 300)}`;
+    case "boundary":
+      return `  [boundary] ${clip(str(d.detail), 300)}`;
     case "message_in": {
       const m = (d.message ?? {}) as { from?: string; text?: string };
       if (m.from === "human") return opts.echoHuman === true ? `you> ${clip(str(m.text), 300)}` : null;

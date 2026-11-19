@@ -17,6 +17,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { probeInstalledVersion, spawnAutoReload, startVersionWatcher, versionPollMs, type VersionWatcher, type VersionWatcherOpts } from "./auto-reload.ts";
+import { boundaryForTool } from "./boundaries.ts";
 import { createEngine as realCreateEngine } from "./engines/index.ts";
 import { startFeed as realStartFeed, type FeedHandle } from "./feeds.ts";
 import { createHostMeter as realCreateHostMeter, type HostMeter, type UsageSample } from "./host-metering.ts";
@@ -379,6 +380,11 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
 
   const onEngineEvent = (e: EngineEvent): void => {
     record(e.type, e.data);
+    // Role boundaries: a desk acting outside its role gets one `boundary` warning. Nothing is blocked.
+    if (e.type === "tool") {
+      const w = boundaryForTool(spec, typeof e.data.tool === "string" ? e.data.tool : "", typeof e.data.summary === "string" ? e.data.summary : "");
+      if (w !== null) record("boundary", { ...w });
+    }
     // fatal: the engine cannot continue (its server died); stop with status error, exit 1.
     if (e.type === "error" && e.data.fatal === true) void stop("error", HOST_EXIT.engineFailed);
     if (e.type === "turn_start") {

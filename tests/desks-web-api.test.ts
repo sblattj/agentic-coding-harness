@@ -613,6 +613,38 @@ describe('desks web api: routes', () => {
     assert.equal(calls, 2, 'a loaded chat is not refetched');
   });
 
+  it('desks.html renders a boundary event as a visible warning row naming the rule and the tool', () => {
+    const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
+    const elSrc = /function el\(tag, cls, text\)[\s\S]*?\n  }\n/.exec(html)?.[0];
+    const nodeSrc = /function eventNode\(name, ev\)[\s\S]*?\n    return n;\n  }\n/.exec(html)?.[0];
+    assert.ok(elSrc && nodeSrc, 'el and eventNode found in the page script');
+    const fakeNode = () => {
+      const n: any = { className: '', textContent: '', attrs: {} as Record<string, string> };
+      n.setAttribute = (k: string, v: string) => { n.attrs[k] = v; };
+      n.appendChild = () => {};
+      return n;
+    };
+    const ctx = createContext({
+      document: { createElement: fakeNode, createTextNode: (t: string) => ({ textContent: t }) },
+      fmtTime: () => '',
+    });
+    runInContext(`${elSrc}; ${nodeSrc}; this.eventNode = eventNode;`, ctx);
+    // Same shape the host emits (src/desks/boundaries.ts) and the page receives over SSE / the events API.
+    const ev: HostEvent = {
+      seq: 7, at: 1, runId: 'r1', name: 'DECISIONS', type: 'boundary',
+      data: { rule: 'decisions-edits', tool: 'Edit', detail: 'DECISIONS called the work tool Edit: hand the edit to a lane' },
+    } as HostEvent;
+    const n = (ctx as any).eventNode('DECISIONS', ev);
+    assert.ok(n, 'a boundary event is rendered, not dropped');
+    assert.match(n.className, /\bbnd\b/, 'carries the warning style class');
+    assert.match(n.textContent, /^boundary:/, 'labelled as a boundary warning');
+    assert.match(n.textContent, /work tool Edit/, 'names the tool');
+    assert.equal(n.attrs['data-seq'], '7');
+    // No detail: falls back to the rule rather than rendering nothing.
+    const bare = (ctx as any).eventNode('DECISIONS', { ...ev, data: { rule: 'decisions-edits', tool: 'Edit' } });
+    assert.match(bare.textContent, /decisions-edits/);
+  });
+
   it('desks.html keeps earlier events from a catch-up response that lands after a newer stream event', async () => {
     const html = readFileSync(join(import.meta.dirname, '..', 'src', 'web', 'desks.html'), 'utf8');
     const chatSrc = /function chatOf[\s\S]*?\n  function eventNode/.exec(html)?.[0]?.replace(/function eventNode$/, '');
