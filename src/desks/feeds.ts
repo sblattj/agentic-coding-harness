@@ -160,6 +160,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     // Events wait here for the serial handler (which can sit on a helper command); bounded, oldest dropped.
     const pending: Record<string, unknown>[] = [];
     let draining = false;
+    let drainIdle: Promise<void> = Promise.resolve(); // settles when the serial handler has gone idle
     let dropped = 0;
 
     const flush = () => {
@@ -249,6 +250,8 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     const drain = async (): Promise<void> => {
       if (draining) return;
       draining = true;
+      let release!: () => void;
+      drainIdle = new Promise<void>((r) => { release = r; });
       try {
         while (pending.length > 0 && !stopped && e === epoch) {
           const next = pending.shift()!;
@@ -256,6 +259,7 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
         }
       } finally {
         draining = false;
+        release();
       }
       if (dropped > 0 && pending.length === 0) { note(`feed dropped ${dropped} oldest events in total while the handler was busy`); dropped = 0; }
     };
@@ -272,9 +276,15 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
     let spawnFailed = false;
     exited = new Promise<void>((resolve) => {
       let done = false;
-      const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      const finish = async (code: number | null, signal: NodeJS.Signals | null) => {
         if (done) return;
         done = true;
+        if (!stopped && draining) {
+          // Events received before the exit may sit in `pending` behind an in-flight helper; let the handler drain them first (bounded).
+          let t: NodeJS.Timeout | undefined;
+          await Promise.race([drainIdle, new Promise<void>((r) => { t = setTimeout(r, helperTimeout + 1000); })]);
+          if (t) clearTimeout(t);
+        }
         if (!stopped) flush(); // events batched before the exit are delivered, not dropped
         else if (batchTimer) { clearTimeout(batchTimer); batchTimer = undefined; }
         if (!stopped && !spawnFailed) note(`feed exited code=${code === null ? `signal ${signal}` : code}`);
