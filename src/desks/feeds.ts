@@ -357,8 +357,8 @@ export function startFeed(spec: FeedSpec, deliver: (text: string) => Promise<voi
 
 /**
  * Run a feed's activeCheck once (outside a feed: desk power status, the auto watcher, the
- * live-call refusal of `off`). Resolves with `active === true` from its JSON stdout; rejects when
- * the command fails, times out or prints no JSON object, so callers can tell "no call" from
+ * live-call refusal of `off`). Resolves with the boolean `active` from its JSON stdout; rejects when
+ * the command fails, times out, or prints no JSON object with a boolean `active`, so callers can tell "no call" from
  * "unknown".
  */
 export async function runActiveCheck(argv: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<boolean> {
@@ -373,7 +373,10 @@ export async function runActiveCheck(argv: string[], opts: { cwd?: string; timeo
     throw new Error(`activeCheck printed no JSON: ${out.trim().slice(0, 200)}`);
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`activeCheck printed no JSON object: ${out.trim().slice(0, 200)}`);
-  return (parsed as { active?: unknown }).active === true;
+  // A missing or non-boolean `active` is unknown, never "no call": `off` and auto mode act on false.
+  const active = (parsed as { active?: unknown }).active;
+  if (typeof active !== "boolean") throw new Error(`activeCheck printed no boolean "active": ${out.trim().slice(0, 200)}`);
+  return active;
 }
 
 /**

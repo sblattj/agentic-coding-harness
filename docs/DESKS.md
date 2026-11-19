@@ -170,7 +170,7 @@ lanes:
 |---|---|---|---|
 | `command` | string[] | required | argv; stdout is JSONL, one object per line, each with a string `type`. |
 | `fullContext` | string[] | none | argv printing the full context so far; sent as ONE message on the first heartbeat when active. Killed after 15 s. |
-| `activeCheck` | string[] | none | argv printing JSON with a boolean `active`, checked on the first heartbeat. Killed after 15 s (counted as not active, with an error event). |
+| `activeCheck` | string[] | none | argv printing JSON with a boolean `active`, checked on the first heartbeat. Killed after 15 s (counted as not active, with an error event). For `desk status`, `desk off`, `desk auto` and the automatic reload, a failed or timed-out check, or one whose JSON has no boolean `active`, counts as unknown, never as no call. |
 | `batchSeconds` | number | `10` | Batch window for non-immediate events. |
 | `immediate` | string[] | none | Event types that flush the batch and are delivered at once. |
 | `heartbeatType` | string | `alive` | Event type meaning the backlog is over. Everything before the first one is backlog. |
