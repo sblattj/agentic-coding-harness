@@ -770,6 +770,8 @@ describe('desks web api: token gate', () => {
     assert.deepEqual(no.json, { error: 'unauthorized' });
     assert.equal((await call(h, 'GET', '/api/desks?token=wrong')).status, 401);
     assert.equal((await call(h, 'POST', '/api/desks/send', JSON.stringify({ to: 'A', text: 'x' }))).status, 401);
+    assert.equal((await call(h, 'POST', '/api/desks/ORCH/reload', '{}')).status, 401);
+    assert.equal((await call(h, 'POST', '/api/desks/all/reload', JSON.stringify({ force: true }))).status, 401);
     assert.equal(h.calls.length, 0, 'no service call before auth');
     assert.equal((await call(h, 'GET', '/api/desks?token=sekret')).status, 200);
     assert.equal((await call(h, 'GET', '/api/desks', undefined, { authorization: 'Bearer sekret' })).status, 200);

@@ -267,6 +267,12 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   let budgetAlerted = false;
   let tokenRecordFailuresSeen = 0;
   let stopping: Promise<number> | undefined;
+  /**
+   * Set by POST /stop-if-idle in the same tick as its idle check: from then on no message is
+   * accepted (send gets 503, a feed message is refused), so nothing can start a turn or queue
+   * between that check and the stop that follows.
+   */
+  let intakeClosed = false;
   /** Engine creation + engine.start(), while in flight: stop() waits for it so no engine outlives the host. */
   let startup: Promise<void> | undefined;
   let heartbeat: NodeJS.Timeout | undefined;
@@ -358,6 +364,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
    * must see the message ahead of the turn it caused.
    */
   const acceptMessage = (from: Sender, text: string, header: boolean): DeskMessage => {
+    if (intakeClosed || stopping !== undefined) throw new HttpError(503, "host is stopping");
     const engineText = header ? peerHeader(from) + text : text;
     const delivered: "now" | "queued" = state === "idle" && queue.length === 0 ? "now" : "queued";
     if (delivered === "queued" && queue.length >= queueCap) throw new HttpError(429, `message queue full (${queueCap} pending); retry when the engine is idle`);
@@ -588,6 +595,15 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
       }
       case "POST /stop":
         return sendJson(res, 200, {}, () => void stop());
+      case "POST /stop-if-idle": {
+        // `desk reload` without force: check idle and close intake in one tick, so a message that
+        // arrives after the caller's /health snapshot is refused (503) instead of cut or dropped.
+        if (state !== "idle" || queue.length > 0) {
+          return sendJson(res, 409, { error: `busy (state ${state}, ${queue.length} queued)`, state, queueDepth: queue.length });
+        }
+        intakeClosed = true;
+        return sendJson(res, 200, { stopping: true }, () => void stop());
+      }
       default:
         throw new HttpError(404, `no route ${route}`);
     }
@@ -704,7 +720,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
       spec,
       running: vw.running ?? VERSION,
       pollMs,
-      isIdle: () => state === "idle" && queue.length === 0 && stopping === undefined && goal?.state !== "active",
+      isIdle: () => state === "idle" && queue.length === 0 && stopping === undefined && !intakeClosed && goal?.state !== "active",
       probe: vw.probe ?? (() => probeInstalledVersion(env)),
       spawn: vw.spawn ?? (() => spawnAutoReload(spec, env)),
       log: (line) => process.stderr.write(`desk host ${spec.name}: ${line}\n`),

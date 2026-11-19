@@ -20,7 +20,7 @@ import { AGENTS, isKnownAgent } from "../core/types.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { loadLayout, deskPort, roleFiles } from "./config.ts";
 import { engineKindFor } from "./engines/index.ts";
-import { hostAttach, hostEvents, hostHealth, hostRecord, hostSend, hostStop, hostTarget, type HostTarget } from "./host-client.ts";
+import { hostAttach, hostEvents, hostHealth, hostRecord, hostSend, hostStop, hostStopIfIdle, hostTarget, type HostTarget } from "./host-client.ts";
 import { spawnHost } from "./host.ts";
 import {
   appendDecisionEvent,
@@ -1196,23 +1196,25 @@ async function reloadMarked(stateDir: string, stack: string, name: string, force
   }
   const h = await hostHealth(entryTarget(stateDir, stack, old), 2000);
   if (h === null || h.runId !== old.runId) throw new Error(`desks: ${name} is not running; \`ach desk up\` starts the stack`);
-  if (!force && (h.state !== "idle" || h.queueDepth > 0)) {
-    throw new Error(
-      `desks: ${name} is busy (state ${h.state}, ${h.queueDepth} queued); a reload would cut its turn and drop its queue. Retry when it is idle, or force it (--force, MCP force: true)`,
-    );
-  }
+  if (!force && (h.state !== "idle" || h.queueDepth > 0)) throw reloadBusy(name, h.state, h.queueDepth);
   // Same shield as an engine switch: a roster prune must not drop the entry while its host is down.
   const marker = switchingMarker(stateDir, stack, name);
   mkdirSync(dirname(marker), { recursive: true });
   writeFileSync(marker, `${process.pid}\n`);
   try {
-    return await reloadDesk(stateDir, stack, old, h.sessionId ?? old.sessionId);
+    return await reloadDesk(stateDir, stack, old, h.sessionId ?? old.sessionId, force);
   } finally {
     rmSync(marker, { force: true });
   }
 }
 
-async function reloadDesk(stateDir: string, stack: string, old: RosterEntry, sessionId: string | undefined): Promise<DeskReloadResult> {
+function reloadBusy(name: string, state: string, queued: number): Error {
+  return new Error(
+    `desks: ${name} is busy (state ${state}, ${queued} queued); a reload would cut its turn and drop its queue. Retry when it is idle, or force it (--force, MCP force: true)`,
+  );
+}
+
+async function reloadDesk(stateDir: string, stack: string, old: RosterEntry, sessionId: string | undefined, force: boolean): Promise<DeskReloadResult> {
   const name = old.name;
   let base: HostSpec | null = null;
   try {
@@ -1267,6 +1269,13 @@ async function reloadDesk(stateDir: string, stack: string, old: RosterEntry, ses
   let note: string | undefined;
   let s: Started;
   try {
+    if (!force) {
+      // The busy check above read a /health snapshot; a message can land after it. The host checks
+      // idle again and closes its intake in one step, so nothing it accepts is cut by this stop.
+      // A host older than that route answers "unsupported": the snapshot check is all it gets.
+      const r = await hostStopIfIdle(entryTarget(stateDir, stack, old));
+      if (r.result === "busy") throw reloadBusy(name, r.state, r.queueDepth);
+    }
     await stopEntry(stateDir, stack, old);
     if (!(await waitPortFree(old.port, 5000))) throw new Error(`desks: port ${old.port} still busy after stopping ${name}`);
     try {

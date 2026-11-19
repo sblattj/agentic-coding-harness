@@ -184,3 +184,35 @@ export async function hostAttach(target: HostTarget): Promise<string[]> {
 export async function hostStop(target: HostTarget): Promise<void> {
   await call(target, "POST", "/stop", {});
 }
+
+/**
+ * POST /stop-if-idle: the host stops only when it is idle with nothing queued, and from that check
+ * on accepts no message. "stopping" = it is stopping; "busy" = refused (state and queue depth);
+ * "unsupported" = a host older than this route (404) or one that could not be asked: the caller
+ * falls back to its own /health check and a plain stop.
+ */
+export async function hostStopIfIdle(target: HostTarget): Promise<{ result: "stopping" } | { result: "busy"; state: string; queueDepth: number } | { result: "unsupported" }> {
+  let res: Response;
+  try {
+    res = await fetch(join(urlOf(target), "/stop-if-idle"), {
+      method: "POST",
+      headers: headersFor(target, { "content-type": "application/json" }),
+      body: "{}",
+      signal: AbortSignal.timeout(HOST_CLIENT_TIMEOUT_MS),
+    });
+  } catch {
+    return { result: "unsupported" };
+  }
+  const text = await res.text().catch(() => "");
+  if (res.ok) return { result: "stopping" };
+  if (res.status === 409) {
+    let b: { state?: unknown; queueDepth?: unknown } = {};
+    try {
+      b = JSON.parse(text) as typeof b;
+    } catch {
+      /* keep the defaults */
+    }
+    return { result: "busy", state: typeof b.state === "string" ? b.state : "busy", queueDepth: typeof b.queueDepth === "number" ? b.queueDepth : 0 };
+  }
+  return { result: "unsupported" };
+}
