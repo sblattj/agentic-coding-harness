@@ -369,6 +369,69 @@ describe('desk power on fake-engine hosts', () => {
       await svc.deskDown({ stateDir: sd, stack });
     }
   });
+
+  // An off that died between marking the roster and stopping the host (or whose stop threw) leaves
+  // `off` set with the host still on the port. Every recovery path must stop that host.
+  async function strandedOff(sd: string, stack: string, port: number): Promise<RosterEntry> {
+    await svc.deskUp({ stateDir: sd, stack, layoutFile: layoutFile(sd, port), term: 'none' });
+    const e = readRoster(sd, stack).entries.LISTENER!;
+    await updateRoster(sd, stack, (r) => {
+      r.entries.LISTENER!.off = { at: Date.now(), by: 'human' };
+    });
+    assert.ok((await health(sd, stack, e))?.runId === e.runId, 'precondition: the host still answers while the roster says off');
+    return e;
+  }
+  function killLeft(pid: number): void {
+    if (pidAlive(pid)) process.kill(pid, 'SIGKILL');
+  }
+
+  it('a stranded off (roster off, host still live): desk off again stops the host', { timeout: 120_000 }, async () => {
+    const sd = tmpDir();
+    const stack = 'p6410';
+    const e = await strandedOff(sd, stack, 6410);
+    try {
+      const r = await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'off' });
+      await until('stranded LISTENER host exits after desk off', () => !pidAlive(e.pid), 10_000).catch(() => undefined);
+      assert.equal(pidAlive(e.pid), false, `desk off on an off desk left its live host running: ${JSON.stringify(r.message)}`);
+      assert.equal(r.changed, true, JSON.stringify(r));
+      assert.equal(r.status.state, 'off');
+    } finally {
+      await svc.deskDown({ stateDir: sd, stack });
+      killLeft(e.pid);
+    }
+  });
+
+  it('a stranded off: desk on stops the old host and starts a new one on the port', { timeout: 120_000 }, async () => {
+    const sd = tmpDir();
+    const stack = 'p6420';
+    const e = await strandedOff(sd, stack, 6420);
+    try {
+      const r = await S.deskPower!({ stateDir: sd, stack, name: 'LISTENER', action: 'on' });
+      assert.equal(r.changed, true, JSON.stringify(r));
+      assert.equal(r.status.state, 'on');
+      const now = readRoster(sd, stack).entries.LISTENER!;
+      assert.notEqual(now.runId, e.runId, 'a new run');
+      assert.equal(pidAlive(e.pid), false, 'the old host is gone');
+      assert.equal((await health(sd, stack, now))?.runId, now.runId, 'the new host answers on the old port');
+    } finally {
+      await svc.deskDown({ stateDir: sd, stack });
+      killLeft(e.pid);
+    }
+  });
+
+  it('a stranded off: desk down stops the host', { timeout: 120_000 }, async () => {
+    const sd = tmpDir();
+    const stack = 'p6430';
+    const e = await strandedOff(sd, stack, 6430);
+    try {
+      await svc.deskDown({ stateDir: sd, stack });
+      await until('stranded LISTENER host exits after desk down', () => !pidAlive(e.pid), 10_000).catch(() => undefined);
+      assert.equal(pidAlive(e.pid), false, 'desk down left the live host of an off desk running');
+    } finally {
+      await svc.deskDown({ stateDir: sd, stack });
+      killLeft(e.pid);
+    }
+  });
 });
 
 describe('desk reload --stale (installed ach version changed)', () => {

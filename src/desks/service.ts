@@ -749,10 +749,9 @@ export async function deskDown(o: StackOpts = {}): Promise<{ stopped: string[] }
   const desks = entries.filter((e) => e.kind === "desk");
   await Promise.all(
     desks.map(async (d) => {
-      if (d.off === undefined) {
-        await closePane(t, d.terminal);
-        await stopEntry(stateDir, stack, d);
-      }
+      // Off desks too: an off whose stop failed or died midway leaves a live host behind (stopEntry is identity-checked).
+      await closePane(t, d.terminal);
+      await stopEntry(stateDir, stack, d);
       await removeEntry(stateDir, stack, d.name);
       stopped.push(d.name);
     }),
@@ -1486,8 +1485,9 @@ async function powerStatus(stateDir: string, stack: string, name: string): Promi
 
 /**
  * Switch a desk on or off (`ach desk on|off|toggle|status`, MCP desk_power, POST /api/desks/:name/power).
- * off: the roster keeps the desk with `off` set (row state "off"), then its pane closes (only panes ach
- * opened) and its host stops, which stops its feed. on: a new host on the same port with a fresh
+ * off: its pane closes (only panes ach opened) and its host stops, which stops its feed, then the
+ * roster keeps the desk with `off` set (row state "off"); off on an off desk whose host still answers
+ * stops that host. on: a new host on the same port with a fresh
  * session (resume: the session saved at off), a new feed and a new pane in the desks window.
  * Turning off is refused while the feed's activeCheck reports a live call, unless force. A desk
  * turning itself off (by === name) gets its answer at once; a detached `ach desk off` stops its host
@@ -1505,7 +1505,11 @@ export async function deskPower(o: StackOpts & { name: string; action: DeskPower
   if (action === "status") return { name, action, changed: false, message: describePower(st), status: st };
   const turnOff = action === "off" || (action === "toggle" && st.state !== "off");
   if (turnOff) {
-    if (st.state === "off") return { name, action, changed: false, message: `${name} is already off`, status: st };
+    if (st.state === "off") {
+      if (!(await stopStrandedHost(stateDir, stack, name))) return { name, action, changed: false, message: `${name} is already off`, status: st };
+      powerLog(stateDir, stack, by, name, "off (stopped a host left running)");
+      return { name, action, changed: true, message: `${name} was off but its host was still running; stopped it`, status: await powerStatus(stateDir, stack, name) };
+    }
     if (o.force !== true && st.callLive === true) throw new Error(`refused: a call is live, ${name} stays on`);
     if (by === name && o.delayMs === undefined) {
       scheduleSelfOff(stateDir, stack, name, DESK_SELF_OFF_DELAY_MS);
@@ -1557,7 +1561,11 @@ function scheduleSelfOff(stateDir: string, stack: string, name: string, delayMs:
   spawnSelfDetached(["desk", "off", name, "--stack", stack, "--from", name, "--delay-ms", String(delayMs)], log, stateDir);
 }
 
-/** Mark off first (a concurrent prune must not drop the entry), then close the pane, then stop the host (and its feed). */
+/**
+ * Close the pane and stop the host (and its feed) first, then mark the roster off: a throw or a crash
+ * midway leaves the desk on or dead, never off with a live host. The switching marker keeps a
+ * concurrent prune from dropping the entry while its host is gone and `off` is not yet set.
+ */
 async function turnDeskOff(stateDir: string, stack: string, name: string, by: Sender): Promise<void> {
   const marker = switchingMarker(stateDir, stack, name);
   mkdirSync(dirname(marker), { recursive: true });
@@ -1566,6 +1574,8 @@ async function turnDeskOff(stateDir: string, stack: string, name: string, by: Se
     const e = powerEntry(stateDir, stack, name);
     const h = await hostHealth(entryTarget(stateDir, stack, e), 1500);
     const sessionId = (h !== null && h.runId === e.runId ? h.sessionId : undefined) ?? e.sessionId;
+    await closePane(readStackTerminal(stateDir, stack), e.terminal);
+    await stopEntry(stateDir, stack, e);
     let marked = false;
     await updateRoster(stateDir, stack, (r) => {
       const x = r.entries[name];
@@ -1577,12 +1587,20 @@ async function turnDeskOff(stateDir: string, stack: string, name: string, by: Se
       marked = true;
     });
     if (!marked) throw new Error(`desks: ${name} changed while it was being switched off; check \`ach desk status ${name}\``);
-    powerLog(stateDir, stack, by, name, "off"); // before the host stops: whoever sees it gone finds the line
-    await closePane(readStackTerminal(stateDir, stack), e.terminal);
-    await stopEntry(stateDir, stack, e);
+    powerLog(stateDir, stack, by, name, "off");
   } finally {
     rmSync(marker, { force: true });
   }
+}
+
+/** An off desk whose host still answers for its run (an earlier off failed or died midway): stop it. True when one was stopped. */
+async function stopStrandedHost(stateDir: string, stack: string, name: string): Promise<boolean> {
+  const e = powerEntry(stateDir, stack, name);
+  const h = await hostHealth(entryTarget(stateDir, stack, e), 1500);
+  if (h === null || h.runId !== e.runId) return false;
+  await closePane(readStackTerminal(stateDir, stack), e.terminal);
+  await stopEntry(stateDir, stack, e);
+  return true;
 }
 
 /** Start an off (or dead) desk on its old port from its last spec; returns a note when resume fell back to a new session. */
@@ -1592,11 +1610,9 @@ async function turnDeskOn(stateDir: string, stack: string, name: string, resume:
   writeFileSync(marker, `${process.pid}\n`);
   try {
     const old = powerEntry(stateDir, stack, name);
-    if (old.off === undefined) {
-      // dead: clear what is left of the old run first
-      await closePane(readStackTerminal(stateDir, stack), old.terminal);
-      await stopEntry(stateDir, stack, old);
-    }
+    // Dead or off: clear what is left of the old run first (an off whose stop failed leaves a live host).
+    await closePane(readStackTerminal(stateDir, stack), old.terminal);
+    await stopEntry(stateDir, stack, old);
     let spec: HostSpec;
     let base: HostSpec | null = null;
     try {

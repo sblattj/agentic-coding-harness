@@ -101,9 +101,12 @@ export const DESK_USAGE = `usage:
   ach desk reload <name>|--all [--force] [--json] (restart a desk's host: same port, engine and session; lanes never)
   ach desk reload --stale [--force] [--json]                (reload idle desks whose host runs an older ach than this one)
   ach desk status <name> [--json]                 (on/off, feed pid, pane, call live, auto watcher)
-  ach desk on <name> [--resume] [--json]          (start an off desk: same port, fresh session; --resume keeps the old one)
-  ach desk off <name> [--force] [--from NAME]     (stop host, feed and pane; refused while a call is live unless --force)
-  ach desk toggle <name> [--force] [--resume]
+  ach desk on <name> [--resume] [--delay-ms N] [--json]
+                                                  (start an off desk: same port, fresh session; --resume keeps the old one)
+  ach desk off <name> [--force] [--from NAME] [--delay-ms N]
+                                                  (stop host, feed and pane; refused while a call is live unless --force)
+  ach desk toggle <name> [--force] [--resume] [--delay-ms N]
+                                                  (--delay-ms N: wait N ms, then switch; what a desk's own off runs detached)
   ach desk auto <name> [--poll S] [--grace S] | auto <name> --stop
                                                   (on when the feed's activeCheck sees a call, off --grace S after it ends;
                                                    defaults poll 30 s, grace 300 s)
@@ -590,7 +593,7 @@ async function runDesk(sub: string, args: string[], d: DeskDeps): Promise<void> 
     case "off":
     case "toggle": {
       const p = o({ force: { type: "boolean" }, resume: { type: "boolean" }, from: { type: "string" }, "delay-ms": { type: "string" } });
-      need(p.positionals.length === 1, `usage: ach desk ${sub} <name>${sub === "status" ? "" : sub === "on" ? " [--resume]" : sub === "off" ? " [--force]" : " [--force] [--resume]"}`);
+      need(p.positionals.length === 1, `usage: ach desk ${sub} <name>${sub === "status" ? "" : sub === "on" ? " [--resume] [--delay-ms N]" : sub === "off" ? " [--force] [--from NAME] [--delay-ms N]" : " [--force] [--resume] [--delay-ms N]"}`);
       need(p.values.force !== true || sub === "off" || sub === "toggle", `ach desk ${sub}: --force only applies to off and toggle`);
       need(p.values.resume !== true || sub === "on" || sub === "toggle", `ach desk ${sub}: --resume only applies to on and toggle`);
       const c = ctxOf(p);
