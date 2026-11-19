@@ -60,6 +60,7 @@ function rig(returns: Record<string, unknown> = {}, opts: { hostEvents?: HostEve
     laneStop: fn("laneStop", { stopped: "audit" }), laneStatus: fn("laneStatus", [row({ name: "audit", kind: "lane" })]),
     decisionAnswer: fn("decisionAnswer", decision({ state: "answered" })), decisionClose: fn("decisionClose", decision({ state: "closed" })),
     decisionList: fn("decisionList", [decision()]), deskCosts: fn("deskCosts", []),
+    deskReload: fn("deskReload", [{ name: "WORKER", ok: true, resumed: true, sessionId: "s1", previousSessionId: "s1", entry: entry({ name: "WORKER", kind: "desk", port: 4801 }) }]),
   } as unknown as DeskService;
   const host = {
     hostEvents: async (_t: HostTarget, _s?: number) => opts.hostEvents ?? [],
@@ -173,6 +174,31 @@ describe("desk argument parsing -> service call args", () => {
     const r = rig();
     await cmdDesk(["engine", "WORKER", "claude", "--model", "claude-sonnet-5-5"], r.deps);
     assert.deepEqual(r.calls, [{ fn: "deskSwitchEngine", args: { name: "WORKER", agent: "claude", model: "claude-sonnet-5-5" } }]);
+  });
+  it("reload: name, --force, --all; by is $ACH_DESK_NAME else human", async () => {
+    const r = rig();
+    assert.equal(await cmdDesk(["reload", "WORKER"], r.deps), 0);
+    assert.deepEqual(r.calls, [{ fn: "deskReload", args: { name: "WORKER", by: "human" } }]);
+    assert.match(r.stdout(), /WORKER: reloaded on port 4801, session s1 kept/);
+    const f = rig({}, { env: { ACH_DESK_NAME: "ORCHESTRATOR" } });
+    await cmdDesk(["reload", "--all", "--force"], f.deps);
+    assert.deepEqual(f.calls, [{ fn: "deskReload", args: { all: true, force: true, by: "ORCHESTRATOR" } }]);
+    const bad = rig();
+    assert.equal(await cmdDesk(["reload"], bad.deps), 2);
+    assert.equal(await cmdDesk(["reload", "A", "--all"], bad.deps), 2);
+    assert.equal(bad.calls.length, 0);
+  });
+  it("reload --all: a desk not reloaded makes the exit status 1; a skipped self does not", async () => {
+    const r = rig({ deskReload: [
+      { name: "A", ok: false, resumed: false, error: "desks: A is busy (state busy, 0 queued)" },
+      { name: "B", ok: true, resumed: false, note: "no session", entry: entry({ name: "B", kind: "desk", port: 4802 }) },
+    ] });
+    assert.equal(await cmdDesk(["reload", "--all"], r.deps), 1);
+    assert.match(r.stdout(), /A: not reloaded: desks: A is busy/);
+    assert.match(r.stdout(), /B: reloaded on port 4802, NEW session \(no session\)/);
+    const s = rig({ deskReload: [{ name: "ME", ok: false, resumed: false, skipped: "a desk cannot reload itself" }] });
+    assert.equal(await cmdDesk(["reload", "--all"], s.deps), 0);
+    assert.match(s.stdout(), /ME: skipped/);
   });
   it("costs renders the lane tree", async () => {
     const rows = [{ name: "ORCH", kind: "desk", runId: "r", costUsd: 1, inputTokens: 1200, outputTokens: 30, lanes: [{ name: "audit", kind: "lane", runId: "r2", costUsd: null, inputTokens: 5, outputTokens: 6, lanes: [] }] }];

@@ -17,6 +17,7 @@ import { accessSync, appendFileSync, closeSync, constants as fsConstants, exists
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { roleNeedsRefresh, roleRefreshNote, writeRoleSent } from "../role-sent.ts";
 import { deskPaths } from "../roster.ts";
 import { desksMcpDef } from "../self.ts";
 import type { Engine, EngineEvent, GoalStatus, HostSpec, McpServerDef } from "../types.ts";
@@ -644,13 +645,24 @@ export class OpenCodeEngine implements Engine {
         extraDisabled = [...extraDisabled, ...leaked];
       }
 
-      this.sessionId = this.api === "v2" ? await this.createSessionV2(spec) : await this.createSessionV1(spec);
+      const resumed = spec.resumeSessionId ? await this.adoptSession(spec.resumeSessionId) : false;
       this.checkStop();
+      if (!resumed) {
+        this.sessionId = this.api === "v2" ? await this.createSessionV2(spec) : await this.createSessionV1(spec);
+        this.checkStop();
+      }
       // The first connect must be a real event stream: a wrong content type fails start() here.
       await this.openEventStream();
       this.checkStop();
+      // A new session gets the role prompt as its first note. A resumed one already holds the prompt
+      // it was given; it gets the current text again only when the role files changed since
+      // (role-sent.ts), so an edited role or an upgraded ach's built-in roles reach a reloaded desk.
       const prompt = rolePrompt(spec);
-      if (prompt !== "") await this.note(prompt);
+      const sid = this.sessionId;
+      if (prompt !== "" && (!resumed || roleNeedsRefresh(spec, sid, prompt))) {
+        await this.note(resumed ? roleRefreshNote(prompt) : prompt);
+        writeRoleSent(spec, sid, prompt);
+      }
       this.checkStop();
     } catch (err) {
       // Tear down whatever this start spawned; a stop() that landed meanwhile wins over the original error.
@@ -708,6 +720,68 @@ export class OpenCodeEngine implements Engine {
     } catch {
       // best effort
     }
+  }
+
+  /**
+   * `desk reload`: continue session `id` on this serve (every serve shares one opencode database).
+   * True only when the session answers with its messages; those are marked as already emitted, so
+   * the first idle reconcile neither repeats their text nor meters their usage a second time.
+   * False (start a new session) when the session is unknown, empty or unreadable.
+   */
+  private async adoptSession(id: string): Promise<boolean> {
+    if (this.api === "v2") return this.adoptSessionV2(id);
+    let msgs: unknown;
+    try {
+      msgs = await this.http("GET", `/session/${encodeURIComponent(id)}/message`, undefined, 10_000);
+    } catch {
+      return false;
+    }
+    if (!Array.isArray(msgs) || msgs.length === 0) return false;
+    for (const m of msgs as Array<{ info?: OcInfo; parts?: OcPart[] }>) {
+      if (m.info?.id && m.info.role) this.roles.set(m.info.id, m.info.role);
+      for (const p of m.parts ?? []) {
+        const key = p.id ?? `${p.messageID ?? m.info?.id}:${p.type}:${p.callID ?? ""}`;
+        if (p.type === "text") this.emittedText.add(key);
+        else if (p.type === "tool") this.emittedTool.add(key);
+        else if (p.type === "step-finish") this.emittedUsage.add(key);
+      }
+    }
+    this.sessionId = id;
+    return true;
+  }
+
+  /**
+   * v2 `desk reload`: same contract as adoptSession, over GET /api/session/<id>/message (paged,
+   * oldest first). Keys match handleMessageV2 / emitTextV2 / emitUsageV2 so nothing re-emits.
+   */
+  private async adoptSessionV2(id: string): Promise<boolean> {
+    const sid = encodeURIComponent(id);
+    let path = `/api/session/${sid}/message?order=asc&limit=200`;
+    let seen = 0;
+    for (let page = 0; page < 1000; page++) {
+      let r: { data?: unknown; cursor?: { next?: unknown } } | null;
+      try {
+        r = (await this.http("GET", path, undefined, 10_000)) as { data?: unknown; cursor?: { next?: unknown } } | null;
+      } catch {
+        return false;
+      }
+      if (!r || typeof r !== "object" || !Array.isArray(r.data)) return false;
+      for (const m of r.data as OcV2Message[]) {
+        seen++;
+        if (m.type !== "assistant" || !m.id) continue;
+        for (const c of m.content ?? []) {
+          if (c.type === "text" && c.text) this.emittedText.add(textKey(m.id, c.text));
+          else if (c.type === "tool") this.emittedTool.add(c.id ?? `${m.id}:tool:${c.name ?? "?"}`);
+        }
+        this.emittedUsage.add(m.id);
+      }
+      const next = r.cursor?.next;
+      if (typeof next !== "string" || next === "" || r.data.length === 0) break;
+      path = `/api/session/${sid}/message?limit=200&cursor=${encodeURIComponent(next)}`;
+    }
+    if (seen === 0) return false;
+    this.sessionId = id;
+    return true;
   }
 
   /**

@@ -43,6 +43,7 @@ export type DesksService = Pick<
   | "deskInbox"
   | "deskEvents"
   | "deskSwitchEngine"
+  | "deskReload"
   | "laneNew"
   | "laneApprove"
   | "laneReject"
@@ -298,12 +299,12 @@ const SERVER_FAILURE =
   /not implemented|layout file not found|invalid layout|cannot parse layout|corrupt (layout|roster)|roles\/common\.md not found|role file .* not found|invalid role name|the layout has no desks|did not become idle|timed out after|no spec or layout entry|^desk host |spawnHost:|ACH_SELF_ARGV/i;
 const FORBIDDEN = /only the human or the decisions desk/i;
 const BAD_INPUT =
-  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid (lane|stack|desk or lane) name|invalid run id|cannot send to yourself|unknown agent/i;
+  /must not be empty|must be (a non-empty string|an array)|needs a label|invalid (lane|stack|desk or lane) name|invalid run id|cannot send to yourself|unknown agent|reload takes a desk name or all/i;
 const MISSING_RESOURCE =
   /\bunknown (desk|lane|decision|pending)\b|\bno pending lane\b|\bno decision\b|\bno such\b|does not exist|\b(desk|lane|decision|pending)\b[^\n]* not found/i;
 
 const CONFLICT =
-  /is already (up|pending approval|approving|approved|rejected)|already in use|still busy|is not running \(dead\)|is a (lane|desk)\b|is closed|no free lane port/i;
+  /is already (up|pending approval|approving|approved|rejected)|already in use|still busy|is busy \(state|is not running( \(dead\)|;)|is a (lane|desk)\b|is closed|no free lane port/i;
 
 export function statusForError(e: unknown): number {
   if (e instanceof HttpError) return e.status;
@@ -493,6 +494,15 @@ export async function handleDesksApi(
       const agent = reqStr(body, "agent");
       const model = optStr(body, "model");
       return done(res, 200, await svc.deskSwitchEngine({ ...so, name: a!, agent, ...(model !== undefined ? { model } : {}) }));
+    }
+    if (n === 2 && b === "reload") {
+      want("POST");
+      const body = await jsonBody(req);
+      if (body.force !== undefined && typeof body.force !== "boolean") throw new HttpError(400, "force must be a boolean");
+      const force = body.force === true ? { force: true } : {};
+      // POST /api/desks/all/reload reloads every desk, never lanes (desk names are upper case, so "all" is never a desk).
+      const target = a === "all" ? { all: true } : { name: a! };
+      return done(res, 200, { results: await svc.deskReload({ ...so, ...target, ...force, by: "human" }) });
     }
     if (n === 2 && b === "attach") {
       want("GET");

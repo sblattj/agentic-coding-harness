@@ -12,7 +12,9 @@
 //   system context. claude gets them as `--append-system-prompt` on EVERY
 //   turn (a resumed `claude -p` rebuilds its system prompt per invocation, so
 //   passing it once would drop it from turn 2 on). Other agents have no such
-//   flag: the role text is prefixed to the first prompt of the session.
+//   flag: the role text is prefixed to the first prompt of the session, and
+//   after a `desk reload` whose role files changed, to the next turn once more
+//   (marked as a refresh; see ../role-sent.ts).
 // - note(text): no agent CLI has a silent-context API for a headless resumed
 //   session, so notes are buffered and prepended to the NEXT turn's prompt
 //   inside a "[context notes]" block. A note never starts a turn.
@@ -31,6 +33,7 @@ import path from "node:path";
 import { ClaudeCodeAdapter } from "../../adapters/claude.ts";
 import { createDriver, defaultAdapters, type Driver } from "../../core/driver.ts";
 import type { AgentAdapter, AgentEvent, RunResult, RunSpec } from "../../core/types.ts";
+import { roleNeedsRefresh, roleRefreshNote, writeRoleSent } from "../role-sent.ts";
 import { achSelfArgv, desksMcpDef } from "../self.ts";
 import type { Engine, EngineEvent, GoalStatus, HostSpec, McpServerDef } from "../types.ts";
 import { startGoalLoop as realStartGoalLoop, type GoalLoopHandle, type GoalLoopOptions } from "./goal-loop.ts";
@@ -146,6 +149,8 @@ export class DriverEngine implements Engine {
   #spec: HostSpec | null = null;
   #driver: Driver | null = null;
   #role = "";
+  /** Non-claude resumed session whose role files changed since it got them: the next turn carries the current role once (role-sent.ts). */
+  #roleRefresh = false;
   #mcpConfigPath = "";
   #sessionId: string | undefined;
   #notes: string[] = [];
@@ -196,6 +201,17 @@ export class DriverEngine implements Engine {
       onEvent: (e) => this.#onAgentEvent(e),
       ...(this.#deps.onOutput ? { onOutput: this.#deps.onOutput } : {}),
     });
+    // `desk reload`: continue the previous session. Every turn already resumes #sessionId, so seeding
+    // it is the whole resume. claude rebuilds its system prompt (the current role) every turn; other
+    // agents got the role prefixed to their first prompt, so when the role files changed since, the
+    // next turn carries the current role once. An adapter whose CLI cannot resume starts fresh, and
+    // the host reports no session id, so reload says so.
+    const resume = spec.resumeSessionId;
+    if (resume !== undefined && resume !== "" && adapters[spec.agent]!.capabilities?.resume !== false) {
+      this.#sessionId = resume;
+      this.#roleRefresh = spec.agent !== "claude" && roleNeedsRefresh(spec, resume, this.#role);
+      return { sessionId: resume };
+    }
     return {};
   }
 
@@ -330,7 +346,9 @@ export class DriverEngine implements Engine {
     const firstTurn = this.#sessionId === undefined;
     const notes = this.#notes;
     this.#notes = [];
-    const prompt = composeTurnPrompt({ role: !isClaude && firstTurn ? this.#role : undefined, notes, text });
+    const refresh = !isClaude && !firstTurn && this.#roleRefresh;
+    const role = !isClaude && firstTurn ? this.#role : refresh ? roleRefreshNote(this.#role) : undefined;
+    const prompt = composeTurnPrompt({ role, notes, text });
     const extraArgs = isClaude
       ? ["--strict-mcp-config", ...(this.#role !== "" ? ["--append-system-prompt", this.#role] : [])]
       : undefined;
@@ -359,6 +377,11 @@ export class DriverEngine implements Engine {
     try {
       result = await driver.run(spec.agent, runSpec);
       if (result.sessionId) this.#sessionId = result.sessionId;
+      // The role rode this turn's prompt (first turn or refresh): record it, so a reload resends it only after a change.
+      if (role !== undefined && this.#role !== "" && this.#sessionId !== undefined && result.exitStatus === "success") {
+        writeRoleSent(spec, this.#sessionId, this.#role);
+        if (refresh) this.#roleRefresh = false;
+      }
       const u = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
       for (const t of result.tokens) {
         u.inputTokens += t.inputTokens;

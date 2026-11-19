@@ -88,6 +88,7 @@ function fakeService(calls: Call[], st: { view: RosterView; throwFor?: Record<st
     deskInbox: rec('deskInbox', () => [msg({ from: 'A', to: 'B', text: 'hi' })]),
     deskEvents: rec('deskEvents', () => [{ seq: 1, at: 1, runId: 'r', name: 'A', type: 'text', data: { text: 'x' } }]),
     deskSwitchEngine: rec('deskSwitchEngine', (a) => ({ ...row(a.name as string), agent: a.agent })),
+    deskReload: rec('deskReload', (a) => [{ name: (a.name as string | undefined) ?? 'ALL', ok: true, resumed: true }]),
     laneNew: rec('laneNew', (a) => (a.name === 'needs-ok' ? { pending: { id: 'L1', request: a, requestedAt: 1, state: 'pending' } } : row(a.name as string, { kind: 'lane' }))),
     laneApprove: rec('laneApprove', () => row('lane1', { kind: 'lane' })),
     laneReject: rec('laneReject', (a) => ({ id: a.id, request: { name: 'x', goal: 'g', launchedBy: 'ORCH' }, requestedAt: 1, state: 'rejected', decidedBy: a.by, reason: a.reason })),
@@ -375,6 +376,22 @@ describe('desks web api: routes', () => {
     const nf = await call(h, 'POST', '/api/desks/NOPE/engine', JSON.stringify({ agent: 'claude' }));
     h.st.throwFor = undefined;
     assert.equal(nf.status, 404);
+  });
+
+  it('POST /:name/reload -> {results}; all reloads every desk; force must be boolean; busy is 409', async () => {
+    const r = await call(h, 'POST', '/api/desks/ORCH/reload', JSON.stringify({ force: true }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.results, [{ name: 'ORCH', ok: true, resumed: true }]);
+    const c = lastCall(h, 'deskReload');
+    assert.deepEqual([c.arg.name, c.arg.force, c.arg.by, c.arg.all], ['ORCH', true, 'human', undefined]);
+    assert.equal((await call(h, 'POST', '/api/desks/all/reload', '{}')).status, 200);
+    const ca = lastCall(h, 'deskReload');
+    assert.deepEqual([ca.arg.all, ca.arg.name, ca.arg.force], [true, undefined, undefined]);
+    assert.equal((await call(h, 'POST', '/api/desks/ORCH/reload', JSON.stringify({ force: 'yes' }))).status, 400);
+    h.st.throwFor = { deskReload: new Error('desks: ORCH is busy (state busy, 1 queued); a reload would cut its turn') };
+    const busy = await call(h, 'POST', '/api/desks/ORCH/reload', '{}');
+    h.st.throwFor = undefined;
+    assert.equal(busy.status, 409);
   });
 
   it('GET /:name/events?since= -> {events}', async () => {

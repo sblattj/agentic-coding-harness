@@ -1,4 +1,4 @@
-// Desk tools on `ach mcp` (#204): desk_roster, desk_send, desk_inbox, lane_new,
+// Desk tools on `ach mcp` (#204): desk_roster, desk_send, desk_inbox, desk_reload, lane_new,
 // lane_status, lane_stop, lane_approve, lane_reject, decision_open, decision_list,
 // decision_close.
 // Identity comes from $ACH_DESK_NAME (+ $ACH_DESK_STACK), never from arguments.
@@ -14,6 +14,7 @@ export type DeskToolService = Pick<
   | "deskRoster"
   | "deskSend"
   | "deskInbox"
+  | "deskReload"
   | "laneNew"
   | "laneStatus"
   | "laneStop"
@@ -139,6 +140,31 @@ export function registerDeskTools(
         ...(limit !== undefined ? { limit } : {}),
         ...(mins !== undefined ? { sinceMs: Date.now() - mins * 60_000 } : {}),
       });
+    },
+  });
+
+  server.registerTool({
+    name: "desk_reload",
+    description:
+      "Restart a desk's host on the same port, engine and agent session (history kept), so it picks up a newer ach build and new desk tools. Give `name`, or `all: true` for every desk (lanes are never reloaded). A busy desk is refused unless `force: true` (force cuts its turn and drops its queued messages). You cannot reload yourself; under `all` you are skipped. Each result says whether the session was resumed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Desk to reload (see desk_roster)" },
+        all: { type: "boolean", description: "Reload every desk except you; lanes never" },
+        force: { type: "boolean", description: "Reload even when the desk is busy" },
+      },
+    },
+    handler: async (args) => {
+      const name = str(args, "name", false);
+      const all = args.all;
+      const force = args.force;
+      if (all !== undefined && typeof all !== "boolean") throw new Error("all must be a boolean");
+      if (force !== undefined && typeof force !== "boolean") throw new Error("force must be a boolean");
+      if ((name === undefined || name === "") === (all !== true)) throw new Error("desk_reload: give either name or all: true");
+      if (name === me) throw new Error(`desk_reload: you cannot reload yourself (your own host runs this call); ask another desk or the human`);
+      if (all === true) return { results: await svc.deskReload({ ...base, all: true, by: me, ...(force === true ? { force: true } : {}) }) };
+      return { results: await svc.deskReload({ ...base, name: name as string, by: me, ...(force === true ? { force: true } : {}) }) };
     },
   });
 

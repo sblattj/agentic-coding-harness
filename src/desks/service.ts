@@ -1021,6 +1021,8 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
   let base: HostSpec | null = null;
   try {
     base = JSON.parse(readFileSync(specFile, "utf8")) as HostSpec;
+    // A session id from an earlier reload belongs to the old engine: the new one starts fresh.
+    delete base.resumeSessionId;
   } catch {
     base = null;
   }
@@ -1080,7 +1082,11 @@ async function switchEngine(o: StackOpts & { name: string; agent: string; model?
 /** Record a restarted desk in the roster in place of `old`, keeping its pane slot. */
 async function installDesk(stateDir: string, stack: string, old: RosterEntry, s: Started): Promise<RosterEntry> {
   writeSpawnPid(stateDir, stack, s.spec.name, s.spawnPid);
-  const entry = entryFrom(s, { ...(old.terminal ? { terminal: old.terminal } : {}), ...(old.pane !== undefined ? { pane: old.pane } : {}) });
+  const entry = entryFrom(s, {
+    ...(old.terminal ? { terminal: old.terminal } : {}),
+    ...(old.pane !== undefined ? { pane: old.pane } : {}),
+    ...(old.goal !== undefined && s.spec.goal === undefined ? { goal: old.goal } : {}),
+  });
   await putEntry(stateDir, stack, entry);
 
   // Pane: keep the slot.
@@ -1119,6 +1125,193 @@ async function waitPortFree(port: number, ms: number): Promise<boolean> {
     if (Date.now() >= deadline) return false;
     await sleep(100);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Reload (same engine, same port, same agent session)
+// ---------------------------------------------------------------------------
+
+/** One desk's outcome of deskReload. */
+export interface DeskReloadResult {
+  name: string;
+  /** True when the desk runs on a fresh host now. */
+  ok: boolean;
+  /** The new roster entry (ok only). */
+  entry?: RosterEntry;
+  /** True when the new host continues the previous agent session (same session id, history kept). */
+  resumed: boolean;
+  /** Agent session id before the reload, when there was one. */
+  previousSessionId?: string;
+  /** Agent session id after the reload. */
+  sessionId?: string;
+  /** Why the session was not resumed (ok but resumed false). */
+  note?: string;
+  /** `all` only: why this desk was left alone on purpose (the caller itself). Not an error. */
+  skipped?: string;
+  /** Why this desk was not reloaded (busy, self, not running, start failure). */
+  error?: string;
+}
+
+/**
+ * Restart a running desk's host on the same port with the same engine and agent session
+ * (`ach desk reload`, MCP desk_reload, POST /api/desks/:name/reload). The new host reads its code
+ * fresh, so a newer ach build and new desks MCP tools reach the desk; the spec (feed, MCPs, model)
+ * and the roster slot (terminal, pane, goal) are kept, and a tmux pane ach tagged is respawned in
+ * place. A busy desk (turn running, starting, or messages queued) is refused unless force: a reload
+ * cuts its turn and drops its queue. `by` names the caller: a desk cannot reload itself, because
+ * its own host runs the call. With `all`, every desk is reloaded in turn (the caller is skipped) and
+ * lanes never are; per-desk refusals and failures come back as results instead of throwing.
+ */
+export async function deskReload(o: StackOpts & { name?: string; all?: boolean; force?: boolean; by?: Sender }): Promise<DeskReloadResult[]> {
+  const { stateDir, stack } = ctx(o);
+  if ((o.name === undefined) === (o.all !== true)) throw new Error("desks: reload takes a desk name or all, not both");
+  if (o.all !== true) {
+    assertDeskOrLaneName(o.name as string);
+    return [await reloadMarked(stateDir, stack, o.name as string, o.force === true, o.by)];
+  }
+  const out: DeskReloadResult[] = [];
+  const desks = Object.values(readRoster(stateDir, stack).entries)
+    .filter((e) => e.kind === "desk")
+    .sort((a, b) => a.port - b.port);
+  for (const d of desks) {
+    if (o.by !== undefined && d.name === o.by) {
+      out.push({ name: d.name, ok: false, resumed: false, skipped: "a desk cannot reload itself (its own host runs this call)" });
+      continue;
+    }
+    try {
+      out.push(await reloadMarked(stateDir, stack, d.name, o.force === true, o.by));
+    } catch (e) {
+      out.push({ name: d.name, ok: false, resumed: false, error: errText(e) });
+    }
+  }
+  return out;
+}
+
+async function reloadMarked(stateDir: string, stack: string, name: string, force: boolean, by: Sender | undefined): Promise<DeskReloadResult> {
+  const old = readRoster(stateDir, stack).entries[name];
+  if (!old) throw new Error(`desks: unknown desk "${name}" in stack "${stack}"`);
+  if (old.kind !== "desk") throw new Error(`desks: ${name} is a lane; only desks reload (stop the lane and start a new one)`);
+  if (by !== undefined && by === name) {
+    throw new Error(`desks: ${name} cannot reload itself (its own host runs this call and would stop with it); ask another desk or the human`);
+  }
+  const h = await hostHealth(entryTarget(stateDir, stack, old), 2000);
+  if (h === null || h.runId !== old.runId) throw new Error(`desks: ${name} is not running; \`ach desk up\` starts the stack`);
+  if (!force && (h.state !== "idle" || h.queueDepth > 0)) {
+    throw new Error(
+      `desks: ${name} is busy (state ${h.state}, ${h.queueDepth} queued); a reload would cut its turn and drop its queue. Retry when it is idle, or force it (--force, MCP force: true)`,
+    );
+  }
+  // Same shield as an engine switch: a roster prune must not drop the entry while its host is down.
+  const marker = switchingMarker(stateDir, stack, name);
+  mkdirSync(dirname(marker), { recursive: true });
+  writeFileSync(marker, `${process.pid}\n`);
+  try {
+    return await reloadDesk(stateDir, stack, old, h.sessionId ?? old.sessionId);
+  } finally {
+    rmSync(marker, { force: true });
+  }
+}
+
+async function reloadDesk(stateDir: string, stack: string, old: RosterEntry, sessionId: string | undefined): Promise<DeskReloadResult> {
+  const name = old.name;
+  let base: HostSpec | null = null;
+  try {
+    base = JSON.parse(readFileSync(specFileOf(stateDir, stack, name), "utf8")) as HostSpec;
+  } catch {
+    base = null;
+  }
+  let spec: HostSpec;
+  if (base) {
+    spec = { ...base, runId: randomUUID(), port: old.port };
+    // Role files are resolved again by THIS ach: the saved paths can name an older install's
+    // built-in roles (a versioned install dir), so a reload after an upgrade reads the new roles.
+    try {
+      if (base.role !== undefined && base.role !== "") spec.roleFiles = roleFiles(stackLayout(stateDir, stack), base.role);
+    } catch {
+      /* keep the saved paths */
+    }
+  } else {
+    const layout = stackLayout(stateDir, stack);
+    const d = layout.desks.find((x) => x.name === name);
+    if (!d) throw new Error(`desks: no spec or layout entry for ${name}`);
+    spec = deskHostSpec(stateDir, stack, layout, d, old.port, old.agent, old.model);
+  }
+  if (sessionId !== undefined && sessionId !== "") spec.resumeSessionId = sessionId;
+  else delete spec.resumeSessionId;
+
+  // tmux closes a pane whose command exits (the attach client ends with the old host): keep the
+  // pane open while the host is down, so installDesk respawns the SAME pane id in place.
+  const t = readStackTerminal(stateDir, stack);
+  const paneId = old.terminal?.kind === "tmux" && old.terminal.id !== "" ? old.terminal.id : undefined;
+  let held = false;
+  if (paneId !== undefined) {
+    const drv = await driverFor(t, "tmux");
+    if (drv !== null && (await paneAlive(drv, old.terminal))) {
+      try {
+        await tmuxRaw(t?.tmuxSocket, ["set-option", "-p", "-t", paneId, "remain-on-exit", "on"]);
+        held = true;
+      } catch {
+        /* the pane is reopened instead */
+      }
+    }
+  }
+  const release = async (): Promise<void> => {
+    if (!held || paneId === undefined) return;
+    try {
+      await tmuxRaw(t?.tmuxSocket, ["set-option", "-p", "-u", "-t", paneId, "remain-on-exit"]);
+    } catch {
+      /* pane gone */
+    }
+  };
+
+  let note: string | undefined;
+  let s: Started;
+  try {
+    await stopEntry(stateDir, stack, old);
+    if (!(await waitPortFree(old.port, 5000))) throw new Error(`desks: port ${old.port} still busy after stopping ${name}`);
+    try {
+      s = await startHost(stateDir, stack, spec);
+    } catch (e) {
+      if (spec.resumeSessionId === undefined) throw e;
+      // The engine could not come up on the old session: keep the desk, on a new session, and say so.
+      const fresh: HostSpec = { ...spec, runId: randomUUID() };
+      delete fresh.resumeSessionId;
+      writeFileSync(switchingMarker(stateDir, stack, name), `${process.pid}\n`); // fresh grace for the retry
+      await waitPortFree(old.port, 5000);
+      try {
+        s = await startHost(stateDir, stack, fresh);
+      } catch (e2) {
+        throw new Error(`${errText(e)}\ndesks: starting ${name} on a new session also failed: ${errText(e2)}`);
+      }
+      note = `resuming session ${spec.resumeSessionId} failed (${errText(e).split("\n")[0]}); ${name} started on a new session`;
+    }
+  } catch (e) {
+    await release();
+    throw e;
+  }
+  let entry: RosterEntry;
+  try {
+    entry = await installDesk(stateDir, stack, old, s);
+  } finally {
+    await release();
+  }
+  const newSession = s.health.sessionId;
+  const resumed = sessionId !== undefined && note === undefined && newSession === sessionId;
+  if (!resumed && note === undefined) {
+    note =
+      sessionId === undefined
+        ? `${name} had no agent session to resume (no turn yet); it started on a new session`
+        : `the ${old.agent} engine did not continue session ${sessionId}; ${name} started on ${newSession !== undefined ? `session ${newSession}` : "a new session"}`;
+  }
+  return {
+    name,
+    ok: true,
+    entry,
+    resumed,
+    ...(sessionId !== undefined ? { previousSessionId: sessionId } : {}),
+    ...(newSession !== undefined ? { sessionId: newSession } : {}),
+    ...(note !== undefined ? { note } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

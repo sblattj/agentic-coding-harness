@@ -284,6 +284,12 @@ export interface HostSpec {
   feed?: FeedSpec;
   budgetUsd?: number;
   /**
+   * `desk reload`: the agent session the engine should continue instead of starting a new one
+   * (opencode: the session id on the shared opencode database; driver: the adapter's resume id).
+   * An engine that cannot continue it starts fresh, and the reload result says so (resumed false).
+   */
+  resumeSessionId?: string;
+  /**
    * Bearer token for the Host HTTP API (32 random bytes, hex), set by service.ts startHost.
    * Lives only in this spec file (mode 0600); never copied to the roster or any API answer.
    * A host whose spec has none refuses every route but GET /health.

@@ -16,11 +16,13 @@ import { timingSafeEqual } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
+import { probeInstalledVersion, spawnAutoReload, startVersionWatcher, versionPollMs, type VersionWatcher, type VersionWatcherOpts } from "./auto-reload.ts";
 import { createEngine as realCreateEngine } from "./engines/index.ts";
 import { startFeed as realStartFeed, type FeedHandle } from "./feeds.ts";
 import { createHostMeter as realCreateHostMeter, type HostMeter, type UsageSample } from "./host-metering.ts";
 import { deskPaths } from "./roster.ts";
 import { achSelfArgv } from "./self.ts";
+import { VERSION } from "../version.ts";
 import {
   DESKS_API_VERSION,
   peerHeader,
@@ -64,6 +66,8 @@ export interface HostDeps {
   eventMemoryCap?: number;
   /** Pending-message queue cap override (tests); default HOST_QUEUE_CAP. */
   queueCap?: number;
+  /** Auto-reload after an ach upgrade (desks only; auto-reload.ts): overrides for tests. */
+  versionWatcher?: Partial<Pick<VersionWatcherOpts, "probe" | "spawn" | "pollMs" | "running" | "settleMs" | "retryAfterMs">>;
 }
 
 export function newMessageId(): string {
@@ -90,7 +94,8 @@ export class EchoEngine implements Engine {
   async start(spec: HostSpec): Promise<{ sessionId?: string; engineUrl?: string; childPid?: number }> {
     this.started = true;
     this.name = spec.name;
-    return { sessionId: `echo-${spec.runId}` };
+    // Honors a reload's resume request, like the real engines, so `desk reload` is testable offline.
+    return { sessionId: spec.resumeSessionId ?? `echo-${spec.runId}` };
   }
   async send(text: string): Promise<void> {
     this.sent.push(text);
@@ -265,6 +270,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   /** Engine creation + engine.start(), while in flight: stop() waits for it so no engine outlives the host. */
   let startup: Promise<void> | undefined;
   let heartbeat: NodeJS.Timeout | undefined;
+  let versionWatcher: VersionWatcher | undefined;
   let resolveDone!: (code: number) => void;
   const done = new Promise<number>((r) => (resolveDone = r));
 
@@ -289,6 +295,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     if (s === state) return;
     state = s;
     record("status", { state: s });
+    if (s === "idle") versionWatcher?.nudge();
     try {
       meter?.heartbeat(s, lastPreview);
     } catch {
@@ -370,6 +377,9 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     if (e.type === "turn_start") {
       if (state === "idle") setState("busy");
     } else if (e.type === "turn_end") {
+      // The driver engine learns its agent session id from the first turn: expose it on /health,
+      // so the roster and `desk reload` see it.
+      if (typeof e.data.sessionId === "string" && e.data.sessionId !== "") sessionId = e.data.sessionId;
       if (state === "busy") setState("idle");
       void refreshGoal();
       drain();
@@ -439,6 +449,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     stopping = (async () => {
       setState("stopping");
       if (heartbeat !== undefined) clearInterval(heartbeat);
+      versionWatcher?.stop();
       if (feed !== undefined) {
         try {
           await feed.stop();
@@ -683,6 +694,23 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     } catch (e) {
       record("error", { error: `feed start failed: ${errText(e)}` });
     }
+  }
+
+  // Desks only (a lane is short-lived and never reloaded): reload once after an ach upgrade, when idle.
+  const vw = deps.versionWatcher ?? {};
+  const pollMs = vw.pollMs ?? versionPollMs(env);
+  if (spec.kind === "desk" && pollMs > 0) {
+    versionWatcher = startVersionWatcher({
+      spec,
+      running: vw.running ?? VERSION,
+      pollMs,
+      isIdle: () => state === "idle" && queue.length === 0 && stopping === undefined && goal?.state !== "active",
+      probe: vw.probe ?? (() => probeInstalledVersion(env)),
+      spawn: vw.spawn ?? (() => spawnAutoReload(spec, env)),
+      log: (line) => process.stderr.write(`desk host ${spec.name}: ${line}\n`),
+      ...(vw.settleMs !== undefined ? { settleMs: vw.settleMs } : {}),
+      ...(vw.retryAfterMs !== undefined ? { retryAfterMs: vw.retryAfterMs } : {}),
+    });
   }
 
   if (spec.kind === "lane" && engine !== undefined) {

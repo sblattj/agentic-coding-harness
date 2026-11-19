@@ -20,6 +20,7 @@ import {
   type ServeProcess,
   type SpawnServe,
 } from "../src/desks/engines/opencode.ts";
+import { writeRoleSent } from "../src/desks/role-sent.ts";
 import type { EngineEvent, GoalStatus, HostSpec } from "../src/desks/types.ts";
 
 /** Fake-backed engines speak the v1 API (no `opencode --version` probe). */
@@ -543,6 +544,99 @@ describe("OpenCodeEngine against a fake opencode serve", () => {
       assert.deepEqual(events.map((e) => e.type), ["turn_start", "turn_end", "turn_start", "turn_end"]);
     } finally {
       await eng.stop();
+    }
+  });
+
+  it("desk reload: resumeSessionId adopts the existing session (no new session, no role note) and never re-emits or re-meters its old parts", async () => {
+    const fake = new FakeOpencode();
+    const port = await fake.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    spec.resumeSessionId = "ses_fake1";
+    const S = "ses_fake1";
+    writeRoleSent(spec, S, rolePrompt(spec)); // the session already got this exact role prompt
+    fake.messages = [
+      { info: { id: "m0", role: "user" }, parts: [{ id: "p0", type: "text", text: "role" }] },
+      {
+        info: { id: "m1", role: "assistant", time: { completed: 5 } },
+        parts: [
+          { id: "p1", type: "text", text: "OLD ANSWER" },
+          { id: "p2", type: "step-finish", tokens: { input: 10, output: 5 } },
+        ],
+      },
+    ];
+    const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    try {
+      const r = await eng.start(spec);
+      assert.equal(r.sessionId, S);
+      assert.equal(fake.of("POST", "/session").length, 0, "no new session");
+      assert.equal(fake.of("POST", `/session/${S}/message`).length, 0, "no second role note");
+      assert.deepEqual(eng.attachCommand().slice(-2), ["--session", S]);
+      fake.messages = [
+        ...fake.messages,
+        { info: { id: "m2", role: "assistant", time: { completed: 9 } }, parts: [{ id: "p3", type: "text", text: "NEW ANSWER" }, { id: "p4", type: "step-finish", tokens: { input: 3, output: 2 } }] },
+      ];
+      eng.handleEvent({ type: "session.status", properties: { sessionID: S, status: { type: "busy" } } });
+      eng.handleEvent({ type: "session.idle", properties: { sessionID: S } });
+      await until(() => events.some((e) => e.type === "turn_end"), 2000, "turn_end");
+      assert.deepEqual(events.filter((e) => e.type === "text").map((e) => e.data.text), ["NEW ANSWER"]);
+      assert.deepEqual(events.filter((e) => e.type === "usage").map((e) => e.data.messageId), ["p4"]);
+    } finally {
+      await eng.stop();
+    }
+  });
+
+  it("desk reload: a role file changed since the session got its prompt -> the resumed session gets the current text once, as a refresh note", async () => {
+    const S = "ses_fake1";
+    const msgs = [{ info: { id: "m0", role: "user" }, parts: [{ id: "p0", type: "text", text: "role" }] }];
+    const { env, spec } = setup();
+    writeRoleSent(spec, S, rolePrompt(spec)); // delivered at desk up
+    writeFileSync(spec.roleFiles[1]!, "Role body v2 for $DESK_NAME: NEWRULE-214.\n"); // edited before the reload
+    spec.resumeSessionId = S;
+    for (const round of [1, 2]) {
+      const fake = new FakeOpencode();
+      spec.enginePort = await fake.listen();
+      fake.messages = [...msgs];
+      const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+      try {
+        assert.equal((await eng.start(spec)).sessionId, S);
+        assert.equal(fake.of("POST", "/session").length, 0, "no new session");
+        const notes = fake.of("POST", `/session/${S}/message`);
+        if (round === 1) {
+          assert.equal(notes.length, 1, "round 1: one refresh note");
+          const b = notes[0]!.body as { noReply?: boolean; parts: { text: string }[] };
+          assert.equal(b.noReply, true);
+          assert.match(b.parts[0]!.text, /role prompt changed/);
+          assert.match(b.parts[0]!.text, /Role body v2 for ORCH: NEWRULE-214\./, "the CURRENT role text, $DESK_NAME expanded");
+        } else {
+          assert.equal(notes.length, 0, "round 2 (unchanged since round 1): no note");
+        }
+      } finally {
+        await eng.stop();
+      }
+    }
+  });
+
+  it("desk reload: an unknown or empty session to resume falls back to a new session with the role note", async () => {
+    for (const [id, msgs] of [["ses_gone", undefined], ["ses_fake1", []]] as const) {
+      const fake = new FakeOpencode();
+      const port = await fake.listen();
+      const { env, spec } = setup();
+      spec.enginePort = port;
+      spec.resumeSessionId = id;
+      if (msgs) fake.messages = [...msgs];
+      const eng = new OpenCodeEngine({ version: V1, env, spawn: fakeSpawn(fake, []), stopGraceMs: 500 });
+      try {
+        const r = await eng.start(spec);
+        assert.equal(r.sessionId, "ses_fake1");
+        assert.equal(fake.of("GET", `/session/${id}/message`).length >= 1, true, "the old session was probed");
+        assert.equal(fake.of("POST", "/session").length, 1, `${id}: a new session`);
+        assert.equal(fake.of("POST", "/session/ses_fake1/message").length, 1, `${id}: role note sent`);
+      } finally {
+        await eng.stop();
+      }
     }
   });
 

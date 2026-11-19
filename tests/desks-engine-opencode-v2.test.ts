@@ -14,9 +14,11 @@ import {
   configuredMcpNames,
   opencodeApiFor,
   opencodeConfigFiles,
+  rolePrompt,
   type ServeProcess,
   type SpawnServe,
 } from "../src/desks/engines/opencode.ts";
+import { writeRoleSent } from "../src/desks/role-sent.ts";
 import type { EngineEvent, HostSpec } from "../src/desks/types.ts";
 
 const tmpRoots: string[] = [];
@@ -434,6 +436,100 @@ describe("OpenCodeEngine against a fake opencode 2 serve", () => {
       assert.equal(v2.unauthorized, 0);
     } finally {
       await eng.stop();
+    }
+  });
+
+  it("v2 desk reload: resumeSessionId adopts the existing session (no new session, no role note) and never re-emits or re-meters its old messages; an unknown session falls back to a new one", async () => {
+    const v2 = new FakeV2();
+    const port = await v2.serve.listen();
+    const { env, spec } = setup();
+    spec.enginePort = port;
+    spec.resumeSessionId = v2.sid;
+    writeRoleSent(spec, v2.sid, rolePrompt(spec)); // the session already got this exact role prompt
+    const old = {
+      id: "msg_old",
+      type: "assistant",
+      content: [
+        { type: "tool", id: "call_old", name: "read", state: { status: "completed", input: { path: "a" } } },
+        { type: "text", text: "old answer" },
+      ],
+      tokens: { input: 5, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+      cost: 0,
+      time: { created: 1, completed: 2 },
+    };
+    v2.messages = [{ id: "msg_u0", type: "user", text: "earlier" }, old];
+    const calls: SpawnCall[] = [];
+    const eng = new OpenCodeEngine({ version: "2.2.5", env, spawn: v2.spawn(calls), stopGraceMs: 300, sendGraceMs: 100, mcpSettleMs: 3000 });
+    const events: EngineEvent[] = [];
+    eng.onEvent((e) => events.push(e));
+    try {
+      const r = await eng.start(spec);
+      assert.equal(r.sessionId, v2.sid, "the resumed session id is reported");
+      assert.equal(v2.serve.of("POST", "/api/session").length, 0, "no new session is created");
+      assert.equal(v2.serve.of("POST", `/api/session/${v2.sid}/synthetic`).length, 0, "no second role note");
+      await until(() => v2.serve.sse.length === 1, 2000, "event stream");
+
+      v2.messages = [
+        ...v2.messages,
+        { id: "msg_u1", type: "user", text: "again" },
+        { id: "msg_new", type: "assistant", content: [{ type: "text", text: "new answer" }], tokens: { input: 7, output: 3, reasoning: 0, cache: { read: 0, write: 0 } }, cost: 0, time: { created: 3, completed: 4 } },
+      ];
+      await eng.send("again");
+      v2.serve.push({ type: "session.execution.started", data: { sessionID: v2.sid } });
+      await sleep(150);
+      v2.serve.push({ type: "session.execution.succeeded", data: { sessionID: v2.sid } });
+      await until(() => events.some((e) => e.type === "turn_end"), 3000, "turn_end");
+      assert.deepEqual(events.map((e) => e.type), ["turn_start", "text", "usage", "turn_end"], "only the new message is emitted and metered");
+      assert.equal((events[1]!.data as { text?: string }).text, "new answer");
+      assert.equal((events[2]!.data as { inputTokens?: number }).inputTokens, 7);
+    } finally {
+      await eng.stop();
+    }
+
+    // Unknown session: the message GET 404s, so start() creates a new session with the role note.
+    const v2b = new FakeV2();
+    const portB = await v2b.serve.listen();
+    const b = setup();
+    b.spec.enginePort = portB;
+    b.spec.resumeSessionId = "ses_gone";
+    const engB = new OpenCodeEngine({ version: "2.2.5", env: b.env, spawn: v2b.spawn([]), stopGraceMs: 300, sendGraceMs: 100, mcpSettleMs: 3000 });
+    try {
+      const rb = await engB.start(b.spec);
+      assert.equal(rb.sessionId, v2b.sid, "a new session replaces the unknown one");
+      assert.equal(v2b.serve.of("POST", "/api/session").length, 1);
+      assert.equal(v2b.serve.of("POST", `/api/session/${v2b.sid}/synthetic`).length, 1, "the new session gets the role note");
+    } finally {
+      await engB.stop();
+    }
+  });
+
+  it("v2 desk reload: a role file changed since the session got its prompt -> one synthetic refresh note with the current text; unchanged -> none", async () => {
+    const { env, spec } = setup();
+    const S = new FakeV2().sid;
+    writeRoleSent(spec, S, rolePrompt(spec)); // delivered at desk up
+    writeFileSync(spec.roleFiles[0]!, "You are $DESK_NAME, v2 rules: NEWRULE-214.\n"); // edited before the reload
+    spec.resumeSessionId = S;
+    for (const round of [1, 2]) {
+      const v2 = new FakeV2();
+      spec.enginePort = await v2.serve.listen();
+      v2.messages = [{ id: "msg_u0", type: "user", text: "earlier" }];
+      const eng = new OpenCodeEngine({ version: "2.2.5", env, spawn: v2.spawn([]), stopGraceMs: 300, sendGraceMs: 100, mcpSettleMs: 3000 });
+      try {
+        assert.equal((await eng.start(spec)).sessionId, S);
+        assert.equal(v2.serve.of("POST", "/api/session").length, 0, "no new session");
+        const notes = v2.serve.of("POST", `/api/session/${S}/synthetic`);
+        if (round === 1) {
+          assert.equal(notes.length, 1, "round 1: one refresh note");
+          const b = notes[0]!.body as { text: string; resume: boolean };
+          assert.equal(b.resume, false, "context only, starts no turn");
+          assert.match(b.text, /role prompt changed/);
+          assert.match(b.text, /You are ORCH, v2 rules: NEWRULE-214\./, "the CURRENT role text");
+        } else {
+          assert.equal(notes.length, 0, "round 2 (unchanged since round 1): no note");
+        }
+      } finally {
+        await eng.stop();
+      }
     }
   });
 

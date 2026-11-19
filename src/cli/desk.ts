@@ -2,6 +2,7 @@
 //   ach desk up [--layout F] [--port-base N] [--term tmux|ghostty|none] [--tmux-session S] [--stack S]
 //   ach desk down | attach [--term ...] | send <to> <text> | roster [--json] | inbox [name] [--json]
 //   ach desk answer <Dn> <text> | decisions [--json] | engine <name> <agent> [--model M]
+//   ach desk reload <name>|--all [--force]   (new host, same port, engine and agent session)
 //   ach desk host --spec <file>        (internal: the per-desk host process)
 //   ach desk chat <name>               (attach REPL for engines without a native TUI)
 //   ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N]
@@ -94,6 +95,7 @@ export const DESK_USAGE = `usage:
   ach desk decisions [--state open|answered|closed] [--json]
   ach desk close <Dn> [--reason R] [--from NAME]
   ach desk engine <name> <agent> [--model M]
+  ach desk reload <name>|--all [--force] [--json] (restart a desk's host: same port, engine and session; lanes never)
   ach desk costs [--json]
   ach desk chat <name>                            (attach REPL for engines without a native TUI)
   ach desk host --spec <file>                     (internal: the per-desk host process)
@@ -499,6 +501,29 @@ async function runDesk(sub: string, args: string[], d: DeskDeps): Promise<void> 
       const r = await svc.deskSwitchEngine(compact({ stack: c.stack, name: p.positionals[0] as string, agent: p.positionals[1] as string, model: p.values.model as string | undefined }));
       if (c.json) emitJson(c, r);
       else d.stdout(`${r.name} now runs ${r.agent}${r.model !== undefined ? ` (${r.model})` : ""} on ${r.engine}\n`);
+      return;
+    }
+    case "reload": {
+      const p = o({ all: { type: "boolean" }, force: { type: "boolean" } });
+      const all = p.values.all === true;
+      need(all ? p.positionals.length === 0 : p.positionals.length === 1, "usage: ach desk reload <name>|--all [--force]");
+      const c = ctxOf(p);
+      const me = d.env.ACH_DESK_NAME;
+      const rs = await svc.deskReload(compact({
+        stack: c.stack, name: all ? undefined : (p.positionals[0] as string), all: all ? true : undefined,
+        force: p.values.force === true ? true : undefined, by: me !== undefined && me !== "" ? me : "human",
+      }));
+      if (c.json) emitJson(c, rs);
+      else {
+        for (const r of rs) {
+          if (r.skipped !== undefined) d.stdout(`${r.name}: skipped: ${r.skipped}\n`);
+          else if (!r.ok) d.stdout(`${r.name}: not reloaded: ${r.error ?? "unknown error"}\n`);
+          else d.stdout(`${r.name}: reloaded on port ${r.entry?.port ?? "?"}, ${r.resumed ? `session ${r.sessionId} kept` : "NEW session"}${r.note !== undefined ? ` (${r.note})` : ""}\n`);
+        }
+        if (rs.length === 0) d.stdout("no desks to reload\n");
+      }
+      const failed = rs.filter((r) => !r.ok && r.skipped === undefined).map((r) => r.name);
+      if (failed.length > 0) throw new Error(`desks: not reloaded: ${failed.join(", ")}`);
       return;
     }
     case "costs": {

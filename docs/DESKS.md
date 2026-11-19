@@ -208,6 +208,7 @@ ach desk answer <Dn> <text...> [--from NAME]
 ach desk decisions [--state open|answered|closed] [--json]
 ach desk close <Dn> [--reason R] [--from NAME]
 ach desk engine <name> <agent> [--model M]
+ach desk reload <name>|--all [--force] [--json]
 ach desk costs [--json]
 ach desk host --spec <file>              internal: the per-desk host process
 ach desk chat <name> [--from NAME]       attach REPL for engines without a native TUI
@@ -229,6 +230,15 @@ Every subcommand takes `--stack S`. `--from` defaults to `$ACH_DESK_NAME`, else 
 - Only the human or the stack's decisions desk (the desk with role `decisions`) may `lane approve` or `lane reject`, from the CLI, MCP tools and web API alike (the web API answers 403 otherwise).
 - `desk events --follow` and `desk chat` look the host up again on every reconnect, so they keep streaming across an engine switch (new host token and run; the new run's events start at seq 1).
 - `desk engine` restarts one desk on another agent, keeping its roster slot, message history and decisions. An agent name ach does not know (the list `GET /api/desks/engines` shows) is refused before the running host is stopped. When the new engine fails to start, the desk is restarted on its previous agent on the same port (with a new run id) and the start error is returned.
+- `desk reload` restarts a running desk's host so it picks up a new ach build (for example a tool added to the desks MCP server): same port, same engine and model, same roster slot, message history and decisions, and the same agent session, so the conversation continues where it was. The host gets a new run id and token. The roster's terminal, feed and goal fields are kept.
+  - A busy desk (a turn running or messages queued) is refused, because the restart would cut its turn; `--force` reloads it anyway. A desk that is not running is refused too (use `desk up`).
+  - `--all` reloads every desk of the stack, one by one, in port order; lanes are never reloaded (a lane by name is refused). One desk that fails does not stop the others, and the exit status is 1 when any desk was not reloaded.
+  - A desk cannot reload itself (its own MCP server runs inside the host being restarted): `desk reload <own name>` from inside a desk is refused, and `--all` from inside a desk skips the caller and says so.
+  - Each result says whether the session was kept (`resumed`). OpenCode adopts the old session on the new `opencode serve` (no new session, old parts are not counted again); driver engines resume it on the next turn when the agent supports resume. When the engine cannot continue it (an agent without resume, an OpenCode session that is gone), the desk starts a new session and the result carries a `note`.
+  - Role prompts: the reloading ach resolves the desk's role files again (so an upgrade's new built-in roles count, not the paths the old install saved). The resumed session gets the current role prompt once, as a note marked as replacing the earlier one, only when it differs from the one the session last got (ach records a hash per desk in `<stateDir>/desks/<stack>/role-sent/<name>.json`; a session with no record gets it once). OpenCode sends it as a no-reply note; non-claude driver agents get it ahead of the next turn's prompt; claude needs nothing extra, because it gets the current role as its system prompt on every turn.
+  - **tmux:** the pane stays. Before the host stops, the pane gets `remain-on-exit on`, so the attach command exiting does not close it; the pane is then respawned in place (`respawn-pane -k`, same `%N` id, new process) and the option is unset again. Only panes ach opened (tagged `@ach_run`) are respawned.
+  - **Ghostty:** a Ghostty window cannot be respawned in place, so the old window is closed and a new one opened on the reloaded desk (a new terminal id).
+  - **Automatic after an ach upgrade:** every desk host (never a lane) checks the installed ach version every 5 minutes, by running `ach --version` from the same path it was started from (the npm or Homebrew link, or the binary), so it sees an upgrade while still running the old code. When the installed version is newer than the one the host runs, the desk is reloaded once it is idle (no turn running, nothing queued, no active goal); a busy desk is never cut off, it waits. The host spawns a detached `ach desk reload <name>` (the new ach does the reload, like a manual one), and logs it in the desk's host log (`<stateDir>/desks/<stack>/logs/<name>.log`, lines starting `auto-reload:`), with the reload's own output in `logs/<name>.auto-reload.log`. Each desk is reloaded once per installed version (`<stateDir>/desks/<stack>/auto-reload/<name>.json`): the new host never triggers again for the same version, and a host whose reload was refused or failed retries after a minute, up to 3 times. An older or equal installed version (another install, a downgrade) changes nothing. `ACH_DESK_VERSION_POLL_MS` sets the interval (`0` turns the check off). A manual `ach desk reload --all` still works at any time.
 - `lane stop` refuses desk names. A busy lane gets up to 15 s to finish its turn, plus about 2 s for the goal verdict, so a lane that just sent DONE is judged before it dies; `--now` skips the wait (emergency stops; `desk down` always stops at once). It closes the pane, stops the host and removes the roster entry.
 - `ach lane status <name>` also answers for a lane that already ended: the roster has forgotten it, so the row is rebuilt from `lanes.log` with `state: "stopped"` and `goalState` (the final goal state, taken from the lane's last `goal` event so a verdict reported while the host was stopping counts). A lane whose host crashed gets the same row: the roster prune writes its stop line (`by: "prune"`). Without a name only live lanes are listed.
 - `--json` prints the `RosterView` (stack, `portBase`, rows with state, queue depth, goal status and cost, pending lanes, open decisions). Without it, a table.
@@ -242,6 +252,7 @@ Registered on `ach mcp` for every desk and lane session (identity from `ACH_DESK
 | `desk_roster` | none | `me` plus peers with role, busy/idle/dead, tools, goal |
 | `desk_send` | `to, text` | refuses self and unknown names; returns at once; do not wait or poll |
 | `desk_inbox` | `limit?, since_minutes?` | recent messages to or from the caller |
+| `desk_reload` | `name?` or `all: true`, `force?` | restart desks on a fresh host, keeping port, engine and session (see `desk reload`); refuses the caller and lanes; `all` skips the caller; returns `{results}` |
 | `lane_new` | `name, goal, mcps?, cwd?, agent?, model?, budget_usd?, brief?` | start a lane, or `{pending}` when approval applies |
 | `lane_status` | `name?` | goal state, verified plan actions, evidence |
 | `lane_stop` | `name, now?` | refuses desk names; waits up to 15 s for a busy lane to finish its turn and for its goal verdict, unless `now: true` |
@@ -315,6 +326,7 @@ POST /api/desks/lanes {name, goal, mcps?, cwd?, agent?, model?, budgetUsd?} -> R
 POST /api/desks/lanes/:name/stop        {now?: true} -> {}   (body optional; now skips the busy-lane grace wait)
 POST /api/desks/pending/:id/approve     -> RosterEntry ; /reject {reason?} -> PendingLane
 POST /api/desks/:name/engine {agent, model?} -> RosterEntry
+POST /api/desks/:name/reload {force?}  -> {results: DeskReloadResult[]}   (name `all` reloads every desk, never lanes; 409 busy or not running)
 GET  /api/desks/:name/events?since=<seq> -> {events: HostEvent[]}
 GET  /api/desks/:name/attach            -> {argv: string[]}   (the command that attaches a terminal to the desk or lane; 404 unknown, 409 dead)
 GET  /api/desks/costs                   -> {rows: DeskCostRow[]}

@@ -21,6 +21,7 @@ function fakeService(calls: Call[], overrides: Partial<Record<string, () => unkn
     deskRoster: mk("deskRoster", { version: "desks-api/1", stack: "default", rows: [] }),
     deskSend: mk("deskSend", { id: "m1", delivered: "now" }),
     deskInbox: mk("deskInbox", []),
+    deskReload: mk("deskReload", [{ name: "X", ok: true, resumed: true }]),
     laneNew: mk("laneNew", { name: "x" }),
     laneStatus: mk("laneStatus", []),
     laneStop: mk("laneStop", { stopped: "x" }),
@@ -56,7 +57,7 @@ function setup(env: Record<string, string | undefined>, overrides: Partial<Recor
 
 const DESK_ENV = { ACH_DESK_NAME: "ORCHESTRATOR", ACH_DESK_STACK: "s1" };
 const ALL = [
-  "desk_roster", "desk_send", "desk_inbox", "lane_new", "lane_status", "lane_stop",
+  "desk_roster", "desk_send", "desk_inbox", "desk_reload", "lane_new", "lane_status", "lane_stop",
   "lane_approve", "lane_reject", "decision_open", "decision_list", "decision_close",
 ];
 
@@ -253,5 +254,27 @@ describe("desk MCP tools: error mapping", () => {
     assert.match((await t.call("lane_new", { name: "n" })).error!.message, /goal is required/);
     assert.match((await t.call("lane_stop", {})).error!.message, /name is required/);
     assert.equal(t.calls.length, 0);
+  });
+});
+
+describe("desk_reload", () => {
+  it("passes name, force and me as by; all: true reloads every desk via the service", async () => {
+    const t = setup(DESK_ENV);
+    const r = await t.ok("desk_reload", { name: "DECISIONS" });
+    assert.deepEqual(r.results, [{ name: "X", ok: true, resumed: true }]);
+    assert.deepEqual(t.calls.at(-1), { fn: "deskReload", o: { stateDir: "/tmp/state-x", stack: "s1", name: "DECISIONS", by: "ORCHESTRATOR" } });
+    await t.ok("desk_reload", { name: "DECISIONS", force: true });
+    assert.equal(t.calls.at(-1)!.o.force, true);
+    await t.ok("desk_reload", { all: true });
+    assert.deepEqual(t.calls.at(-1), { fn: "deskReload", o: { stateDir: "/tmp/state-x", stack: "s1", all: true, by: "ORCHESTRATOR" } });
+  });
+  it("refuses self, both or neither of name/all, and non-boolean flags, without calling the service", async () => {
+    const t = setup(DESK_ENV);
+    assert.match((await t.call("desk_reload", { name: "ORCHESTRATOR" })).error!.message, /cannot reload yourself/);
+    assert.match((await t.call("desk_reload", {})).error!.message, /either name or all/);
+    assert.match((await t.call("desk_reload", { name: "DECISIONS", all: true })).error!.message, /either name or all/);
+    assert.match((await t.call("desk_reload", { name: "DECISIONS", force: "yes" })).error!.message, /force must be a boolean/);
+    assert.match((await t.call("desk_reload", { all: "yes" })).error!.message, /all must be a boolean/);
+    assert.equal(t.calls.filter((c) => c.fn === "deskReload").length, 0);
   });
 });

@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { readRunRecord } from '../src/core/registry.ts';
 import type { AgentAdapter, AgentEvent, AgentHandle, RunSpec } from '../src/core/types.ts';
-import { DriverEngine } from '../src/desks/engines/driver.ts';
+import { DriverEngine, roleContext } from '../src/desks/engines/driver.ts';
+import { writeRoleSent } from '../src/desks/role-sent.ts';
 import type { GoalLoopHandle, GoalLoopOptions } from '../src/desks/engines/goal-loop.ts';
 import type { EngineEvent, GoalStatus, HostSpec } from '../src/desks/types.ts';
 
@@ -102,6 +103,62 @@ async function idle(engine: DriverEngine, ms = 10_000): Promise<void> {
 const ENV = { ACH_SELF_ARGV: JSON.stringify(['/bin/ach-test']) };
 
 describe('DriverEngine (fake adapter through the real core driver)', () => {
+  it('desk reload: resumeSessionId is the first turn\'s resume id, without the role prompt; an adapter that cannot resume starts fresh', async () => {
+    const fake = new FakeAdapter();
+    const engine = new DriverEngine({ adapters: { fake }, env: ENV });
+    const spec0 = hostSpec({ resumeSessionId: 'prior-sess' });
+    writeRoleSent(spec0, 'prior-sess', roleContext(spec0)); // the session already got this exact role
+    assert.deepEqual(await engine.start(spec0), { sessionId: 'prior-sess' });
+    await engine.send('after reload');
+    await idle(engine);
+    assert.equal(fake.specs[0]!.resume, 'prior-sess');
+    assert.doesNotMatch(fake.specs[0]!.prompt, /Role: PM/, 'the resumed session already has the role');
+    assert.equal(engine.sessionId, 'prior-sess');
+
+    const noResume = Object.assign(new FakeAdapter(), { capabilities: { headless: true, streaming: true, resume: false, acp: false } });
+    const e2 = new DriverEngine({ adapters: { fake: noResume as unknown as AgentAdapter }, env: ENV });
+    assert.deepEqual(await e2.start(hostSpec({ resumeSessionId: 'prior-sess' })), {}, 'no session claimed');
+    await e2.send('fresh');
+    await idle(e2);
+    assert.equal(noResume.specs[0]!.resume, undefined);
+  });
+
+  it('desk reload, non-claude: a role file changed since the session got it -> the next turn carries the current role once, as a refresh', async () => {
+    const spec = hostSpec({ resumeSessionId: 'prior-sess' });
+    writeRoleSent(spec, 'prior-sess', roleContext(spec)); // delivered on the first turn before the reload
+    writeFileSync(spec.roleFiles[1]!, 'Role: PM v2 for $DESK_NAME, NEWRULE-214.'); // edited before the reload
+    const fake = new FakeAdapter();
+    const engine = new DriverEngine({ adapters: { fake }, env: ENV });
+    await engine.start(spec);
+    await engine.send('one');
+    await idle(engine);
+    await engine.send('two');
+    await idle(engine);
+    assert.match(fake.specs[0]!.prompt, /role prompt changed/);
+    assert.match(fake.specs[0]!.prompt, /Role: PM v2 for PM, NEWRULE-214\./, 'turn 1 after the reload carries the CURRENT role');
+    assert.doesNotMatch(fake.specs[1]!.prompt, /NEWRULE-214|role prompt changed/, 'only once');
+    // A second reload with the role unchanged since: no refresh.
+    const fake2 = new FakeAdapter();
+    const e2 = new DriverEngine({ adapters: { fake: fake2 }, env: ENV });
+    await e2.start({ ...spec, runId: 'desk-run-2' });
+    await e2.send('three');
+    await idle(e2);
+    assert.doesNotMatch(fake2.specs[0]!.prompt, /NEWRULE-214|role prompt changed/, 'unchanged since the refresh: not resent');
+  });
+
+  it('desk reload, claude: a resumed session gets the CURRENT role file text as --append-system-prompt (no refresh note needed)', async () => {
+    const spec = hostSpec({ agent: 'claude', resumeSessionId: 'prior-sess' });
+    writeFileSync(spec.roleFiles[1]!, 'Role: PM v2 for $DESK_NAME, NEWRULE-214.');
+    const fake = new FakeAdapter();
+    const engine = new DriverEngine({ adapters: { claude: fake }, env: ENV });
+    await engine.start(spec);
+    await engine.send('a');
+    await idle(engine);
+    assert.equal(fake.specs[0]!.resume, 'prior-sess');
+    assert.deepEqual(fake.specs[0]!.extraArgs, ['--strict-mcp-config', '--append-system-prompt', 'You are desk PM.\n\nRole: PM v2 for PM, NEWRULE-214.']);
+    assert.doesNotMatch(fake.specs[0]!.prompt, /role prompt changed/);
+  });
+
   it('chains resume across 2 turns and writes child run records with parentRunId + desk.kind turn', async () => {
     const fake = new FakeAdapter();
     const engine = new DriverEngine({ adapters: { fake }, env: ENV });
