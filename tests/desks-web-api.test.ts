@@ -421,6 +421,11 @@ describe('desks web api: routes', () => {
     const st = await call(h, 'POST', '/api/desks/all/reload', JSON.stringify({ stale: true }));
     assert.deepEqual(st.json.results, [{ name: 'OLD', ok: true, resumed: true }]);
     assert.equal(lastCall(h, 'deskReloadStale').arg.by, 'human');
+    const reloadsBefore = h.calls.filter((x) => x.fn === 'deskReload').length;
+    const named = await call(h, 'POST', '/api/desks/LISTENER/reload', JSON.stringify({ stale: true }));
+    assert.equal(named.status, 400, 'stale with a desk name is refused, as in the CLI and desk_reload');
+    assert.match(named.json.error, /stale takes no desk name/);
+    assert.equal(h.calls.filter((x) => x.fn === 'deskReload').length, reloadsBefore, 'no plain reload ran');
   });
 
   it('GET /:name/attach of an off desk is 409', async () => {

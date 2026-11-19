@@ -259,20 +259,23 @@ describe('auto reload after an ach upgrade: host watcher (in-process)', () => {
       lines.push(String(chunk));
       return (orig as (...a: unknown[]) => boolean)(chunk, ...rest);
     }) as typeof process.stderr.write;
-    const h = await startHost({ stateDir: sd, installed: () => '1.1.0', feed: { command: ['/bin/cat'], activeCheck: ['/bin/cat', active] } });
+    let h: Awaited<ReturnType<typeof startHost>> | undefined;
     try {
+      // startHost runs inside the try, so the stderr patch is restored even if it rejects.
+      const host = await startHost({ stateDir: sd, installed: () => '1.1.0', feed: { command: ['/bin/cat'], activeCheck: ['/bin/cat', active] } });
+      h = host;
       await sleep(600); // ~12 polls with the call state unknown
       assert.equal(h.spawns.length, 0, 'call check failed: not reloaded');
       assert.equal(readAutoReloadMark(h.spec), null, 'call check failed: no attempt spent');
       assert.equal(lines.filter((l) => l.includes('auto-reload: call check failed, waiting')).length, 1, 'logged once per pending reload');
       writeFileSync(active, JSON.stringify({ active: false })); // the check answers: no call
-      await waitFor(() => h.spawns.length > 0, 'reload once the check answers');
+      await waitFor(() => host.spawns.length > 0, 'reload once the check answers');
       await sleep(300);
       assert.equal(h.spawns.length, 1, 'spawned once');
       assert.equal(readAutoReloadMark(h.spec)?.attempts, 1);
     } finally {
       process.stderr.write = orig;
-      await stop(h);
+      if (h) await stop(h);
     }
   });
 

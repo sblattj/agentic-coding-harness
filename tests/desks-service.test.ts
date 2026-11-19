@@ -363,7 +363,9 @@ describe('lanes: approval path on real fake-engine hosts', () => {
     await new Promise<void>((r) => blocker.listen(PORT_BASE + 10, '127.0.0.1', () => r()));
     try {
       const e = (await laneNew({ stateDir: sd, stack, name: 'quick', goal: '--max-minutes 1 do it', launchedBy: 'ORCHESTRATOR' })) as RosterEntry;
-      assert.equal(e.port, PORT_BASE + 11, 'skips the bound port');
+      // The lane must skip the bound port. The next one up is usually free, but on a
+      // shared CI runner it can be taken too (seen: 5911 and 5912 busy, lane on 5913).
+      assert.ok(e.port !== undefined && e.port > PORT_BASE + 10, `skips the bound port (got ${e.port})`);
       assert.equal(e.goal, '--max-minutes 1 do it', 'goal with flags is not prefixed');
       await laneStop({ stateDir: sd, stack, name: 'quick' });
       assert.equal(pgrepStateDir(sd), '');

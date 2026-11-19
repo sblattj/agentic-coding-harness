@@ -504,6 +504,8 @@ export async function handleDesksApi(
       if (body.force !== undefined && typeof body.force !== "boolean") throw new HttpError(400, "force must be a boolean");
       const force = body.force === true ? { force: true } : {};
       if (body.stale !== undefined && typeof body.stale !== "boolean") throw new HttpError(400, "stale must be a boolean");
+      // Same rule as the CLI and desk_reload: stale picks its own desks, so it takes no desk name.
+      if (body.stale === true && a !== "all") throw new HttpError(400, "stale takes no desk name: POST /api/desks/all/reload {\"stale\": true}");
       // POST /api/desks/all/reload {stale: true}: only the idle desks on an older ach build.
       if (a === "all" && body.stale === true) return done(res, 200, { results: await svc.deskReloadStale({ ...so, ...force, by: "human" }) });
       // POST /api/desks/all/reload reloads every desk, never lanes (desk names are upper case, so "all" is never a desk).
