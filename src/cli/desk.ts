@@ -624,7 +624,7 @@ async function runDesk(sub: string, args: string[], d: DeskDeps): Promise<void> 
     }
     case "watch": {
       const p = o({ "poll-ms": { type: "string" }, "grace-ms": { type: "string" }, token: { type: "string" } });
-      need(p.positionals.length === 1, "usage: ach desk watch <name> --poll-ms N --grace-ms N (internal: run by ach desk auto)");
+      need(p.positionals.length === 1, "usage: ach desk watch <name> [--poll-ms N (default 30000)] [--grace-ms N (default 300000)] (internal: run by ach desk auto)");
       const c = ctxOf(p);
       const ac = new AbortController();
       const onSig = (): void => ac.abort();
