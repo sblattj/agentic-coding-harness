@@ -76,8 +76,50 @@ export function isWorkTool(tool: string): boolean {
   return WORK_TOOLS.has(toolBaseName(tool));
 }
 
-/** `desk_send` arguments addressed to the human: `"to": "human"` in the (possibly clipped) JSON summary. */
-const TO_HUMAN = /"to"\s*:\s*"human"/i;
+/**
+ * The top-level `to` string of a (possibly clipped) JSON object summary, or null.
+ * Walks the tokens instead of matching a regex, so a `"to": "human"` quoted inside
+ * another value (the message text, a nested object) never counts as the recipient.
+ */
+export function summaryRecipient(summary: string): string | null {
+  const s = summary.trimStart();
+  if (!s.startsWith("{")) return null;
+  let i = 0;
+  let depth = 0;
+  let state: "key" | "colon" | "value" | "comma" = "key";
+  let key = "";
+  const readString = (): string | null => {
+    let out = "";
+    i++;
+    while (i < s.length) {
+      const c = s[i];
+      if (c === "\\") { out += s[i + 1] ?? ""; i += 2; continue; }
+      if (c === '"') { i++; return out; }
+      out += c;
+      i++;
+    }
+    return null; // clipped inside a string
+  };
+  while (i < s.length) {
+    const c = s.charAt(i);
+    if (c === '"') {
+      const top = depth === 1;
+      const str = readString();
+      if (str === null) return null;
+      if (!top) continue;
+      if (state === "key") { key = str; state = "colon"; }
+      else if (state === "value") { if (key === "to") return str; state = "comma"; }
+      continue;
+    }
+    if (c === "{" || c === "[") { depth++; i++; continue; }
+    if (c === "}" || c === "]") { depth--; if (depth === 1) state = "comma"; if (depth <= 0) return null; i++; continue; }
+    if (depth === 1 && c === ":" && state === "colon") state = "value";
+    else if (depth === 1 && c === ",") state = "key";
+    else if (depth === 1 && state === "value" && !/\s/.test(c)) state = "comma"; // number, true, null...
+    i++;
+  }
+  return null;
+}
 
 /**
  * The boundary warning for one tool call by a desk, or null when the call is
@@ -99,7 +141,7 @@ export function boundaryForTool(desk: { kind: DeskKind; role: string }, tool: st
     if (isDeskTool(tool, "decision_open")) {
       return { rule: "orchestrator-asks-human", tool, detail: `ORCHESTRATOR opened a question for the human with ${tool}: forward the call to DECISIONS (open: <call> | context | asked by)` };
     }
-    if (isDeskTool(tool, "desk_send") && TO_HUMAN.test(summary)) {
+    if (isDeskTool(tool, "desk_send") && summaryRecipient(summary)?.trim().toLowerCase() === "human") {
       return { rule: "orchestrator-asks-human", tool, detail: `ORCHESTRATOR addressed the human with ${tool}: forward the call to DECISIONS (open: <call> | context | asked by)` };
     }
   }

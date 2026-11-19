@@ -73,6 +73,19 @@ describe('boundaryForTool: ORCHESTRATOR', () => {
     assert.equal(w?.rule, 'orchestrator-asks-human');
     assert.equal(w?.tool, 'mcp__desks__desk_send');
   });
+  it('a message to DECISIONS that quotes "to": "human" in its text is not a warning', () => {
+    const quoted = JSON.stringify({ to: 'DECISIONS', text: 'open: lane sent {"to": "human"} | ctx | LISTENER' });
+    assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', quoted), null);
+    const nested = JSON.stringify({ to: 'DECISIONS', meta: { to: 'human' } });
+    assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', nested), null);
+  });
+  it('reads the recipient from a clipped summary, ignoring a clipped text value', () => {
+    const clipped = JSON.stringify({ to: 'human', text: 'x'.repeat(300) }).slice(0, 199) + '…';
+    assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', clipped)?.rule, 'orchestrator-asks-human');
+    const textFirst = JSON.stringify({ text: 'he wrote "to": "human" and ' + 'x'.repeat(300), to: 'human' }).slice(0, 120);
+    assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', textFirst), null);
+    assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', '{"to" : "HUMAN"}')?.rule, 'orchestrator-asks-human');
+  });
   it('a work tool on ORCHESTRATOR is not a boundary warning (checking evidence may need one)', () => {
     assert.equal(boundaryForTool(ORCHESTRATOR, 'bash', 'ls'), null);
   });
