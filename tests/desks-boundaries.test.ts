@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { formatChatEvent, formatEventLine } from '../src/cli/desk.ts';
 import type { HostEvent } from '../src/desks/types.ts';
-import { ROLE_BLOCK_HEADING, DIVISION_HEADING, boundaryForTool, toolBaseName } from '../src/desks/boundaries.ts';
+import { ROLE_BLOCK_HEADING, DIVISION_HEADING, boundaryForTool, inputRecipient, toolBaseName } from '../src/desks/boundaries.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const DECISIONS = { kind: 'desk' as const, role: 'decisions' };
@@ -78,6 +78,15 @@ describe('boundaryForTool: ORCHESTRATOR', () => {
     assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', quoted), null);
     const nested = JSON.stringify({ to: 'DECISIONS', meta: { to: 'human' } });
     assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', nested), null);
+  });
+  it('a structured recipient wins over the summary (opencode reports a title there)', () => {
+    assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', 'Send message to human', 'human')?.rule, 'orchestrator-asks-human');
+    assert.equal(boundaryForTool(ORCHESTRATOR, 'desks_desk_send', '{"to":"human"}', 'DECISIONS'), null);
+    assert.equal(inputRecipient({ to: 'human', text: 'x' }), 'human');
+    assert.equal(inputRecipient('{"to":"HUMAN"}'), 'HUMAN');
+    assert.equal(inputRecipient({ to: 3 }), undefined);
+    assert.equal(inputRecipient('not json'), undefined);
+    assert.equal(inputRecipient(undefined), undefined);
   });
   it('reads the recipient from a clipped summary, ignoring a clipped text value', () => {
     const clipped = JSON.stringify({ to: 'human', text: 'x'.repeat(300) }).slice(0, 199) + '…';

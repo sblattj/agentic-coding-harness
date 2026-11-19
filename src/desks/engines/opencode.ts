@@ -22,6 +22,7 @@ import { deskPaths } from "../roster.ts";
 import { desksMcpDef } from "../self.ts";
 import type { Engine, EngineEvent, GoalStatus, HostSpec, McpServerDef } from "../types.ts";
 import { ENGINE_PORT_OFFSET } from "../types.ts";
+import { inputRecipient } from "../boundaries.ts";
 import { readOpencodeGoal, setOpencodeGoal } from "./opencode-goals.ts";
 
 /** What start() needs from a spawned `opencode serve`. The default wraps node:child_process. */
@@ -1274,7 +1275,8 @@ export class OpenCodeEngine implements Engine {
         this.emittedTool.add(key);
         const input = c.state?.input;
         const raw = input === undefined ? "" : typeof input === "string" ? input : JSON.stringify(input);
-        this.emit({ type: "tool", data: { tool: c.name ?? "?", summary: raw.length > 200 ? `${raw.slice(0, 197)}...` : raw, status, callId: c.id } });
+        const to = inputRecipient(input);
+        this.emit({ type: "tool", data: { tool: c.name ?? "?", summary: raw.length > 200 ? `${raw.slice(0, 197)}...` : raw, status, callId: c.id, ...(to !== undefined ? { to } : {}) } });
       }
     }
     if (m.tokens && m.time?.completed !== undefined) this.emitUsageV2(id, m.tokens, m.cost, m.model?.providerID, m.model?.id);
@@ -1361,7 +1363,8 @@ export class OpenCodeEngine implements Engine {
       if (status !== "completed" && status !== "error") return;
       if (this.emittedTool.has(key)) return;
       this.emittedTool.add(key);
-      this.emit({ type: "tool", data: { tool: p.tool ?? "?", summary: toolSummary(p), status, callId: p.callID } });
+      const to = inputRecipient(p.state?.input);
+      this.emit({ type: "tool", data: { tool: p.tool ?? "?", summary: toolSummary(p), status, callId: p.callID, ...(to !== undefined ? { to } : {}) } });
     } else if (p.type === "step-finish") {
       if (this.emittedUsage.has(key) || !p.tokens) return;
       this.emittedUsage.add(key);

@@ -71,8 +71,8 @@ class FakeEngine implements Engine {
     this.emit({ type: 'turn_start', data: {} });
   }
   /** An engine-reported tool call (what opencode/driver emit as a `tool` event). */
-  tool(tool: string, summary = ''): void {
-    this.emit({ type: 'tool', data: { tool, summary } });
+  tool(tool: string, summary = '', extra: Record<string, unknown> = {}): void {
+    this.emit({ type: 'tool', data: { tool, summary, ...extra } });
   }
   finishTurn(reply = 'ok'): void {
     this.emit({ type: 'text', data: { text: reply } });
@@ -771,6 +771,20 @@ describe('desk host: role boundary warnings', () => {
       assert.equal(b.length, 1);
       assert.equal(b[0]?.data.rule, 'orchestrator-asks-human');
       assert.equal(b[0]?.data.tool, 'desks_desk_send');
+    } finally {
+      await stopAndWait(s);
+    }
+  });
+
+  it('an ORCHESTRATOR desk_send to the human whose summary is a title still yields a boundary event', async () => {
+    const s = await start({ name: 'ORCHESTRATOR', role: 'orchestrator' });
+    try {
+      s.engine.tool('desks_desk_send', 'Send message to human', { to: 'human' });
+      s.engine.tool('desks_desk_send', 'Send message to DECISIONS', { to: 'DECISIONS' });
+      await waitFor(async () => (await hostEvents(s.t, 0)).filter((e) => e.type === 'tool').length === 2, 'two tool events');
+      const b = await boundaries(s);
+      assert.equal(b.length, 1);
+      assert.equal(b[0]?.data.rule, 'orchestrator-asks-human');
     } finally {
       await stopAndWait(s);
     }

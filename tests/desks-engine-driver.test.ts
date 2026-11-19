@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { readRunRecord } from '../src/core/registry.ts';
 import type { AgentAdapter, AgentEvent, AgentHandle, RunSpec } from '../src/core/types.ts';
-import { DriverEngine, roleContext } from '../src/desks/engines/driver.ts';
+import { DriverEngine, mapAgentEvent, roleContext } from '../src/desks/engines/driver.ts';
 import { readRoleSent, roleHash, writeRoleSent } from '../src/desks/role-sent.ts';
 import type { GoalLoopHandle, GoalLoopOptions } from '../src/desks/engines/goal-loop.ts';
 import type { EngineEvent, GoalStatus, HostSpec } from '../src/desks/types.ts';
@@ -101,6 +101,17 @@ async function idle(engine: DriverEngine, ms = 10_000): Promise<void> {
 }
 
 const ENV = { ACH_SELF_ARGV: JSON.stringify(['/bin/ach-test']) };
+
+describe('mapAgentEvent: tool recipient', () => {
+  it('copies a tool input `to` onto the tool event, and adds nothing without one', () => {
+    const send = mapAgentEvent({ type: 'tool', toolName: 'mcp__desks__desk_send', phase: 'start', input: { to: 'human', text: 'x' } } as unknown as AgentEvent);
+    assert.equal(send?.data.to, 'human');
+    const call = mapAgentEvent({ type: 'tool_call', functionName: 'desk_send', arguments: '{"to":"DECISIONS"}' } as unknown as AgentEvent);
+    assert.equal(call?.data.to, 'DECISIONS');
+    const bash = mapAgentEvent({ type: 'tool', toolName: 'bash', phase: 'start', input: { command: 'ls' } } as unknown as AgentEvent);
+    assert.equal(bash !== null && 'to' in bash.data, false);
+  });
+});
 
 describe('DriverEngine (fake adapter through the real core driver)', () => {
   it('desk reload: resumeSessionId is the first turn\'s resume id, without the role prompt; an adapter that cannot resume starts fresh', async () => {

@@ -382,7 +382,7 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
     record(e.type, e.data);
     // Role boundaries: a desk acting outside its role gets one `boundary` warning. Nothing is blocked.
     if (e.type === "tool") {
-      const w = boundaryForTool(spec, typeof e.data.tool === "string" ? e.data.tool : "", typeof e.data.summary === "string" ? e.data.summary : "");
+      const w = boundaryForTool(spec, typeof e.data.tool === "string" ? e.data.tool : "", typeof e.data.summary === "string" ? e.data.summary : "", typeof e.data.to === "string" ? e.data.to : undefined);
       if (w !== null) record("boundary", { ...w });
     }
     // fatal: the engine cannot continue (its server died); stop with status error, exit 1.

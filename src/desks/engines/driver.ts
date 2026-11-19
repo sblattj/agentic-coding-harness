@@ -36,6 +36,7 @@ import type { AgentAdapter, AgentEvent, RunResult, RunSpec } from "../../core/ty
 import { roleNeedsRefresh, roleRefreshNote, writeRoleSent } from "../role-sent.ts";
 import { achSelfArgv, desksMcpDef } from "../self.ts";
 import type { Engine, EngineEvent, GoalStatus, HostSpec, McpServerDef } from "../types.ts";
+import { inputRecipient } from "../boundaries.ts";
 import { startGoalLoop as realStartGoalLoop, type GoalLoopHandle, type GoalLoopOptions } from "./goal-loop.ts";
 
 export interface DriverEngineDeps {
@@ -76,6 +77,12 @@ export function assistantText(e: AgentEvent): string {
   return "";
 }
 
+/** `{to}` when a tool call's input names a recipient (see inputRecipient), else `{}`. */
+function withRecipient(input: unknown): { to?: string } {
+  const to = inputRecipient(input);
+  return to === undefined ? {} : { to };
+}
+
 function summarize(v: unknown, max = 200): string {
   if (v === undefined || v === null || v === "") return "";
   const s = typeof v === "string" ? v : JSON.stringify(v);
@@ -88,12 +95,12 @@ export function mapAgentEvent(e: AgentEvent): EngineEvent | null {
   if (text !== "") return { type: "text", data: { text } };
   if (e.type === "tool_call") {
     const t = e as { functionName?: string; title?: string; arguments?: unknown };
-    return { type: "tool", data: { tool: t.functionName ?? t.title ?? "tool", summary: summarize(t.arguments) } };
+    return { type: "tool", data: { tool: t.functionName ?? t.title ?? "tool", summary: summarize(t.arguments), ...withRecipient(t.arguments) } };
   }
   if (e.type === "tool") {
     const t = e as { toolName: string; phase: string; input?: unknown };
     if (t.phase !== "start") return null;
-    return { type: "tool", data: { tool: t.toolName, summary: summarize(t.input) } };
+    return { type: "tool", data: { tool: t.toolName, summary: summarize(t.input), ...withRecipient(t.input) } };
   }
   if (e.type === "error") {
     const m = (e as { message?: string }).message;

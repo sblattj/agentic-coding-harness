@@ -126,7 +126,23 @@ export function summaryRecipient(summary: string): string | null {
  * inside the desk's role. `desk.role` is the layout role name (spec.role); a
  * lane (`kind: "lane"`) is never classified.
  */
-export function boundaryForTool(desk: { kind: DeskKind; role: string }, tool: string, summary = ""): BoundaryWarning | null {
+/**
+ * The string `to` of a tool call's input (an object, or a JSON string of one), else undefined.
+ * Engines copy it onto `tool` events as `data.to`, so the human-send check does not depend on
+ * the summary (opencode puts the tool's title there when it has one).
+ */
+export function inputRecipient(input: unknown): string | undefined {
+  let v = input;
+  if (typeof v === "string") {
+    try { v = JSON.parse(v); } catch { return undefined; }
+  }
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const to = (v as Record<string, unknown>).to;
+  return typeof to === "string" ? to : undefined;
+}
+
+/** `boundaryForTool`'s `recipient` (from `data.to`) wins over the summary; the summary is read only when the engine sent none. */
+export function boundaryForTool(desk: { kind: DeskKind; role: string }, tool: string, summary = "", recipient?: string): BoundaryWarning | null {
   if (desk.kind !== "desk") return null;
   const role = desk.role.trim().toLowerCase();
   if (role === "decisions" || role === "listener") {
@@ -141,7 +157,7 @@ export function boundaryForTool(desk: { kind: DeskKind; role: string }, tool: st
     if (isDeskTool(tool, "decision_open")) {
       return { rule: "orchestrator-asks-human", tool, detail: `ORCHESTRATOR opened a question for the human with ${tool}: forward the call to DECISIONS (open: <call> | context | asked by)` };
     }
-    if (isDeskTool(tool, "desk_send") && summaryRecipient(summary)?.trim().toLowerCase() === "human") {
+    if (isDeskTool(tool, "desk_send") && (recipient ?? summaryRecipient(summary))?.trim().toLowerCase() === "human") {
       return { rule: "orchestrator-asks-human", tool, detail: `ORCHESTRATOR addressed the human with ${tool}: forward the call to DECISIONS (open: <call> | context | asked by)` };
     }
   }
