@@ -150,6 +150,39 @@ describe('auto reload after an ach upgrade: host watcher (in-process)', () => {
     }
   });
 
+  it('a poll right after the desk went idle waits out the settle window (first sighting and while a nudge is armed); a message in the window defers the reload', async () => {
+    let idle = true;
+    const spawns: number[] = [];
+    const spec: HostSpec = {
+      stack: 'auto', stateDir: tmpDir(), name: 'ALPHA', kind: 'desk', role: 'orchestrator', roleFiles: [],
+      agent: 'claude', engine: 'driver', mcps: [], port: 0, cwd: '/', runId: 'run-s',
+    };
+    const settleMs = 300;
+    const w = startVersionWatcher({ spec, running: '1.0.0', pollMs: 0, settleMs, isIdle: () => idle, probe: async () => '1.1.0', spawn: () => (spawns.push(Date.now()), 1), log: () => undefined });
+    try {
+      // First sighting: a turn just ended (nudge with nothing pending yet), then the poll lands.
+      w.nudge();
+      await w.tick();
+      assert.equal(spawns.length, 0, 'first-sighting poll inside the settle window: no spawn yet');
+      // A message arrives inside the window: the desk is busy when the window ends.
+      idle = false;
+      await sleep(settleMs + 150);
+      assert.equal(spawns.length, 0, 'busy when the window ended: still no spawn');
+      // That turn ends; the poll lands while the nudge's settle timer is armed.
+      idle = true;
+      const idleAt = Date.now();
+      w.nudge();
+      await w.tick();
+      assert.equal(spawns.length, 0, 'poll while the settle timer is armed: no spawn yet');
+      await waitFor(() => spawns.length === 1, 'spawn once idle held the settle window', 3000);
+      assert.ok(spawns[0]! - idleAt >= settleMs - 5, `spawned ${spawns[0]! - idleAt} ms after idle, settle is ${settleMs}`);
+      await sleep(settleMs + 100);
+      assert.equal(spawns.length, 1, 'one spawn');
+    } finally {
+      w.stop();
+    }
+  });
+
   it('installed version not newer -> no reload', async () => {
     const h = await startHost({ installed: () => '1.0.0' });
     try {

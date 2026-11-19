@@ -140,7 +140,7 @@ export interface VersionWatcherOpts {
 }
 
 export interface VersionWatcher {
-  /** The host went idle: if a reload is waiting for that, try it once idle has held settleMs. */
+  /** The host went idle: starts the settle window every reload honors (a poll too); a waiting reload is tried once idle has held settleMs. */
   nudge(): void;
   stop(): void;
   /** One check now (tests). */
@@ -160,6 +160,18 @@ export function startVersionWatcher(o: VersionWatcherOpts): VersionWatcher {
   let waitingLogged: string | undefined;
   let lastSpawnAt: number | undefined;
   let settleTimer: NodeJS.Timeout | undefined;
+  /** When the desk last went idle (nudge); undefined = idle since this host started, no turn yet. */
+  let idleSince: number | undefined;
+
+  /** Try again once idle has held settleMs (re-armed by every nudge; a check that fires early re-arms). */
+  const armSettle = (ms: number): void => {
+    if (settleTimer !== undefined) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = undefined;
+      if (o.isIdle()) void tick();
+    }, Math.max(0, ms));
+    settleTimer.unref();
+  };
 
   const check = async (): Promise<void> => {
     const installed = pending ?? (await o.probe());
@@ -191,6 +203,15 @@ export function startVersionWatcher(o: VersionWatcherOpts): VersionWatcher {
       }
       return;
     }
+    // Idle, but a turn ended less than settleMs ago (a poll can land right after it, before any
+    // nudge timer fires): wait out the rest of the window, as nudge() does, so a message that lands
+    // in it is served first.
+    const wait = idleSince === undefined ? 0 : settleMs - (Date.now() - idleSince);
+    if (wait > 0) {
+      pending = installed;
+      armSettle(wait);
+      return;
+    }
     pending = undefined;
     writeAutoReloadMark(o.spec, { version: installed, runId: o.spec.runId, attempts: attempts + 1, at: Date.now() });
     lastSpawnAt = Date.now();
@@ -214,13 +235,10 @@ export function startVersionWatcher(o: VersionWatcherOpts): VersionWatcher {
 
   return {
     nudge() {
-      if (stopped || pending === undefined) return;
-      if (settleTimer !== undefined) clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => {
-        settleTimer = undefined;
-        if (o.isIdle()) void tick();
-      }, settleMs);
-      settleTimer.unref();
+      if (stopped) return;
+      idleSince = Date.now();
+      if (pending === undefined) return;
+      armSettle(settleMs);
     },
     stop() {
       stopped = true;
