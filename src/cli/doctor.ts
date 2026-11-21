@@ -116,6 +116,7 @@ const INSTALL_HINT: Record<AgentName, string> = {
   claude: "install Claude Code (npm i -g @anthropic-ai/claude-code) or put `claude` on PATH",
   codex: "install the Codex CLI (npm i -g @openai/codex) or put `codex` on PATH",
   gemini: "install the Gemini CLI (npm i -g @google/gemini-cli) or put `gemini` on PATH",
+  agy: "install the Antigravity CLI (its installer puts `agy` in ~/.local/bin) or put `agy` on PATH",
   opencode: "install opencode (npm i -g opencode-ai) or put `opencode` on PATH",
   null: "built-in offline adapter; no installation needed",
   kiro: "install kiro-cli or point KIRO_CLI_BIN at it",
@@ -136,6 +137,8 @@ const AUTH_ENV: Record<AgentName, string[]> = {
   claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
   codex: ["OPENAI_API_KEY"],
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  // The agy binary reads both (it warns "Both GOOGLE_API_KEY and GEMINI_API_KEY are set").
+  agy: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   opencode: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"],
   kiro: ["KIRO_API_KEY"],
   "kiro-ide": [],
@@ -152,6 +155,7 @@ const MODEL_FAMILY: Partial<Record<AgentName, { re: RegExp; label: string }>> = 
   claude: { re: /^claude-/, label: "claude-*" },
   codex: { re: /^(gpt-|o\d|codex-)/, label: "gpt-* / o* / codex-*" },
   gemini: { re: /^gemini-/, label: "gemini-*" },
+  agy: { re: /^gemini-/, label: "gemini-* (see `agy models`)" },
 };
 
 // ------------------------------------------------------------------ helpers
@@ -510,6 +514,16 @@ async function checkAuth(agent: AgentName, env: NodeJS.ProcessEnv, allAgents = f
       if (await exists(adc)) return mk("verified", `gcloud application-default credentials present (${offline})`);
       return mk("failed", `no ${names.join(" / ")} in env, no GOOGLE_APPLICATION_CREDENTIALS, no ${oauth}`, "run `gemini` once and sign in, or set GEMINI_API_KEY");
     }
+    case "agy": {
+      // agy 1.5.x keeps its Google sign-in in the OS keychain (a generic
+      // password item with account "antigravity" on macOS), not in a file
+      // under ~/.gemini/antigravity-cli, so it is not checkable offline.
+      return mk(
+        "unproven",
+        `no ${names.join(" / ")} in env; agy keeps its Google sign-in in the OS keychain, which is not checkable offline`,
+        "if runs fail to authenticate, run `agy` once and sign in, or set GEMINI_API_KEY",
+      );
+    }
     case "opencode": {
       const dataHome = env.XDG_DATA_HOME && env.XDG_DATA_HOME !== "" ? env.XDG_DATA_HOME : path.join(home, ".local", "share");
       const p = path.join(dataHome, "opencode", "auth.json");
@@ -662,7 +676,10 @@ function serversFromJsonMap(map: unknown): McpServerDecl[] {
     if (!isObj(v)) return { name };
     if (typeof v.command === "string") return { name, command: v.command };
     if (Array.isArray(v.command) && typeof v.command[0] === "string") return { name, command: v.command[0] };
-    if (typeof v.url === "string" || typeof v.httpUrl === "string" || v.type === "remote") return { name, remote: true };
+    // agy's ~/.gemini/config/mcp_config.json names a remote server `serverUrl` (observed, agy 1.5.13).
+    if (typeof v.url === "string" || typeof v.httpUrl === "string" || typeof v.serverUrl === "string" || v.type === "remote") {
+      return { name, remote: true };
+    }
     return { name };
   });
 }
@@ -711,6 +728,10 @@ export async function scanMcp(agent: AgentName, env: NodeJS.ProcessEnv, cwd: str
     case "gemini":
       await jsonSource(path.join(home, ".gemini", "settings.json"), "mcpServers");
       await jsonSource(path.join(cwd, ".gemini", "settings.json"), "mcpServers");
+      break;
+    case "agy":
+      // Antigravity's MCP servers (`agy mcp add`) live in ~/.gemini/config/mcp_config.json.
+      await jsonSource(path.join(home, ".gemini", "config", "mcp_config.json"), "mcpServers");
       break;
     case "copilot": {
       // `copilot mcp` servers live in <COPILOT_HOME>/mcp-config.json

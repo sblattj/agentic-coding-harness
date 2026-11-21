@@ -238,6 +238,14 @@ function fromGeminiFlat(d: Record<string, unknown>): { tok: Tok; model?: string 
   return tok ? { tok } : null;
 }
 
+/** agy step/result usage {input_tokens (uncached), cache_read_tokens,
+ *  output_tokens (thinking included)} (src/adapters/agy.ts, #231). */
+function fromAgy(d: Record<string, unknown>): { tok: Tok } | null {
+  if (!("cache_read_tokens" in d) || "cached_input_tokens" in d) return null;
+  if (!isNum(d.input_tokens) || !isNum(d.output_tokens)) return null;
+  return { tok: { inputTokens: d.input_tokens, outputTokens: d.output_tokens, cacheReadTokens: n0(d.cache_read_tokens), cacheWriteTokens: 0 } };
+}
+
 /** codex turn.completed usage: input_tokens INCLUDES cached_input_tokens. */
 function fromCodex(d: Record<string, unknown>): { tok: Tok } | null {
   if (!isNum(d.input_tokens) || !isNum(d.output_tokens)) return null;
@@ -257,6 +265,9 @@ const RAW_EXTRACTORS: Record<string, (d: Record<string, unknown>) => RawTokens |
   opencode: fromOpencode,
   kiro: fromKiro,
   gemini: fromGeminiFlat,
+  // Before codex: an agy payload also has input_tokens/output_tokens, but
+  // its input is already uncached and its cache reads are cache_read_tokens.
+  agy: fromAgy,
   codex: fromCodex,
   // prime-agent usage {input (uncached), output, cacheRead, cacheWrite,
   // totalTokens, cost} is the same top-level shape as the claude house payload.

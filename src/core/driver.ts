@@ -26,6 +26,7 @@ import { OpenCodeAdapter } from '../adapters/opencode.js';
 import { KiroAdapter } from '../adapters/kiro.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { GeminiAdapter } from '../adapters/gemini.js';
+import { AgyAdapter } from '../adapters/agy.js';
 import { PrimeAdapter } from '../adapters/prime.js';
 import { KiroIdeAdapter } from '../adapters/kiro-ide.js';
 import { CopilotAdapter } from '../adapters/copilot.js';
@@ -204,7 +205,7 @@ export interface Driver {
   installSignalAbort(runId: string, signals?: readonly NodeJS.Signals[]): () => void;
 }
 
-const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'prime', 'kiro-ide', 'copilot', 'cursor', 'null'] as const;
+const ADAPTER_MODULE_NAMES = ['claude', 'opencode', 'kiro', 'codex', 'gemini', 'agy', 'prime', 'kiro-ide', 'copilot', 'cursor', 'null'] as const;
 
 /** Default signals wired by installSignalAbort (#11). */
 const ABORT_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
@@ -233,6 +234,7 @@ export async function defaultAdapters(): Promise<Record<string, AgentAdapter>> {
     kiro: () => new KiroAdapter(),
     codex: () => new CodexAdapter(),
     gemini: () => new GeminiAdapter(),
+    agy: () => new AgyAdapter(),
     prime: () => new PrimeAdapter(),
     'kiro-ide': () => new KiroIdeAdapter(),
     copilot: () => new CopilotAdapter(),

@@ -25,6 +25,8 @@ const AGENT_DEFAULT_MODELS: Record<(typeof AGENTS)[number], string> = {
   kiro: 'claude-sonnet-4-5',
   codex: 'gpt-5.6',
   gemini: 'gemini-3-flash',
+  // agy runs gemini-4-* by default, which has no list rates yet (cost n/a); a priceable stand-in, as for kiro-ide.
+  agy: 'gemini-3-flash',
   // prime-agent stamps message.model: the provider's bare model id.
   prime: 'claude-sonnet-5',
   // kiro-ide reports no tokens (credits only); a priceable stand-in, as for kiro.

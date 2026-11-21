@@ -239,6 +239,30 @@ describe("runDoctor — per-agent checks", () => {
     assert.match(check(missing, "copilot", "binary").hint ?? "", /npm i -g @github\/copilot/);
   });
 
+  it("agy: auth via GEMINI_API_KEY, else unproven (keychain sign-in); gemini- models pass the family check; MCP from ~/.gemini/config/mcp_config.json treats serverUrl as remote", async () => {
+    const w = await world();
+    await fakeBin(w, "agy", 'echo "1.5.13"');
+    const base = { agents: ["agy" as const], cwd: w.cwd, stateDir: w.state };
+    const none = await runDoctor({ ...base, env: w.env });
+    assert.equal(check(none, "agy", "binary").status, "verified");
+    assert.match(check(none, "agy", "version").detail, /1\.5\.13/);
+    assert.equal(check(none, "agy", "auth").status, "unproven");
+    const tok = await runDoctor({ ...base, env: { ...w.env, GEMINI_API_KEY: "key_SECRET" } });
+    assert.equal(check(tok, "agy", "auth").status, "verified");
+    assert.doesNotMatch(JSON.stringify(tok), /key_SECRET/);
+    const goog = await runDoctor({ ...base, env: { ...w.env, GOOGLE_API_KEY: "key_SECRET" } });
+    assert.equal(check(goog, "agy", "auth").status, "verified");
+    const cfg = path.join(w.home, ".gemini", "config");
+    await fs.mkdir(cfg, { recursive: true });
+    await fs.writeFile(path.join(cfg, "mcp_config.json"), JSON.stringify({ mcpServers: { remote: { serverUrl: "http://127.0.0.1:1/mcp" } } }));
+    const remote = await runDoctor({ ...base, env: w.env });
+    assert.equal(check(remote, "agy", "mcp").status, "verified");
+    assert.match(check(remote, "agy", "mcp").detail, /1 remote url/);
+    await fs.writeFile(path.join(cfg, "mcp_config.json"), JSON.stringify({ mcpServers: { s: { command: "no-such-mcp-cmd" } } }));
+    const bad = await runDoctor({ ...base, env: w.env });
+    assert.equal(check(bad, "agy", "mcp").status, "failed");
+  });
+
   it("cursor: binary honours CURSOR_AGENT_BIN; auth via CURSOR_API_KEY, else unproven (a stored login is not checkable offline); model is not table-checked; MCP from ~/.cursor/mcp.json", async () => {
     const w = await world();
     await fakeBin(w, "cursor-agent", 'echo "2026.10.01-stub"');

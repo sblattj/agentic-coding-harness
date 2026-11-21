@@ -395,6 +395,18 @@ export function normalizeGemini(agent: string, raw: unknown, timestamp = Date.no
   return null;
 }
 
+/** agy usage {input_tokens (uncached), cache_read_tokens, output_tokens
+ *  (thinking included), thinking_tokens} (src/adapters/agy.ts, #231). No model in the payload. */
+export function normalizeAgy(agent: string, raw: unknown, timestamp = Date.now()): CanonicalTokenRecord | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const u = raw as Record<string, unknown>;
+  if (!('cache_read_tokens' in u) || 'cached_input_tokens' in u) return null;
+  const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+  if (typeof u.input_tokens !== 'number' || typeof u.output_tokens !== 'number') return null;
+  const thinking = n(u.thinking_tokens);
+  return record(agent, 'unknown', n(u.input_tokens), n(u.output_tokens), n(u.cache_read_tokens), 0, timestamp, thinking || undefined);
+}
+
 export function normalizeKiro(agent: string, raw: unknown, timestamp = Date.now()): CanonicalTokenRecord | null {
   const parsed = KiroTokenUsage.safeParse(raw);
   if (!parsed.success) return null;
@@ -436,6 +448,8 @@ export function normalizePrime(agent: string, raw: unknown, timestamp = Date.now
 const EXTRACTORS: Record<string, (agent: string, raw: unknown, ts: number) => CanonicalTokenRecord | null> = {
   claude: normalizeClaude,
   opencode: normalizeOpencode,
+  // agy before codex: both carry input_tokens/output_tokens; agy's input is uncached.
+  agy: normalizeAgy,
   codex: normalizeCodex,
   gemini: normalizeGemini,
   kiro: normalizeKiro,

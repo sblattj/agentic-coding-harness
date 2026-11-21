@@ -106,6 +106,7 @@ const AGENT_BINARIES: Record<string, string> = {
   claude: 'claude',
   codex: 'codex',
   gemini: 'gemini',
+  agy: 'agy',
   cursor: 'cursor-agent',
   'cursor-agent': 'cursor-agent',
   copilot: 'copilot',

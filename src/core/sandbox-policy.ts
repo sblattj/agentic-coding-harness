@@ -80,6 +80,8 @@ const HONORED: Record<string, readonly PolicyField[]> = {
   claude: ["permissionMode", "allowedTools", "disallowedTools", "mcpConfig"],
   gemini: ["permissionMode", "allowedTools", "disallowedTools", "mcpConfig"],
   codex: ["permissionMode"],
+  // agySandboxArgs: permissionMode only (agy has no allow/deny-tool or MCP-config flag).
+  agy: ["permissionMode"],
   kiro: ["allowedTools"],
   // copilotSandboxArgs maps all four; its own copilotUnsupportedSandbox warns
   // about permissionMode values it cannot express.

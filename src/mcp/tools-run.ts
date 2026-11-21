@@ -19,6 +19,7 @@ import { KIRO_CAPABILITIES } from "../adapters/kiro.ts";
 import { KIRO_IDE_CAPABILITIES, defaultKiroBin } from "../adapters/kiro-ide.ts";
 import { CODEX_CAPABILITIES } from "../adapters/codex.ts";
 import { GEMINI_CAPABILITIES } from "../adapters/gemini.ts";
+import { AGY_CAPABILITIES } from "../adapters/agy.ts";
 import { PRIME_CAPABILITIES } from "../adapters/prime.ts";
 import { COPILOT_CAPABILITIES } from "../adapters/copilot.ts";
 import { CURSOR_CAPABILITIES } from "../adapters/cursor.ts";
@@ -60,7 +61,7 @@ export const RunArgsSchema = z.object({
 export const SANDBOX_INPUT_SCHEMA = {
   type: "object",
   description:
-    "Typed sandbox/permission policy, the same four fields as `ach run --permission-mode/--allowed-tools/--disallowed-tools/--mcp-config`. A field the chosen agent cannot honor is dropped and reported in the result's `warnings` (claude and gemini take all four, codex permissionMode only, kiro and prime allowedTools only).",
+    "Typed sandbox/permission policy, the same four fields as `ach run --permission-mode/--allowed-tools/--disallowed-tools/--mcp-config`. A field the chosen agent cannot honor is dropped and reported in the result's `warnings` (claude and gemini take all four, codex and agy permissionMode only, kiro and prime allowedTools only).",
   additionalProperties: false,
   properties: {
     permissionMode: { type: "string", description: "'ask' and 'dontAsk' are portable; any other value is the agent's native mode (claude bypassPermissions/acceptEdits, codex on-failure, gemini yolo)" },
@@ -177,6 +178,8 @@ function agentInfo(name: string): { command: string | null; capabilities?: Adapt
       return { command: "codex", capabilities: CODEX_CAPABILITIES };
     case "gemini":
       return { command: "gemini", capabilities: GEMINI_CAPABILITIES };
+    case "agy":
+      return { command: "agy", capabilities: AGY_CAPABILITIES };
     case "kiro-ide":
       return { command: defaultKiroBin(process.platform), capabilities: KIRO_IDE_CAPABILITIES };
     case "prime":
@@ -243,7 +246,7 @@ export function registerRunTools(
   server.registerTool({
     name: "harness_run",
     description:
-      "Run one harness agent (claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor) with a prompt and optional model/cwd/budget/turn limits and sandbox policy (permissionMode/allowedTools/disallowedTools/mcpConfig; fields the agent cannot honor are dropped and listed in warnings); resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
+      "Run one harness agent (claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cursor) with a prompt and optional model/cwd/budget/turn limits and sandbox policy (permissionMode/allowedTools/disallowedTools/mcpConfig; fields the agent cannot honor are dropped and listed in warnings); resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
     inputSchema: {
       type: "object",
       properties: {

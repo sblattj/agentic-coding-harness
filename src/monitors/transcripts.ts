@@ -37,7 +37,7 @@ export interface CanonicalTokenRecord {
   sourcePath?: string;
   /** Which CLI agent produced the record. amp/goose/qwen are read-only
    * transcript sources (src/monitors/transcript-sources.ts). */
-  agent: "claude" | "codex" | "gemini" | "amp" | "goose" | "qwen" | "cursor" | "prime" | "copilot";
+  agent: "claude" | "codex" | "gemini" | "agy" | "amp" | "goose" | "qwen" | "cursor" | "prime" | "copilot";
   /** Session identifier when the source exposes one, else null. */
   sessionId: string | null;
   /** ISO-8601 timestamp when the source exposes one, else null. */
@@ -990,6 +990,52 @@ export async function parseGeminiChat(
 }
 
 // ---------------------------------------------------------------------------
+// Antigravity CLI (agy) brain transcripts (#231)
+// ---------------------------------------------------------------------------
+
+const AgyTranscriptRowSchema = z.object({
+  type: z.string().nullish(),
+  created_at: z.string().nullish(),
+  model: z.string().nullish(),
+  input_tokens: z.number().nullish(),
+  cache_read_tokens: z.number().nullish(),
+  output_tokens: z.number().nullish(),
+});
+
+/**
+ * Parse one agy conversation log
+ * (~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl,
+ * agy 1.5.6). Each PLANNER_RESPONSE row is one model call carrying its model
+ * and tokens: input_tokens is the UNCACHED prompt slice and
+ * cache_read_tokens is separate (verified against the stream-json usage of
+ * the same call), output_tokens includes thinking. The row has no thinking
+ * count, so reasoning stays 0. sessionId is the conversation directory name.
+ * transcript_full.jsonl in the same dir repeats these rows and is not read.
+ */
+export async function parseAgyTranscript(path: string): Promise<CanonicalTokenRecord[]> {
+  const sessionId = basename(dirname(dirname(dirname(path))));
+  const records: CanonicalTokenRecord[] = [];
+  for await (const row of readJsonlLines(path, (line) => line.includes('"PLANNER_RESPONSE"'))) {
+    const parsed = AgyTranscriptRowSchema.safeParse(row);
+    if (!parsed.success || parsed.data.type !== "PLANNER_RESPONSE") continue;
+    const r = parsed.data;
+    if (r.input_tokens == null && r.output_tokens == null && r.cache_read_tokens == null) continue;
+    records.push({
+      agent: "agy",
+      sessionId,
+      timestamp: r.created_at ?? null,
+      model: r.model ?? null,
+      input: r.input_tokens ?? 0,
+      output: r.output_tokens ?? 0,
+      cacheRead: r.cache_read_tokens ?? 0,
+      cacheWrite: 0,
+      reasoning: 0,
+    });
+  }
+  return records;
+}
+
+// ---------------------------------------------------------------------------
 // scanAll
 // ---------------------------------------------------------------------------
 
@@ -1000,6 +1046,8 @@ export interface ScanOptions {
   codexDir?: string;
   /** Gemini tmp dir containing <hash>/chats/*.json files. */
   geminiDir?: string;
+  /** agy brain dir (~/.gemini/antigravity-cli/brain) holding <id>/.system_generated/logs/transcript.jsonl. */
+  agyDir?: string;
   /** Prime Agent dir (~/.prime/agent) holding sessions/ and session-artifacts/. */
   primeDir?: string;
   /** Copilot CLI session-state dir (${COPILOT_HOME:-~/.copilot}/session-state) holding <id>/events.jsonl. */
@@ -1040,6 +1088,14 @@ function isJsonl(filePath: string): boolean {
   return extname(filePath) === ".jsonl";
 }
 
+function isAgyTranscriptFile(filePath: string): boolean {
+  return (
+    basename(filePath) === "transcript.jsonl" &&
+    basename(dirname(filePath)) === "logs" &&
+    basename(dirname(dirname(filePath))) === ".system_generated"
+  );
+}
+
 function isGeminiChatFile(filePath: string): boolean {
   return extname(filePath) === ".json" && basename(dirname(filePath)) === "chats";
 }
@@ -1063,12 +1119,15 @@ const NATIVE_TRANSCRIPT_SOURCES = [
   { agent: "claude", option: "claudeDir", root: (home: string) => join(home, ".claude", "projects"), keep: isJsonl, parse: parseClaudeTranscript },
   { agent: "codex", option: "codexDir", root: (home: string) => join(home, ".codex", "sessions"), keep: isJsonl, parse: parseCodexRollout },
   { agent: "gemini", option: "geminiDir", root: (home: string) => join(home, ".gemini", "tmp"), keep: isGeminiChatFile, parse: parseGeminiChat },
+  // #231: launchable (ach run --agent agy) AND monitored. Under ~/.gemini but
+  // disjoint from gemini's ~/.gemini/tmp root.
+  { agent: "agy", option: "agyDir", root: (home: string) => join(home, ".gemini", "antigravity-cli", "brain"), keep: isAgyTranscriptFile, parse: parseAgyTranscript },
   { agent: "prime", option: "primeDir", root: (home: string) => join(home, ".prime", "agent"), keep: isPrimeSessionFile, parse: parsePrimeSession },
   // #23: launchable (ach run --agent copilot) AND monitored, like prime. $COPILOT_HOME relocates it.
   { agent: "copilot", option: "copilotDir", root: copilotSessionStateRoot, keep: isCopilotEventsFile, parse: parseCopilotSession },
 ] as const satisfies ReadonlyArray<{
   agent: CanonicalTokenRecord["agent"];
-  option: "claudeDir" | "codexDir" | "geminiDir" | "primeDir" | "copilotDir";
+  option: "claudeDir" | "codexDir" | "geminiDir" | "agyDir" | "primeDir" | "copilotDir";
   root: (home: string) => string;
   keep: (filePath: string) => boolean;
   parse: (filePath: string) => Promise<CanonicalTokenRecord[]>;
@@ -1103,7 +1162,7 @@ export function transcriptSources(opts: ScanOptions = {}): TranscriptSource[] {
 export function scanOptionsForRoot(root: string): Required<ScanOptions> {
   const native = Object.fromEntries(NATIVE_TRANSCRIPT_SOURCES.map((src) => [src.option, src.root(root)])) as Pick<
     Required<ScanOptions>,
-    "claudeDir" | "codexDir" | "geminiDir" | "primeDir" | "copilotDir"
+    "claudeDir" | "codexDir" | "geminiDir" | "agyDir" | "primeDir" | "copilotDir"
   >;
   return {
     ...native,

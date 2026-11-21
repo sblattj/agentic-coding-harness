@@ -45,10 +45,10 @@ export const CONTEXT_WARN_FRACTION = 0.85;
 export const CHARS_PER_TOKEN_ESTIMATE = 4;
 
 /** Agents the meter serves. Kiro is excluded: its session store owns the meter. */
-const METERED_AGENTS = new Set(['claude', 'codex', 'gemini', 'opencode']);
+const METERED_AGENTS = new Set(['claude', 'codex', 'gemini', 'agy', 'opencode']);
 
 /** Agents whose `usage` events are one model call each (else: turn/run totals). */
-const PER_CALL_USAGE_AGENTS = new Set(['opencode']);
+const PER_CALL_USAGE_AGENTS = new Set(['opencode', 'agy']);
 
 let bundledTable: Map<string, number> | null = null;
 

@@ -17,7 +17,7 @@ export const ARCHIVE_USAGE = `usage: ach archive [--agent A] [--days N] [--out D
        ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
 
   Copies machine transcripts (~/.claude/projects, ~/.codex/sessions,
-  ~/.gemini/tmp, ~/.prime/agent, and the read-only amp/goose/qwen/cursor stores; SQLite
+  ~/.gemini/tmp, ~/.gemini/antigravity-cli/brain, ~/.prime/agent, and the read-only amp/goose/qwen/cursor stores; SQLite
   stores are snapshotted), harness raw transcripts (<stateDir>/raw) and registry
   records (<stateDir>/runs) into DIR (default <stateDir>/warehouse/<batch>/)
   with a manifest.jsonl (sourcePath, sha256, runId). Unchanged files are never

@@ -70,7 +70,7 @@ test("scan of the fixture root: exactly 12 records, grand total 156005, edges ne
   assert.equal(files.length, 3);
   assert.ok(!files.includes(EDGES));
   const rs: CanonicalTokenRecord[] = [];
-  for await (const r of scanAll({ claudeDir: "/nonexistent", codexDir: "/nonexistent", geminiDir: "/nonexistent", primeDir: fixtures, sourceRoots: {} })) {
+  for await (const r of scanAll({ claudeDir: "/nonexistent", codexDir: "/nonexistent", geminiDir: "/nonexistent", agyDir: "/nonexistent", primeDir: fixtures, sourceRoots: {} })) {
     if (r.agent === "prime") rs.push(r);
   }
   assert.equal(rs.length, 12);

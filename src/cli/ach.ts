@@ -180,7 +180,7 @@ usage:
   ach --config <path> <command> ...  read that JSON config instead of the default search
                             (./.ach/config.json over ~/.config/agentic-coding-harness/config.json);
                             precedence flag > env > config file > default, see \`ach config\`
-  ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor|null> [--model M] [--resume SID]
+  ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cursor|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
               [--pr N|auto]  (PR number stamped on the run record as pr + prSource; precedence
                            flag > AGENTIC_CODING_HARNESS_PR > branch name (482-slug, pr-482, issue-482);
@@ -205,7 +205,8 @@ usage:
                            --mcp-config is a file path, or inline JSON when it starts with '{'.
                            Honored by: claude all four; gemini all four; codex --permission-mode only;
                            kiro --allowed-tools only; prime --allowed-tools only; copilot all four;
-                           cursor --permission-mode only (dontAsk|plan|ask). Any other field/agent
+                           cursor --permission-mode only (dontAsk|plan|ask); agy --permission-mode
+                           only (dontAsk|ask, or agy's accept-edits|auto|plan). Any other field/agent
                            prints a [warn] naming the dropped flag. The resolved policy is printed as a
                            '[sandbox]' header line and added to --json output)
               [--evidence-dir <dir>]  (after the run, write <dir>/metrics.json (repeat: metrics-<i>.json):
@@ -271,6 +272,13 @@ usage:
                          Cost is the CLI's own stated figure when its result carries one, else
                          computed from its reported tokens, else n/a (never estimated).
                          The Cursor IDE store is still metered by: ach stats --agent cursor.
+              agy: Antigravity CLI (agy; sign in by running agy once). Runs agy -p with
+                         --output-format stream-json and --dangerously-skip-permissions unless
+                         --permission-mode is set. Tokens and per-call TTFT come from the stream;
+                         A model with no exact rate prices via a known family when one matches
+                         (warned as estimated), else cost is n/a (gemini-4 ids today). Without --model the model id is
+                         read from agy's own log (~/.gemini/antigravity-cli/brain).
+                         --resume continues a conversation (agy --conversation <id>)
   ach run --agent custom --template '<cmd {prompt}>' [--prompt-stdin] [--template-shell] [--model M] "<prompt>"
               any CLI via a template; placeholders {prompt} {model} {workspace} (= cwd).
               The template is split argv-style and spawned WITHOUT a shell: the prompt
@@ -1729,7 +1737,9 @@ async function cmdStats(rest: string[]): Promise<number> {
         reasoningTokens: rec.reasoning,
         ...(rec.extra !== undefined ? { extra: rec.extra } : {}),
       };
-      if (rec.agent === "copilot" && runOwned.has(`${rec.agent}\0${rec.sessionId}`)) continue;
+      // copilot + agy: the run already recorded these calls (agy run rows may
+      // carry a different model label, so dedupeKey alone would not collapse them).
+      if ((rec.agent === "copilot" || rec.agent === "agy") && runOwned.has(`${rec.agent}\0${rec.sessionId}`)) continue;
       const key = dedupeKey(row);
       if (seen.has(key)) continue;
       seen.add(key);

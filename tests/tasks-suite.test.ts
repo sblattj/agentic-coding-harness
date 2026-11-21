@@ -134,6 +134,7 @@ describe("suite resolution", () => {
         { agent: "opencode", reason: "opencode-bin not found on PATH" },
         { agent: "kiro", reason: "kiro-bin not found on PATH" },
         { agent: "gemini", reason: "gemini-bin not found on PATH" },
+        { agent: "agy", reason: "agy-bin not found on PATH" },
         { agent: "prime", reason: "prime-bin not found on PATH" },
         { agent: "copilot", reason: "copilot-bin not found on PATH" },
         { agent: "cursor", reason: "cursor-bin not found on PATH" },

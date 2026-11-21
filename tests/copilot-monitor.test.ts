@@ -119,7 +119,7 @@ test("COPILOT_HOME relocates the default root (real home only); a --transcript-d
 test("scanAll over the copilot root yields one record per metered session and skips the no-shutdown one", async () => {
   const recs: Awaited<ReturnType<typeof parseCopilotSession>> = [];
   await withEnvAsync({ COPILOT_HOME: join(ROOT, "..") }, async () => {
-    for await (const r of scanAll({ claudeDir: "/nonexistent", codexDir: "/nonexistent", geminiDir: "/nonexistent", primeDir: "/nonexistent", copilotDir: join(ROOT), sourceRoots: { amp: [], goose: [], qwen: [], cursor: [] } })) {
+    for await (const r of scanAll({ claudeDir: "/nonexistent", codexDir: "/nonexistent", geminiDir: "/nonexistent", agyDir: "/nonexistent", primeDir: "/nonexistent", copilotDir: join(ROOT), sourceRoots: { amp: [], goose: [], qwen: [], cursor: [] } })) {
       if (r.agent === "copilot") recs.push(r);
     }
   });

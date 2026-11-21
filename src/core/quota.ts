@@ -79,6 +79,7 @@ const NO_SOURCE: Record<QuotaAgent, string> = {
   claude: "no snapshot — pipe the statusline JSON into `ach quota ingest claude`",
   codex: "no rate_limits in any Codex rollout",
   gemini: "no vendor quota source wired",
+  agy: "no vendor quota source wired",
   opencode: "no vendor quota source wired",
   kiro: "no vendor quota source wired",
   prime: "no vendor quota source wired",

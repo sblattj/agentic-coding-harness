@@ -117,11 +117,13 @@ describe("findAncestorInstructions (#106)", () => {
     assert.deepEqual(findAncestorInstructions("claude", ws, { root }), [path.join(root, "CLAUDE.md")]);
     assert.deepEqual(findAncestorInstructions("codex", ws, { root }), [path.join(root, "AGENTS.md")]);
     assert.deepEqual(findAncestorInstructions("gemini", ws, { root }), [path.join(root, "GEMINI.md")]);
+    // agy 1.5.x (probed #231): AGENTS.md and GEMINI.md, up to the git root; never CLAUDE.md.
+    assert.deepEqual(findAncestorInstructions("agy", ws, { root }), [path.join(root, "AGENTS.md"), path.join(root, "GEMINI.md")]);
     for (const agent of ["opencode", "kiro", "null", "custom", "my-descriptor"]) {
       assert.deepEqual(findAncestorInstructions(agent, ws, { root }), [], agent);
     }
     assert.deepEqual(findAncestorInstructions("prime", ws, { root }), [path.join(root, "AGENTS.md"), path.join(root, "CLAUDE.md")]);
-    assert.deepEqual(Object.keys(ANCESTOR_INSTRUCTION_SPECS).sort(), ["claude", "codex", "copilot", "gemini", "prime"]);
+    assert.deepEqual(Object.keys(ANCESTOR_INSTRUCTION_SPECS).sort(), ["agy", "claude", "codex", "copilot", "gemini", "prime"]);
   });
 
   it("a directory named CLAUDE.md is not an instruction file", () => {

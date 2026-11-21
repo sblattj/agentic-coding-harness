@@ -66,6 +66,8 @@ export const ANCESTOR_INSTRUCTION_SPECS: Readonly<Record<string, AncestorInstruc
   claude: { files: ['CLAUDE.md', 'CLAUDE.local.md'], stop: 'filesystem-root' },
   codex: { files: ['AGENTS.override.md', 'AGENTS.md'], stop: 'git-root' },
   gemini: { files: ['GEMINI.md'], stop: 'git-root' },
+  // agy 1.5.6 (probed): AGENTS.md and GEMINI.md from cwd up to the git root; not CLAUDE.md.
+  agy: { files: ['AGENTS.md', 'GEMINI.md'], stop: 'git-root' },
   prime: { files: ['AGENTS.md', 'CLAUDE.md'], stop: 'filesystem-root' },
   copilot: { files: ['AGENTS.md', 'CLAUDE.md'], stop: 'git-root' },
 };

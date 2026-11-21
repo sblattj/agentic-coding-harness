@@ -70,6 +70,7 @@ export { ClaudeCodeAdapter } from './adapters/claude.ts';
 export { KiroAdapter } from './adapters/kiro.ts';
 export { CodexAdapter } from './adapters/codex.ts';
 export { GeminiAdapter } from './adapters/gemini.ts';
+export { AgyAdapter } from './adapters/agy.ts';
 export { PrimeAdapter } from './adapters/prime.ts';
 export { KiroIdeAdapter } from './adapters/kiro-ide.ts';
 export { CopilotAdapter } from './adapters/copilot.ts';

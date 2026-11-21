@@ -22,6 +22,7 @@ const SAMPLE_FILE: Record<string, string> = {
   claude: "proj/session.jsonl",
   codex: "2026/09/28/rollout-x.jsonl",
   gemini: "hash/chats/session.json",
+  agy: "622ca06c-6ec8-40da-852b-ffa9db027d87/.system_generated/logs/transcript.jsonl",
   prime: "sessions/01a0f5c1-58b0-7452-a3c9-dfe75f77b6e9.jsonl",
   amp: "thread.json",
   goose: "sessions.db",
