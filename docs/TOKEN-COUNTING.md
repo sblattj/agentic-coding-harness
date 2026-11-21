@@ -104,6 +104,27 @@ and `usage.tokens.coverage` / `complete` say whether the stream's totals include
 
 Event: `prime-agent -p --mode json` → one `usage` block `{input, output, cacheRead, cacheWrite, cost}` per assistant message, taken from `message_end` or, when prime-agent skips that event, from the `turn_end` that repeats the message; counted once per message (keyed by `responseId`). `input` is taken as the uncached prompt slice (pi convention; unverified, because the observed sessions had `cacheRead` 0). A provider-reported `cost` of 0 is treated as unpriced (`n/a`), not $0. Subagent (`rlm.spawn`) usage is not in the stream, so at `agent_end` the adapter adds the child session files under `~/.prime/agent/session-artifacts/`.
 
+### Antigravity CLI (stream tap `agy`)
+
+Event: `agy -p --output-format stream-json` → a `step_update` of `step_type: agent_response`
+in state `DONE` (or `ERROR`) carries that model call's `usage`; the final `result.usage` is the
+run sum (checked on agy 1.5.6 and 1.5.13).
+
+| Native field | Meaning |
+|---|---|
+| `usage.input_tokens` | uncached prompt slice (cache reads are NOT inside it) |
+| `usage.cache_read_tokens` | cached prompt tokens |
+| `usage.output_tokens` | completions, thinking included |
+| `usage.thinking_tokens` | thinking slice of output (kept in `reasoningTokens`, not re-added) |
+| `usage.total_tokens` | input + cache read + output |
+
+**→ canonical:** one `usage` per call; `result.usage` only adds a residual when it exceeds the
+per-call sum (so nothing counts twice). `cacheWriteTokens = 0`. The stream names a model only
+when `--model` is passed (`init.model`); otherwise the adapter reads the call's model from agy's
+own log (`~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl`,
+`PLANNER_RESPONSE` row with the same `step_index`). The same log is the `ach stats` transcript
+source; rows of a harness-launched run are skipped there so the run counts once.
+
 ### Gemini CLI (stream tap `gemini`)
 
 Event: `--output-format stream-json` → `result` event with `stats`.
@@ -440,7 +461,7 @@ result.usage.cost = {
 ## 5. Context-window pressure for every agent (#21)
 
 Kiro's occupancy comes from its session store (§1). For **claude, codex,
-gemini and opencode** the driver runs a context meter
+gemini, agy and opencode** the driver runs a context meter
 (`createContextMeter`, `src/core/context-meter.ts`) over the event stream and
 fills `usage.context` when the kiro path left it unavailable.
 
@@ -492,7 +513,8 @@ codex frames stay turn-total; the run-detail verdict shows the last-call reading
 - **Unknown model and no reported window → `available: false`** (dash/report
   render `n/a`); the meter never guesses a window. Codex's stream names no model, so a codex run
   without `--model` is `n/a`; the same holds for gemini (its `init` model is
-  not bridged today).
+  not bridged today). agy runs name their model, but no model agy lists today
+  (`gemini-4-*`, `gemini-3.8-flash-*`, `gemini-pro-orchestrator*`) has a known window, so their gauge is `n/a` too.
 - **Overflow warning:** a `budget.alert` event at 85% with metric `context`,
   persisted in `RunRecord.alerts` for dash/web. It uses the shared cooldown
   state in `alerts.json` (see [Budget alerts](BUDGET-ALERTS.md)). It fires only

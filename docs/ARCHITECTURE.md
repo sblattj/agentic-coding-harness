@@ -7,7 +7,7 @@
 > its flag — this doc describes the interfaces as they stand, not as they should be.
 
 agentic-coding-harness is a headless-first orchestration and observability layer over coding-agent CLIs
-(Claude Code, Codex CLI, OpenCode, Gemini CLI, Kiro, Prime Agent). One harness, many agents: normalized events,
+(Claude Code, Codex CLI, OpenCode, Gemini CLI, Antigravity CLI (`agy`), Kiro, Prime Agent). One harness, many agents: normalized events,
 cache-aware token accounting, persisted trajectories, and live dashboards — without giving up each
 agent's native strength.
 
@@ -36,7 +36,8 @@ Three driving lanes, in strict preference order:
 
 1. **Headless-first (primary lane, implemented).** Every shipped adapter drives the CLI's
    non-interactive JSONL mode: `codex exec --json` (`adapters/codex.ts`), `gemini -p --output-format
-   stream-json --approval-mode yolo` (`adapters/gemini.ts`), Claude `--output-format stream-json`
+   stream-json --approval-mode yolo` (`adapters/gemini.ts`), `agy -p --output-format stream-json`
+   (`adapters/agy.ts`), Claude `--output-format stream-json`
    (via the transcript tap until `adapters/claude.ts` lands). Lessons from running agents under
    Harbor apply: headless is the only lane that is reproducible, diffable, and parallelizable.
 2. **ACP (emerging universal layer).** ACP-speaking agents collapse into one adapter — one event
@@ -69,7 +70,7 @@ split is closed — see §9).
 ### Driver
 
 `core/driver.ts` (`createDriver`) is the run orchestrator: resolves the adapter from a registry
-(`defaultAdapters()` instantiates the bundled `adapters/{claude,opencode,kiro,codex,gemini,prime,kiro-ide,copilot,cursor}.js`
+(`defaultAdapters()` instantiates the bundled `adapters/{claude,opencode,kiro,codex,gemini,agy,prime,kiro-ide,copilot,cursor}.js`
 classes, skipping missing ones with a warning), attaches to the event stream, writes a raw NDJSON
 transcript to `<stateDir>/raw/<agent>-<sessionId>.jsonl`, normalizes usage (`normalizeAuto` /
 `fromPreNormalized`), prices each record via the `Pricer`, and enforces budgets inside the event
@@ -135,6 +136,7 @@ emitters sum `model_call_end.usage` alongside `usage` events, and the run totals
 | claude | every call, per lane (main loop; each sub-agent by `parent_tool_use_id`) | init line / last `tool_result` line → first `assistant` line of a new `message.id`; end = last line of that id | first completed content block (ach does not pass `--include-partial-messages`) | yes: `message.usage.output_tokens` over first → last block. Upper bound: the first block's tokens count but its generation time does not, and a single-block response is skipped |
 | codex | first request of each turn | `turn.started` → first surfaced item (completed reasoning/message, or a tool's `item.started`); end after that tool start, else `turn.completed` | first completed item | no (usage is per turn, across requests) |
 | gemini | every call | `init`, user message or last `tool_result` → first assistant message / `tool_use`; end = last output before the next `tool_result` or `result` | first streamed chunk | no (`result.stats` is run-level) |
+| agy | every call | `init` or the ended `user_input` step → first `agent_response` step of a new `step_index`; end = that step's DONE/ERROR update, which carries the call's usage | first streamed `text_delta` | no |
 | kiro (headless) | first request of the run | `runStarted` → first `agent_message_chunk`/`agent_thought_chunk` step (counted as output); end after the first tool start, else the last chunk | first streamed chunk | no (no token counts) |
 | kiro (ACP) | every request that streams text, **estimated** (`provenance: 'estimated'`, #108); excluded from latency | none on the stream. The adapter derives a span from the first chunk after a tool announcement (or run start) to the next tool announcement, metering frame or end of turn. The span starts AT the first output, so it would give a fake ~0 ms TTFT | — (excluded) | — |
 | prime | every call (one request per turn) | `turn_start` → first assistant `message_start`/`message_update` (a streamed delta); end = the assistant `message_end` (or the `turn_end` repeating it when prime skips the `message_end`), which carries that call's own output tokens | first streamed delta | yes (per-call usage) |

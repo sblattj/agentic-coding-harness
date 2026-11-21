@@ -1,7 +1,7 @@
 # Read-only transcript adapters
 
 ach meters coding agents it did not launch by reading the session files they
-leave on disk. Claude Code, Codex CLI, Gemini CLI and Prime Agent are read by
+leave on disk. Claude Code, Codex CLI, Gemini CLI, Antigravity CLI (`agy`, `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`) and Prime Agent are read by
 `src/monitors/transcripts.ts` (Prime Agent: `src/monitors/prime.ts`, sessions at
 `~/.prime/agent/sessions/<uuid>.jsonl` plus subagent sessions at
 `~/.prime/agent/session-artifacts/<parent>/sub-*/<uuid>.jsonl`; the parent's

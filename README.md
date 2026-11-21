@@ -1,6 +1,6 @@
-# agentic-coding-harness — cost tracking and observability for Claude Code, Codex CLI, Gemini CLI, OpenCode, Kiro, Prime Agent, and GitHub Copilot CLI
+# agentic-coding-harness — cost tracking and observability for Claude Code, Codex CLI, Gemini CLI, Antigravity CLI, OpenCode, Kiro, Prime Agent, and GitHub Copilot CLI
 
-**Agents hide the burn. `ach` runs, watches, and meters Claude Code, Codex CLI, Gemini CLI, OpenCode, Kiro, Prime Agent, and GitHub Copilot CLI from one CLI — agent cost tracking whose numbers verify against each CLI's own records.**
+**Agents hide the burn. `ach` runs, watches, and meters Claude Code, Codex CLI, Gemini CLI, Antigravity CLI, OpenCode, Kiro, Prime Agent, and GitHub Copilot CLI from one CLI — agent cost tracking whose numbers verify against each CLI's own records.**
 
 <p>
   <a href="https://www.npmjs.com/package/agentic-coding-harness"><img alt="npm version" src="https://img.shields.io/npm/v/agentic-coding-harness"></a>
@@ -13,7 +13,7 @@
 
 ## Highlights
 
-- **One CLI, six agents (plus the Kiro IDE)** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` adapters (plus `copilot` for GitHub Copilot CLI, `cursor` for the Cursor CLI agent, and `kiro-ide`, which drives the Kiro desktop app over CDP) normalize six different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
+- **One CLI, six agents (plus the Kiro IDE)** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` adapters (plus `agy` for the Antigravity CLI, `copilot` for GitHub Copilot CLI, `cursor` for the Cursor CLI agent, and `kiro-ide`, which drives the Kiro desktop app over CDP) normalize six different transcript formats into one `AgentEvent` stream and one canonical token record (input, output, cache read, cache write, reasoning).
 - **Cost math you can defend** — cache-aware accounting verified against each CLI's own ground truth (Claude session JSONL, Kiro session files, provider-reported `costUSD`); LiteLLM pricing, and unpriced models are marked unavailable rather than silently assigned a price.
 - **Live agent runs dashboard** — `ach dash` redraws 2×/s in the terminal; `ach web` (port 8399) grids every run with a browser terminal you can type into — PTY per run, vendored xterm.js, zero CDN.
   Typing and every other privileged route sit behind a per-server token, like Jupyter's `?token=` URL.
@@ -163,13 +163,28 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 
 ## What it does: token metering, verified cost tracking, and run artifacts for six agents
 
-- **Eight CLI adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes) — plus `copilot` (GitHub Copilot CLI, below), `cursor` (Cursor CLI agent, below) and `kiro-ide`, which drives the Kiro IDE desktop app over CDP (see "Kiro IDE (desktop app)").
+- **Nine CLI adapters** — `claude`, `opencode`, `kiro`, `codex`, `gemini`, `prime` (headless / ACP lanes) — plus `agy` (Antigravity CLI, below), `copilot` (GitHub Copilot CLI, below), `cursor` (Cursor CLI agent, below) and `kiro-ide`, which drives the Kiro IDE desktop app over CDP (see "Kiro IDE (desktop app)").
 - **Prime Agent** — `ach run --agent prime` drives `prime-agent -p --mode json`; `--model`
   passes through verbatim (`<provider>/<model>`). Usage is counted per assistant message plus
   the subagent (`rlm.spawn`) sessions read from `~/.prime/agent/session-artifacts/`; a
   provider-reported cost of 0 is shown as `n/a`, not `$0`. `ach doctor --agent prime` checks the
   binary and auth (`PRIME_API_KEY`, `~/.prime/agent/auth.json`, or a provider key in
   `~/.prime/agent/models.json`). No vendor quota source.
+- **Antigravity CLI (`agy`)**: `ach run --agent agy` drives `agy -p <prompt> --output-format stream-json
+  --dangerously-skip-permissions` (the skip flag is replaced by the policy's own flag when
+  `--permission-mode` is set; `--resume <id>` becomes `agy --conversation <id>`). **Auth prerequisite:**
+  run `agy` once and sign in (the login lives in the OS keychain, so `ach doctor` reports it `unproven`), or
+  set `GEMINI_API_KEY`. Tokens come from the stream, one usage record per model call (input is uncached,
+  cache reads are separate, output includes thinking); a `--print-timeout` expiry or a bad `--model` is
+  recorded as an error with no usage. Cost uses the usual pricing table: the `gemini-4-*` models agy
+  defaults to have no list rates yet, so their cost is `n/a` with a warning, never estimated.
+  `ach stats` / `ach watch` / `ach archive` also read agy's own conversation logs
+  (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`); a run's own
+  conversation is counted once. No vendor quota source.
+  The `gemini` adapter stays: per Google's notice at the top of the
+  [Gemini CLI README](https://github.com/google-gemini/gemini-cli#readme) (reported there, checked
+  2026-11-20), free and Google AI Pro / Ultra access moved from Gemini CLI to Antigravity CLI on June 18,
+  2026, while Gemini Code Assist Standard / Enterprise keeps Gemini CLI.
 - **GitHub Copilot CLI** — `ach run --agent copilot` drives `copilot --prompt=<text> --output-format json
   --allow-all-tools` (binary override: `COPILOT_CLI_BIN`). **Auth prerequisite:** a GitHub login that has
   Copilot access, by `copilot login`, a `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` env var, or
@@ -229,7 +244,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
 - **Emitters** — ATIF v1.7 trajectories (self-validating), OpenTelemetry `gen_ai` spans, Langfuse via OTLP.
 - **Single-file HTML reports** — charts + timelines comparing every agent in a trial dir.
-- **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini/prime transcript
+- **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini/agy/prime transcript
   dirs plus the opencode SQLite store; `stats` aggregates totals/byAgent/byDay over machine
   transcripts and harness state (`--state-only` to skip transcript scans).
 
@@ -309,7 +324,7 @@ drawer: the span waterfall, cumulative token/cost charts, and the leveled event 
 metrics pane also shows latency — time to first token, output tokens/s, time per output token,
 and a per-tool duration table (calls, avg, p95, total); a metric the event log cannot support
 reads `n/a`. Time to first token is measured for claude, gemini, codex (first request of each
-turn) and headless kiro (first request); output tokens/s and time per output token for claude
+turn), agy (every model call that streams text, timed from the request) and headless kiro (first request); output tokens/s and time per output token for claude
 only; opencode's stream carries no request timing. See [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 ("Latency metrics") for definitions, precision and which agents emit what.
 
@@ -402,7 +417,7 @@ estimates; quota output uses provider-reported values when available.
 ## CLI
 
 ```sh
-ach run --agent <claude|opencode|kiro|codex|gemini|prime|kiro-ide|copilot|cursor|null|custom|descriptor> [--model M] [--resume SID]
+ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cursor|null|custom|descriptor> [--model M] [--resume SID]
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
             [--extra-args 'a b']... [--extra-arg TOKEN]...   # see "Passing extra CLI args"
@@ -561,7 +576,7 @@ tools does not stall on an approval prompt, and you do not hand-assemble `--extr
 
 - `--permission-mode <mode>`: `ask` and `dontAsk` are portable; any other value passes
   through as the agent's native mode (claude `bypassPermissions` / `acceptEdits`, codex
-  `on-failure`, gemini `yolo`).
+  `on-failure`, gemini `yolo`, agy `accept-edits` / `auto` / `plan` via `--mode`).
 - `--allowed-tools <list>` / `--disallowed-tools <list>`: repeatable AND comma-separated;
   occurrences concatenate. Commas inside parentheses are kept, so `'Bash(git log:*)'` is one tool.
   Tool names are agent-native (copilot: `bash`, `view`, `create`, `edit`, `grep`, `glob`, ...; claude: `Bash`,
@@ -577,6 +592,7 @@ tools does not stall on an approval prompt, and you do not hand-assemble `--extr
 | claude | yes | yes | yes | yes |
 | gemini | yes | yes | yes | yes |
 | codex | yes | no | no | no |
+| agy | `dontAsk` (`--dangerously-skip-permissions`), `ask` (agy's default review), `accept-edits`/`auto`/`plan` (`--mode`) | no (no allow-list flag) | no | no (servers live in `~/.gemini/config/mcp_config.json`) |
 | kiro | no | yes (becomes `--kiro-tools`; `--kiro-tools` wins) | no | no (use `--kiro-mcp-server`) |
 | prime | no | yes | no | no |
 | copilot | `dontAsk`/`ask` (all tools pre-approved), `plan`, `interactive`, `autopilot` | yes (`--available-tools`) | yes (`--excluded-tools`) | yes (`--additional-mcp-config`) |
@@ -684,6 +700,7 @@ own project memory and are not listed.
 | claude | `CLAUDE.md`, `CLAUDE.local.md` | every ancestor, up to `/` |
 | codex | `AGENTS.override.md`, `AGENTS.md` | up to the git root (the nearest dir with `.git`); none without one |
 | gemini | `GEMINI.md` | up to the git root; none without one |
+| agy | `AGENTS.md`, `GEMINI.md` | up to the git root; none without one |
 | prime | `AGENTS.md`, `CLAUDE.md` | every ancestor, up to `/` (it does not stop at the git root) |
 | copilot | `AGENTS.md`, `CLAUDE.md` | up to the git root; none without one |
 | opencode, kiro, cursor, null, custom | none checked | |
@@ -987,7 +1004,7 @@ semantics. An optional second argument overrides the wired signals
 (`driver.installSignalAbort(runId, ['SIGHUP'])`).
 
 Exported: `createDriver`, `defaultAdapters`, `runToDirectory`, `ClaudeCodeAdapter`, `KiroAdapter`,
-`CodexAdapter`, `GeminiAdapter`, `OpenCodeAdapter`, `PrimeAdapter`, `CopilotAdapter`, `VERSION`, plus the run-record API —
+`CodexAdapter`, `GeminiAdapter`, `AgyAdapter`, `OpenCodeAdapter`, `PrimeAdapter`, `CopilotAdapter`, `VERSION`, plus the run-record API —
 `RunRecordSchema`, `CanonicalTokenRecordSchema`, `ExternalRunFeedSchema`, `writeRunRecord`,
 `readRunRecord`, `listRunIds`, `listRunRecords`, `registryDir`, and the `RunRecord` /
 `CanonicalTokenRecord` / `ExternalRunFeed` / `RunSource` types. `DriverOptions.onOutput` / `RunSpec.onOutput` give a
@@ -1032,16 +1049,17 @@ API (`/api/runs`, `/api/stats`, `/api/compare`, `/health`) stay open on the loop
 
 - **`/`** — one run in full: a structured live feed built from the persisted `AgentEvent` rows
   (text, expandable tool-call/result cards, warnings, usage, exit status), streamed over `/ws?runId=`.
-  For claude, codex, gemini and opencode runs every row ends in a context-window gauge
+  For claude, codex, gemini, agy and opencode runs every row ends in a context-window gauge
   (`212.9k 21%`, teal / yellow ≥50% / red ≥80%, red tick at the 85% warn threshold). Tool rows show
   the last model call's value dimmed; a yellow `+Δ` marks the call that grew it; hover for the
   input · cache-read · cache-write breakdown. The server computes it with the same context meter as
-  `usage.context` (see [TOKEN-COUNTING.md §5](docs/TOKEN-COUNTING.md)); an unknown window shows tokens only.
+  `usage.context` (see [TOKEN-COUNTING.md §5](docs/TOKEN-COUNTING.md)); an unknown window shows tokens only
+  (today that is every agy model).
 - **`/grid`**: every run as a tile, each tile body carrying that same feed. On a live
   `ach run --interactive` run the green button reads **TUI** and attaches to that run's own PTY
   (scrollback replayed, keystrokes go to the run's session); closing the pane detaches and the run
   keeps going. On other runs it reads **TERM** and spawns a NEW, separate interactive PTY for the
-  run's agent (`claude`, `opencode`, `kiro-cli`, `codex`, `gemini`, else `bash -i`), labelled as a
+  run's agent (`claude`, `opencode`, `kiro-cli`, `codex`, `gemini`, `agy`, else `bash -i`), labelled as a
   new session; closing that pane kills it. Either way the tile expands to a full-width xterm.js pane
   you can type into, with the feed as a strip above it. While a `--pause-between` run waits, the
   attached pane shows a **NEXT STEP** button.

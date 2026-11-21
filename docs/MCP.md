@@ -74,7 +74,7 @@ Run one task on one agent. Each run is persisted to `<stateDir>/runs/<runId>.jso
 
 | name | type | required | description |
 |---|---|---|---|
-| agent | string | yes | claude / codex / opencode / gemini / kiro |
+| agent | string | yes | claude / codex / opencode / gemini / agy / kiro |
 | prompt | string | yes | task prompt |
 | model | string | no | model override |
 | cwd | string | no | working directory |

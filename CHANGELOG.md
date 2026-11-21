@@ -4,6 +4,10 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Added
+
+- New agent `agy`, the Antigravity CLI: `ach run --agent agy` drives `agy -p --output-format stream-json`, with tool calls, per-call usage (uncached input, cache reads, output including thinking), time to first token per model call, `--resume` via `agy --conversation`, and `--permission-mode` mapped to `--dangerously-skip-permissions` / `--mode` (other sandbox fields are dropped with a warning). `ach stats`, `ach watch` and `ach archive` read agy's conversation logs under `~/.gemini/antigravity-cli/brain`, and a run's own conversation is counted once. `ach doctor`, the context meter, ancestor instruction files (`AGENTS.md`, `GEMINI.md` up to the git root), MCP `harness_run` and `ach smoke` know it too. The `gemini` adapter stays; the README notes Google's move of free and Google AI Pro / Ultra users from Gemini CLI to Antigravity CLI. Without `--model` the run still names its model: agy's stream leaves it out, so each call's model is read from agy's own conversation log. `ach doctor` treats a `serverUrl` entry in `~/.gemini/config/mcp_config.json` as a remote MCP server. `gemini-4-*` models have no list rates yet, so their cost is n/a, and no agy model has a known context window yet, so the context gauge shows tokens only. Fixes #231.
+
 ## [0.31.0] - 2026-11-19
 
 ### Added
