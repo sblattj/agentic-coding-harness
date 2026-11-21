@@ -1,10 +1,10 @@
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { AgyAdapter, AGY_CAPABILITIES, AgyStreamParser, agySandboxArgs, agyTranscriptModel } from '../src/adapters/agy.ts';
+import { AgyAdapter, AGY_CAPABILITIES, AgyStreamParser, agySandboxArgs, agyTranscriptModel, agyTranscriptModelReader } from '../src/adapters/agy.ts';
 import { parseAgyTranscript } from '../src/monitors/transcripts.ts';
 import { normalizeUsage } from '../src/core/normalize.ts';
 import { extractRawTokens } from '../src/cli/audit.ts';
@@ -245,6 +245,29 @@ describe('agy model backfill without --model (init names no model)', () => {
     assert.equal(agyTranscriptModel(home, id, 2), undefined, 'a tool step has no model');
     assert.equal(agyTranscriptModel(home, 'missing-id', 1), undefined);
     assert.equal(agyTranscriptModel(home, '../etc', 1), undefined, 'ids are not paths');
+  });
+
+  it('agyTranscriptModelReader reads a growing log incrementally and holds back a partial line', () => {
+    const home = mkdtempSync(join(tmpdir(), 'ach-agy-home-'));
+    const id = 'aaaa-bbbb';
+    const dir = join(home, '.gemini', 'antigravity-cli', 'brain', id, '.system_generated', 'logs');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'transcript.jsonl');
+    const row = (step: number, model: string) => JSON.stringify({ step_index: step, type: 'PLANNER_RESPONSE', model }) + '\n';
+    writeFileSync(file, row(1, 'm-one'));
+    const lookup = agyTranscriptModelReader(home);
+    assert.equal(lookup(id, 1), 'm-one');
+    assert.equal(lookup(id, 4), undefined, 'step 4 not written yet');
+    const second = row(4, 'm-four');
+    appendFileSync(file, second.slice(0, 20));
+    assert.equal(lookup(id, 4), undefined, 'a partly written line is not parsed');
+    appendFileSync(file, second.slice(20));
+    assert.equal(lookup(id, 4), 'm-four', 'the held-back half joins the rest');
+    // Earlier rows are served from the cache: rewriting the first bytes in
+    // place (same size) would change a full re-read, but not the cached answer.
+    const text = readFileSync(file, 'utf8');
+    writeFileSync(file, text.replace('m-one', 'm-xxx'));
+    assert.equal(lookup(id, 1), 'm-one', 'cached, not re-read');
   });
 
   it('the parser stamps the looked-up model on each usage and model_call end', () => {

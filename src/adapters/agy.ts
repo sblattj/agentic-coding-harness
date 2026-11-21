@@ -26,7 +26,7 @@ import type {
   RunSpec as CoreRunSpec,
   SandboxPolicy,
 } from '../core/types.js';
-import { readFileSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { runJsonlCli, launchDriverHandle, houseEventToCore, takeOnOutput, validateCliSessionProfile, type JsonlRunSpec, type SpawnFn } from './shared.ts';
@@ -97,24 +97,60 @@ export type AgyModelLookup = (conversationId: string, stepIndex: number) => stri
  * names the model id. Undefined when the log or row is not there (yet).
  */
 export function agyTranscriptModel(home: string, conversationId: string, stepIndex: number): string | undefined {
-  if (!/^[A-Za-z0-9-]+$/.test(conversationId)) return undefined;
-  const file = join(home, '.gemini', 'antigravity-cli', 'brain', conversationId, '.system_generated', 'logs', 'transcript.jsonl');
-  let text: string;
-  try {
-    text = readFileSync(file, 'utf8');
-  } catch {
-    return undefined;
-  }
-  for (const line of text.split('\n')) {
-    if (!line.includes('"PLANNER_RESPONSE"')) continue;
-    try {
-      const row: unknown = JSON.parse(line);
-      if (isObj(row) && row.step_index === stepIndex && typeof row.model === 'string' && row.model !== '') return row.model;
-    } catch {
-      // a partly written last line: skip
+  return agyTranscriptModelReader(home)(conversationId, stepIndex);
+}
+
+/**
+ * A lookup that reads each conversation log incrementally: it keeps the byte
+ * offset and the step → model rows it has seen, so a long tool loop reads
+ * every byte once instead of re-reading the whole growing file per call.
+ * A partly written last line is held back until its newline arrives.
+ */
+export function agyTranscriptModelReader(home: string): AgyModelLookup {
+  const logs = new Map<string, { offset: number; tail: string; models: Map<number, string> }>();
+  return (conversationId, stepIndex) => {
+    if (!/^[A-Za-z0-9-]+$/.test(conversationId)) return undefined;
+    let log = logs.get(conversationId);
+    if (log === undefined) {
+      log = { offset: 0, tail: '', models: new Map() };
+      logs.set(conversationId, log);
     }
-  }
-  return undefined;
+    const known = log.models.get(stepIndex);
+    if (known !== undefined) return known;
+    const file = join(home, '.gemini', 'antigravity-cli', 'brain', conversationId, '.system_generated', 'logs', 'transcript.jsonl');
+    let fd: number | undefined;
+    try {
+      fd = openSync(file, 'r');
+      const size = fstatSync(fd).size;
+      if (size < log.offset) {
+        log.offset = 0;
+        log.tail = '';
+      }
+      if (size > log.offset) {
+        const buf = Buffer.alloc(size - log.offset);
+        const n = readSync(fd, buf, 0, buf.length, log.offset);
+        log.offset += n;
+        const lines = (log.tail + buf.subarray(0, n).toString('utf8')).split('\n');
+        log.tail = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.includes('"PLANNER_RESPONSE"')) continue;
+          try {
+            const row: unknown = JSON.parse(line);
+            if (isObj(row) && typeof row.step_index === 'number' && typeof row.model === 'string' && row.model !== '') {
+              log.models.set(row.step_index, row.model);
+            }
+          } catch {
+            // not a JSON row: skip
+          }
+        }
+      }
+    } catch {
+      return undefined;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+    return log.models.get(stepIndex);
+  };
 }
 
 /**
@@ -419,7 +455,7 @@ export class AgyAdapter implements AgentAdapter, CoreAgentAdapter {
       scrubEnv: spec.sandbox?.scrubEnv,
     };
     const home = spec.env?.HOME !== undefined && spec.env.HOME !== '' ? spec.env.HOME : homedir();
-    const parser = new AgyStreamParser(spec.model === undefined ? (id, step) => agyTranscriptModel(home, id, step) : undefined);
+    const parser = new AgyStreamParser(spec.model === undefined ? agyTranscriptModelReader(home) : undefined);
     const handle = this.#run(jsonlSpec, takeOnOutput(spec), (line) => parser.parse(line));
     return launchDriverHandle({
       agent: 'agy',
