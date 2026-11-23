@@ -173,7 +173,7 @@ describe('opencode adapter', () => {
 
     test('unknown event types are skipped but still yield their sessionID', () => {
       const line =
-        '{"type":"tool","sessionID":"ses_other","part":{"type":"tool","tool":"bash","state":{"status":"pending"}}}';
+        '{"type":"some_future_event","sessionID":"ses_other","part":{"type":"some-future-part"}}';
       const parsed = parseOpencodeLineRecord(line);
       assert.deepEqual(parsed.events, []);
       assert.equal(parsed.sessionId, 'ses_other');

@@ -145,8 +145,9 @@ emitters sum `model_call_end.usage` alongside `usage` events, and the run totals
 A response whose request start was never observed (a claude sub-agent's first call, gemini output
 before any `init`) is left without boundaries rather than given an invented start. codex and
 kiro bracket only the first request because their streams cannot tell a follow-up request from
-a second tool call of the same response. Every agent except opencode also gets the per-tool
-breakdown; opencode emits no tool events, so it gets no latency at all.
+a second tool call of the same response. Every agent also gets the per-tool breakdown. opencode
+reports each tool call once, already finished, so its tool events carry opencode's own
+`state.time.start`/`end` instead of the receive time; it still has no model-call boundaries.
 
 Kiro ACP's derived spans (#108) exist only to give the span view and turn structure. They carry
 `provenance: 'estimated'` on both `model_call_start` and `model_call_end` and never carry `usage`

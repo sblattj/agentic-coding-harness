@@ -37,9 +37,12 @@ const DEFAULT_SERVER_URL = 'http://127.0.0.1:4096';
 // ---------------------------------------------------------------------------
 // Native wire schemas (recorded from `opencode run --format json`, v1.18.30; the same
 // shape is emitted unchanged by 2.2.5 and 2.3.2, which omit tokens.total).
-// Envelope: {"type":"step_start"|"text"|"step_finish", timestamp, sessionID,
-// part:{...}}; part types use dashes ("step-start"). Unknown envelope types
-// (tool, reasoning, ...) are skipped but still yield their sessionID.
+// Envelope: {"type":"step_start"|"text"|"tool_use"|"step_finish", timestamp,
+// sessionID, part:{...}}; part types use dashes ("step-start"). A tool_use
+// envelope carries a part {type:"tool", tool, callID, state:{status, input,
+// output|error, title}}, emitted once the call is completed or errored
+// (recorded on 1.19.0). Unknown envelope types (reasoning, ...) are skipped
+// but still yield their sessionID.
 // ---------------------------------------------------------------------------
 
 const opencodeEnvelopeSchema = z.object({
@@ -67,6 +70,25 @@ const textPartSchema = z
   .object({
     type: z.literal('text'),
     text: z.string(),
+  })
+  .passthrough();
+
+const toolPartSchema = z
+  .object({
+    type: z.literal('tool'),
+    tool: z.string(),
+    callID: z.string().nullish(),
+    state: z
+      .object({
+        status: z.string().nullish(),
+        input: z.unknown().optional(),
+        output: z.unknown().optional(),
+        error: z.unknown().optional(),
+        title: z.string().nullish(),
+        time: z.object({ start: z.number().nullish(), end: z.number().nullish() }).passthrough().nullish(),
+      })
+      .passthrough()
+      .nullish(),
   })
   .passthrough();
 
@@ -151,6 +173,11 @@ function mapPart(
     events.push({ type: 'message', role: 'assistant', text: text.data.text });
     return { events, sessionId };
   }
+  const tool = toolPartSchema.safeParse(part);
+  if (tool.success) {
+    events.push(...mapToolPart(tool.data));
+    return { events, sessionId };
+  }
   const finish = stepFinishPartSchema.safeParse(part);
   if (finish.success) {
     const usageEvent: OpencodeEvent = {
@@ -164,6 +191,40 @@ function mapPart(
   return { events, sessionId };
 }
 
+/**
+ * One opencode tool part -> canonical tool events. `opencode run --format json`
+ * emits the part once, already completed (or errored), so a finished part
+ * yields the start and the result together, sharing the callID; each carries
+ * the part's own `state.time` start/end, so per-tool latency stays real. A part that
+ * is still pending/running (serve snapshots) yields only the start.
+ */
+function mapToolPart(p: z.infer<typeof toolPartSchema>): OpencodeEvent[] {
+  const st = p.state ?? {};
+  const id = p.callID ?? undefined;
+  const start: OpencodeEvent = {
+    type: 'tool',
+    phase: 'start',
+    toolName: p.tool,
+    ...(id !== undefined ? { toolCallId: id } : {}),
+    ...(st.input !== undefined ? { input: st.input } : {}),
+    ...(typeof st.title === 'string' && st.title !== '' ? { title: st.title } : {}),
+    ...(typeof st.time?.start === 'number' ? { timestamp: st.time.start } : {}),
+  };
+  if (st.status !== 'completed' && st.status !== 'error') return [start];
+  const failed = st.status === 'error';
+  const output = failed ? st.error : st.output;
+  const result: OpencodeEvent = {
+    type: 'tool',
+    phase: 'result',
+    toolName: p.tool,
+    ...(id !== undefined ? { toolCallId: id } : {}),
+    ...(output !== undefined ? { output } : {}),
+    status: failed ? 'error' : 'success',
+    ...(typeof st.time?.end === 'number' ? { timestamp: st.time.end } : {}),
+  };
+  return [start, result];
+}
+
 function partSessionId(part: unknown): string | undefined {
   if (part && typeof part === 'object' && 'sessionID' in part) {
     const v = (part as { sessionID: unknown }).sessionID;
@@ -175,7 +236,7 @@ function partSessionId(part: unknown): string | undefined {
 /**
  * Parse one NDJSON line from `opencode run --format json`.
  * step_start -> session + step events; text -> assistant message;
- * step_finish -> usage (CanonicalTokenRecord from part.tokens, cost from
+ * tool_use -> tool start + result (same callID); step_finish -> usage (CanonicalTokenRecord from part.tokens, cost from
  * part.cost). Unknown event types are skipped, but their sessionID is still
  * reported so resume capture never misses a line. Malformed JSON throws so
  * the run loop can surface it as an error event.
@@ -188,6 +249,8 @@ export function parseOpencodeLineRecord(line: string): ParsedOpencodeLine {
       return mapped;
     }
     case 'text':
+      return mapPart(evt.part, evt.sessionID ?? undefined, false);
+    case 'tool_use':
       return mapPart(evt.part, evt.sessionID ?? undefined, false);
     case 'step_finish':
       return mapPart(evt.part, evt.sessionID ?? undefined, false);
@@ -214,6 +277,12 @@ export interface OpencodeRunSpec extends RunOptions {
   /** POST to a running `opencode serve` instead of spawning a child. */
   preferServer?: boolean;
   /**
+   * Extra `opencode run` args, appended verbatim after the built flags (e.g.
+   * `--agent <name>`, `--variant high`). Headless only: the `opencode serve`
+   * path spawns no child, so it reports them as not applied.
+   */
+  extraArgs?: string[];
+  /**
    * Sandbox policy (issue #8): `opencode run` has no CLI flags for
    * allowedTools/disallowedTools/permissionMode/mcpConfig — those fields are
    * omitted (use extraArgs, e.g. `--config permission.edit=deny`). Only
@@ -225,7 +294,7 @@ export interface OpencodeRunSpec extends RunOptions {
 
 /**
  * Build argv for `opencode run "<prompt>" --format json [--model <model>]
- * [--session <id> | --continue]`. Pure; exported for tests.
+ * [--session <id> | --continue] [...extraArgs]`. Pure; exported for tests.
  */
 export function buildRunArgs(spec: OpencodeRunSpec): string[] {
   const args = ['run', spec.prompt, '--format', 'json'];
@@ -235,6 +304,7 @@ export function buildRunArgs(spec: OpencodeRunSpec): string[] {
   } else if (spec.resume && typeof spec.resume === 'object' && spec.resume.sessionId) {
     args.push('--session', spec.resume.sessionId);
   }
+  if (spec.extraArgs?.length) args.push(...spec.extraArgs);
   return args;
 }
 
@@ -406,6 +476,7 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
       ...(spec.env ? { env: spec.env } : {}),
       ...(spec.preferServer === true ? { preferServer: true } : {}),
+      ...(spec.extraArgs !== undefined ? { extraArgs: spec.extraArgs } : {}),
       ...(spec.sandbox !== undefined ? { sandbox: spec.sandbox } : {}),
       ...(takeOnOutput(spec) ? { onOutput: takeOnOutput(spec) } : {}),
     };
@@ -699,6 +770,13 @@ export class OpenCodeAdapter implements CoreAgentAdapter {
 
     const run = (async () => {
       try {
+        if (task.extraArgs?.length) {
+          // The serve path spawns no child, so there is no argv to append to; say so rather than drop them silently.
+          queue.push({
+            type: 'progress',
+            text: `opencode serve path: extraArgs not applied (no child process): ${task.extraArgs.join(' ')}`,
+          });
+        }
         const api = await detect();
         if (api === 'v2') await runV2();
         else await runV1();

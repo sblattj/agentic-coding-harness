@@ -510,6 +510,12 @@ export type CanonicalEvent =
       title?: string;
       /** Paths the call touches (kiro ACP `locations[]`, #107). Display only. */
       locations?: unknown[];
+      /**
+       * Producer's own wall-clock time for this phase (epoch ms), when the stream
+       * reports it (opencode `state.time.start`/`end`). The bridge uses it instead
+       * of the receive time, so a call delivered all at once keeps its real span.
+       */
+      timestamp?: number;
     }
   | { type: "step"; payload?: unknown }
   | { type: "usage"; tokens: AdapterTokenRecord; cost?: number }

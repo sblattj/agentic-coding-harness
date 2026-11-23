@@ -594,6 +594,7 @@ export function houseEventToCore(agent: string, event: HouseEventLike): CoreAgen
         timestamp,
       };
     case 'tool': {
+      const toolTs = typeof event.timestamp === 'number' && Number.isFinite(event.timestamp) ? event.timestamp : timestamp;
       if (event.phase === 'start') {
         return {
           type: 'tool_call',
@@ -603,7 +604,7 @@ export function houseEventToCore(agent: string, event: HouseEventLike): CoreAgen
           arguments: (event.input as Record<string, unknown> | string | undefined) ?? '',
           ...(event.title !== undefined ? { title: event.title } : {}),
           ...(event.locations !== undefined ? { locations: event.locations } : {}),
-          timestamp,
+          timestamp: toolTs,
         };
       }
       return {
@@ -612,7 +613,7 @@ export function houseEventToCore(agent: string, event: HouseEventLike): CoreAgen
         toolCallId: event.toolCallId ?? '',
         content: (event.output as string | Record<string, unknown> | undefined) ?? '',
         ...(event.status !== undefined ? { isError: event.status === 'error' } : {}),
-        timestamp,
+        timestamp: toolTs,
       };
     }
     case 'usage': {
