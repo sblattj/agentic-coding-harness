@@ -4,6 +4,13 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-11-22
+
+### Fixed
+
+- opencode adapter: `--extra-arg` / `--extra-args` (and `extraArgs` in the library and MCP `harness_run`) now reach `opencode run`. They were silently dropped: `buildRunArgs` never appended them and `launch()` never passed them on, so flags like `--agent <name>` never took effect. The `opencode serve` path, which spawns no child, now says the extra args were not applied instead of dropping them silently. A cross-adapter test proves every other CLI adapter (claude, codex, gemini, agy, prime, copilot, cursor, kiro) already forwarded them.
+- opencode adapter: tool calls now become ach tool events. `opencode run --format json` reports each call as a `tool_use` line, which the parser skipped, so a run showed no `tool_call` / `tool_result` at all. Each finished call now yields a `tool_call` (name, call id, input, title) and a `tool_result` (output, or the error text with `isError: true`), stamped with opencode's own `state.time` start and end, so per-tool latency is real. The same mapping covers the 1.x `opencode serve` path.
+
 ## [0.32.0] - 2026-11-20
 
 ### Added
