@@ -484,7 +484,12 @@ ach emit --input events.json --format atif|otel|langfuse|sft [--out path]
             (sft: OpenAI chat JSONL for fine-tuning; --input may be a trials dir;
              [--min-score N] [--exit success] [--agent A] [--full-conversation]; docs/SFT-EXPORT.md)
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
-ach report <trials-dir> [--out path]           # single-file HTML comparison
+            [--mask none|preview|all] [--mask-style replace|partial] [--mask-entropy] [--mask-pattern RE]...
+            (secret masking before export; default none; docs/MASKING.md)
+ach report <trials-dir> [--out path] [--mask none|preview|all]   # single-file HTML comparison
+ach scrub <file|dir>... --mask preview|all [--out-dir DIR] [--json]
+            # share-time scrub of exported artifacts: preview lists every key, email and home path
+            # and touches nothing; all writes <name>.masked.<ext> copies, originals unchanged (docs/MASKING.md)
 ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help] [--spark [--no-spark]] [--set-terminal-title[=FMT]]; ? help, q quits
 ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-file run queue, <= N live
             # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
@@ -1248,6 +1253,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [Config file (`.ach/config.json`, `ach config`)](docs/CONFIG.md): per-command flag defaults, precedence flag > env > file > default, named agent profiles (`ach run --profile`), [JSON schema](docs/config.schema.json).
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
+- [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them.
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
 - [Desks and lanes (`ach desk`, `ach lane`)](docs/DESKS.md): long-lived role agents plus goal-driven lanes that message each other, with per-desk cost.
 - [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).

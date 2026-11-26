@@ -71,6 +71,9 @@ import { AtifWriter } from "../emitters/atif.ts";
 import { toOtlpJson } from "../emitters/otel.ts";
 import { emitToLangfuse } from "../emitters/langfuse.ts";
 import { runSftEmit } from "../emitters/sft.ts";
+import { MASK_OPTIONS, maskForExport } from "../core/masking.ts";
+import { maskPolicyFor, noteMasked, writeMaskPreview } from "./mask-cli.ts";
+import { cmdScrub } from "./scrub.ts";
 import {
   parseClaudeTranscript,
   parseCodexRollout,
@@ -521,8 +524,22 @@ usage:
                 --langfuse-url/--langfuse-public-key/--langfuse-secret-key or
                 env LANGFUSE_URL|LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY,
                 LANGFUSE_SECRET_KEY)
-  ach report <trials-dir> [--out path]
-                 (single-file HTML comparison; a trials/ root scans subdirs)
+               [--mask none|preview|all] [--mask-style replace|partial]
+               [--mask-entropy] [--mask-pattern <regex>]...
+               (secret masking before export: preview lists findings and writes
+                and sends nothing, all masks keys, tokens, emails, home paths;
+                default none; env AGENTIC_CODING_HARNESS_MASK, config mask.*;
+                docs/MASKING.md)
+  ach report <trials-dir> [--out path] [--mask none|preview|all] [--mask-style ..]
+                 (single-file HTML comparison; a trials/ root scans subdirs;
+                  --mask* as for emit)
+  ach scrub <file|dir>... --mask preview|all [--out-dir <dir>] [--json]
+               [--mask-style replace|partial] [--mask-entropy] [--mask-pattern <regex>]...
+                 (share-time scrub of exported artifacts: preview lists every
+                  finding (file, location, detector, what would change) and
+                  touches nothing; all writes <name>.masked.<ext> copies (or the
+                  tree under --out-dir) with per-detector counts, never editing
+                  the originals; docs/MASKING.md)
   ach dash [--json] [--all] [--state-only] [--state-dir <stateDir>] [--budget-usd N] [--offline]
                (live run dashboard; --json dumps RunRecords and exits; live
                 runs get a pace row: $/h + tok/min over 15m/1h, budget ETA;
@@ -2268,6 +2285,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
       "min-score": { type: "string" },
       exit: { type: "string" },
       "full-conversation": { type: "boolean" },
+      ...MASK_OPTIONS,
     },
     allowPositionals: true,
   });
@@ -2291,6 +2309,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
       exit: args.values.exit,
       agent: args.values.agent,
       fullConversation: args.values["full-conversation"],
+      mask: maskPolicyFor("sft", args.values),
     });
   }
   const sftOnly = (["min-score", "exit", "full-conversation"] as const).filter((k) => args.values[k] !== undefined);
@@ -2309,6 +2328,14 @@ async function cmdEmit(rest: string[]): Promise<number> {
   } catch (e) {
     throw new HarnessError(`--input '${input}' is not valid JSON: ${e instanceof Error ? e.message : e}`, "IO");
   }
+  // #71: the export chokepoint. Mode none (DEFAULT_MASK_MODE) passes the input through untouched.
+  const gate = maskForExport(parsed, maskPolicyFor(format, args.values));
+  if (gate.mode === "preview") {
+    writeMaskPreview(input, gate.findings);
+    return 0;
+  }
+  if (gate.mode === "all") noteMasked(input, gate.findings);
+  parsed = gate.value;
   const stream = EventStreamSchema.safeParse(parsed);
   if (!stream.success) {
     throw new HarnessError(`--input '${input}' must be an event array or {events: [...]}`, "IO");
@@ -2426,6 +2453,7 @@ const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
   "trial", "queue", "replay", "smoke", "gc", "config", "init", "attach", "desk", "lane", "listener", "update", "profiles",
+  "scrub",
 ]);
 
 /** #98: commands that never get the automatic update line (stdio protocols and
@@ -2557,6 +2585,8 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdTrial(rest);
     case "report":
       return cmdReport(rest);
+    case "scrub":
+      return cmdScrub(rest);
     case "dash":
       return cmdDash(rest);
     case "serve":

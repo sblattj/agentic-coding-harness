@@ -10,18 +10,25 @@ import { verdictLabel, verifyRunRecord } from "./verify-run.ts";
 import { stateDir } from "../core/store.ts";
 import { branchLabel } from "./stats-dims.ts";
 import { readVersion, renderReport } from "../report/html.ts";
+import { MASK_OPTIONS, maskForExport, type Finding, type MaskMode, type MaskPolicy } from "../core/masking.ts";
+import { maskPolicyFor, noteMasked, writeMaskPreview } from "./mask-cli.ts";
 
 export async function cmdReport(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
-    options: { out: { type: "string" } },
+    options: { out: { type: "string" }, ...MASK_OPTIONS },
     allowPositionals: true,
   });
   const roots = args.positionals;
   if (roots.length === 0) {
     throw new HarnessError("report requires a trials directory (e.g. trials/20260910-091011)", "USAGE");
   }
-  const r = await writeComparisonReport(roots, args.values.out);
+  const r = await writeComparisonReport(roots, args.values.out, maskPolicyFor("report", args.values));
+  if (r.maskMode === "preview") {
+    writeMaskPreview(r.out, r.maskFindings);
+    return 0;
+  }
+  if (r.maskMode === "all") noteMasked(r.out, r.maskFindings);
   process.stdout.write(
     `wrote ${r.out} (${r.runs} runs · ${r.trials} trial${r.trials === 1 ? "" : "s"})\n`,
   );
@@ -32,6 +39,9 @@ export interface WrittenReport {
   out: string;
   runs: number;
   trials: number;
+  /** #71: what masking found (empty in mode none); in mode preview nothing was written. */
+  maskFindings: Finding[];
+  maskMode: MaskMode;
 }
 
 /**
@@ -40,7 +50,7 @@ export interface WrittenReport {
  * `<root>/report.html` for one root, else `./report.html`. Also used by
  * `ach trial --suite` (#51) for its end-of-grid report.
  */
-export async function writeComparisonReport(roots: readonly string[], outPath?: string): Promise<WrittenReport> {
+export async function writeComparisonReport(roots: readonly string[], outPath?: string, mask?: MaskPolicy): Promise<WrittenReport> {
   if (roots.length === 0) throw new HarnessError("report requires at least one trials directory", "USAGE");
   // One positional may expand to many trials (a `trials/` root scans its
   // subdirectories); several positionals are reported side by side.
@@ -72,11 +82,12 @@ export async function writeComparisonReport(roots: readonly string[], outPath?: 
 
   const out =
     outPath ?? (roots.length === 1 ? path.join(root, "report.html") : path.resolve("report.html"));
-  const html = renderReport(
-    { rootDir: root, labels: [...labels].sort(), runs },
-    { version: await readVersion(), generatedAt: new Date() },
-  );
+  // #71: the export chokepoint, on the report model before it is rendered.
+  const gate = maskForExport({ rootDir: root, labels: [...labels].sort(), runs }, mask);
+  const base = { out, runs: runs.length, trials: labels.size, maskFindings: gate.findings, maskMode: gate.mode };
+  if (gate.mode === "preview") return base;
+  const html = renderReport(gate.value, { version: await readVersion(), generatedAt: new Date() });
   await fs.mkdir(path.dirname(path.resolve(out)), { recursive: true });
   await fs.writeFile(out, html);
-  return { out, runs: runs.length, trials: labels.size };
+  return base;
 }

@@ -1384,6 +1384,95 @@
         },
         "additionalProperties": false
       }
+    },
+    "mask": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "global mask mode for every export (default 'none', pending an owner decision); env AGENTIC_CODING_HARNESS_MASK and --mask win",
+          "type": "string",
+          "enum": [
+            "none",
+            "preview",
+            "all"
+          ]
+        },
+        "style": {
+          "description": "replace = [REDACTED_<LABEL>], partial = short prefix + ...****",
+          "type": "string",
+          "enum": [
+            "replace",
+            "partial"
+          ]
+        },
+        "entropy": {
+          "description": "enable the high-entropy detector (off by default)",
+          "type": "boolean"
+        },
+        "patterns": {
+          "description": "extra regexes to mask (a named group 'secret' limits the replaced span)",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "atif": {
+          "description": "mask mode for the atif export (beats mask.mode)",
+          "type": "string",
+          "enum": [
+            "none",
+            "preview",
+            "all"
+          ]
+        },
+        "otel": {
+          "description": "mask mode for the otel export (beats mask.mode)",
+          "type": "string",
+          "enum": [
+            "none",
+            "preview",
+            "all"
+          ]
+        },
+        "langfuse": {
+          "description": "mask mode for the langfuse export (beats mask.mode)",
+          "type": "string",
+          "enum": [
+            "none",
+            "preview",
+            "all"
+          ]
+        },
+        "sft": {
+          "description": "mask mode for the sft export (beats mask.mode)",
+          "type": "string",
+          "enum": [
+            "none",
+            "preview",
+            "all"
+          ]
+        },
+        "report": {
+          "description": "mask mode for the report export (beats mask.mode)",
+          "type": "string",
+          "enum": [
+            "none",
+            "preview",
+            "all"
+          ]
+        },
+        "scrub": {
+          "description": "mask mode for the scrub export (beats mask.mode)",
+          "type": "string",
+          "enum": [
+            "none",
+            "preview",
+            "all"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "description": "secret masking before export (#71): see docs/MASKING.md"
     }
   },
   "additionalProperties": false,

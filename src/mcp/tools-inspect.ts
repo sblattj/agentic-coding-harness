@@ -14,6 +14,8 @@ import { loadTrials } from "../report/model.ts";
 import { readVersion, renderReport } from "../report/html.ts";
 import { aggregate, type AggregatableRecord } from "../cli/lib.ts";
 import { checkArtifactPath, type GatewayConfig } from "../serve/gateway.ts";
+import { countByDetector, MASK_MODES, maskForExport, resolveMaskPolicy, type Finding, type MaskSink } from "../core/masking.ts";
+import { loadedMaskConfig } from "../cli/config.ts";
 import type { McpServer } from "./contract.ts";
 
 /** Opts shared by every register* function: state dir plus the optional
@@ -33,6 +35,16 @@ function parseArgs<T extends z.ZodTypeAny>(schema: T, args: Record<string, unkno
   return parsed.data;
 }
 
+/** #71: the mask policy for one MCP export (arg `mask` > env > config file > DEFAULT_MASK_MODE). */
+function mcpMaskPolicy(sink: MaskSink, mask: string | undefined) {
+  return resolveMaskPolicy({ sink, flags: { mask }, config: loadedMaskConfig() });
+}
+
+/** A `mask: "preview"` result: findings (star samples only) and counts; nothing written or sent. */
+function previewResult(findings: Finding[], extra: Record<string, unknown>): unknown {
+  return { ...extra, mask: "preview", written: false, findings, counts: countByDetector(findings) };
+}
+
 async function fileBytes(file: string): Promise<number> {
   try {
     return (await fs.stat(file)).size;
@@ -47,6 +59,7 @@ const ReportSchema = z.object({
   dir: z.string().min(1),
   out: z.string().min(1).optional(),
   open: z.boolean().default(false),
+  mask: z.enum(MASK_MODES).optional(),
 });
 
 async function harnessReport(args: Record<string, unknown>, opts: ToolOpts): Promise<unknown> {
@@ -64,10 +77,9 @@ async function harnessReport(args: Record<string, unknown>, opts: ToolOpts): Pro
   for (const l of trialSet.labels) labels.add(l);
   const root = rootDir ?? path.resolve(a.dir);
   const out = a.out ?? path.join(root, "report.html");
-  const html = renderReport(
-    { rootDir: root, labels: [...labels].sort(), runs },
-    { version: await readVersion(), generatedAt: new Date() },
-  );
+  const gate = maskForExport({ rootDir: root, labels: [...labels].sort(), runs }, mcpMaskPolicy("report", a.mask));
+  if (gate.mode === "preview") return previewResult(gate.findings, { out });
+  const html = renderReport(gate.value, { version: await readVersion(), generatedAt: new Date() });
   await fs.mkdir(path.dirname(path.resolve(out)), { recursive: true });
   await fs.writeFile(out, html);
   if (a.open && process.platform === "darwin") {
@@ -88,6 +100,7 @@ const EmitSchema = z.object({
   format: z.enum(["atif", "otel", "langfuse"]),
   out: z.string().min(1).optional(),
   endpoint: z.string().min(1).optional(),
+  mask: z.enum(MASK_MODES).optional(),
 });
 
 async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promise<unknown> {
@@ -111,6 +124,10 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
   } catch (e) {
     throw new Error(`runFile: '${a.runFile}' is not valid JSON: ${e instanceof Error ? e.message : e}`);
   }
+  // #71: the export chokepoint (mode none passes the input through untouched).
+  const gate = maskForExport(parsed, mcpMaskPolicy(a.format, a.mask));
+  if (gate.mode === "preview") return previewResult(gate.findings, { format: a.format });
+  parsed = gate.value;
   const stream = EventStreamSchema.safeParse(parsed);
   if (!stream.success) {
     throw new Error(`runFile: '${a.runFile}' must be an event array or {events: [...]}`);
@@ -297,6 +314,7 @@ export function registerInspectTools(server: McpServer, opts: ToolOpts): void {
         dir: { type: "string", description: "Trial directory to report on" },
         out: { type: "string", description: "Output path (default <dir>/report.html)" },
         open: { type: "boolean", description: "Open the file with `open` on macOS" },
+        mask: { type: "string", enum: [...MASK_MODES], description: "Secret masking: none | preview (list findings, write nothing) | all (mask before writing); default from config/env, else none" },
       },
       required: ["dir"],
     },
@@ -313,6 +331,7 @@ export function registerInspectTools(server: McpServer, opts: ToolOpts): void {
         format: { type: "string", enum: ["atif", "otel", "langfuse"] },
         out: { type: "string", description: "Output file for atif/otel (and langfuse payload dump)" },
         endpoint: { type: "string", description: "Langfuse OTLP base URL override" },
+        mask: { type: "string", enum: [...MASK_MODES], description: "Secret masking: none | preview (list findings, write and send nothing) | all (mask before export); default from config/env, else none" },
       },
       required: ["runFile", "format"],
     },

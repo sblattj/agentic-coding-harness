@@ -18,6 +18,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { HarnessError, RunResultSchema } from "../core/types.ts";
+import { maskForExport, formatMaskedNote, formatPreview, type Finding, type MaskMode, type MaskPolicy } from "../core/masking.ts";
 import type { AgentEvent } from "../core/types.ts";
 import { looksLikeRunResult, repeatEnvelopeRuns } from "../report/model.ts";
 
@@ -335,6 +336,8 @@ export interface SftOptions extends SftFilters {
   input: string;
   out?: string;
   fullConversation?: boolean;
+  /** #71: export masking; absent = DEFAULT_MASK_MODE (no change). Findings are at `$[i]` = JSONL line i+1. */
+  mask?: MaskPolicy;
 }
 
 export interface SftResult {
@@ -342,17 +345,24 @@ export interface SftResult {
   runsRead: number;
   runsKept: number;
   samples: number;
+  /** #71: what masking found (empty in mode none). */
+  maskFindings: Finding[];
+  maskMode: MaskMode;
 }
 
 export async function buildSft(opts: SftOptions): Promise<SftResult> {
   const runs = await loadSftRuns(opts.input);
   const kept = filterSftRuns(runs, opts);
-  const lines: string[] = [];
+  const samples: unknown[] = [];
   for (const r of kept) {
     const msgs = withPrompt(eventsToMessages(r.events), r.prompt);
-    for (const s of opts.fullConversation ? fullSample(msgs) : turnSamples(msgs)) lines.push(JSON.stringify(s));
+    samples.push(...(opts.fullConversation ? fullSample(msgs) : turnSamples(msgs)));
   }
+  const gate = maskForExport(samples, opts.mask);
+  const lines = gate.value.map((s) => JSON.stringify(s));
   return {
+    maskFindings: gate.findings,
+    maskMode: gate.mode,
     body: lines.length > 0 ? lines.join("\n") + "\n" : "",
     runsRead: runs.length,
     runsKept: kept.length,
@@ -363,6 +373,11 @@ export async function buildSft(opts: SftOptions): Promise<SftResult> {
 /** CLI entry for `ach emit --format sft`; returns the process exit code. */
 export async function runSftEmit(opts: SftOptions): Promise<number> {
   const res = await buildSft(opts);
+  if (res.maskMode === "preview") {
+    process.stdout.write(formatPreview(opts.input, res.maskFindings));
+    return 0;
+  }
+  if (res.maskMode === "all") process.stderr.write(formatMaskedNote(opts.input, res.maskFindings));
   if (opts.out) {
     await fs.writeFile(opts.out, res.body);
     process.stdout.write(`wrote ${opts.out} (${res.samples} samples from ${res.runsKept}/${res.runsRead} runs)\n`);

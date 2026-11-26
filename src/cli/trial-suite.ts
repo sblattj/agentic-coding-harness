@@ -20,6 +20,8 @@ import { formatSandboxHeader } from "../core/sandbox-policy.ts";
 import { AGENTS, HarnessError, isKnownAgent, type EffortLevel, type SandboxPolicy } from "../core/types.ts";
 import { agentCliAvailability } from "../mcp/tools-run.ts";
 import { writeComparisonReport } from "./report.ts";
+import { maskPolicyFor } from "./mask-cli.ts";
+import { formatMaskedNote, formatPreview } from "../core/masking.ts";
 import {
   DEFAULT_MODEL_TOKEN,
   executeMatrixCli,
@@ -332,10 +334,17 @@ export async function runSuiteCli(o: SuiteCliOptions): Promise<number> {
       if (roots.length === 0) {
         return { json: { report: null }, lines: ["report     none (no run artifacts for these tasks)"] };
       }
-      const r = await writeComparisonReport(roots, paths.report);
+      // #71: the config file's / env's report mask mode applies here too.
+      const r = await writeComparisonReport(roots, paths.report, maskPolicyFor("report", {}));
+      if (r.maskMode === "preview") {
+        return { json: { report: null, maskFindings: r.maskFindings }, lines: [formatPreview(r.out, r.maskFindings).trimEnd()] };
+      }
       return {
         json: { report: r.out, reportRuns: r.runs },
-        lines: [`report     ${r.out} (${r.runs} runs · ${r.trials} task${r.trials === 1 ? "" : "s"})`],
+        lines: [
+          `report     ${r.out} (${r.runs} runs · ${r.trials} task${r.trials === 1 ? "" : "s"})`,
+          ...(r.maskMode === "all" ? [formatMaskedNote(r.out, r.maskFindings).trimEnd()] : []),
+        ],
       };
     },
   });

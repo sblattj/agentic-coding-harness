@@ -23,6 +23,7 @@ import path from "node:path";
 import { z } from "zod";
 import { HarnessError, type RunProfileInfo } from "../core/types.ts";
 import { EXIT_CODES } from "./exit-codes.ts";
+import { DEFAULT_MASK_MODE, MASK_ENV, MaskConfigSchema, type MaskConfig } from "../core/masking.ts";
 
 export const CONFIG_ENV = "AGENTIC_CODING_HARNESS_CONFIG";
 export const STATE_DIR_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
@@ -30,6 +31,8 @@ export const CONFIG_SECTIONS = ["run", "stats", "web", "serve"] as const;
 export type ConfigSection = (typeof CONFIG_SECTIONS)[number];
 /** Top-level key holding the named agent profiles (#77). */
 export const PROFILES_KEY = "profiles";
+/** Top-level key holding the export masking settings (#71, docs/MASKING.md). */
+export const MASK_KEY = "mask";
 /** The `ach run` flag that selects a profile; never a key inside one. */
 export const PROFILE_FLAG = "profile";
 /** The section whose flags a profile body holds. */
@@ -520,8 +523,12 @@ export function validateConfig(file: LoadedFile, tables: SectionTables): void {
 /** Every problem in one file, as messages (empty = valid). */
 export function configProblems(file: LoadedFile, tables: SectionTables): string[] {
   const problems: string[] = [];
-  const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS, PROFILES_KEY];
+  const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS, PROFILES_KEY, MASK_KEY];
   for (const [section, body] of Object.entries(file.data)) {
+    if (section === MASK_KEY) {
+      problems.push(...maskProblems(file.path, body));
+      continue;
+    }
     if (section === PROFILES_KEY) {
       problems.push(...profileProblems(file.path, body, tables));
       continue;
@@ -562,6 +569,21 @@ export function configProblems(file: LoadedFile, tables: SectionTables): string[
     }
   }
   return problems;
+}
+
+/** Problems in the top-level `mask` object of one file (#71). */
+function maskProblems(file: string, body: unknown): string[] {
+  if (!isObject(body)) return [`config ${file}: '${MASK_KEY}' must be an object, got ${typeName(body)}`];
+  const r = MaskConfigSchema.safeParse(body);
+  if (r.success) return [];
+  const keys = Object.keys(MaskConfigSchema.shape);
+  return r.error.issues.map((i) => {
+    if (i.code === "unrecognized_keys") {
+      return i.keys.map((k) => `config ${file}: '${MASK_KEY}' has unknown key '${k}' (${MASK_KEY}.${k})${suggest(k, keys)} (expected one of: ${keys.join(", ")})`).join("; ");
+    }
+    const at = [MASK_KEY, ...i.path.map(String)].join(".");
+    return `config ${file}: '${at}' ${i.message}`;
+  });
 }
 
 /** camelCase key -> long flag for a profile body: the `run` section's keys,
@@ -634,6 +656,11 @@ export function mergeFiles(files: LoadedFile[], tables: SectionTables): Map<stri
       if (section === "$schema") continue;
       if (section === "stateDir") {
         if (typeof body === "string" && body !== "") out.set("stateDir", { value: resolveStateDir(body, f.path), file: f.path });
+        continue;
+      }
+      // #71: `mask.<key>` entries, later file wins per key; invalid ones are validation's.
+      if (section === MASK_KEY) {
+        if (isObject(body) && MaskConfigSchema.safeParse(body).success) for (const [k, v] of Object.entries(body)) out.set(`${MASK_KEY}.${k}`, { value: v, file: f.path });
         continue;
       }
       // Invalid entries (unknown section/key, wrong shape) are reported by
@@ -742,6 +769,7 @@ function resolveStateDir(raw: string, file: string): string {
 export async function applyConfig(cmd: string, explicit: string | undefined, commands: SectionCommands): Promise<void> {
   armed = null;
   lastResolution = null;
+  loadedMask = undefined;
   const files = loadConfigFiles({ explicit });
   // `run` is armed even with no file, so `--profile <name>` there is an
   // "unknown profile" error rather than silently ignored.
@@ -752,6 +780,7 @@ export async function applyConfig(cmd: string, explicit: string | undefined, com
   const tables = await captureTables(commands);
   for (const f of files) validateConfig(f, tables);
   const merged = mergeFiles(files, tables);
+  loadedMask = maskConfigFrom(merged);
   const sd = merged.get("stateDir");
   if (sd !== undefined && !isSet(process.env[STATE_DIR_ENV])) process.env[STATE_DIR_ENV] = sd.value as string;
   if (!(CONFIG_SECTIONS as readonly string[]).includes(cmd)) return;
@@ -765,6 +794,20 @@ export async function applyConfig(cmd: string, explicit: string | undefined, com
     });
   const profiles = section === PROFILE_SECTION ? mergeProfiles(files, tables) : new Map<string, MergedProfile>();
   if (entries.length > 0 || section === PROFILE_SECTION) armed = { mode: "apply", section, entries, profiles };
+}
+
+let loadedMask: MaskConfig | undefined;
+
+/** The merged `mask` object `applyConfig` loaded for this invocation (#71); undefined when no file sets one. */
+export function loadedMaskConfig(): MaskConfig | undefined {
+  return loadedMask;
+}
+
+/** The `mask.<key>` entries of merged config values, as one object. */
+export function maskConfigFrom(merged: Map<string, FileValue>): MaskConfig | undefined {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of merged) if (k.startsWith(`${MASK_KEY}.`)) out[k.slice(MASK_KEY.length + 1)] = v.value;
+  return Object.keys(out).length > 0 ? (out as MaskConfig) : undefined;
 }
 
 /** Peel a leading global `--config <path>` / `--config=<path>` off argv. */
@@ -825,6 +868,17 @@ export function resolveRows(opts: {
       else if (profVal !== undefined) rows.push({ key, flag, value: profVal.value, source: `profile:${opts.profile!.name}` });
       else if (fileVal !== undefined) rows.push({ key, flag, value: fileVal.value, source: `file:${fileVal.file}` });
       else rows.push({ key, flag, value: spec.default ?? null, source: "default" });
+    }
+  }
+  // #71: the export mask settings (mask.mode always; other mask keys when a file sets them).
+  if (opts.sections === undefined) {
+    const envMode = env[MASK_ENV];
+    const fileMode = opts.merged.get(`${MASK_KEY}.mode`);
+    if (isSet(envMode)) rows.push({ key: `${MASK_KEY}.mode`, value: envMode, source: `env:${MASK_ENV}` });
+    else if (fileMode !== undefined) rows.push({ key: `${MASK_KEY}.mode`, value: fileMode.value, source: `file:${fileMode.file}` });
+    else rows.push({ key: `${MASK_KEY}.mode`, value: DEFAULT_MASK_MODE, source: "default" });
+    for (const [k, v] of opts.merged) {
+      if (k.startsWith(`${MASK_KEY}.`) && k !== `${MASK_KEY}.mode`) rows.push({ key: k, value: v.value, source: `file:${v.file}` });
     }
   }
   return rows;
@@ -893,6 +947,7 @@ export function configZodSchema(tables: SectionTables) {
       .describe(`state root for every command (env ${STATE_DIR_ENV} wins); relative to this file, ~ expands`),
     ...sections,
     ...(profilesSchema !== undefined ? { [PROFILES_KEY]: profilesSchema } : {}),
+    [MASK_KEY]: MaskConfigSchema.optional(),
   });
 }
 
@@ -1053,6 +1108,38 @@ function editProfile(doc: Record<string, unknown>, dotted: string, raw: string |
   return pp.name;
 }
 
+/** Apply one `--set` / `--unset` of `mask.<key>` (#71) to `doc`. */
+function editMask(doc: Record<string, unknown>, dotted: string, raw: string | undefined): void {
+  const key = dotted.slice(MASK_KEY.length + 1);
+  const keys = Object.keys(MaskConfigSchema.shape);
+  if (raw === undefined && (dotted === MASK_KEY || deleteExistingPath(doc, dotted))) {
+    if (dotted === MASK_KEY) delete doc[MASK_KEY];
+    return;
+  }
+  if (key === "" || key.includes(".") || !keys.includes(key)) {
+    throw new HarnessError(`config: '${MASK_KEY}' has unknown key '${key}' (${dotted})${suggest(key, keys)} (expected one of: ${keys.join(", ")})`, "CONFIG");
+  }
+  if (raw === undefined) return;
+  let value: unknown = raw;
+  if (key === "entropy") {
+    if (raw !== "true" && raw !== "false") throw new HarnessError(`config --set ${dotted}: expects true or false, got '${raw}'`, "USAGE");
+    value = raw === "true";
+  } else if (key === "patterns") {
+    if (raw.trim().startsWith("[")) {
+      try {
+        value = JSON.parse(raw) as unknown;
+      } catch (e) {
+        throw new HarnessError(`config --set ${dotted}: not a valid JSON array: ${e instanceof Error ? e.message : String(e)}`, "USAGE");
+      }
+    } else value = [raw];
+  }
+  const body = { ...(isObject(doc[MASK_KEY]) ? (doc[MASK_KEY] as Record<string, unknown>) : {}), [key]: value };
+  const r = MaskConfigSchema.safeParse(body);
+  const issue = r.success ? undefined : r.error.issues.find((i) => i.path[0] === key);
+  if (issue !== undefined) throw new HarnessError(`config --set ${dotted}: ${issue.message}`, "USAGE");
+  doc[MASK_KEY] = body;
+}
+
 /** Hooks `ach config` / `ach profiles` get from ach.ts (which config.ts cannot import). */
 export interface ConfigHooks {
   /**
@@ -1104,6 +1191,8 @@ export const CONFIG_USAGE = `  ach config --show [<section>] [--json] [-- <secti
                 (key is stateDir or <run|stats|web|serve>.<camelCaseFlag>, e.g.
                  run.budgetUsd; writes ./.ach/config.json, or the --config file;
                  --dry-run prints the resolved config after the change, writes nothing)
+                (also mask.<mode|style|entropy|patterns|atif|otel|langfuse|sft|report|scrub>:
+                 export secret masking, docs/MASKING.md)
                 (also profiles.<name>.<key> and profiles.<name>.env.<NAME>: agent
                  profiles for \`ach run --profile <name>\`; a profile the agent's
                  validation rejects is not saved. <key>=<value> works too)
@@ -1191,7 +1280,9 @@ export async function cmdConfig(rest: string[], explicit: string | undefined, co
   const existing = files.find((f) => f.path === target) ?? readConfigFile(target, "project", true);
   const doc: Record<string, unknown> = existing ? structuredClone(existing.data) : { $schema: CONFIG_SCHEMA_URL };
   let editedProfile: string | undefined;
-  if (dotted === PROFILES_KEY || dotted.startsWith(`${PROFILES_KEY}.`)) {
+  if (dotted === MASK_KEY || dotted.startsWith(`${MASK_KEY}.`)) {
+    editMask(doc, dotted, raw);
+  } else if (dotted === PROFILES_KEY || dotted.startsWith(`${PROFILES_KEY}.`)) {
     if (dotted === PROFILES_KEY) {
       if (raw !== undefined) throw new HarnessError(`config --set ${dotted}: set one key at a time (${PROFILES_KEY}.<name>.<key> <value>)`, "USAGE");
       delete doc[PROFILES_KEY];
