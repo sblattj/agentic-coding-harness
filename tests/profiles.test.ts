@@ -440,3 +440,18 @@ describe("profiles in the config file", () => {
     assert.equal(doc.profiles, undefined, "whole profile removed");
   });
 });
+
+describe("profiles carry --effort (#77 with #54)", () => {
+  it("a profile's effort reaches the agent CLI like a typed --effort, and the record says requested high", async () => {
+    const p = await project({ profiles: { deep: { agent: "kiro", effort: "high" } } });
+    const profiled = await kiroRun(p, ["--profile", "deep"]);
+    const byHand = await kiroRun(p, ["--agent", "kiro", "--effort", "high"]);
+    // control: a bare kiro run passes no --effort, so the probe can tell them apart.
+    const control = await kiroRun(p, ["--agent", "kiro"]);
+    assert.doesNotMatch(control.log, /^arg --effort$/m, "control: no --effort without the flag or profile");
+    assert.match(profiled.log, /^arg --effort\narg high$/m, "the profile's effort reached kiro-cli");
+    assert.equal(profiled.log, byHand.log, "kiro-cli argv + env");
+    const rec = readRunRecord(p.state, profiled.result.runId) as { effort?: { requested?: string } } | null;
+    assert.equal(rec?.effort?.requested, "high");
+  });
+});
