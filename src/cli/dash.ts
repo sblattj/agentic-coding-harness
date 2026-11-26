@@ -27,6 +27,7 @@ import { collectQueueViews, fmtDuration, queueSummaryLine, sliceDetail, QUEUE_RE
 import { CreditTotals, creditUnitOfAgent } from "../core/credit-units.ts";
 import { transcriptView } from "./transcript-view.ts";
 import { installOfflineGuard } from "../core/offline.ts";
+import { lastNDays, sparkline, sparkSupported } from "./sparkline.ts";
 
 const REDRAW_MS = 500;
 /** Quota sources are files on disk (rollouts, statusline snapshot); re-read at most this often. */
@@ -310,6 +311,31 @@ export interface FrameOptions {
   skippedRunRecords?: number;
   /** Queue views (#115): adds a "Queues" section; omitted or empty = no section. */
   queues?: QueueView[];
+  /** #85: add a `cost trend:` line under the footer; ascii = plain min-max text. Omitted = off. */
+  spark?: { ascii: boolean };
+}
+
+const SPARK_MAX_DAYS = 30;
+
+/** Cost per UTC startedAt day over the days the visible runs span (capped at the latest 30). Pure. */
+export function sparkCostLine(visible: RunRecord[], ascii: boolean): string {
+  const byDay: Record<string, { costUsd: number; inputTokens: number; outputTokens: number }> = {};
+  let first = Infinity;
+  let last = -Infinity;
+  for (const r of visible) {
+    if (r.totals === undefined || usdUnavailable(r)) continue;
+    const ms = r.startedAt;
+    if (!Number.isFinite(ms)) continue;
+    const day = new Date(ms).toISOString().slice(0, 10);
+    const t = Date.parse(`${day}T00:00:00Z`);
+    first = Math.min(first, t);
+    last = Math.max(last, t);
+    const b = (byDay[day] ??= { costUsd: 0, inputTokens: 0, outputTokens: 0 });
+    b.costUsd += r.totals.costUsd;
+  }
+  const span = Number.isFinite(first) ? Math.round((last - first) / 86_400_000) + 1 : 0;
+  const values = span === 0 ? [] : lastNDays(byDay, Math.min(span, SPARK_MAX_DAYS), "cost");
+  return `cost trend: ${sparkline(values, { ascii, fmt: fmtCost })}`;
 }
 
 /** The "Queues" section: a summary line per queue, then one row per slice. Pure. */
@@ -402,6 +428,7 @@ export function frame(
     lines.push(ansi ? `\x1b[33m${text}\x1b[0m` : text);
   }
   lines.push(footer(visible));
+  if (opts.spark !== undefined) lines.push(sparkCostLine(visible, opts.spark.ascii));
   return lines.join("\n");
 }
 
@@ -424,6 +451,8 @@ export const FLAG_HELP: ReadonlyArray<{ flag: string; desc: string }> = [
   { flag: "--all", desc: "show runs older than the last hour" },
   { flag: "--json", desc: "dump RunRecords as JSON instead of the TUI" },
   { flag: "--dir <path>", desc: "read a different state directory (alias --state-dir)" },
+  { flag: "--spark", desc: "add a cost-trend sparkline under the footer (off by default)" },
+  { flag: "--no-spark", desc: "with --spark, use plain min-max text instead of block bars" },
   { flag: "--help-keys", desc: "show this help on launch, even if already seen" },
   { flag: "--no-help", desc: "never auto-show this help (scripts, CI)" },
   { flag: "--set-terminal-title[=FMT]", desc: "keep run counts in the tab title" },
@@ -554,10 +583,10 @@ export function takeTitleFlag(argv: string[]): { rest: string[]; format: string 
 
 // ---------------------------------------------------------------- modes
 
-async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined, stateOnly: boolean, showHelpAtStart: boolean, titleFormat: string | undefined): Promise<number> {
+async function liveLoop(dir: string, showAll: boolean, budgetUsd: number | undefined, stateOnly: boolean, showHelpAtStart: boolean, titleFormat: string | undefined, spark?: { ascii: boolean }): Promise<number> {
   const ansi = !process.env.NO_COLOR;
   const tracker = new PaceTracker();
-  const frameOpts: FrameOptions = { tracker, ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
+  const frameOpts: FrameOptions = { tracker, ...(budgetUsd !== undefined ? { budgetUsd } : {}), ...(spark !== undefined ? { spark } : {}) };
   const width = (): number => process.stdout.columns ?? 120;
   process.stdout.write(ansi ? "\x1b[?1049h\x1b[?25l" : "");
 
@@ -698,6 +727,8 @@ export async function cmdDash(argv: string[]): Promise<number> {
       "help-keys": { type: "boolean", default: false },
       "no-help": { type: "boolean", default: false },
       queues: { type: "boolean", default: false },
+      spark: { type: "boolean", default: false },
+      "no-spark": { type: "boolean", default: false },
       dir: { type: "string" },
       "state-dir": { type: "string" },
       "budget-usd": { type: "string" },
@@ -748,5 +779,6 @@ export async function cmdDash(argv: string[]): Promise<number> {
     return 0;
   }
   const showHelp = shouldShowHelp(dir, { helpKeys: args.values["help-keys"], noHelp: args.values["no-help"] });
-  return liveLoop(dir, args.values.all, budgetUsd, args.values["state-only"], showHelp, titleFormat);
+  return liveLoop(dir, args.values.all, budgetUsd, args.values["state-only"], showHelp, titleFormat,
+    args.values.spark ? { ascii: args.values["no-spark"] || !sparkSupported() } : undefined);
 }

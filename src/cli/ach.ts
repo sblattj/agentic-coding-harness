@@ -120,6 +120,7 @@ import { statsProvenance, type StatsProvenanceRecord } from "./stats-provenance.
 import { markerFor, PROVENANCE_LEGEND, type ProvenanceMap } from "../core/provenance.ts";
 import { kiroPreflight } from "../adapters/kiro-preflight.ts";
 import {
+  dayKey,
   inWindow,
   joinAgoTokens,
   parseBy,
@@ -171,6 +172,9 @@ import {
 } from "./custom-agents.ts";
 import { cmdDoctor, checkKiroIde } from "./doctor.ts";
 import { endpointFrom } from "../adapters/kiro-ide-cdp.ts";
+import { lastNDays, sparkline, sparkSupported } from "./sparkline.ts";
+
+const SPARK_DAYS = 14;
 
 const USAGE = `ach — agentic-coding-harness · run, watch & meter coding agents
 version: ${VERSION}
@@ -451,6 +455,9 @@ usage:
                  model · session · today · block · budget; --chain keeps your
                  existing statusline in front)
             [--cost-mode auto|calculate|display] (also AGENTIC_CODING_HARNESS_COST_MODE)
+            [--spark cost|tokens] [--no-spark]
+                (14-day trend bar on the totals line; --no-spark or a non-UTF
+                 terminal prints plain min=.. max=.. text)
   ach emit --input <events.json> --format <atif|otel|langfuse|sft> [--out path]
                [--agent A] [--model M] [--session-id SID]
                (sft: OpenAI chat JSONL for fine-tuning; --input may be a RunResult
@@ -1511,6 +1518,9 @@ async function cmdStats(rest: string[]): Promise<number> {
       dir: { type: "string" },
       "transcript-dir": { type: "string" },
       "cost-mode": { type: "string" },
+      // #85: trend sparkline on the totals line.
+      spark: { type: "string" },
+      "no-spark": { type: "boolean", default: false },
       // #25: provenance filter. Not --source: `ach web --source` is a run feed,
       // and stats rows already carry source: state|transcript.
       origin: { type: "string" },
@@ -1537,6 +1547,10 @@ async function cmdStats(rest: string[]): Promise<number> {
     }
   }
   const costMode = resolveCostMode(args.values["cost-mode"], process.env[COST_MODE_ENV]);
+  const sparkMetric = args.values.spark;
+  if (sparkMetric !== undefined && sparkMetric !== "cost" && sparkMetric !== "tokens") {
+    throw new HarnessError(`--spark: unknown metric '${sparkMetric}' (expected cost or tokens)`, "USAGE");
+  }
   // --transcript-dir (alias --dir): a home-shaped root for machine transcripts.
   const transcriptDir = resolveDirFlag(args.values, "transcript-dir");
 
@@ -1897,6 +1911,17 @@ async function cmdStats(rest: string[]): Promise<number> {
   const mapView = (m: Record<string, typeof agg.totals>, pm: Record<string, ProvenanceMap>) =>
     Object.fromEntries(Object.entries(m).map(([k, b]) => [k, { ...view(b), provenance: pm[k] ?? {} }]));
 
+  const sparkValues =
+    sparkMetric === undefined
+      ? undefined
+      : lastNDays(
+          Object.fromEntries(Object.entries(agg.byDay).map(([d, b]) => [d, { ...b, costUsd: view(b).costUsd ?? 0 }])),
+          SPARK_DAYS,
+          sparkMetric,
+          // The trend ends at the window's last day (today when --until is absent), so quiet
+          // recent days show as low bars instead of dropping off the end.
+          dayKey(window.untilMs !== undefined ? window.untilMs - 1 : Date.now(), timeZone),
+        );
   if (args.values.json) {
     process.stdout.write(
       JSON.stringify(
@@ -1906,6 +1931,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(hasTranscripts ? { sources } : {}),
           ...(showOrigins ? { origin: wantOrigin, origins } : {}),
           ...Object.fromEntries(Object.entries(timeMaps).map(([k, v]) => [k, mapView(v, k === "byDay" ? prov.byDay : k === "byWeek" ? prov.byWeek ?? {} : prov.byMonth ?? {})])),
+          ...(sparkValues !== undefined ? { spark: { metric: sparkMetric, days: SPARK_DAYS, values: sparkValues } } : {}),
           timezone: timeZone,
           window: windowJson(window),
           pricing: pricingInfo,
@@ -1940,7 +1966,14 @@ async function cmdStats(rest: string[]): Promise<number> {
   } else {
     const line = (label: string, b: CostModeBucket, p: ProvenanceMap | undefined) =>
       `${label.padEnd(9)} records=${fmtInt(b.records)} input=${fmtInt(b.inputTokens)} output=${fmtInt(b.outputTokens)} cacheRead=${fmtInt(b.cacheReadTokens)} cacheWrite=${fmtInt(b.cacheWriteTokens)} reasoning=${fmtInt(b.reasoningTokens)} cost=${b.costUsd === null ? "n/a" : fmtUsd(b.costUsd) + markerFor(p?.costUsd)} cacheHit=${fmtCacheHit(cacheHitRatio(b))}${b.unpricedRecords > 0 ? ` unpriced=${fmtInt(b.unpricedRecords)}` : ""}`;
-    process.stdout.write(line("totals", view(agg.totals), prov.total) + ` costMode=${costMode}` + "\n");
+    const sparkText =
+      sparkValues === undefined
+        ? ""
+        : ` spark(${sparkMetric},${SPARK_DAYS}d)=${sparkline(sparkValues, {
+            ascii: args.values["no-spark"] || !sparkSupported(),
+            fmt: sparkMetric === "cost" ? fmtUsd : fmtInt,
+          })}`;
+    process.stdout.write(line("totals", view(agg.totals), prov.total) + ` costMode=${costMode}` + sparkText + "\n");
     if (hasTranscripts) {
       for (const [source, bucket] of Object.entries(sources)) {
         process.stdout.write(line(`source: ${source}`, bucket, bucket.provenance) + "\n");

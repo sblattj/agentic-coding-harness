@@ -394,6 +394,7 @@ ach doctor --agent claude --json                 # configuration checks, no prom
 ach run --agent null --verify 'true' --repeat 3 "offline smoke"
 ach stats --last 7d --tz America/Los_Angeles --by week,model,project
 ach stats --cost-mode calculate --blocks         # computed cost and Claude 5-hour blocks
+ach stats --spark cost                           # 14-day trend bar on the totals line
 ach quota --json                                # vendor-reported headroom, n/a when absent
 ach quota wait --max-used 90 -- ./batch.sh       # start a job once the quota window has room
 ach status --compact
@@ -404,6 +405,7 @@ ach regrade <run-id> --verify 'npm test'          # append a score without anoth
 
 `--cost-mode auto|calculate|display` selects reported or computed cost, with
 provenance labels on displayed values. Time filters, project/model dimensions,
+`--spark cost|tokens` (14-day block-bar trend on the totals line; `--no-spark` or a non-UTF terminal prints plain `min=.. max=..` text),
 cache-hit ratios, and `--exit-codes ladder` compose with the existing stats commands.
 Custom agents can use `--agent custom --template 'mycli {prompt}'` or a JSON file in
 `.ach/agents.d/`; runs without a usage source remain explicitly unmetered.
@@ -464,7 +466,7 @@ ach emit --input events.json --format atif|otel|langfuse|sft [--out path]
              [--min-score N] [--exit success] [--agent A] [--full-conversation]; docs/SFT-EXPORT.md)
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
 ach report <trials-dir> [--out path]           # single-file HTML comparison
-ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help] [--set-terminal-title[=FMT]]; ? help, q quits
+ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help] [--spark [--no-spark]] [--set-terminal-title[=FMT]]; ? help, q quits
 ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-file run queue, <= N live
             # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
 ach config --show [<section>] [--json]   # every resolved setting + its source (flag/env/file/default)

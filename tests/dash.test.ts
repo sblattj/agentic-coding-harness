@@ -198,3 +198,22 @@ describe('dash table — truthful usage columns', () => {
     assert.ok(footerLine.includes('cost $0.0100'), footerLine); // 999 excluded
   });
 });
+
+describe('dash --spark cost trend (#85)', () => {
+  const DAY = 86_400_000;
+  const base = Date.parse('2026-05-01T12:00:00Z');
+  const rec = (i: number, cost: number) =>
+    ({ runId: `spark-run-${i}`, agent: 'claude', status: 'success', startedAt: base + i * DAY, updatedAt: base + i * DAY, totals: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: cost } }) as unknown as RunRecord;
+  const recs = [rec(0, 1), rec(1, 2), rec(2, 4), rec(3, 8)];
+
+  it('is off by default and adds a cost trend line when enabled', () => {
+    assert.doesNotMatch(frame(recs, '/tmp/state', true, 200, false), /cost trend/);
+    const out = frame(recs, '/tmp/state', true, 200, false, { spark: { ascii: false } }).split('\n');
+    assert.equal(out.at(-1), 'cost trend: ▁▂▄█');
+  });
+
+  it('ascii fallback prints min-max text', () => {
+    const out = frame(recs, '/tmp/state', true, 200, false, { spark: { ascii: true } }).split('\n');
+    assert.equal(out.at(-1), 'cost trend: min=$1.0000 max=$8.0000');
+  });
+});
