@@ -4,6 +4,17 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-11-26
+
+### Added
+
+- `ach update --check [--json] [--offline]` asks the GitHub release feed whether a newer version exists and prints `up to date` or `new version X available: <url>`. It never downloads or changes anything; it only writes `<state>/update-check.json`. An automatic once-per-24h stderr line is available behind `AGENTIC_CODING_HARNESS_UPDATE_CHECK=1` and is off by default, so ach makes no network call unless asked. See docs/UPDATE-CHECK.md. Fixes #98.
+- `ach stats --compare prev` compares the selected window with the same-length window right before it, and `--compare prev:<dur>` shifts it back by `<dur>`. Windows are calendar-exact in `--tz` (Sep 1-7 vs Aug 25-31). The text output adds tokens, cost and runs with delta and signed percent; `--json` adds a top-level `compare` object only when asked. A zero base shows `n/a` / `null`, and days whose transcripts were pruned are listed as unexplained. Fixes #42.
+- `ach stats` and `ach watch` read several data dirs at once: a repeatable `--state-dir` on stats, and repeatable `--dir` / `--transcript-dir` on both. Duplicates merge by run id, usage file path and session id; identical copies collapse, and a conflicting copy prints one warning naming every path and keeps the newest. `--rewrite <from>=<to>` maps paths in the output (`/mnt/c=C:` turns `/mnt/c/Users/x/proj` into `C:\Users\x\proj`). With one dir and no rule the output is unchanged. `ach watch --dir A --dir B` tails both in one stream. See docs/MULTI-DIR.md. Fixes #99.
+- `--effort low|medium|high|xhigh|max` on `ach run`, `ach trial`, plan files and the MCP `harness_run` / `harness_run_async` tools, mapped to each agent's own setting (claude, agy and kiro `--effort`, codex `model_reasoning_effort`, copilot `--reasoning-effort`, opencode `--variant`, cursor's model slug). Agents without one still run and record `applied: false` with a warning. Every such run records `effort {requested, applied, mechanism}`. `--kiro-effort` keeps working. See docs/EFFORT.md. Fixes #54.
+- Agent profiles: named sets of run flags under `profiles.<name>` in the config file, picked with `ach run --profile <name>` (precedence: flag, env, profile, run section, default). A profile can also set env vars on the agent process only. `ach profiles list [--json]` shows each expansion, `ach config --set profiles.<name>.<key>` edits them and rejects bad adapter combinations at save time, and the run record keeps enough to re-run without the profile (never env values). Profiles carry `--effort` too. Fixes #77.
+- `ach init`, a first-run setup: it finds agent CLIs on PATH, runs the doctor checks for the one you pick and writes `run.agent`, `run.model`, `run.budgetUsd` and `run.maxTurns` to the user config file (`--project` writes `./.ach/config.json`). Flags: `--agent --model --budget-usd --max-turns --yes --dry-run --show --project`. A terminal gets a short wizard; piped input never prompts. A missing agent binary refuses to write and prints the install hint. Fixes #80.
+
 ## [0.34.0] - 2026-11-26
 
 ### Added
