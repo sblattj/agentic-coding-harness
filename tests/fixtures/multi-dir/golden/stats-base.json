@@ -183,6 +183,13 @@
       "2026-01-11": 0
     }
   },
+  "cache": {
+    "cacheRead": 0,
+    "cacheCreation": 0,
+    "input": 3300,
+    "ttl": null,
+    "bySession": []
+  },
   "byProject": {
     "/mnt/c/Users/x/proj": {
       "records": 4,

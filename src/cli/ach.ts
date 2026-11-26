@@ -98,6 +98,7 @@ import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
 import { dashboardSpan, inDashboardSpan, reconcileDashboardWithState, type DashboardSpan } from "./cursor-dashboard-merge.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
+import { cachePanel, cachePanelsBySession, fmtCacheTtl, type CacheSample } from "../core/cache-ttl.ts";
 import { createPricer, pricingMeta, pricingStaleNotice } from "../core/pricing.ts";
 import { OfflineViolation, installOfflineGuard } from "../core/offline.ts";
 import { autoUpdateNotice, checkForUpdate, formatUpdateResult } from "./update-check.ts";
@@ -2266,6 +2267,12 @@ async function cmdStats(rest: string[], write: (chunk: string) => void = (chunk)
           // recent days show as low bars instead of dropping off the end.
           dayKey(window.untilMs !== undefined ? window.untilMs - 1 : Date.now(), timeZone),
         );
+  // #83: cache panel (read vs creation vs plain input) with a tier-labeled TTL, overall and per session.
+  const cacheSamples: CacheSample[] = records.map((r) => {
+    const ms = r.ts ? Date.parse(r.ts) : NaN;
+    return { ...r, ts: Number.isFinite(ms) ? ms : null };
+  });
+  const cache = { ...cachePanel(cacheSamples), bySession: cachePanelsBySession(cacheSamples) };
   if (args.values.json) {
     write(
       JSON.stringify(
@@ -2283,6 +2290,7 @@ async function cmdStats(rest: string[], write: (chunk: string) => void = (chunk)
           byModel: dims.byModel,
           unpricedModels: dims.unpricedModels,
           cacheHitRatio: baseCacheRatios(agg),
+          cache,
           ...(dims.byModelDay ? { byModelDay: dims.byModelDay } : {}),
           ...(args.values["merge-models"] ? { mergedModels: true, modelAliases } : {}),
           ...(dims.byProject ? { byProject: dims.byProject, projectAliases } : {}),
@@ -2321,6 +2329,9 @@ async function cmdStats(rest: string[], write: (chunk: string) => void = (chunk)
             fmt: sparkMetric === "cost" ? fmtUsd : fmtInt,
           })}`;
     process.stdout.write(line("totals", view(agg.totals), prov.total) + ` costMode=${costMode}` + sparkText + "\n");
+    if (cache.ttl !== null) {
+      process.stdout.write(`${"cache".padEnd(9)} read=${fmtInt(cache.cacheRead)} creation=${fmtInt(cache.cacheCreation)} input=${fmtInt(cache.input)} ttl=${fmtCacheTtl(cache.ttl)} sessions=${fmtInt(cache.bySession.length)}\n`);
+    }
     if (hasTranscripts) {
       for (const [source, bucket] of Object.entries(sources)) {
         process.stdout.write(line(`source: ${source}`, bucket, bucket.provenance) + "\n");

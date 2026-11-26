@@ -1,5 +1,6 @@
 import type { AgentEvent, CanonicalTokenRecord } from "../core/types.ts";
 import { cacheHitRatio } from "../core/cache-ratio.ts";
+import { cachePanel, type CachePanel, type CacheSample } from "../core/cache-ttl.ts";
 import { buildSpanTree, type SpanTreeNode } from "./span-tree.ts";
 import { deriveLatency, toEventMs, type LatencyMetrics } from "../core/latency.ts";
 
@@ -424,6 +425,8 @@ export interface RunObservability {
   cacheHitRatio?: number | null;
   /** Per-model token split with cache-hit ratio (#69). Present only when usage exists. */
   byModel?: ModelCacheRow[];
+  /** Cache panel with a tier-labeled TTL (#83). Present only when usage exists. */
+  cache?: CachePanel;
   /** TTFT, throughput/TPOT, per-tool durations (#32). Present whenever the run has events. */
   latency?: LatencyMetrics;
 }
@@ -480,6 +483,34 @@ export function deriveModelCache(events: AgentEvent[]): ModelCacheRow[] {
     .sort((a, b) => a.model.localeCompare(b.model));
 }
 
+/**
+ * The run's cache panel (#83) over the same usage-bearing events deriveMetrics
+ * counts. A usage record with no session id belongs to the run's own
+ * conversation, so it pairs with the run's other records of the same model
+ * (src/core/cache-ttl.ts cachePrefixKey) and never with another run's.
+ */
+export function deriveRunCache(events: AgentEvent[]): CachePanel {
+  const samples: CacheSample[] = [];
+  for (const ev of events) {
+    const u = ev.type === "usage" ? ev.usage : ev.type === "model_call_end" ? ev.usage : undefined;
+    if (u === undefined) continue;
+    const sid = u.sessionId ?? (typeof ev.sessionId === "string" ? ev.sessionId : undefined);
+    const model = u.model ?? (ev.type === "model_call_end" ? ev.model : undefined);
+    samples.push({
+      ts: toEventMs(ev.timestamp) ?? (typeof u.timestamp === "number" ? u.timestamp : null),
+      agent: u.agent,
+      sessionId: sid !== undefined && sid !== null && sid !== "" ? sid : "run",
+      model,
+      inputTokens: u.inputTokens,
+      cacheReadTokens: u.cacheReadTokens,
+      cacheWriteTokens: u.cacheWriteTokens,
+      cacheWrite1hTokens: u.cacheWrite1hTokens,
+      extra: u.extra,
+    });
+  }
+  return cachePanel(samples);
+}
+
 export interface ReconciledCredits {
   available?: boolean;
   value?: number;
@@ -511,6 +542,7 @@ export function deriveRunObservability(events: AgentEvent[], credits?: Reconcile
       cacheWriteTokens: last.cacheWrite,
     });
     out.byModel = deriveModelCache(events);
+    out.cache = deriveRunCache(events);
   }
   if (events.length > 0) out.latency = deriveLatency(events);
   return out;

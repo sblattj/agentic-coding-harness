@@ -627,6 +627,10 @@ function renderMeta() {
     box.appendChild(kv("cache hit / " + m.model, m.cacheHitRatio == null ? "n/a" : (m.cacheHitRatio * 100).toFixed(1) + "%"));
   });
   else box.appendChild(kv("cache hit / model", "n/a"));
+  var ttl = cacheTtlText(obs && obs.data && obs.data.cache);
+  var ttlKv = kv("cache ttl", ttl.text);
+  ttlKv.title = ttl.title;
+  box.appendChild(ttlKv);
   var stamp = r.updatedAt || r.startedAt;
   if ((!obs || obs.stamp !== stamp) && !modelCachePending[r.runId]) {
     modelCachePending[r.runId] = true;
@@ -710,6 +714,24 @@ function modelChips(r) {
   });
 }
 /* modelchips:end */
+/* cachettl:begin */
+/* #83: TTL text with its tier, mirrors fmtCacheTtl in src/core/cache-ttl.ts. A value without a
+   known tier renders n/a: no path shows a bare number. */
+var CACHE_TTL_TIERS = { est: "our estimate (default 5m)", reported: "vendor-reported expiry", measured: "longest observed cache write to read gap (lower bound)" };
+function fmtTtlDuration(ms) {
+  function trim(n) { return String(Math.round(n * 10) / 10); }
+  if (ms < 60000) return Math.round(ms / 1000) + "s";
+  if (ms < 3600000) return trim(ms / 60000) + "m";
+  return trim(ms / 3600000) + "h";
+}
+function cacheTtlText(panel) {
+  var t = panel && panel.ttl;
+  if (!t || !Object.prototype.hasOwnProperty.call(CACHE_TTL_TIERS, t.tier) || typeof t.value !== "number" || !isFinite(t.value)) {
+    return { text: "n/a", title: "nothing known about the prompt-cache TTL" };
+  }
+  return { text: fmtTtlDuration(t.value) + " " + t.tier, title: CACHE_TTL_TIERS[t.tier] + (t.samples ? " over " + t.samples + " gap(s)" : "") };
+}
+/* cachettl:end */
 
 /* ===== usage scope + model provenance (#140/#142); mirrors src/core/usage-scope.ts ===== */
 function usageScopeText(u) {

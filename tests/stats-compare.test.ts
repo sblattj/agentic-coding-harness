@@ -188,7 +188,7 @@ describe("ach stats --compare (#42)", () => {
     assert.equal(r.code, 0, r.stderr);
     const j = JSON.parse(r.stdout);
     assert.deepEqual(Object.keys(j), [
-      "total", "byAgent", "byDay", "timezone", "window", "pricing", "byModel", "unpricedModels", "cacheHitRatio", "codexAccounting", "runs", "runOutcomes", "pace",
+      "total", "byAgent", "byDay", "timezone", "window", "pricing", "byModel", "unpricedModels", "cacheHitRatio", "cache", "codexAccounting", "runs", "runOutcomes", "pace",
     ]);
     assert.ok(!("compare" in j));
     // and --compare adds exactly one key, in front of pricing

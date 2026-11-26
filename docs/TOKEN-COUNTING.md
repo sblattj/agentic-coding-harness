@@ -573,6 +573,13 @@ a field on every `byModel`/`byProject` row), in the dashboard run header, and
 in `/trio` metrics (run card plus one card per model from
 `/api/runs/:runId/observability` `byModel`).
 
+**Cache panel and TTL (#83).** `--json` also carries a top-level `cache`
+panel (`cacheRead`, `cacheCreation`, `input`, `ttl`, plus `bySession`), and the
+observability endpoint a per-run `cache` panel. The TTL is always tier-labeled
+(`est` 5m default, `reported` from a vendor expiry or the `cacheWrite1hTokens`
+split, `measured` from observed write-to-read gaps); see
+[CACHE-TTL.md](CACHE-TTL.md). Cost math does not read it.
+
 **`byModel` (always in `--json`; printed with `--by model`).** Keys are
 runtime-scoped `agent/model`, so `claude/gpt-5` and `opencode/gpt-5` stay two
 rows. A record carrying per-model slices (`extra.raw.models`, the claude

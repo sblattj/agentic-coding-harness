@@ -289,6 +289,7 @@ describe('ach CLI exit codes (end to end, fake codex)', () => {
       'byAgent',
       'byDay',
       'byModel',
+      'cache',
       'cacheHitRatio',
       'pace',
       'pricing',

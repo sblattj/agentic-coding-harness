@@ -176,6 +176,8 @@ describe("harness cli", () => {
       "byAgent",
       "byDay",
       "byModel",
+      // #83: cache panel with a tier-labeled TTL.
+      "cache",
       "cacheHitRatio",
       // #142: additive, present when codex rows are in the window.
       "codexAccounting",

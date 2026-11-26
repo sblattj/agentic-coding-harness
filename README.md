@@ -440,6 +440,10 @@ ach regrade <run-id> --verify 'npm test'          # append a score without anoth
 provenance labels on displayed values. Time filters, project/model dimensions,
 `--spark cost|tokens` (14-day block-bar trend on the totals line; `--no-spark` or a non-UTF terminal prints plain `min=.. max=..` text),
 cache-hit ratios, and `--exit-codes ladder` compose with the existing stats commands.
+A cache panel (cache reads vs creation vs plain input) carries a prompt-cache TTL that
+is always tier-labeled `est`, `reported` or `measured` (`n/a` when nothing is known):
+`cache` in `ach stats --json`, a `cache` line in text stats, and `cache ttl` in the `ach web`
+run view. See [docs/CACHE-TTL.md](docs/CACHE-TTL.md).
 Custom agents can use `--agent custom --template 'mycli {prompt}'` or a JSON file in
 `.ach/agents.d/`; runs without a usage source remain explicitly unmetered.
 

@@ -134,6 +134,12 @@ test("every ach stats --json section honours --project and --until together", ()
         assert.deepEqual(keysOf(v.byMonth), keysOf(out.byMonth));
         assert.equal(typeof v.total, "number");
       },
+      // #83: the cache panel and its per-session rows see only the filtered records.
+      cache: (v) => {
+        assert.equal(v.cacheRead, 50);
+        assert.equal(v.input, 100);
+        assert.deepEqual(v.bySession.map((x: Json) => x.sessionId), ["s-a1"]);
+      },
       byModelDay: (v) => assert.deepEqual(keysOf(v), ["2026-09-20"]),
       byProject: (v) => {
         assert.deepEqual(keysOf(v), ["/alpha"]);
@@ -183,6 +189,7 @@ test("ach stats text output honours --project and --until in every section", () 
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /^totals\s+records=1 /m);
     assert.match(r.stdout, /^unmetered runs=1 /m);
+    assert.match(r.stdout, /^cache\s+read=50 creation=0 input=100 ttl=5m est sessions=1$/m);
     assert.match(r.stdout, /^2026-09-20 /m);
     assert.doesNotMatch(r.stdout, /2026-09-21/);
     assert.doesNotMatch(r.stdout, /\/beta/);
