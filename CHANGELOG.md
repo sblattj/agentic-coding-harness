@@ -4,6 +4,22 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-11-26
+
+### Added
+
+- Secret masking before export: `--mask none|preview|all` (with `--mask-style`, `--mask-entropy`, `--mask-pattern`) on `ach emit` (atif, otel, langfuse, sft), `ach report`, the trial-suite report and the MCP `harness_emit` / `harness_report` tools. Detectors cover API keys and tokens, private keys, connection-string credentials, credential assignments, secret-named JSON fields, emails and home paths, plus an opt-in high-entropy detector. `preview` lists findings and writes or sends nothing. `ach scrub <file|dir>... --mask preview|all` lists findings in already exported files or writes `.masked` copies, leaving the originals untouched. Config: a top-level `mask` key, env `AGENTIC_CODING_HARNESS_MASK`. Local outputs default to `none` and are unchanged unless you ask; outbound otel and langfuse default to `all` (see Changed). See docs/MASKING.md. Fixes #71.
+- Privacy modes for shared output: `--privacy off|redact|anon` on `ach report` (HTML and the new `--json`), `ach emit` and the MCP report and emit tools. `redact` shortens paths to basenames and collapses `$HOME` to `~`; `anon` also drops prompt and message text and turns run and session ids into stable `anon-<12 hex>` hashes. Numbers are never touched, and a non-off mode is stamped into every output. `off` is the default and stays byte-identical. Fixes #46.
+- `ach export --out <dir>`: a full data dump of runs, raw events, archived transcripts, `stats.json`, `stats.csv` and a `manifest.json` with a sha256 per file, record counts and the ach version. Re-runs skip identical files, and `--mask` applies the masking policy (default raw). See docs/EXPORT.md. Fixes #96.
+- Content-capture tiers: `--capture-mode full|metadata|off` on `ach run` and `ach trial`, env `ACH_CAPTURE_MODE`, `run.captureMode`, or `contentCapture { default, agents }` in the config file, where a per-agent entry beats the global tier. `metadata` keeps event types, ids, timings, models, tool names, tokens and costs and strips every other string at record time; `off` keeps the run lifecycle and the stripped token lines so `ach stats` and `ach audit` totals match across tiers. `full` stays the default. See docs/CAPTURE.md. Fixes #72.
+- Export enrichers: repeatable `--attr key=value` and `--attr-env key=ENVVAR` on `ach emit` (or the config file's `emit` section) stamp custom attributes on every OTel and Langfuse span and the OTLP resource, and in ATIF `extra.attributes`. `--enricher <path>` loads a JS module for per-span attributes; it is CLI and config only and is never accepted over MCP. Enrichers fail open with one warning. Fixes #95.
+- W3C trace context: a run joins an incoming `TRACEPARENT` (or starts a trace), records `trace` on its RunRecord and RunResult, and hands its agent child and `--verify` checker a `TRACEPARENT` naming the run's span. `ach emit` otel and langfuse exports adopt those ids; inputs without `trace` export the same ids as before. The run summary and `ach web` show the traceparent. See docs/TRACE-CONTEXT.md. Fixes #73.
+
+### Changed
+
+- Outbound exports now mask secrets by default: `ach emit` otel and langfuse output (files, stdout and the Langfuse POST) and the MCP `harness_emit` tool resolve to `--mask all` when nothing else is set, and print a one-line mask note on stderr. Local outputs (atif, sft, report, scrub, export) keep the `none` default and stay byte-identical. A global `mask.mode`, `mask.<sink>`, the env var and `--mask` still win. To opt out: `ach config --set mask.otel none` and `ach config --set mask.langfuse none`. Privacy (`--privacy`) stays `off`. Refs #71.
+
+
 ## [0.35.0] - 2026-11-26
 
 ### Added
