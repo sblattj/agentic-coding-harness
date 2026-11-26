@@ -54,6 +54,13 @@ function resultJson(over: Record<string, unknown>): string {
   });
 }
 
+/** The per-run comparison table only (#90 added a league table above it with its own experiment/variant/agent columns). */
+function comparisonTable(html: string): string {
+  const start = html.indexOf('<table class="cmp sortable" id="comparison">');
+  assert.ok(start >= 0, "comparison table present");
+  return html.slice(start, html.indexOf("</table>", start));
+}
+
 async function writeTrial(
   root: string,
   label: string,
@@ -85,7 +92,8 @@ describe("report variant grouping (spec §6.3)", () => {
     const out = path.join(tmp, "mixed.html");
     const r = runCli(["report", path.join(tmp, "20260912-000001"), "--out", out]);
     assert.equal(r.code, 0, r.stderr);
-    const html = await fs.readFile(out, "utf8");
+    const page = await fs.readFile(out, "utf8");
+    const html = comparisonTable(page);
     assert.match(html, /<th data-k="variant" data-t="s">variant<\/th>/);
     assert.ok(html.includes(">ptr-prompt</td>"), "variant value in the identity column");
     // the legacy identity header must be gone, not merely joined by it
@@ -94,15 +102,15 @@ describe("report variant grouping (spec §6.3)", () => {
     const tbody = html.slice(html.indexOf("<tbody"), html.indexOf("</tbody>"));
     assert.ok(/<td data-v="" class="agent-cell"><span class="muted">—<\/span><\/td>/.test(tbody));
     // per-agent detail sections are unchanged (identity stays per-run)
-    assert.match(html, /<summary>claude /);
-    assert.match(html, /<summary>codex /);
+    assert.match(page, /<summary>claude /);
+    assert.match(page, /<summary>codex /);
   });
 
   test("all-legacy fixture keeps the by-agent grouping exactly as before", async () => {
     const out = path.join(tmp, "legacy.html");
     const r = runCli(["report", path.join(tmp, "legacy"), "--out", out]);
     assert.equal(r.code, 0, r.stderr);
-    const html = await fs.readFile(out, "utf8");
+    const html = comparisonTable(await fs.readFile(out, "utf8"));
     assert.match(html, /<th data-k="agent" data-t="s">agent<\/th>/);
     assert.doesNotMatch(html, /data-k="variant"/);
     assert.ok(!html.includes(">variant</th>"), "no variant header");

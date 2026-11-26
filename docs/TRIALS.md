@@ -124,6 +124,11 @@ by variant, or by agent when no run has a variant:
 |---|---|---|---|---|---|---|
 | baseline | 3 | 2 | 66.7% | 20.8% – 93.9% | 0.0% | 100.0% |
 
+Every report also opens with a **league table**, one row per experiment ×
+variant (the `/api/compare` rollup), and writes the same rows to
+`leaderboard.json` next to the HTML. `ach report --registry` builds it over
+the run registry with no trial paths. See [LEADERBOARD.md](LEADERBOARD.md).
+
 ## The statistics (`src/core/repeat-stats.ts`)
 
 For a cell with n verified runs and c passes (k = n):

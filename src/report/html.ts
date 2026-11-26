@@ -5,6 +5,7 @@
 // (names, models, event content) passes through esc() before embedding.
 import fs from "node:fs/promises";
 import type { LoadedRun, TrialSet } from "./model.ts";
+import type { LeaderboardDoc, LeaderboardRow } from "./leaderboard.ts";
 import { VERSION } from "../version.ts";
 import { repeatStats } from "../core/repeat-stats.ts";
 import { NO_BRANCH } from "../cli/stats-dims.ts";
@@ -574,6 +575,85 @@ ${rows}
 `;
 }
 
+// ---------------------------------------------------------------- league table
+
+/** One league-table column: the leaderboard.json field it shows and how. */
+interface LeagueCol {
+  field: keyof LeaderboardRow;
+  label: string;
+  num: boolean;
+  text: (v: number) => string;
+}
+
+const LEAGUE_COLS: LeagueCol[] = [
+  { field: "runs", label: "runs", num: true, text: (v) => String(v) },
+  { field: "successRate", label: "success rate", num: true, text: (v) => pct(v) },
+  { field: "avgCostUsd", label: "mean cost", num: true, text: (v) => fmtCost(v) },
+  { field: "medianCostUsd", label: "median cost", num: true, text: (v) => fmtCost(v) },
+  { field: "avgTotalTokens", label: "mean tokens", num: true, text: (v) => fmtInt(Math.round(v)) },
+  { field: "medianTotalTokens", label: "median tokens", num: true, text: (v) => fmtInt(Math.round(v)) },
+  { field: "avgDurationMs", label: "mean wall", num: true, text: (v) => fmtOffset(Math.round(v), 0).replace(/^0ms$/, "0s") },
+  { field: "medianDurationMs", label: "median wall", num: true, text: (v) => fmtOffset(Math.round(v), 0).replace(/^0ms$/, "0s") },
+  { field: "passRate", label: "pass rate", num: true, text: (v) => pct(v) },
+];
+
+/**
+ * League table (#90): one row per experiment x variant, the same rows as
+ * leaderboard.json (every cell's data-v is the raw JSON value, `data-f` names
+ * the field) and the same rollup as /api/compare. Sortable client-side.
+ */
+function renderLeagueTable(doc: LeaderboardDoc | undefined): string {
+  if (doc === undefined || doc.rows.length === 0) return "";
+  const showPass = doc.rows.some((r) => r.passRate !== null);
+  const cols = LEAGUE_COLS.filter((c) => showPass || c.field !== "passRate");
+  const head = [
+    `<th data-k="experiment" data-t="s">experiment</th>`,
+    `<th data-k="variant" data-t="s">variant</th>`,
+    `<th data-k="agent" data-t="s">agent</th>`,
+    ...cols.map((c) => `<th data-k="${c.field}" data-t="n" class="num">${esc(c.label)}</th>`),
+    `<th data-k="members" data-t="s">runs aggregated</th>`,
+  ].join("");
+  const rows = doc.rows
+    .map((r) => {
+      const cells = [
+        `<td data-f="experiment" data-v="${esc(r.experiment)}" class="agent-cell">${esc(r.experiment)}</td>`,
+        r.variant === null
+          ? `<td data-f="variant" data-v="" class="na">n/a</td>`
+          : `<td data-f="variant" data-v="${esc(r.variant)}">${esc(r.variant)}</td>`,
+        `<td data-f="agent" data-v="${esc(r.agent)}">${esc(r.agent)}</td>`,
+        ...cols.map((c) => {
+          const v = r[c.field] as number | null;
+          if (v === null) {
+            const note = c.field === "avgCostUsd" || c.field === "medianCostUsd" ? ` title="${r.unpricedRuns} unpriced run(s)"` : "";
+            return `<td data-f="${c.field}" data-v="" class="num na"${note}>n/a</td>`;
+          }
+          return `<td data-f="${c.field}" data-v="${v}" class="num">${esc(c.text(v))}</td>`;
+        }),
+        `<td data-f="members" data-v="${esc(r.members.map((m) => m.runId).join(" "))}" class="members">${r.members
+          .map(
+            (m) =>
+              `<span class="member" data-run="${esc(m.runId)}" data-seal="${m.seal ?? ""}"><code>${esc(m.runId)}</code> ${
+                m.seal === null ? '<span class="muted">no record</span>' : esc(sealText(m.seal))
+              }</span>`,
+          )
+          .join("")}</td>`,
+      ];
+      return `      <tr data-experiment="${esc(r.experiment)}" data-variant="${esc(r.variant ?? "")}">${cells.join("")}</tr>`;
+    })
+    .join("\n");
+  return `  <section>
+    <h3>league table</h3>
+    <p class="meta">One row per experiment &times; variant over ${doc.runs} run${doc.runs === 1 ? "" : "s"}, the same rollup as <code>/api/compare</code>: success rate = successes / runs with a verdict; cost n/a when any run in the row is unpriced; tokens = input + output; wall = end minus start. The same rows are in <code>leaderboard.json</code> (schema ${esc(doc.schema)} v${doc.schemaVersion}).</p>
+  <table class="cmp sortable" id="league">
+    <thead><tr>${head}</tr></thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>
+  </section>
+`;
+}
+
 // ---------------------------------------------------------------- sections
 
 function renderAgentSection(r: LoadedRun): string {
@@ -673,6 +753,8 @@ pre.msg { background: #10101a; border: 1px solid #2f334d; border-radius: 8px; pa
 button.show-more { background: #1f2335; color: #7dcfff; border: 1px solid #2f334d;
   border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; margin-top: 6px; }
 button.show-more:hover { background: #2f334d; }
+.members .member { display: inline-block; margin: 0 10px 2px 0; white-space: nowrap; font-size: 12px; }
+.members code { background: #1f2335; padding: 1px 6px; border-radius: 4px; font-size: 11px; }
 .warnings { color: #e0af68; font-size: 12px; padding-left: 20px; }
 footer { margin-top: 40px; color: #565f89; font-size: 12px; border-top: 1px solid #2f334d; padding-top: 14px; }
 `;
@@ -722,7 +804,10 @@ const JS = `
 
 export interface RenderOptions {
   version: string;
-  generatedAt: Date;
+  /** Footer generation time (wall clock). Optional since #90: `ach report` passes dataAsOf instead, so output is byte-stable. */
+  generatedAt?: Date;
+  /** #90: the newest run time in the set, printed as "data as of" in the footer. */
+  dataAsOf?: Date;
   /** #46: the privacy mode the model was sanitized with; stamped in the page when set and not `off`. */
   privacy?: PrivacyMode;
 }
@@ -764,7 +849,7 @@ ${privacyMeta(opts.privacy)}<style>${CSS}</style>
     <p class="meta">${multiTrial ? `${labels.length} trials` : `trial ${esc(labels[0] ?? "")}`}<span class="sep">·</span>${agents.length} agent${agents.length === 1 ? "" : "s"}<span class="sep">·</span>task: ${task ? esc(clip(task, 120)) : "same-prompt comparison (task not captured)"}</p>
     <div class="chips">${tsChips}</div>
 ${privacyStamp(opts.privacy)}  </header>
-  <section>
+${renderLeagueTable(trialSet.leaderboard)}  <section>
     <h3>comparison</h3>
 ${renderComparisonTable(runs, multiTrial)}
     <p class="muted legend">${esc(PROVENANCE_LEGEND)}</p>
@@ -778,7 +863,7 @@ ${renderScoreHistory(runs)}${renderRepeatStats(runs)}${renderBranchTable(runs)}$
     <h3>per-agent detail</h3>
 ${runs.map(renderAgentSection).join("\n")}
   </section>
-  <footer>generated by agentic-coding-harness ${esc(opts.version)} · ${esc(opts.generatedAt.toISOString())}</footer>
+  <footer>generated by agentic-coding-harness ${esc(opts.version)}${opts.generatedAt !== undefined ? ` · ${esc(opts.generatedAt.toISOString())}` : ""}${opts.dataAsOf !== undefined ? ` · data as of ${esc(opts.dataAsOf.toISOString())}` : ""}</footer>
 </main>
 <script>${JS}</script>
 </body>

@@ -21,8 +21,8 @@ import {
 import { AtifWriter } from "../src/emitters/atif.ts";
 import { toOtlpJson } from "../src/emitters/otel.ts";
 import { eventsToMessages, turnSamples, withPrompt } from "../src/emitters/sft.ts";
-import { loadTrials } from "../src/report/model.ts";
 import { readVersion, renderReport } from "../src/report/html.ts";
+import { loadReportModel } from "../src/cli/report.ts";
 import { registerInspectTools } from "../src/mcp/tools-inspect.ts";
 import type { McpServer, McpToolDef } from "../src/mcp/contract.ts";
 import type { AgentEvent } from "../src/core/types.ts";
@@ -438,7 +438,19 @@ describe("every output stamps the active privacy mode", () => {
 
 describe("--privacy off (the default) is byte-identical to today's output", () => {
   test("report HTML, ATIF, OTel and SFT with no flag and with --privacy off equal the untouched builders", async () => {
-    const want = stableHtml(renderReport(await loadTrials(trial), { version: await readVersion(), generatedAt: new Date(0) }));
+    // #90: the CLI page carries the league table folded from the same state
+    // dir, and stamps the newest run time (if any) instead of the wall clock.
+    const prevState = process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
+    process.env.AGENTIC_CODING_HARNESS_STATE_DIR = stateDir;
+    let model: Awaited<ReturnType<typeof loadReportModel>>;
+    try {
+      model = await loadReportModel([trial]);
+    } finally {
+      if (prevState === undefined) delete process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
+      else process.env.AGENTIC_CODING_HARNESS_STATE_DIR = prevState;
+    }
+    const asOf = model.leaderboard.dataAsOf;
+    const want = stableHtml(renderReport(model, { version: await readVersion(), ...(asOf !== null ? { dataAsOf: new Date(asOf) } : {}) }));
     for (const extra of [[], ["--privacy", "off"]]) {
       const html = path.join(tmp, `off-${extra.length}.html`);
       const r = cli(["report", trial, "--out", html, ...extra]);

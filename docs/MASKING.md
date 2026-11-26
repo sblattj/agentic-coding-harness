@@ -59,7 +59,8 @@ ach emit --input trials/ --format sft --mask preview          # list findings, w
 ach report trials/20260911-141210 --mask all                  # masked HTML report
 ```
 
-Masking covers `ach emit` (`atif`, `otel`, `langfuse`, `sft`), `ach report`, the trial-suite
+Masking covers `ach emit` (`atif`, `otel`, `langfuse`, `sft`), `ach report` (its HTML, its
+`leaderboard.json` and `--registry` reports, all through one gate), the trial-suite
 report, and the MCP tools `harness_emit` and `harness_report` (a `mask` argument). The input run is
 masked once, before any emitter sees it, so message text, tool arguments, tool results and the
 run's session id, agent and model are all covered. Values you type yourself (`--session-id`,

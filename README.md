@@ -303,6 +303,19 @@ ach trial --suite local --tasks-dir tasks --task my-task --agent claude
 The new `verify.sh` fails until you write the check, and `trial new` runs it once to show
 that. See [docs/TRIALS.md](docs/TRIALS.md#ach-trial-new-scaffold-a-task).
 
+To share the result, build a league table from the run registry: one row per
+experiment × variant (runs, success rate, mean and median cost, tokens, wall time, and the
+run ids with their seal verdict), the same rollup as `/api/compare`. It lands in the
+single-file HTML report and in a versioned `leaderboard.json` next to it, and regenerates
+byte-identically from unchanged runs:
+
+```sh
+ach report --registry --out site/index.html   # also writes site/leaderboard.json
+ach report --registry --limit 50 --privacy anon --out site/index.html   # newest 50, ids hashed
+```
+
+Walkthrough and the JSON schema: [docs/LEADERBOARD.md](docs/LEADERBOARD.md).
+
 ![Cross-agent comparison table showing token usage, cost, duration, and status for Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro run on the same task](docs/assets/cli-compare.png)
 
 ## Live dashboards: terminal (`ach dash`) and web (`ach web`)
@@ -518,7 +531,10 @@ ach emit --input events.json --format atif|otel|langfuse|sft [--out path]
             (privacy mode for shared output: redact shortens paths, anon also drops prompt text
              and hashes run/session ids; default off; docs/MASKING.md#privacy-modes)
 ach report <trials-dir> [--out path] [--json] [--mask none|preview|all] [--privacy off|redact|anon]
-            # single-file HTML comparison; --json prints the report model (with a privacy field)
+ach report --registry [--limit N] [--out path] [--json] [--mask ..] [--privacy ..]
+            # single-file HTML comparison plus an experiment x variant league table, and
+            # leaderboard.json next to the HTML; --registry reads <stateDir>/runs/ instead of
+            # trial dirs; --json prints the report model (with a privacy field) (docs/LEADERBOARD.md)
 ach scrub <file|dir>... --mask preview|all [--out-dir DIR] [--json]
             # share-time scrub of exported artifacts: preview lists every key, email and home path
             # and touches nothing; all writes <name>.masked.<ext> copies, originals unchanged (docs/MASKING.md)
@@ -1310,6 +1326,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them. Outbound exports (`otel`, `langfuse`) mask by default; local files stay raw unless you ask (`ach config --set mask.otel none` opts otel out). Privacy modes (`--privacy redact|anon`) strip paths, prompt text and ids from shared reports and exports.
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
 - [Desks and lanes (`ach desk`, `ach lane`)](docs/DESKS.md): long-lived role agents plus goal-driven lanes that message each other, with per-desk cost.
+- [League tables (`ach report --registry`, `leaderboard.json`)](docs/LEADERBOARD.md): a shareable, byte-stable leaderboard (HTML + versioned JSON) from the compare rollups, run → leaderboard → share.
 - [Full data export (`ach export`)](docs/EXPORT.md): everything the harness recorded in one portable, sha256-verifiable dump, for backup, migration or knowing exactly what exists before erasing it.
 - [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — adapter pattern (headless / ACP / tmux lanes),

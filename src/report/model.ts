@@ -15,6 +15,8 @@ import {
 } from "../core/types.ts";
 import { VerifyResultSchema, type VerifyResult } from "../core/verify.ts";
 import type { Provenance } from "../core/provenance.ts";
+import type { RunRecord } from "../core/registry.ts";
+import type { LeaderboardDoc } from "./leaderboard.ts";
 
 /** Tolerant RunResult view: `harness run --json` writes the full envelope, but
  * hand-trimmed fixtures may omit numeric/cost fields. Everything except
@@ -73,6 +75,8 @@ export interface TrialSet {
    * trial), sorted. */
   labels: string[];
   runs: LoadedRun[];
+  /** #90: the league table (src/report/leaderboard.ts); rendered when present. */
+  leaderboard?: LeaderboardDoc;
 }
 
 /** A JSON file qualifies as a RunResult artifact when it has an `events`
@@ -287,4 +291,54 @@ export async function loadTrials(root: string): Promise<TrialSet> {
   }
   const labels = [...new Set(runs.map((r) => r.trialLabel))].sort();
   return { rootDir: abs, labels, runs };
+}
+
+/**
+ * `ach report --registry` (#90): the report view of one run record. A record
+ * holds totals, not the event stream, so the per-agent detail has no
+ * timeline; every number comes from `totals` under the same rules as
+ * /api/compare (a run with no trustworthy price renders n/a, never $0).
+ */
+export function loadedRunFromRecord(rec: RunRecord, dir: string, label: string): LoadedRun {
+  const t = rec.totals;
+  const usdUnavailable = rec.metering === "none" || rec.usage?.usd.available === false;
+  const cost = t?.costUsd;
+  const costUsd = usdUnavailable || cost === undefined || !Number.isFinite(cost) ? undefined : cost;
+  const end = rec.endedAt ?? rec.updatedAt ?? rec.startedAt;
+  const exitStatus = (rec.exitStatus ?? rec.status ?? "unknown") as RunResult["exitStatus"];
+  const model = t?.byModel?.[0]?.model ?? null;
+  return {
+    agent: rec.agent,
+    trialDir: dir,
+    trialLabel: label,
+    result: {
+      runId: rec.runId,
+      sessionId: rec.sessionId ?? "",
+      events: [],
+      tokens: [],
+      totalCost: costUsd ?? 0,
+      durationMs: Math.max(0, end - rec.startedAt),
+      exitStatus,
+      warnings: [],
+      ...(rec.variant !== undefined ? { variant: rec.variant } : {}),
+      ...(rec.usage !== undefined ? { usage: rec.usage } : {}),
+    } as RunResult,
+    wallSecs: null,
+    hasStderr: false,
+    model,
+    inputTokens: t?.inputTokens ?? 0,
+    outputTokens: t?.outputTokens ?? 0,
+    cacheReadTokens: t?.cacheReadTokens ?? 0,
+    cacheWriteTokens: t?.cacheWriteTokens ?? 0,
+    reasoningTokens: 0,
+    costUsd,
+    ...(costUsd !== undefined && t?.costSource !== undefined ? { costProvenance: t.costSource } : {}),
+    credits: t?.credits ?? null,
+    task: rec.promptPreview ?? null,
+    ...(rec.variant !== undefined ? { variant: rec.variant } : {}),
+    ...(rec.usage !== undefined ? { usage: rec.usage } : {}),
+    tokensUnavailable: rec.metering === "none" || rec.usage?.tokens.available === false,
+    usdUnavailable,
+    ...(rec.verify !== undefined ? { verify: rec.verify } : {}),
+  };
 }

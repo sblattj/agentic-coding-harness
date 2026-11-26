@@ -582,9 +582,14 @@ usage:
                 config mask.privacy; docs/MASKING.md)
   ach report <trials-dir> [--out path] [--json] [--mask none|preview|all] [--mask-style ..]
                [--privacy off|redact|anon]
+  ach report --registry [--limit N] [--out path] [--json] [--mask ..] [--privacy ..]
                  (single-file HTML comparison; a trials/ root scans subdirs;
-                  --json prints the report model (with a privacy field) instead,
-                  or writes it to --out; --mask* and --privacy as for emit)
+                  adds an experiment x variant league table (the /api/compare
+                  rollup) and writes leaderboard.json next to the HTML;
+                  --registry reads the run set from <stateDir>/runs/ (newest
+                  --limit N); --json prints the report model (with a privacy
+                  field) instead, or writes it to --out; --mask* and --privacy
+                  as for emit; docs/LEADERBOARD.md)
   ach scrub <file|dir>... --mask preview|all [--out-dir <dir>] [--json]
                [--mask-style replace|partial] [--mask-entropy] [--mask-pattern <regex>]...
                  (share-time scrub of exported artifacts: preview lists every

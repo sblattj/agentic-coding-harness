@@ -76,6 +76,19 @@ function groupValue(rec: RunRecord, key: CompareGroupKey): string | undefined {
  *  Undefined group values OMIT the column (JSON drops it); rows sort by
  *  group-key values ascending with undefined last, then runs descending. */
 export function computeCompareRows(records: RunRecord[], groupBy: string[], now: number = Date.now()): CompareRow[] {
+  return computeCompareGroups(records, groupBy, now).map((g) => g.row);
+}
+
+/** One compare group: its rollup row plus the records it folds (#90: the
+ *  league table reuses this so its rows ARE the /api/compare rows). */
+export interface CompareGroup {
+  row: CompareRow;
+  records: RunRecord[];
+}
+
+/** computeCompareRows with group membership kept: same grouping, same math,
+ *  same row order; `records` keep their input order. */
+export function computeCompareGroups(records: RunRecord[], groupBy: string[], now: number = Date.now()): CompareGroup[] {
   const keys = resolveCompareGroupBy(groupBy);
   const groups = new Map<string, { values: (string | undefined)[]; records: RunRecord[] }>();
   for (const rec of records) {
@@ -89,7 +102,7 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[], now:
     group.records.push(rec);
   }
 
-  const rows: CompareRow[] = [];
+  const rows: CompareGroup[] = [];
   for (const group of groups.values()) {
     const runs = group.records.length;
     let totalTokens = 0;
@@ -146,10 +159,10 @@ export function computeCompareRows(records: RunRecord[], groupBy: string[], now:
       const value = group.values[i];
       if (value !== undefined) row[key] = value;
     });
-    rows.push(row);
+    rows.push({ row, records: group.records });
   }
 
-  rows.sort((a, b) => {
+  rows.sort(({ row: a }, { row: b }) => {
     for (const key of keys) {
       const av = a[key];
       const bv = b[key];
