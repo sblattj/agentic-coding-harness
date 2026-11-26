@@ -1,0 +1,278 @@
+{
+  "total": {
+    "records": 4,
+    "inputTokens": 3300,
+    "outputTokens": 330,
+    "cacheReadTokens": 0,
+    "cacheWriteTokens": 0,
+    "reasoningTokens": 0,
+    "costUsd": 0,
+    "costSource": null,
+    "costBySource": {
+      "reported": null,
+      "computed": null
+    },
+    "unpricedRecords": 4,
+    "costDisagreements": 0,
+    "provenance": {
+      "inputTokens": "reported",
+      "outputTokens": "reported",
+      "cacheReadTokens": "reported",
+      "cacheWriteTokens": "reported",
+      "reasoningTokens": "reported"
+    }
+  },
+  "byAgent": {
+    "claude": {
+      "records": 4,
+      "inputTokens": 3300,
+      "outputTokens": 330,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "costSource": null,
+      "costBySource": {
+        "reported": null,
+        "computed": null
+      },
+      "unpricedRecords": 4,
+      "provenance": {
+        "inputTokens": "reported",
+        "outputTokens": "reported",
+        "cacheReadTokens": "reported",
+        "cacheWriteTokens": "reported",
+        "reasoningTokens": "reported"
+      }
+    }
+  },
+  "sources": {
+    "state": {
+      "records": 2,
+      "inputTokens": 300,
+      "outputTokens": 30,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "costSource": null,
+      "costBySource": {
+        "reported": null,
+        "computed": null
+      },
+      "unpricedRecords": 2,
+      "provenance": {
+        "inputTokens": "reported",
+        "outputTokens": "reported",
+        "cacheReadTokens": "reported",
+        "cacheWriteTokens": "reported",
+        "reasoningTokens": "reported"
+      }
+    },
+    "transcript": {
+      "records": 2,
+      "inputTokens": 3000,
+      "outputTokens": 300,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "costSource": null,
+      "costBySource": {
+        "reported": null,
+        "computed": null
+      },
+      "unpricedRecords": 2,
+      "provenance": {
+        "inputTokens": "reported",
+        "outputTokens": "reported",
+        "cacheReadTokens": "reported",
+        "cacheWriteTokens": "reported",
+        "reasoningTokens": "reported"
+      }
+    }
+  },
+  "byDay": {
+    "2026-01-10": {
+      "records": 2,
+      "inputTokens": 300,
+      "outputTokens": 30,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "costSource": null,
+      "costBySource": {
+        "reported": null,
+        "computed": null
+      },
+      "unpricedRecords": 2,
+      "provenance": {
+        "inputTokens": "reported",
+        "outputTokens": "reported",
+        "cacheReadTokens": "reported",
+        "cacheWriteTokens": "reported",
+        "reasoningTokens": "reported"
+      }
+    },
+    "2026-01-11": {
+      "records": 2,
+      "inputTokens": 3000,
+      "outputTokens": 300,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "costSource": null,
+      "costBySource": {
+        "reported": null,
+        "computed": null
+      },
+      "unpricedRecords": 2,
+      "provenance": {
+        "inputTokens": "reported",
+        "outputTokens": "reported",
+        "cacheReadTokens": "reported",
+        "cacheWriteTokens": "reported",
+        "reasoningTokens": "reported"
+      }
+    }
+  },
+  "timezone": "UTC",
+  "window": {
+    "since": "2026-01-01T00:00:00.000Z",
+    "until": "2026-02-01T00:00:00.000Z"
+  },
+  "pricing": {
+    "snapshotDate": "2026-09-29",
+    "sourceUrl": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+    "modelCount": 199,
+    "ageDays": 58,
+    "stale": false,
+    "staleDays": 180,
+    "source": "bundled"
+  },
+  "byModel": {
+    "claude/fixture-unpriced-model": {
+      "records": 4,
+      "inputTokens": 3300,
+      "outputTokens": 330,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": null,
+      "costSource": null,
+      "costBySource": {
+        "reported": null,
+        "computed": null
+      },
+      "unpricedRecords": 4,
+      "cacheHitRatio": 0
+    }
+  },
+  "unpricedModels": [
+    "claude/fixture-unpriced-model"
+  ],
+  "cacheHitRatio": {
+    "total": 0,
+    "byAgent": {
+      "claude": 0
+    },
+    "byDay": {
+      "2026-01-10": 0,
+      "2026-01-11": 0
+    }
+  },
+  "byProject": {
+    "/mnt/c/Users/x/proj": {
+      "records": 4,
+      "inputTokens": 3300,
+      "outputTokens": 330,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": null,
+      "costSource": null,
+      "costBySource": {
+        "reported": null,
+        "computed": null
+      },
+      "unpricedRecords": 4,
+      "cacheHitRatio": 0
+    }
+  },
+  "projectAliases": {},
+  "runs": [
+    {
+      "runId": "run-shared",
+      "agent": "claude",
+      "startedAt": 1768039200000,
+      "status": "success",
+      "model": null,
+      "contextPercentage": null,
+      "contextTokens": null,
+      "cumulativeTokens": null,
+      "windowTokens": null,
+      "windowSource": null,
+      "basis": null,
+      "estimated": false
+    },
+    {
+      "runId": "run-a",
+      "agent": "claude",
+      "startedAt": 1768042800000,
+      "status": "success",
+      "model": null,
+      "contextPercentage": null,
+      "contextTokens": null,
+      "cumulativeTokens": null,
+      "windowTokens": null,
+      "windowSource": null,
+      "basis": null,
+      "estimated": false
+    }
+  ],
+  "runOutcomes": {
+    "total": {
+      "runs": 2,
+      "success": 2,
+      "unavailable": 0,
+      "noVerdict": 0,
+      "successRate": 1
+    },
+    "byAgent": {
+      "claude": {
+        "runs": 2,
+        "success": 2,
+        "unavailable": 0,
+        "noVerdict": 0,
+        "successRate": 1
+      }
+    },
+    "includeUnavailable": false
+  },
+  "pace": {
+    "asOf": "2026-11-26T21:01:56.314Z",
+    "budgetUsd": null,
+    "spentUsd": null,
+    "budget": null,
+    "windows": {
+      "15m": {
+        "windowMs": 900000,
+        "effectiveMs": 900000,
+        "records": 0,
+        "usdPerHour": null,
+        "tokensPerMinute": null,
+        "etaBudgetHit": null
+      },
+      "1h": {
+        "windowMs": 3600000,
+        "effectiveMs": 3600000,
+        "records": 0,
+        "usdPerHour": null,
+        "tokensPerMinute": null,
+        "etaBudgetHit": null
+      }
+    }
+  }
+}

@@ -72,6 +72,11 @@ export interface DimOptions {
   byModelDay?: boolean;
   /** Build the byProject rollup. */
   byProject?: boolean;
+  /**
+   * `--rewrite` (#99): maps a path-shaped project key (the repo root, never an
+   * alias name) for output. The root itself is found on the original path.
+   */
+  rewriteProject?: (root: string) => string;
   /** Build the byBranch rollup (#47). */
   byBranch?: boolean;
   /** Build the byPr rollup (#48). */
@@ -502,7 +507,8 @@ export function aggregateDims(records: DimRecord[], opts: DimOptions = {}): DimA
       if (opts.byModelDay) addContribution(((byModelDay[day] ??= {})[key] ??= emptyModelBucket()), c);
     }
     if (opts.byProject) {
-      const name = projectOf(r.cwd, opts.projectAliases).name;
+      const p = projectOf(r.cwd, opts.projectAliases);
+      const name = opts.rewriteProject && p.root !== null && p.name === p.root ? opts.rewriteProject(p.name) : p.name;
       addRatio((byProject[name] ??= { ...emptyBucket(), cacheHitRatio: null }), r);
     }
     if (opts.byBranch) addRatio((byBranch[r.branch || NO_BRANCH] ??= { ...emptyBucket(), cacheHitRatio: null }), r);

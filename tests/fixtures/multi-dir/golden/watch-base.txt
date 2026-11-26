@@ -1,0 +1,2 @@
+claude   tsess-a      +2,000 input +200 output +0 cacheR +0 cacheW n/a source: transcript
+claude   tsess-shared +1,000 input +100 output +0 cacheR +0 cacheW n/a source: transcript

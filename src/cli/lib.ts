@@ -26,6 +26,38 @@ export function resolveDirFlag(
   return named ?? dir;
 }
 
+/**
+ * The repeatable form of resolveDirFlag (#99): `stats`/`watch` take
+ * `--dir A --dir B` (or `--transcript-dir`). Returns every directory, in the
+ * order given, with the same directory spelled twice kept once. Mixing both
+ * spellings is allowed only when they name the same set of directories, so
+ * `--dir A --transcript-dir B` stays a usage error, never a silent merge.
+ */
+export function resolveDirFlags(
+  values: { dir?: string | string[] | undefined; "state-dir"?: string | string[] | undefined; "transcript-dir"?: string | string[] | undefined },
+  alias: "state-dir" | "transcript-dir",
+): string[] {
+  const list = (v: string | string[] | undefined): string[] => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+  const dir = list(values.dir);
+  const named = list(values[alias]);
+  const key = (xs: string[]) => [...new Set(xs.map((x) => path.resolve(x)))].sort().join("\0");
+  if (dir.length > 0 && named.length > 0 && key(dir) !== key(named)) {
+    throw new HarnessError(
+      `--${alias} '${named.join("', '")}' and --dir '${dir.join("', '")}' disagree (--dir is an alias of --${alias}; pass one)`,
+      "USAGE",
+    );
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const d of named.length > 0 ? named : dir) {
+    const k = path.resolve(d);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(d);
+  }
+  return out;
+}
+
 // ---------- argv preprocessing (#101/#104) ----------
 
 /**

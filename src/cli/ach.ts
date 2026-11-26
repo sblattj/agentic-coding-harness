@@ -60,7 +60,7 @@ import { cmdTrial } from "./trial-matrix.ts";
 import { z } from "zod";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { VERSION } from "../version.ts";
-import { stateDir, loadOffsets, saveOffsets, appendRecords, readAllRecords, type StatRecord } from "../core/store.ts";
+import { stateDir, loadOffsets, saveOffsets, appendRecords, type StatRecord } from "../core/store.ts";
 import { AtifWriter } from "../emitters/atif.ts";
 import { toOtlpJson } from "../emitters/otel.ts";
 import { emitToLangfuse } from "../emitters/langfuse.ts";
@@ -79,14 +79,13 @@ import {
 } from "../monitors/transcripts.ts";
 import { TRANSCRIPT_SOURCES, isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { drainTranscriptWarnings } from "../monitors/transcript-warnings.ts";
-import { readCursorDashboardStore } from "../monitors/cursor-dashboard.ts";
 import { dashboardSpan, inDashboardSpan, reconcileDashboardWithState, type DashboardSpan } from "./cursor-dashboard-merge.ts";
 import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer, pricingMeta, pricingStaleNotice } from "../core/pricing.ts";
 import { OfflineViolation, installOfflineGuard } from "../core/offline.ts";
 import { autoUpdateNotice, checkForUpdate, formatUpdateResult } from "./update-check.ts";
-import { aggregate, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, orderedExtraArgs, resolveDirFlag, wantsHelp } from "./lib.ts";
+import { aggregate, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, orderedExtraArgs, resolveDirFlags, wantsHelp } from "./lib.ts";
 import { runLatency } from "../core/latency.ts";
 import {
   aggregateDims,
@@ -103,6 +102,7 @@ import {
   parseByDims,
   parseModelAliases,
   projectMatches,
+  projectOf,
   renderDimsText,
   BY_DIMS,
   type DimRecord,
@@ -143,7 +143,7 @@ import {
 import { cmdReport } from "./report.ts";
 import { runContextRows } from "./context-stats.ts";
 import { cmdDesk, cmdLane, cmdListener } from "./desk.ts";
-import { scanRunRecords, skippedRunRecordsWarning, type RunRecord } from "../core/registry.ts";
+import type { RunRecord } from "../core/registry.ts";
 import { cmdDash } from "./dash.ts";
 import { statsExtras } from "./usage-render.ts";
 import { resolvePlan } from "../core/plans.ts";
@@ -163,7 +163,8 @@ import { cmdStatus } from "./status.ts";
 import { cmdStatusline } from "./statusline.ts";
 import { cmdQuota } from "./quota.ts";
 import { cmdQueue, QUEUE_USAGE } from "./queue.ts";
-import { cmdArchive, statsMachineRecords, statsScanOptions, warehouseStateRecords } from "./archive.ts";
+import { cmdArchive } from "./archive.ts";
+import { STATS_REWRITE_FIELDS, WATCH_REWRITE_FIELDS, openStatsSources, parseRewriteRules, rewritePath, rewritesJson, rewritesTextLine } from "./multi-source.ts";
 import { cmdGc } from "./gc.ts";
 import { cmdAttach } from "./attach.ts";
 import { randomUUID } from "node:crypto";
@@ -352,9 +353,12 @@ usage:
                  already run in a new empty dir and are left alone); the four sandbox flags work as for ach run and
                  become the plan-level sandbox: per-cell drop warnings, listed in --dry-run
                  --json, recorded on every ledger row, not part of the cell identity)
-  ach watch [--transcript-dir <home-shaped-root>] [--since DATE | --last D] [--tz Z] [--offline]
+  ach watch [--transcript-dir <home-shaped-root>]... [--rewrite FROM=TO]...
+            [--since DATE | --last D] [--tz Z] [--offline]
                 (--since/--last: print history newer than the bound on startup;
-                 --dir is an alias of --transcript-dir here)
+                 --dir is an alias of --transcript-dir here; repeat it to tail
+                 several roots in one stream, each line ending 'dir: <root>';
+                 --rewrite maps that root path, e.g. /mnt/c=C:)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
             [--tz Z] [--by day|week|month] [--json] [--state-only] [--include-unavailable]
             [--compare prev|prev:<dur>] [--offline]
@@ -404,7 +408,8 @@ usage:
                  x time left. Always: pace over trailing 15m/1h windows, ETA to
                  --budget-usd. --plan frames the active window as % of the
                  plan allowance; built-in presets are community estimates)
-            [--with-warehouse] [--transcript-dir <root>]
+            [--with-warehouse] [--transcript-dir <root>]... [--state-dir <stateDir>]...
+            [--rewrite FROM=TO]...
             [--origin all|native|imported|transcript]
                 (--origin counts only rows of that provenance: native = ach
                  runs, imported = sessions \`ach import\` recorded, transcript =
@@ -412,7 +417,14 @@ usage:
                 (--with-warehouse adds archived copies whose live file is gone;
                  --transcript-dir reads machine transcripts from
                  <root>/.claude/projects etc., e.g. a restore; --dir is an
-                 alias of --transcript-dir here, NOT a state dir)
+                 alias of --transcript-dir here, NOT a state dir;
+                 --state-dir reads harness state (runs/, raw/) from that dir
+                 instead of the default; repeat either flag to merge dirs: a run
+                 or session in two dirs counts once, a conflicting copy warns
+                 with both paths and the newest mtime wins; --rewrite FROM=TO
+                 maps path fields in the output (byProject keys), e.g.
+                 /mnt/c=C: shows /mnt/c/Users/x as C:\\Users\\x; rules are echoed
+                 in --json "rewrites" and on a 'rewrite' text line; see docs/MULTI-DIR.md)
   ach archive [--agent A] [--days N] [--out DIR] [--state-dir <stateDir>] [--json]
   ach archive --restore <batch|latest|all> [--to DIR] [--out DIR] [--json]
                 (snapshot transcripts + RunRecords into <stateDir>/warehouse,
@@ -1257,8 +1269,10 @@ async function cmdWatch(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: joinAgoTokens(rest),
     options: {
-      dir: { type: "string" },
-      "transcript-dir": { type: "string" },
+      // #99: repeatable; several roots are tailed in one stream, each line tagged with its root.
+      dir: { type: "string", multiple: true },
+      "transcript-dir": { type: "string", multiple: true },
+      rewrite: { type: "string", multiple: true },
       since: { type: "string" },
       last: { type: "string" },
       tz: { type: "string" },
@@ -1279,9 +1293,15 @@ async function cmdWatch(rest: string[]): Promise<number> {
     now: Date.now(),
     timeZone: resolveTimeZone(args.values.tz, process.env[TZ_ENV]),
   }).sinceMs;
-  // --transcript-dir (alias --dir): a home-shaped root to read transcripts from.
-  const transcriptDir = resolveDirFlag(args.values, "transcript-dir");
-  const sources = transcriptSources(transcriptDir ? scanOptionsForRoot(path.resolve(transcriptDir)) : {});
+  // --transcript-dir (alias --dir): home-shaped roots to read transcripts from.
+  // Several roots (#99) multiplex into one stream; each event names its root.
+  const transcriptDirs = resolveDirFlags(args.values, "transcript-dir");
+  const rewrites = parseRewriteRules(args.values.rewrite);
+  const tagRoots = transcriptDirs.length > 1;
+  const sources: Array<ReturnType<typeof transcriptSources>[number] & { root?: string }> =
+    transcriptDirs.length === 0
+      ? transcriptSources({})
+      : transcriptDirs.flatMap((d) => transcriptSources(scanOptionsForRoot(path.resolve(d))).map((s) => ({ ...s, root: path.resolve(d) })));
   const state = stateDir();
   const offsets = await loadOffsets();
   type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number; vendorCost?: number; vendorMetered?: boolean };
@@ -1290,6 +1310,8 @@ async function cmdWatch(rest: string[]): Promise<number> {
   const pricer = createPricer();
   process.stderr.write(`watch: ${sources.map((s) => `${s.agent}=${s.dir}`).join(" ")}\n`);
   process.stderr.write(`watch: state=${state}, poll=${POLL_MS / 1000}s — Ctrl-C to stop\n`);
+  const rewriteLine = rewritesTextLine(rewrites, WATCH_REWRITE_FIELDS);
+  if (rewriteLine !== null) process.stdout.write(rewriteLine + "\n");
 
   let stopping = false;
   const stop = () => {
@@ -1304,6 +1326,8 @@ async function cmdWatch(rest: string[]): Promise<number> {
   interface Watched {
     file: string;
     agent: WatchedAgent;
+    /** The --dir root the file was found under; set only when several roots are tailed. */
+    root?: string;
     parse: (file: string) => Promise<
       Array<{
         agent: WatchedAgent;
@@ -1331,15 +1355,16 @@ async function cmdWatch(rest: string[]): Promise<number> {
       for (const file of await walkFiles(src.dir, src.keep)) {
         if (files.has(file)) continue;
         files.add(file);
-        watched.push({ file, agent: src.agent, parse: src.parse });
+        watched.push({ file, agent: src.agent, parse: src.parse, ...(tagRoots && src.root !== undefined ? { root: src.root } : {}) });
       }
     }
-    const deltas = new Map<string, { agent: string; sessionId: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; priced: boolean }>();
-    const bump = (r: { agent?: string; sessionId?: string | null; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd?: number }) => {
+    const deltas = new Map<string, { agent: string; sessionId: string; root?: string; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; priced: boolean }>();
+    const bump = (r: { agent?: string; sessionId?: string | null; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd?: number }, root?: string) => {
       const agent = r.agent ?? "unknown";
       const sessionId = r.sessionId ?? "unknown";
-      const key = `${agent}\u0000${sessionId}`;
-      const d = deltas.get(key) ?? { agent, sessionId, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, priced: true };
+      // The same session under two roots stays two lines, one per root (#99).
+      const key = root === undefined ? `${agent}\u0000${sessionId}` : `${agent}\u0000${sessionId}\u0000${root}`;
+      const d = deltas.get(key) ?? { agent, sessionId, ...(root !== undefined ? { root } : {}), input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, priced: true };
       d.input += r.inputTokens;
       d.output += r.outputTokens;
       d.cacheRead += r.cacheReadTokens;
@@ -1399,7 +1424,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
         if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0 && !vendorCost) continue;
         const priced = value.vendorMetered ? (value.vendorCost !== undefined ? vendorCost! : NaN) : value.model ? pricer.price({ model: value.model, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens }) : NaN;
         bump({ agent: value.agent, sessionId: value.sessionId, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
-          ...(Number.isFinite(priced) ? { costUsd: priced } : {}) });
+          ...(Number.isFinite(priced) ? { costUsd: priced } : {}) }, w.root);
       }
       seenByFile.set(w.file, totals);
       offsets.files[w.file] = fingerprint;
@@ -1407,7 +1432,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
 
     // --- opencode SQLite store (adapter). First tick baselines silently.
     try {
-      for (const s of transcriptDir ? [] : await statsFromDb()) {
+      for (const s of transcriptDirs.length > 0 ? [] : await statsFromDb()) {
         const key = `opencode\u0000${s.id}\u0000${s.time_created}`;
         if (seenOpencode.has(key)) continue;
         seenOpencode.add(key);
@@ -1433,7 +1458,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
     for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
     for (const d of deltas.values()) {
       process.stdout.write(
-        `${d.agent.padEnd(8)} ${d.sessionId.slice(0, 12).padEnd(12)} +${fmtInt(d.input)} input +${fmtInt(d.output)} output +${fmtInt(d.cacheRead)} cacheR +${fmtInt(d.cacheWrite)} cacheW ${d.priced ? fmtUsd(d.cost) : "n/a"} source: transcript\n`,
+        `${d.agent.padEnd(8)} ${d.sessionId.slice(0, 12).padEnd(12)} +${fmtInt(d.input)} input +${fmtInt(d.output)} output +${fmtInt(d.cacheRead)} cacheR +${fmtInt(d.cacheWrite)} cacheW ${d.priced ? fmtUsd(d.cost) : "n/a"} source: transcript${d.root !== undefined ? ` dir: ${rewritePath(d.root, rewrites)}` : ""}\n`,
       );
     }
     firstTick = false;
@@ -1541,8 +1566,11 @@ async function cmdStats(rest: string[]): Promise<number> {
       "plan-window-messages": { type: "string" },
       "budget-usd": { type: "string" },
       "with-warehouse": { type: "boolean", default: false },
-      dir: { type: "string" },
-      "transcript-dir": { type: "string" },
+      // #99: repeatable transcript roots and state dirs, merged; --rewrite maps output paths.
+      dir: { type: "string", multiple: true },
+      "transcript-dir": { type: "string", multiple: true },
+      "state-dir": { type: "string", multiple: true },
+      rewrite: { type: "string", multiple: true },
       "cost-mode": { type: "string" },
       // #85: trend sparkline on the totals line.
       spark: { type: "string" },
@@ -1577,8 +1605,11 @@ async function cmdStats(rest: string[]): Promise<number> {
   if (sparkMetric !== undefined && sparkMetric !== "cost" && sparkMetric !== "tokens") {
     throw new HarnessError(`--spark: unknown metric '${sparkMetric}' (expected cost or tokens)`, "USAGE");
   }
-  // --transcript-dir (alias --dir): a home-shaped root for machine transcripts.
-  const transcriptDir = resolveDirFlag(args.values, "transcript-dir");
+  // --transcript-dir (alias --dir): home-shaped roots for machine transcripts;
+  // --state-dir: harness state dirs (#99). Several of either merge.
+  const transcriptDirs = resolveDirFlags(args.values, "transcript-dir");
+  const stateDirs = resolveDirFlags({ "state-dir": args.values["state-dir"] }, "state-dir");
+  const rewrites = parseRewriteRules(args.values.rewrite);
 
   // Every record gets a reported cost (state lines that carried costUsd; the
   // machine transcripts carry none) and a computed one (token × bundled price,
@@ -1672,10 +1703,14 @@ async function cmdStats(rest: string[]): Promise<number> {
 
   // Harness state (driver-run NDJSON + watch-persisted opencode) ...
   const withWarehouse = args.values["with-warehouse"];
-  const stateRecords = [
-    ...(await readAllRecords({ agent, sinceTs: loadSinceTs })),
-    ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs: loadSinceTs }) : []),
-  ].filter((r) => {
+  const src = await openStatsSources({
+    stateDirs: stateDirs.length > 0 ? stateDirs : [stateDir()],
+    transcriptDirs,
+    withWarehouse,
+    read: { agent, sinceTs: loadSinceTs },
+    warn: (l) => process.stderr.write(l + "\n"),
+  });
+  const stateRecords = src.stateRecords.filter((r) => {
     if (inWindow(Date.parse(r.ts), loadWindow)) return true;
     // A desk message with a line outside the window is partial in-window: its reported cost can't be compared to the in-window tokens.
     const ex = r.extra as Record<string, unknown> | undefined;
@@ -1686,7 +1721,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   });
   // One registry scan feeds both the cwd index and the run rollups; records
   // that fail to parse are counted (skippedRunRecords), never dropped silently.
-  const registryScan = scanRunRecords(stateDir());
+  const registryScan = src.registryScan;
   const runCwd = cwdIndex(registryScan.records);
   const runBranch = branchIndex(registryScan.records);
   const runPr = prIndex(registryScan.records);
@@ -1731,7 +1766,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   // cursor rows and the Cursor IDE-store rows inside their span.
   let dashSpan: DashboardSpan | null = null;
   if (!agent || agent === "cursor") {
-    const dashAll = readCursorDashboardStore(stateDir());
+    const dashAll = src.cursorDashboard();
     dashSpan = dashboardSpan(dashAll);
     const dash = dashAll.filter((d) => inWindow(d.timestamp ? Date.parse(d.timestamp) : NaN, loadWindow));
     const rec = reconcileDashboardWithState(dash, records);
@@ -1764,7 +1799,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   // --state-only skips this scan entirely: stateDir records only (e.g. on a
   // machine whose transcript dirs are huge or being rotated).
   if (!args.values["state-only"]) {
-    const machine = statsMachineRecords({ scan: statsScanOptions(transcriptDir), withWarehouse, stateDir: stateDir() });
+    const machine = src.machineRecords();
     for await (const rec of machine) {
       if (agent && rec.agent !== agent) continue;
       const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
@@ -1815,10 +1850,13 @@ async function cmdStats(rest: string[]): Promise<number> {
   if (staleNotice !== null) process.stderr.write(staleNotice + "\n");
   for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
   const skippedRunRecords = registryScan.skipped.length;
-  const skippedWarning = skippedRunRecordsWarning(stateDir(), registryScan.skipped);
-  if (skippedWarning) process.stderr.write(skippedWarning + "\n");
+  for (const w of src.skippedWarnings) process.stderr.write(w + "\n");
+  // --project also accepts the rewritten spelling of a root (#99).
+  const rewriteProject = rewrites.length > 0 ? (p: string) => rewritePath(p, rewrites) : undefined;
+  const matchesProject = (cwd: string | null | undefined, want: string): boolean =>
+    projectMatches(cwd, want, projectAliases) || (rewriteProject !== undefined && !!cwd && rewriteProject(projectOf(cwd, projectAliases).name) === want);
 
-  if (wantProject !== undefined) records = records.filter((r) => projectMatches(r.cwd, wantProject, projectAliases));
+  if (wantProject !== undefined) records = records.filter((r) => matchesProject(r.cwd, wantProject));
   // #25: label every row with its origin (numbers unchanged), then --origin filters.
   for (const r of records) r.origin = originIndex.originOf(r);
   if (wantOrigin !== "all") records = records.filter((r) => r.origin === wantOrigin);
@@ -1885,6 +1923,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     byPr: dimsBy.has("pr"),
     byDesk: dimsBy.has("desk"),
     projectAliases,
+    ...(rewriteProject !== undefined ? { rewriteProject } : {}),
   });
   if (dims.unpricedModels.length > 0) {
     process.stderr.write(
@@ -1892,7 +1931,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     );
   }
   // Run records from the registry, honouring the full #26 [since, until) window.
-  const windowedRunRecords = registryScan.records.filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)) && (wantOrigin === "all" || originIndex.runOrigin(r) === wantOrigin));
+  const windowedRunRecords = registryScan.records.filter((r) => inWindow(r.startedAt, window) && (wantProject === undefined || matchesProject(r.cwd, wantProject)) && (wantOrigin === "all" || originIndex.runOrigin(r) === wantOrigin));
   // Run outcomes (#60) from the run registry: shown only when there are runs,
   // so the historical {total, byAgent, byDay} shape is untouched otherwise.
   // Imported sessions (#25) carry no task verdict: kept out of the outcome,
@@ -1921,7 +1960,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     spentUsd: agg.totals.costUsd,
   });
   // metering=none runs (#37) carry no token records: counted as runs, apart.
-  const unmetered = unmeteredRuns(stateDir(), { agent, sinceTs, records: runRecords });
+  const unmetered = unmeteredRuns(src.primaryStateDir, { agent, sinceTs, records: runRecords });
   probe.drainWarnings();
   // Disagreements go to stderr (capped) and are counted in total.costDisagreements.
   const MAX_DISAGREEMENT_LINES = 10;
@@ -2019,6 +2058,8 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(repeatGroups.length > 0 ? { byRepeatGroup: repeatGroups } : {}),
           // Registry files that failed to parse (not windowed: their time is unknown).
           ...(skippedRunRecords > 0 ? { skippedRunRecords } : {}),
+          // #99: the --rewrite rules applied to path fields (absent with none).
+          ...(rewrites.length > 0 ? { rewrites: rewritesJson(rewrites) } : {}),
         },
         null,
         2,
@@ -2071,6 +2112,8 @@ async function cmdStats(rest: string[]): Promise<number> {
       for (const l of renderCompareText(compare, periods.current, periods.previous, timeZone)) process.stdout.write(l + "\n");
     }
     for (const g of repeatGroups) process.stdout.write(formatRepeatGroupLine(g, fmtUsd) + "\n");
+    const rewriteLine = rewritesTextLine(rewrites, STATS_REWRITE_FIELDS);
+    if (rewriteLine !== null) process.stdout.write(rewriteLine + "\n");
     process.stdout.write(`${"legend".padEnd(9)} ${PROVENANCE_LEGEND}
 `);
   }

@@ -259,8 +259,18 @@ export interface ReadRecordsOptions {
 
 /** Read every canonical record under <stateDir>/raw. */
 export async function readAllRecords(opts: ReadRecordsOptions = {}): Promise<StatRecord[]> {
-  const root = path.join(stateDir(), "raw");
+  return readStateDirRecords(stateDir(), opts);
+}
+
+/** readAllRecords over an explicit state dir (`ach stats --state-dir`, #99). */
+export async function readStateDirRecords(dir: string, opts: ReadRecordsOptions = {}): Promise<StatRecord[]> {
+  const root = path.join(dir, "raw");
   return readRecordFiles((await listFilesRecursive(root)).map((f) => ({ file: f, root })), opts);
+}
+
+/** Every `*.jsonl` under `dir`, depth-first in readdir order (the order readAllRecords reads). */
+export async function listJsonlFiles(dir: string): Promise<string[]> {
+  return listFilesRecursive(dir);
 }
 
 /**

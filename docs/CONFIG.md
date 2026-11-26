@@ -70,11 +70,13 @@ The env layer applies to the flags that already have an env default: `--budget-u
 `src/cli/config.ts`. Any other key goes straight from the file to the flag. `stateDir` follows the
 same rule against `AGENTIC_CODING_HARNESS_STATE_DIR`, and so do `web.stateDir` / `web.dir` (the
 `web` command reads the same env var); a command's own `--state-dir` flag still wins. `stats.dir`
-is a transcript root, has no env var, and so always comes from the file.
+is a transcript root, has no env var, and so always comes from the file. `stats.stateDir` (one path
+or a list, #99) has no env mirror either; a command-line `--dir` on `stats` replaces only
+`stats.dir` / `stats.transcriptDir`, never `stats.stateDir` (see [MULTI-DIR.md](MULTI-DIR.md)).
 
 Relative paths in a file resolve against that file's directory, never the process cwd, and a
 leading `~` expands to your home dir. This covers `stateDir` and every path-typed key:
-`run.evidenceDir`, `run.kiroIdeUserDataDir`, `stats.dir`, `stats.transcriptDir`, `web.dir`,
+`run.evidenceDir`, `run.kiroIdeUserDataDir`, `stats.dir`, `stats.transcriptDir`, `stats.stateDir`, `web.dir`,
 `web.stateDir` and `serve.root` (`PATH_FLAGS` in `src/cli/config.ts`).
 
 Two limits of flag parsing to know:

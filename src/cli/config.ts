@@ -187,6 +187,9 @@ export const parseArgs = ((config?: Parameters<typeof nodeParseArgs>[0]) => {
   // `--dir` is an alias of `--state-dir` / `--transcript-dir` (lib.ts
   // resolveDirFlag): the command-line spelling of either one beats the file's.
   for (const [a, b] of DIR_ALIASES) {
+    // A table with both spellings (`stats`, #99) takes --dir as --transcript-dir
+    // only: its --state-dir is a different directory, not an alias.
+    if (b === "state-dir" && "transcript-dir" in options) continue;
     if (given.has(a)) given.add(b);
     if (given.has(b)) given.add(a);
   }

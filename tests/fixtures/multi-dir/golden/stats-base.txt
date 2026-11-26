@@ -1,0 +1,11 @@
+totals    records=4 input=3,300 output=330 cacheRead=0 cacheWrite=0 reasoning=0 cost=$0.0000 cacheHit=0.0% unpriced=4 costMode=auto
+source: state records=2 input=300 output=30 cacheRead=0 cacheWrite=0 reasoning=0 cost=$0.0000 cacheHit=0.0% unpriced=2
+source: transcript records=2 input=3,000 output=300 cacheRead=0 cacheWrite=0 reasoning=0 cost=$0.0000 cacheHit=0.0% unpriced=2
+claude    records=4 input=3,300 output=330 cacheRead=0 cacheWrite=0 reasoning=0 cost=$0.0000 cacheHit=0.0% unpriced=4
+2026-01-10 records=2 input=300 output=30 cacheRead=0 cacheWrite=0 reasoning=0 cost=$0.0000 cacheHit=0.0% unpriced=2
+2026-01-11 records=2 input=3,000 output=300 cacheRead=0 cacheWrite=0 reasoning=0 cost=$0.0000 cacheHit=0.0% unpriced=2
+-- by project
+/mnt/c/Users/x/proj records=4 input=3,300 output=330 cacheRead=0 cacheWrite=0 reasoning=0 cost=n/a cacheHit=0.0%
+runs claude    runs=2 success=2 unavailable=0 successRate=100.0%
+pace      15m: n/a n/a  1h: n/a n/a
+legend    * computed by ach (tokens x bundled price)  ≈ estimated (heuristic)  unmarked = reported by the agent CLI  n/a = not reported

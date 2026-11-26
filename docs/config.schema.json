@@ -637,16 +637,82 @@
         },
         "dir": {
           "description": "ach stats --dir",
-          "type": [
-            "string",
-            "number"
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
           ]
         },
         "transcriptDir": {
           "description": "ach stats --transcript-dir",
-          "type": [
-            "string",
-            "number"
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "stateDir": {
+          "description": "ach stats --state-dir",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "rewrite": {
+          "description": "ach stats --rewrite",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
           ]
         },
         "costMode": {

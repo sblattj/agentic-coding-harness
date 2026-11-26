@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-01-11T10:00:00.000Z","sessionId":"tsess-shared","cwd":"/mnt/c/Users/x/proj","requestId":"req-tsess-shared","message":{"id":"msg_tsess-shared","model":"fixture-unpriced-model","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}

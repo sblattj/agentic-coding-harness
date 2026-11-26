@@ -442,9 +442,13 @@ ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] 
             # bundled task suite; missing agent CLIs skipped; HTML report next to the ledger
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach preflight --agent kiro-ide [--kiro-ide-cdp host:port] [--json]  # read-only CDP rows, same as doctor
-ach watch [--transcript-dir <root>]           # live per-session token deltas
+ach watch [--transcript-dir <root>]... [--rewrite FROM=TO]...   # live per-session token deltas
 ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--json] [--state-only]
-            [--transcript-dir <root>] [--origin all|native|imported|transcript]
+            [--transcript-dir <root>]... [--state-dir <stateDir>]... [--rewrite FROM=TO]...
+            [--origin all|native|imported|transcript]
+            # repeat --dir/--transcript-dir or --state-dir to merge several dirs (a run or
+            # session in two dirs counts once); --rewrite /mnt/c=C: maps WSL paths for
+            # display (docs/MULTI-DIR.md: WSL and multi-machine recipes)
             # window is [--since, --until): since inclusive, until EXCLUSIVE (a record
             # stamped exactly at --until is not counted); --until alone = everything before it
             # --compare prev | prev:<dur>: add a compare block (tokens, cost, runs: current,

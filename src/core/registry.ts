@@ -291,9 +291,9 @@ function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
   return typeof e === "object" && e !== null && "code" in e;
 }
 
-type ParsedRunRecord = { ok: true; record: RunRecord } | { ok: false; reason: string };
+export type ParsedRunRecord = { ok: true; record: RunRecord } | { ok: false; reason: string };
 
-function parseRunRecordDetailed(text: string): ParsedRunRecord {
+export function parseRunRecordDetailed(text: string): ParsedRunRecord {
   let json: unknown;
   try {
     json = JSON.parse(text);

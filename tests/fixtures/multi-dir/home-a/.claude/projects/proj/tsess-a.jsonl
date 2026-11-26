@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-01-11T11:00:00.000Z","sessionId":"tsess-a","cwd":"/mnt/c/Users/x/proj","requestId":"req-tsess-a","message":{"id":"msg_tsess-a","model":"fixture-unpriced-model","usage":{"input_tokens":2000,"output_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
