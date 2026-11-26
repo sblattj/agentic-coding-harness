@@ -1175,6 +1175,12 @@ API (`/api/runs`, `/api/stats`, `/api/compare`, `/health`) stay open on the loop
   input · cache-read · cache-write breakdown. The server computes it with the same context meter as
   `usage.context` (see [TOKEN-COUNTING.md §5](docs/TOKEN-COUNTING.md)); an unknown window shows tokens only
   (today that is every agy model).
+  A **feed | transcript** toggle above the pane switches the same run to a chat-style transcript
+  (`/?view=transcript` keeps it): one block per turn, the user prompt then the agent's replies, with
+  each tool call a collapsed row (name, one-line summary, status, duration) that expands to its
+  arguments and result. It reads the same `AgentEvent` stream over the same socket, so a live run
+  updates at the feed's cadence. Content stripped by a capture tier reads "not captured", never
+  `[STRIPPED]` as if the agent wrote it. See [docs/TRANSCRIPT-VIEW.md](docs/TRANSCRIPT-VIEW.md).
 - **`/grid`**: every run as a tile, each tile body carrying that same feed. On a live
   `ach run --interactive` run the green button reads **TUI** and attaches to that run's own PTY
   (scrollback replayed, keystrokes go to the run's session); closing the pane detaches and the run

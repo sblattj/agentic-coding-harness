@@ -31,6 +31,10 @@
  *
  * All event-derived text goes through textContent; nothing is ever parsed as
  * HTML or markdown.
+ *
+ * `createTranscript()` (#93) is a second, chat-style renderer over the same
+ * events with the same handle surface, so `connect()` drives either one; see
+ * the transcript section below. The feed above is unchanged by it.
  */
 (function () {
   "use strict";
@@ -978,6 +982,633 @@
     return handle;
   }
 
+  /* --------------------------------------------------- transcript (#93) */
+
+  /*
+   * createTranscript: the chat-style layout over the SAME persisted AgentEvent
+   * stream the feed reads (no new capture, no new event fields). It returns a
+   * handle with the feed's surface (append / reset / setEnded / destroy /
+   * count), so `connect()` drives it exactly like a feed: backlog first, then
+   * every event the run socket tails, at the same cadence.
+   *
+   * Turns: a `message` with source "user" opens a turn (its prompt); every
+   * assistant message, reasoning block, tool call and error that follows lands
+   * in that turn's reply, in arrival order. Activity before any user message
+   * opens turn 1 with no prompt event: headless runs pass the prompt on the
+   * command line, so it is not in the stream. The record's `promptPreview`
+   * (first 120 chars, written only under capture mode full) is then shown,
+   * labelled as a preview; without it the block says the prompt is not in
+   * the transcript.
+   *
+   * Tool calls are collapsed rows (name, one-line summary, status chip,
+   * duration) that expand to the arguments and the result.
+   *
+   * Content capture (#72): under capture mode metadata every text string
+   * reads "[STRIPPED]" on disk. The transcript never shows that marker as if
+   * the agent wrote it: stripped prompts, replies, arguments and results
+   * render as a dim "not captured" note, and a banner names the tier. Under
+   * capture mode off the stream holds no message or tool events at all; the
+   * banner says so instead of showing an empty conversation as if nothing
+   * happened.
+   */
+
+  var STRIPPED_MARK = "[STRIPPED]";
+
+  var TX_CSS = [
+    ".tx-rows{display:flex;flex-direction:column;gap:10px;padding:12px 16px 40px 12px;min-height:100%}",
+    ".tx-banner{border:1px dashed var(--feed-yellow,#e5c07b);color:var(--feed-yellow,#e5c07b);",
+    "border-radius:4px;padding:6px 10px;white-space:pre-wrap}",
+    ".tx-banner[hidden],.tx-empty[hidden]{display:none}",
+    ".tx-empty{color:var(--feed-dim,#5d6b82);padding:6px 2px}",
+    ".tx-turn{border:1px solid var(--feed-line,#1d2534);border-radius:6px;padding:8px 10px;",
+    "display:flex;flex-direction:column;gap:6px}",
+    ".tx-turn-head{display:flex;gap:10px;align-items:baseline;color:var(--feed-dim,#5d6b82);",
+    "font-size:11px;text-transform:uppercase;letter-spacing:.6px}",
+    ".tx-ts{font-variant-numeric:tabular-nums;text-transform:none;letter-spacing:0}",
+    ".tx-msg{position:relative;border-radius:6px;padding:6px 10px;max-width:92%}",
+    ".tx-msg .tx-ts{display:block;color:var(--feed-dim,#5d6b82);font-size:10px;margin-bottom:2px}",
+    ".tx-text{white-space:pre-wrap;overflow-wrap:anywhere}",
+    ".tx-user{align-self:flex-end;background:rgba(122,162,247,.10);",
+    "border:1px solid var(--feed-blue,#7aa2f7);color:var(--feed-fg,#c9d4e3)}",
+    ".tx-noprompt{align-self:flex-end;border:1px dashed var(--feed-line,#1d2534);color:var(--feed-dim,#5d6b82)}",
+    ".tx-agent{align-self:flex-start;background:rgba(255,255,255,.03);",
+    "border:1px solid var(--feed-line,#1d2534);color:var(--feed-fg,#c9d4e3)}",
+    ".tx-reason{align-self:flex-start;color:var(--feed-dim,#5d6b82);font-style:italic}",
+    ".tx-system{align-self:center;color:var(--feed-dim,#5d6b82)}",
+    ".tx-error{align-self:flex-start;color:var(--feed-red,#e06c75);border:1px solid var(--feed-red,#e06c75)}",
+    ".tx-stripped{color:var(--feed-dim,#5d6b82);font-style:italic}",
+    ".tx-tool{align-self:stretch;max-width:none;padding:0}",
+    ".tx-status{color:var(--feed-dim,#5d6b82);font-weight:700;letter-spacing:.5px}",
+    ".tx-status.ok{color:var(--feed-green,#4cc38a)}",
+    ".tx-status.err{color:var(--feed-red,#e06c75)}",
+  ].join("");
+
+  function injectTranscriptCss() {
+    injectCss();
+    if (typeof document === "undefined") return;
+    if (document.getElementById(CSS_ID + "-tx")) return;
+    var style = document.createElement("style");
+    style.id = CSS_ID + "-tx";
+    style.textContent = TX_CSS;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  /** True when `s` is non-empty and nothing but capture-tier markers (#72). */
+  function isStrippedText(s) {
+    if (typeof s !== "string" || s.trim() === "") return false;
+    return s.split(STRIPPED_MARK).join("").trim() === "" && s.indexOf(STRIPPED_MARK) >= 0;
+  }
+
+  /** True when every string leaf of `v` is a capture-tier marker (and there is one). */
+  function isStrippedValue(v) {
+    if (typeof v === "string") return isStrippedText(v);
+    if (v === null || typeof v !== "object") return false;
+    var leaves = 0;
+    var clean = true;
+    (function walk(x) {
+      if (!clean) return;
+      if (typeof x === "string") {
+        leaves += 1;
+        if (!isStrippedText(x)) clean = false;
+        return;
+      }
+      if (x === null || typeof x !== "object") return;
+      for (var k in x) if (Object.prototype.hasOwnProperty.call(x, k)) walk(x[k]);
+    })(v);
+    return clean && leaves > 0;
+  }
+
+  function isoOf(ts) {
+    if (ts === null) return "";
+    try { return new Date(ts).toISOString(); } catch (e) { return ""; }
+  }
+
+  function createTranscript(container, opts) {
+    if (!container) throw new Error("HarnessFeed.createTranscript: container required");
+    injectTranscriptCss();
+    var options = opts || {};
+
+    container.textContent = "";
+    container.classList.add("hf-scroll");
+    var rows = el("div", "tx-rows");
+    container.appendChild(rows);
+    var banner = el("div", "tx-banner", "");
+    banner.hidden = true;
+    rows.appendChild(banner);
+    var empty = el("div", "tx-empty", "no conversation events in this transcript yet");
+    rows.appendChild(empty);
+    var pill = el("button", "hf-pill", "↓ latest");
+    pill.type = "button";
+    pill.hidden = true;
+    pill.addEventListener("click", function () {
+      container.scrollTop = container.scrollHeight;
+      pill.hidden = true;
+    });
+    container.appendChild(pill);
+
+    var record = options.record || null;
+    var state;
+
+    function freshState() {
+      return {
+        first: null,
+        count: 0,
+        ended: false,
+        turns: [],                  // the model behind the DOM (turns())
+        turn: null,                 // the open turn: { model, node, reply, promptNode }
+        byId: Object.create(null),  // toolCallId -> tool rec
+        unresolved: [],
+        stream: null,               // { item, textNode, kind, text }
+        endNode: null,
+        refs: [],                   // every turn's DOM handle, in order
+      };
+    }
+    state = freshState();
+
+    function captureMode() {
+      var m = record && record.captureMode;
+      return m === "off" || m === "metadata" || m === "full" ? m : null;
+    }
+
+    function strippedNote(what) {
+      var m = captureMode();
+      return what + " not captured (" + (m !== null && m !== "full" ? "capture mode " + m : "stripped at record time") + ")";
+    }
+
+    function atBottom() {
+      return container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX;
+    }
+
+    container.addEventListener("scroll", function () {
+      if (atBottom()) pill.hidden = true;
+    });
+
+    /** Follow the tail when the reader is at the bottom; else show the pill. */
+    function placed(near) {
+      if (near) {
+        container.scrollTop = container.scrollHeight;
+        pill.hidden = true;
+      } else {
+        pill.hidden = false;
+      }
+    }
+
+    function renderBanner() {
+      var m = captureMode();
+      if (m === "off") {
+        banner.textContent = "capture mode off: this run kept only lifecycle and token events, " +
+          "so its transcript holds no prompts, replies or tool calls to show.";
+        banner.hidden = false;
+      } else if (m === "metadata") {
+        banner.textContent = "capture mode metadata: prompt, reply and tool text was stripped at record time; " +
+          "turns, tool names, timings and status remain.";
+        banner.hidden = false;
+      } else {
+        banner.textContent = "";
+        banner.hidden = true;
+      }
+      empty.hidden = state.turns.length > 0;
+      if (m === "off" && state.turns.length === 0) empty.hidden = true;
+    }
+
+    function stamp(node, ts) {
+      var iso = isoOf(ts);
+      var rel = ts !== null && state.first !== null ? fmtRel(ts - state.first) : "";
+      var t = el("span", "tx-ts", iso === "" ? "" : rel + "  " + iso.slice(11, 19) + "Z");
+      if (iso !== "") t.setAttribute("title", iso);
+      node.appendChild(t);
+      return t;
+    }
+
+    function attachRaw(node, evs) {
+      node.hfEvents = evs;
+      var raw = el("button", "hf-raw", "");
+      raw.type = "button";
+      raw.setAttribute("aria-label", "inspect raw JSON");
+      raw.setAttribute("title", "raw JSON");
+      raw.addEventListener("click", function (e) {
+        if (e && e.stopPropagation) e.stopPropagation();
+        var list = node.hfEvents;
+        inspect(list.length === 1 ? list[0] : list, {
+          title: list.map(function (x) { return x && x.type; }).join(" + ") || "event",
+        });
+      });
+      node.appendChild(raw);
+    }
+
+    /** The prompt block for a turn with no user message event. */
+    function fillNoPrompt(promptNode, model) {
+      promptNode.textContent = "";
+      var preview = record && typeof record.promptPreview === "string" ? record.promptPreview : "";
+      if (model.index === 1 && preview.trim() !== "" && !isStrippedText(preview)) {
+        model.prompt = { text: preview, stripped: false, from: "record-preview", ts: null };
+        promptNode.className = "tx-msg tx-noprompt";
+        promptNode.appendChild(el("span", "tx-ts", "prompt preview from the run record (first 120 chars)"));
+        promptNode.appendChild(el("div", "tx-text", preview));
+      } else {
+        var m = captureMode();
+        model.prompt = { text: null, stripped: m === "metadata", from: null, ts: null };
+        promptNode.className = "tx-msg tx-noprompt";
+        promptNode.appendChild(el("div", "tx-text tx-stripped",
+          m === "metadata" && model.index === 1 ? strippedNote("prompt") : "prompt not in the transcript"));
+      }
+    }
+
+    function openTurn(ts) {
+      var near = atBottom();
+      if (state.first === null && ts !== null) state.first = ts;
+      var model = { index: state.turns.length + 1, startedAt: ts, prompt: null, items: [] };
+      var node = el("section", "tx-turn");
+      var head = el("header", "tx-turn-head");
+      head.appendChild(el("span", "", "turn " + model.index));
+      var iso = isoOf(ts);
+      var when = el("span", "tx-ts", iso);
+      if (iso !== "") when.setAttribute("title", iso);
+      head.appendChild(when);
+      node.appendChild(head);
+      var promptNode = el("div", "tx-msg tx-noprompt");
+      node.appendChild(promptNode);
+      var reply = el("div", "tx-reply");
+      reply.style.display = "flex";
+      reply.style.flexDirection = "column";
+      reply.style.gap = "6px";
+      node.appendChild(reply);
+      if (state.endNode !== null && state.endNode.parentNode === rows) rows.insertBefore(node, state.endNode);
+      else rows.appendChild(node);
+      state.turns.push(model);
+      state.turn = { model: model, node: node, reply: reply, promptNode: promptNode, head: when, hasPromptEvent: false };
+      state.refs.push(state.turn);
+      fillNoPrompt(promptNode, model);
+      renderBanner();
+      placed(near);
+      return state.turn;
+    }
+
+    function currentTurn(ts) {
+      return state.turn !== null ? state.turn : openTurn(ts);
+    }
+
+    function setPrompt(turn, ev, text) {
+      var ts = tsOf(ev);
+      var stripped = isStrippedText(text);
+      turn.model.prompt = { text: stripped ? null : text, stripped: stripped, from: "event", ts: ts };
+      turn.hasPromptEvent = true;
+      if (turn.model.startedAt === null && ts !== null) {
+        turn.model.startedAt = ts;
+        var iso = isoOf(ts);
+        turn.head.textContent = iso;
+        if (iso !== "") turn.head.setAttribute("title", iso);
+      }
+      var p = turn.promptNode;
+      p.textContent = "";
+      p.className = "tx-msg tx-user";
+      stamp(p, ts);
+      p.appendChild(el("div", stripped ? "tx-text tx-stripped" : "tx-text", stripped ? strippedNote("prompt") : text));
+      attachRaw(p, [ev]);
+    }
+
+    /** Append one reply item (model + node) to the open turn. */
+    function addItem(ev, item, node) {
+      var near = atBottom();
+      var turn = currentTurn(item.ts);
+      if (state.first === null && item.ts !== null) state.first = item.ts;
+      turn.model.items.push(item);
+      turn.reply.appendChild(node);
+      state.count += 1;
+      if (ev) attachRaw(node, [ev]);
+      placed(near);
+      return turn;
+    }
+
+    function textBubble(ev, kind, text, ts) {
+      var stripped = isStrippedText(text);
+      var cls = kind === "reasoning" ? "tx-reason" : kind === "system" ? "tx-system" : kind === "error" ? "tx-error" : "tx-agent";
+      var node = el("div", "tx-msg " + cls);
+      stamp(node, ts);
+      var label = kind === "reasoning" ? "reasoning" : kind === "error" ? "error text" : "reply";
+      var textNode = el("div", stripped ? "tx-text tx-stripped" : "tx-text", stripped ? strippedNote(label) : text);
+      node.appendChild(textNode);
+      var item = { kind: kind, text: stripped ? null : text, stripped: stripped, ts: ts };
+      addItem(ev, item, node);
+      return { item: item, node: node, textNode: textNode };
+    }
+
+    function endStream() {
+      state.stream = null;
+    }
+
+    function streamText(ev, text, kind) {
+      if (typeof text !== "string" || text === "") return;
+      if (state.stream !== null && state.stream.kind !== kind) endStream();
+      if (state.stream === null) {
+        var b = textBubble(ev, kind, text, tsOf(ev));
+        state.stream = { item: b.item, node: b.node, textNode: b.textNode, kind: kind, text: text };
+        return;
+      }
+      var s = state.stream;
+      s.text += text;
+      if (s.node.hfEvents) s.node.hfEvents.push(ev);
+      var stripped = isStrippedText(s.text);
+      s.item.text = stripped ? null : s.text;
+      s.item.stripped = stripped;
+      s.textNode.className = stripped ? "tx-text tx-stripped" : "tx-text";
+      s.textNode.textContent = stripped ? strippedNote(kind === "reasoning" ? "reasoning" : "reply") : s.text;
+      if (atBottom()) container.scrollTop = container.scrollHeight;
+    }
+
+    /** A confirming message equal to the live stream of its kind folds into it. */
+    function confirmsStream(kind, text) {
+      var s = state.stream;
+      if (s === null || s.kind !== kind) return false;
+      if (s.text.trim() === text.trim() && text.trim() !== "") return true;
+      return isStrippedText(s.text) && isStrippedText(text);
+    }
+
+    function renderMessage(ev) {
+      var content = typeof ev.content === "string" ? ev.content : "";
+      var source = ev.source === "assistant" ? "agent" : ev.source;
+      var reasoning = typeof ev.reasoningContent === "string" ? ev.reasoningContent : "";
+      if (source === "user") {
+        if (content.trim() === "") return;
+        endStream();
+        var turn = state.turn;
+        if (turn === null || turn.hasPromptEvent || turn.model.items.length > 0) turn = openTurn(tsOf(ev));
+        setPrompt(turn, ev, content);
+        state.count += 1;
+        return;
+      }
+      if (ev.reasoning === true) {
+        if (content.trim() !== "" && reasoning.trim() === "") reasoning = content;
+        content = "";
+      }
+      if (reasoning.trim() !== "") {
+        if (confirmsStream("reasoning", reasoning)) {
+          if (state.stream.node.hfEvents) state.stream.node.hfEvents.push(ev);
+          endStream();
+        } else {
+          endStream();
+          textBubble(ev, "reasoning", reasoning, tsOf(ev));
+        }
+      }
+      if (content.trim() === "") return;
+      if (source === "system") {
+        endStream();
+        textBubble(ev, "system", content, tsOf(ev));
+        return;
+      }
+      if (confirmsStream("message", content)) {
+        var s = state.stream;
+        if (s.node.hfEvents) s.node.hfEvents.push(ev);
+        if (!isStrippedText(content)) {
+          s.item.text = content;
+          s.textNode.textContent = content;
+        }
+        endStream();
+        return;
+      }
+      endStream();
+      textBubble(ev, "message", content, tsOf(ev));
+    }
+
+    /* ---- tool blocks ---- */
+
+    function openTool(ev, id, name, args, hasArgs, title) {
+      endStream();
+      var ts = tsOf(ev);
+      var argsStripped = hasArgs && isStrippedValue(args);
+      var summaryText = typeof title === "string" && title.trim() !== "" && !isStrippedText(title)
+        ? argsSummary(title)
+        : argsStripped ? strippedNote("arguments") : hasArgs ? argsSummary(args) : "";
+      var item = {
+        kind: "tool",
+        ts: ts,
+        tool: {
+          name: name || "tool",
+          id: typeof id === "string" ? id : "",
+          summary: summaryText,
+          status: "pending",
+          durationMs: null,
+          args: hasArgs ? args : null,
+          argsStripped: argsStripped,
+          result: null,
+          resultStripped: false,
+        },
+      };
+      var node = el("div", "tx-msg tx-tool hf-card");
+      var head = el("div", "hf-head");
+      head.tabIndex = 0;
+      head.setAttribute("role", "button");
+      head.setAttribute("aria-expanded", "false");
+      var tri = el("span", "hf-tri", "▸");
+      head.appendChild(tri);
+      head.appendChild(el("span", "hf-fn", item.tool.name));
+      head.appendChild(el("span", "hf-args" + (argsStripped ? " tx-stripped" : ""), summaryText));
+      var chip = el("span", "hf-chip hf-chip-pending", "…");
+      head.appendChild(chip);
+      var ms = el("span", "hf-ms", "");
+      head.appendChild(ms);
+      var iso = isoOf(ts);
+      var when = el("span", "tx-ts", iso === "" ? "" : iso.slice(11, 19) + "Z");
+      if (iso !== "") when.setAttribute("title", iso);
+      head.appendChild(when);
+      node.appendChild(head);
+      var detail = el("div", "hf-detail");
+      detail.hidden = true;
+      if (hasArgs) {
+        detail.appendChild(el("div", "hf-sec", "arguments"));
+        if (argsStripped) detail.appendChild(el("div", "tx-stripped", strippedNote("arguments") + "; recorded shape:"));
+        detail.appendChild(el("pre", "hf-pre", pretty(args)));
+      }
+      node.appendChild(detail);
+      function toggle() {
+        detail.hidden = !detail.hidden;
+        tri.textContent = detail.hidden ? "▸" : "▾";
+        head.setAttribute("aria-expanded", detail.hidden ? "false" : "true");
+      }
+      head.addEventListener("click", toggle);
+      head.addEventListener("keydown", function (e) {
+        if (e && (e.key === "Enter" || e.key === " ")) { if (e.preventDefault) e.preventDefault(); toggle(); }
+      });
+      var rec = { item: item, node: node, chip: chip, ms: ms, detail: detail, toggle: toggle, resolved: false };
+      node.hfTool = rec;
+      if (item.tool.id !== "") state.byId[item.tool.id] = rec;
+      state.unresolved.push(rec);
+      addItem(ev, item, node);
+      return rec;
+    }
+
+    function resolveTool(rec, ev, content, isError) {
+      rec.resolved = true;
+      var at = state.unresolved.indexOf(rec);
+      if (at >= 0) state.unresolved.splice(at, 1);
+      if (rec.node.hfEvents && ev) rec.node.hfEvents.push(ev);
+      var t = rec.item.tool;
+      t.status = isError ? "error" : "ok";
+      rec.chip.className = "hf-chip " + (isError ? "hf-chip-err" : "hf-chip-ok");
+      rec.chip.textContent = isError ? "✖" : "✔";
+      if (isError) rec.node.classList.add("hf-card-err");
+      var end = tsOf(ev);
+      if (end !== null && rec.item.ts !== null) {
+        t.durationMs = end - rec.item.ts;
+        rec.ms.textContent = fmtDurMs(t.durationMs);
+      }
+      var stripped = isStrippedValue(content);
+      t.result = stripped ? null : content === undefined ? null : content;
+      t.resultStripped = stripped;
+      rec.detail.appendChild(el("div", "hf-sec", isError ? "result (error)" : "result"));
+      if (stripped) {
+        rec.detail.appendChild(el("div", "tx-stripped", strippedNote("result")));
+        return;
+      }
+      var text = typeof content === "string" ? content : pretty(content);
+      rec.detail.appendChild(el("pre", "hf-pre", text.length > OUTPUT_CAP ? text.slice(0, OUTPUT_CAP) : text));
+      if (text.length > OUTPUT_CAP) {
+        rec.detail.appendChild(el("div", "hf-dim", "result truncated to " + fmtTok(OUTPUT_CAP) + " of " + fmtTok(text.length) + " chars; the {} inspector shows it all"));
+      }
+    }
+
+    function findTool(id) {
+      if (typeof id === "string" && id.length > 0) {
+        var hit = state.byId[id];
+        return hit && !hit.resolved ? hit : null;
+      }
+      return state.unresolved.length > 0 ? state.unresolved[0] : null;
+    }
+
+    function toolResult(ev, id, name, content, isError) {
+      var rec = findTool(id);
+      if (rec === null) rec = openTool(ev, "", name || "result", null, false, "");
+      resolveTool(rec, ev, content, isError);
+    }
+
+    function terminal(ev, text, cls) {
+      endStream();
+      var near = atBottom();
+      var node = el("div", "tx-status " + cls, text);
+      var ts = tsOf(ev);
+      var iso = isoOf(ts);
+      if (iso !== "") node.setAttribute("title", iso);
+      rows.appendChild(node);
+      state.count += 1;
+      placed(near);
+    }
+
+    function renderOne(ev) {
+      if (ev == null || typeof ev !== "object") return;
+      switch (ev.type) {
+        case "message":
+          renderMessage(ev);
+          return;
+        case "tool_call":
+          openTool(ev, ev.toolCallId, ev.functionName, ev.arguments,
+            ev.arguments !== undefined && ev.arguments !== null && ev.arguments !== "", ev.title);
+          return;
+        case "tool_result":
+          toolResult(ev, ev.toolCallId, ev.functionName, ev.content, ev.isError === true);
+          return;
+        case "tool":
+          if (ev.phase === "start") {
+            openTool(ev, ev.toolCallId, ev.toolName, ev.input, ev.input !== undefined && ev.input !== null, ev.title);
+          } else {
+            toolResult(ev, ev.toolCallId, ev.toolName, ev.output, ev.status === "error");
+          }
+          return;
+        case "step": {
+          var d = stepData(ev);
+          if (d === null) return;
+          if (d.kind === "chunk") {
+            streamText(ev, typeof d.text === "string" ? d.text : "", d.chunkKind === "agent_thought_chunk" ? "reasoning" : "message");
+            return;
+          }
+          if (d.kind === "runFinished") {
+            var st = typeof d.status === "string" ? d.status : "finished";
+            terminal(ev, "-- " + st.toUpperCase() + " --", st === "success" ? "ok" : "err");
+          }
+          return;
+        }
+        case "error": {
+          endStream();
+          var msg = typeof ev.message === "string" && ev.message !== "" ? ev.message : "error";
+          textBubble(ev, "error", msg, tsOf(ev));
+          return;
+        }
+        case "done": {
+          var exit = typeof ev.exitStatus === "string" ? ev.exitStatus : "done";
+          terminal(ev, "-- " + exit.toUpperCase() + " --", exit === "success" ? "ok" : "");
+          return;
+        }
+        case "aborted":
+          terminal(ev, "-- ABORTED --", "err");
+          return;
+        default:
+          // progress, usage, model-call bounds, bookkeeping steps: the feed
+          // shows those; the conversation layout leaves them out.
+          return;
+      }
+    }
+
+    function clearRows() {
+      rows.textContent = "";
+      rows.appendChild(banner);
+      rows.appendChild(empty);
+    }
+
+    var handle = {
+      append: function (events) {
+        if (!events) return handle;
+        var list = Array.isArray(events) ? events : [events];
+        for (var i = 0; i < list.length; i++) renderOne(list[i]);
+        return handle;
+      },
+      reset: function () {
+        clearRows();
+        state = freshState();
+        pill.hidden = true;
+        renderBanner();
+        return handle;
+      },
+      /** The run record (connect() passes it): capture tier banner and prompt preview. */
+      setRecord: function (rec) {
+        record = rec || null;
+        renderBanner();
+        var first = state.refs.length > 0 ? state.refs[0] : null;
+        if (first !== null && !first.hasPromptEvent) fillNoPrompt(first.promptNode, first.model);
+        return handle;
+      },
+      setEnded: function (note) {
+        for (var i = 0; i < state.unresolved.length; i++) {
+          var rec = state.unresolved[i];
+          rec.item.tool.status = "no-result";
+          rec.chip.className = "hf-chip";
+          rec.chip.textContent = "·";
+          rec.chip.setAttribute("title", "no result recorded");
+        }
+        state.unresolved = [];
+        state.stream = null;
+        if (state.ended) return handle;
+        state.ended = true;
+        var near = atBottom();
+        state.endNode = el("div", "tx-status", note || "-- stream ended --");
+        rows.appendChild(state.endNode);
+        if (near) container.scrollTop = container.scrollHeight;
+        return handle;
+      },
+      destroy: function () {
+        rows.textContent = "";
+        if (pill.parentNode) pill.parentNode.removeChild(pill);
+        if (rows.parentNode) rows.parentNode.removeChild(rows);
+        container.classList.remove("hf-scroll");
+        state = freshState();
+      },
+      /** The turn model behind the layout, in order (read-only use). */
+      turns: function () { return state.turns; },
+      container: container,
+    };
+    Object.defineProperty(handle, "count", { get: function () { return state.count; } });
+    renderBanner();
+    return handle;
+  }
+
   /* ------------------------------------------------------------- socket */
 
   function wsUrl(runId, token) {
@@ -1029,6 +1660,8 @@
         try { msg = JSON.parse(m.data); } catch (e) { return; }
         if (msg.type === "record" && msg.record) {
           lastRecord = msg.record;
+          // #93: a transcript view reads the capture tier and prompt preview off the record.
+          if (typeof feed.setRecord === "function") feed.setRecord(msg.record);
           if (typeof o.onRecord === "function") o.onRecord(msg.record);
           return;
         }
@@ -1080,5 +1713,12 @@
     };
   }
 
-  window.HarnessFeed = { create: create, connect: connect, inspect: inspect, copyText: copyText, version: 1 };
+  window.HarnessFeed = {
+    create: create,
+    createTranscript: createTranscript,
+    connect: connect,
+    inspect: inspect,
+    copyText: copyText,
+    version: 1,
+  };
 })();

@@ -117,7 +117,10 @@ sentence) becomes `[STRIPPED]#<n>`.
   `RunResult.providerLimit: true`; the ledger reason then reads "rate or usage
   limit (text not recorded: capture mode metadata)".
 - **`ach web` and `ach dash`** show these runs with the prompt column empty and
-  stripped event bodies.
+  stripped event bodies. The `ach web` transcript view names the tier in a banner
+  and renders each stripped prompt, reply, argument and result as "not captured
+  (capture mode metadata)"; an `off` run shows the banner and no turns
+  ([TRANSCRIPT-VIEW.md](TRANSCRIPT-VIEW.md)).
 - **Desks**: the live desk conversation (its SSE feed and in-memory ring) keeps
   the text, since the conversation is the product; the events file, the
   heartbeat preview and the stack's `messages.jsonl` follow the tier.

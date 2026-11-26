@@ -108,6 +108,10 @@ body {
 #metastrip .chip { white-space: nowrap; padding: 1px 7px; border: 1px solid var(--line); border-radius: 9px; color: var(--dim); }
 #metastrip .chip.unpriced { border-style: dashed; }
 #metastrip .copy { background: none; border: 1px solid var(--line); color: var(--dim); font: inherit; padding: 0 5px; margin-left: 5px; cursor: pointer; border-radius: 3px; }
+/* #93: feed | transcript view toggle for the selected run */
+#viewbar { display: flex; gap: 4px; padding: 4px 14px; border-bottom: 1px solid var(--line); background: var(--bg2); }
+#viewbar button { background: none; border: 1px solid var(--line); color: var(--dim); font: inherit; padding: 1px 10px; cursor: pointer; border-radius: 3px; }
+#viewbar button.on { color: var(--green); border-color: var(--green); }
 #statsbar {
   display: flex;
   flex-wrap: wrap;
@@ -188,6 +192,10 @@ body {
 <main id="main">
   <div id="statsbar" title="global stats for the selected window (/api/stats)">loading stats...</div>
   <div id="metastrip"></div>
+  <div id="viewbar" role="tablist" aria-label="run view">
+    <button type="button" role="tab" data-view="feed">feed</button>
+    <button type="button" role="tab" data-view="transcript">transcript</button>
+  </div>
   <div id="feedwrap">
     <div id="feed"></div>
     <div id="empty">select a run</div>
@@ -752,6 +760,50 @@ function teardown() {
   if (feedConn) { try { feedConn.close(); } catch (e) {} feedConn = null; }
   if (feed) { try { feed.destroy(); } catch (e) {} feed = null; }
 }
+/* #93: "feed" (default, the structured event feed) or "transcript" (chat layout); ?view= keeps it. */
+var VIEWS = ["feed", "transcript"];
+var viewMode = VIEWS.indexOf(new URLSearchParams(location.search).get("view")) > 0 ? "transcript" : "feed";
+function renderViewbar() {
+  var btns = document.querySelectorAll("#viewbar button");
+  for (var i = 0; i < btns.length; i++) {
+    var on = btns[i].getAttribute("data-view") === viewMode;
+    btns[i].className = on ? "on" : "";
+    btns[i].setAttribute("aria-selected", on ? "true" : "false");
+  }
+}
+function setView(mode) {
+  if (VIEWS.indexOf(mode) < 0 || mode === viewMode) return;
+  viewMode = mode;
+  try {
+    var sp = new URLSearchParams(location.search);
+    if (mode === "feed") sp.delete("view"); else sp.set("view", mode);
+    var qs = sp.toString();
+    history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+  } catch (e) {}
+  renderViewbar();
+  if (selectedId) mountRunView(selectedId);
+}
+(function () {
+  var btns = document.querySelectorAll("#viewbar button");
+  for (var i = 0; i < btns.length; i++) btns[i].addEventListener("click", function (ev) { setView(ev.currentTarget.getAttribute("data-view")); });
+  renderViewbar();
+})();
+function mountRunView(id) {
+  teardown();
+  if (!window.HarnessFeed) {
+    $("feed").textContent = "feed.js failed to load";
+    return;
+  }
+  var rec = findRun(id);
+  feed = viewMode === "transcript"
+    ? window.HarnessFeed.createTranscript($("feed"), { record: rec || null })
+    : window.HarnessFeed.create($("feed"), { keepEvents: false });
+  feedConn = window.HarnessFeed.connect(feed, {
+    runId: id,
+    token: TOKEN,
+    onRecord: upsertRun
+  });
+}
 function selectRun(id) {
   if (id === selectedId) return;
   selectedId = id;
@@ -760,16 +812,7 @@ function selectRun(id) {
   renderMeta();
   if (!id) { showFeed(false); return; }
   showFeed(true);
-  if (!window.HarnessFeed) {
-    $("feed").textContent = "feed.js failed to load";
-    return;
-  }
-  feed = window.HarnessFeed.create($("feed"), { keepEvents: false });
-  feedConn = window.HarnessFeed.connect(feed, {
-    runId: id,
-    token: TOKEN,
-    onRecord: upsertRun
-  });
+  mountRunView(id);
 }
 
 /* ===== data + sockets ===== */
