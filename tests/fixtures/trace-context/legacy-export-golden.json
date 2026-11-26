@@ -1,0 +1,78 @@
+{
+  "otel": [
+    {
+      "name": "invoke_agent claude",
+      "traceId": "00000001aaaa4bbb8ccc00000001dddd",
+      "spanId": "10000004aaaa4bbb",
+      "parentSpanId": null,
+      "startTimeUnixNano": "1767225600000000000",
+      "endTimeUnixNano": "1767225604000000000"
+    },
+    {
+      "name": "chat model-a",
+      "traceId": "00000001aaaa4bbb8ccc00000001dddd",
+      "spanId": "10000006aaaa4bbb",
+      "parentSpanId": "10000004aaaa4bbb",
+      "startTimeUnixNano": "1767225601000000000",
+      "endTimeUnixNano": "1767225601000000000"
+    },
+    {
+      "name": "execute_tool Read",
+      "traceId": "00000001aaaa4bbb8ccc00000001dddd",
+      "spanId": "10000008aaaa4bbb",
+      "parentSpanId": "10000004aaaa4bbb",
+      "startTimeUnixNano": "1767225602000000000",
+      "endTimeUnixNano": "1767225603000000000"
+    },
+    {
+      "name": "chat model-a",
+      "traceId": "00000001aaaa4bbb8ccc00000001dddd",
+      "spanId": "1000000aaaaa4bbb",
+      "parentSpanId": "10000004aaaa4bbb",
+      "startTimeUnixNano": "1767225604000000000",
+      "endTimeUnixNano": "1767225604000000000"
+    }
+  ],
+  "langfuse": [
+    {
+      "name": "invoke_agent claude",
+      "traceId": "0000000baaaa4bbb8ccc0000000bdddd",
+      "spanId": "1000000eaaaa4bbb",
+      "parentSpanId": null,
+      "startTimeUnixNano": "1767225600000000000",
+      "endTimeUnixNano": "1767225604000000000"
+    },
+    {
+      "name": "chat model-a",
+      "traceId": "0000000baaaa4bbb8ccc0000000bdddd",
+      "spanId": "10000010aaaa4bbb",
+      "parentSpanId": "1000000eaaaa4bbb",
+      "startTimeUnixNano": "1767225601000000000",
+      "endTimeUnixNano": "1767225601000000000"
+    },
+    {
+      "name": "execute_tool Read",
+      "traceId": "0000000baaaa4bbb8ccc0000000bdddd",
+      "spanId": "10000012aaaa4bbb",
+      "parentSpanId": "1000000eaaaa4bbb",
+      "startTimeUnixNano": "1767225602000000000",
+      "endTimeUnixNano": "1767225603000000000"
+    },
+    {
+      "name": "chat model-a",
+      "traceId": "0000000baaaa4bbb8ccc0000000bdddd",
+      "spanId": "76daa80000000001",
+      "parentSpanId": "1000000eaaaa4bbb",
+      "startTimeUnixNano": "1767225604000000000",
+      "endTimeUnixNano": "1767225604000000000"
+    },
+    {
+      "name": "chat model-b",
+      "traceId": "0000000baaaa4bbb8ccc0000000bdddd",
+      "spanId": "76daa80000000002",
+      "parentSpanId": "1000000eaaaa4bbb",
+      "startTimeUnixNano": "1767225604000000000",
+      "endTimeUnixNano": "1767225604000000000"
+    }
+  ]
+}

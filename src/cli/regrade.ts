@@ -13,6 +13,7 @@ import { stateDir } from "../core/store.ts";
 import { HarnessError } from "../core/types.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, runVerifier } from "../core/verify.ts";
 import { annotateRunRecord, formatVerifyLine, readRawRunRecord } from "./trials.ts";
+import { readRunTraceContext, withRunTrace } from "../core/trace-context.ts";
 
 export async function cmdRegrade(rest: string[]): Promise<number> {
   const args = parseArgs({
@@ -56,7 +57,7 @@ export async function cmdRegrade(rest: string[]): Promise<number> {
     throw new HarnessError(`run '${runId}' workspace ${rec.cwd} no longer exists; cannot regrade`, "IO");
   }
 
-  const verdict = await runVerifier({ command, cwd: rec.cwd, env: process.env, timeoutMs });
+  const verdict = await runVerifier({ command, cwd: rec.cwd, env: withRunTrace(process.env, readRunTraceContext(rec.trace)), timeoutMs });
   const regrades = [...(Array.isArray(rec.regrades) ? rec.regrades : []), verdict];
   if (!annotateRunRecord(dir, runId, { regrades })) {
     throw new HarnessError(`could not write regrade verdict to run record '${runId}'`, "IO");

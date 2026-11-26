@@ -19,6 +19,7 @@
 import { z } from "zod";
 import type { AttachmentManifest } from "./attachments.js";
 import type { LatencyMetrics } from "./latency.ts";
+import { RunTraceContextSchema, type RunTraceContext } from "./trace-context.ts";
 
 // ---------------------------------------------------------------- agents
 
@@ -1446,6 +1447,8 @@ export interface RunResult {
   hermetic?: HermeticRunInfo;
   /** #75: set when the run executed in its own git worktree (--isolate). */
   worktree?: WorktreeRunInfo;
+  /** #73: W3C trace context of the run (src/core/trace-context.ts); exports adopt these ids. */
+  trace?: RunTraceContext;
 }
 
 /** #199: whole-run facts for a RunResult whose `events` is a tail. */
@@ -1549,6 +1552,7 @@ export const RunResultSchema = z.object({
   ancestorInstructions: z.array(z.string()).optional(),
   hermetic: HermeticRunInfoSchema.optional(),
   worktree: WorktreeRunInfoSchema.optional(),
+  trace: RunTraceContextSchema.optional(),
 });
 
 // ---------------------------------------------------------------- errors

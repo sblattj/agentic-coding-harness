@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import type { AgentEvent, CanonicalTokenRecord } from '../core/types.js';
-import { toOtlpJson } from './otel.js';
+import { toOtlpJson, type ExportTraceIds } from './otel.js';
 import type { EmitRunOptions, OtlpResourceSpansJson, OtlpSpanJson } from './otel.js';
 
 /**
@@ -46,6 +46,8 @@ export interface LangfusePayloadOptions {
   attributes?: Record<string, string>;
   /** #95: per-span user-enricher attributes (see EmitRunOptions). */
   spanAttributes?: readonly (Record<string, string> | undefined)[];
+  /** #73: stored W3C ids of the run; the payload adopts them (see otel.ts ExportTraceIds). */
+  trace?: ExportTraceIds;
 }
 
 export interface LangfuseEmitOptions extends LangfuseIngestOptions, LangfusePayloadOptions {

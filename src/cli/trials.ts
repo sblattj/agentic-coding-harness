@@ -17,6 +17,7 @@ import { HermeticSyncError, runHermetic, type HermeticSyncErrorInfo, type RunHer
 import { finishIsolation, prepareIsolation, type IsolateOptions, type IsolatedWorkspace } from "../core/isolate.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
 import { HarnessError, type RunResult, type RunSpec } from "../core/types.ts";
+import { withRunTrace } from "../core/trace-context.ts";
 import { runVerifier, type VerifyResult } from "../core/verify.ts";
 
 export interface VerifyRequest {
@@ -123,7 +124,8 @@ export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
         partial.verify = await runVerifier({
           command: opts.verify.command,
           cwd: err.keptDir,
-          env: opts.verify.env ?? process.env,
+          // #73: the checker is a child of the run's span too.
+          env: withRunTrace(opts.verify.env ?? process.env, err.result.trace),
           timeoutMs: opts.verify.timeoutMs,
         });
       }
@@ -147,7 +149,7 @@ export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
     outcome.verify = await runVerifier({
       command: opts.verify.command,
       cwd: iso !== undefined ? iso.agentCwd : opts.verify.cwd,
-      env: iso !== undefined ? { ...(opts.verify.env ?? process.env), ACH_WORKSPACE: iso.agentCwd } : (opts.verify.env ?? process.env),
+      env: withRunTrace(iso !== undefined ? { ...(opts.verify.env ?? process.env), ACH_WORKSPACE: iso.agentCwd } : (opts.verify.env ?? process.env), result.trace),
       timeoutMs: opts.verify.timeoutMs,
     });
   }

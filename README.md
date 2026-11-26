@@ -248,6 +248,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
 - **Emitters** — ATIF v1.7 trajectories (self-validating), OpenTelemetry `gen_ai` spans, Langfuse via OTLP.
   Custom static or env-sourced attributes (`--attr`, `--attr-env`, or the config file's `emit` section) ride on every exported span; `--enricher` adds a JS module for dynamic per-span attributes.
+- **W3C trace context**: a run joins an incoming `TRACEPARENT` (or starts a trace), stamps `trace` on its record, hands its agent child and `--verify` checker a `TRACEPARENT` naming the run's span, and the OTel/Langfuse exports reuse those ids; the run summary and `ach web` show the copyable traceparent. See [docs/TRACE-CONTEXT.md](docs/TRACE-CONTEXT.md).
 - **Single-file HTML reports** — charts + timelines comparing every agent in a trial dir.
 - **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini/agy/prime transcript
   dirs plus the opencode SQLite store; `stats` aggregates totals/byAgent/byDay over machine
@@ -489,6 +490,7 @@ ach emit --input events.json --format atif|otel|langfuse|sft [--out path]
             (sft: OpenAI chat JSONL for fine-tuning; --input may be a trials dir;
              [--min-score N] [--exit success] [--agent A] [--full-conversation]; docs/SFT-EXPORT.md)
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
+            (otel/langfuse: a RunResult input's `trace` ids are adopted, docs/TRACE-CONTEXT.md)
             [--mask none|preview|all] [--mask-style replace|partial] [--mask-entropy] [--mask-pattern RE]...
             (secret masking before export; default none; docs/MASKING.md)
             [--privacy off|redact|anon]
@@ -1281,6 +1283,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [Cost modes and provenance](docs/PROVENANCE.md), [billing blocks and plan estimates](docs/USAGE-WINDOWS.md), [quota headroom](docs/QUOTA.md).
 - [Config file (`.ach/config.json`, `ach config`)](docs/CONFIG.md): per-command flag defaults, precedence flag > env > file > default, named agent profiles (`ach run --profile`), [JSON schema](docs/config.schema.json).
 - [Content capture (`--capture-mode full|metadata|off`, `contentCapture`)](docs/CAPTURE.md): how much prompt and tool text ach records, per run and per agent.
+- [W3C trace context (`TRACEPARENT` in, child spans out)](docs/TRACE-CONTEXT.md).
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
 - [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them. Privacy modes (`--privacy redact|anon`) strip paths, prompt text and ids from shared reports and exports.

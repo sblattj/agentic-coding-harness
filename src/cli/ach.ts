@@ -71,6 +71,7 @@ import { stateDir, loadOffsets, saveOffsets, appendRecords, type StatRecord } fr
 import { AtifWriter } from "../emitters/atif.ts";
 import { deriveSpans, toOtlpJson } from "../emitters/otel.ts";
 import { loadEnricher, resolveEnrichAttributes, resolveEnricherPath, runEnricher, type EnricherInput } from "../emitters/enrich.ts";
+import { formatTraceLine, readRunTraceContext } from "../core/trace-context.ts";
 import { emitToLangfuse } from "../emitters/langfuse.ts";
 import { runSftEmit } from "../emitters/sft.ts";
 import { MASK_OPTIONS, maskForExport } from "../core/masking.ts";
@@ -1335,6 +1336,8 @@ function runSummaryText(agent: string, result: RunResult, modelFlag: string | un
   }
   if (result.hermetic !== undefined) summary += `\n${formatHermeticLine(result.hermetic)}`;
   if (result.worktree !== undefined) summary += `\n${formatIsolateLine(result.worktree)}`;
+  // #73: the run's W3C traceparent (copy into any tracing UI or a downstream TRACEPARENT).
+  if (result.trace !== undefined) summary += `\n${formatTraceLine(result.trace)}`;
   if (verify !== undefined) summary += `\n${formatVerifyLine(verify)}`;
   return summary;
 }
@@ -2454,12 +2457,14 @@ async function cmdEmit(rest: string[]): Promise<number> {
   // When --input is a full RunResult (not just an event stream), inherit its
   // sessionId/agent/model so callers don't have to restate them per-flag.
   const runResult = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-    ? parsed as { sessionId?: unknown; agent?: unknown; model?: unknown; tokens?: unknown; captureMode?: unknown }
+    ? parsed as { sessionId?: unknown; agent?: unknown; model?: unknown; tokens?: unknown; captureMode?: unknown; trace?: unknown }
     : {};
   // #72: a RunResult carries captureMode only below `full`; stamp it then,
   // so a full run's export stays byte-for-byte what it was.
   const captureStamp: { captureMode?: string } =
     typeof runResult.captureMode === "string" && runResult.captureMode !== "full" ? { captureMode: runResult.captureMode } : {};
+  // #73: a RunResult's W3C ids (RunResult.trace); otel/langfuse adopt them.
+  const runTrace = readRunTraceContext(runResult.trace);
   // RunResult doesn't carry top-level agent/model — fall back to the first
   // token record's fields so Langfuse span names stay meaningful.
   const firstToken = Array.isArray(runResult.tokens) && runResult.tokens.length > 0
@@ -2533,6 +2538,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
         ...captureStamp,
         attributes,
         spanAttributes: enriched.spanAttributes,
+        ...(runTrace !== undefined ? { trace: runTrace } : {}),
       });
     } catch (e) {
       throw new HarnessError(
@@ -2565,6 +2571,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
       ...captureStamp,
       attributes,
       spanAttributes: enriched.spanAttributes,
+      ...(runTrace !== undefined ? { trace: runTrace } : {}),
     });
     body = JSON.stringify(doc, null, 2) + "\n";
     if (args.values.out) await fs.writeFile(args.values.out, body);

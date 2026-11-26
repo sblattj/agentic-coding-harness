@@ -107,6 +107,7 @@ body {
 #metastrip .k { color: var(--dim); margin-right: 5px; }
 #metastrip .chip { white-space: nowrap; padding: 1px 7px; border: 1px solid var(--line); border-radius: 9px; color: var(--dim); }
 #metastrip .chip.unpriced { border-style: dashed; }
+#metastrip .copy { background: none; border: 1px solid var(--line); color: var(--dim); font: inherit; padding: 0 5px; margin-left: 5px; cursor: pointer; border-radius: 3px; }
 #statsbar {
   display: flex;
   flex-wrap: wrap;
@@ -580,6 +581,20 @@ function renderMeta() {
   if (r.experiment || r.variant) {
     box.appendChild(kv("experiment / variant", [r.experiment, r.variant].filter(Boolean).join(" / ")));
   }
+  var tp = traceparentOf(r);
+  if (tp) {
+    var traceKv = kv("trace", tp);
+    traceKv.title = traceTitle(r);
+    var copyBtn = el("button", "copy", "copy");
+    copyBtn.type = "button";
+    copyBtn.title = "copy the W3C traceparent";
+    copyBtn.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      if (navigator.clipboard) navigator.clipboard.writeText(tp).then(function () { copyBtn.textContent = "copied"; }, function () { copyBtn.textContent = "copy failed"; });
+    });
+    traceKv.appendChild(copyBtn);
+    box.appendChild(traceKv);
+  }
   if (r.cwd) {
     var cwdKv = kv("cwd", String(r.cwd));
     cwdKv.title = String(r.cwd);
@@ -713,6 +728,21 @@ function modelProvText(m) {
   return "unknown (not observed, none requested)";
 }
 
+/* tracectx:begin */
+/* #73: the run's W3C traceparent (00-<trace id>-<run span id>-<flags>), or "" when the record has none. */
+function traceparentOf(r) {
+  var t = r && r.trace;
+  if (!t || !/^[0-9a-f]{32}$/.test(String(t.traceId)) || !/^[0-9a-f]{16}$/.test(String(t.spanId))) return "";
+  var flags = /^[0-9a-f]{2}$/.test(String(t.traceFlags)) ? t.traceFlags : "01";
+  return "00-" + t.traceId + "-" + t.spanId + "-" + flags;
+}
+/* Tooltip for the trace chip: the trace id and, when the run joined an upstream trace, its parent span. */
+function traceTitle(r) {
+  var t = r && r.trace;
+  if (!traceparentOf(r)) return "";
+  return "trace id " + t.traceId + (t.parentSpanId ? " \u00b7 child of upstream span " + t.parentSpanId : " \u00b7 new trace");
+}
+/* tracectx:end */
 /* ===== feed pane ===== */
 function showFeed(on) {
   $("feed").style.display = on ? "block" : "none";

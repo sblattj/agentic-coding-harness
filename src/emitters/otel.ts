@@ -110,6 +110,18 @@ export interface EmitRunOptions {
   spanAttributes?: readonly (Record<string, string> | undefined)[];
 }
 
+/**
+ * #73: stored W3C ids of a run (RunRecord/RunResult `trace`). When given, the
+ * export adopts the trace id, the root span takes the run's own span id, and
+ * the root's parent is the upstream span. Absent: ids are generated as before.
+ */
+export interface ExportTraceIds {
+  traceId: string;
+  spanId?: string;
+  parentSpanId?: string;
+  traceFlags?: string;
+}
+
 export interface DerivedSpans {
   root: SpanSpec;
   children: SpanSpec[];
@@ -264,14 +276,17 @@ export function toOtlpJson(
     /** Extra resource attributes after `service.name` (#46: `ach.privacy`). */
     resourceAttributes?: Record<string, string>;
     captureMode?: string;
+    trace?: ExportTraceIds;
   },
 ): OtlpResourceSpansJson {
   const serviceName = opts.serviceName ?? 'agentic-coding-harness';
   const { root, children } = deriveSpans(events, opts);
-  const { traceId, spanId: rootSpanId } = newIds();
+  const { traceId: generatedTraceId, spanId: rootSpanId } = newIds();
+  const traceId = opts.trace?.traceId ?? generatedTraceId;
 
   const toJsonSpan = (spec: SpanSpec, parentSpanId?: string): OtlpSpanJson => {
-    const { spanId } = newIds();
+    const { spanId: generatedSpanId } = newIds();
+    const spanId = spec.role === 'root' && opts.trace?.spanId !== undefined ? opts.trace.spanId : generatedSpanId;
     const span: OtlpSpanJson = {
       traceId,
       spanId,
@@ -286,7 +301,7 @@ export function toOtlpJson(
     return span;
   };
 
-  const rootJson = toJsonSpan(root);
+  const rootJson = toJsonSpan(root, opts.trace?.parentSpanId);
   const childJson = children.map((c) => toJsonSpan(c, rootJson.spanId));
 
   return {
@@ -318,14 +333,25 @@ export function toOtlpJson(
 /** Side-effectful variant: emits the same span tree through a real tracer/provider. */
 export function emitRun(
   tracer: Tracer,
-  opts: EmitRunOptions,
+  opts: EmitRunOptions & { trace?: ExportTraceIds },
 ): { root: Span; spans: Span[] } {
   const { root: rootSpec, children } = deriveSpans(opts.events, opts);
+  // #73: the tracer API mints span ids itself, so a live export adopts the
+  // trace id and upstream parent (as a remote parent context) but not the
+  // run's stored span id; toOtlpJson pins all three.
+  const upstream = opts.trace?.parentSpanId !== undefined
+    ? trace.setSpanContext(ROOT_CONTEXT, {
+        traceId: opts.trace.traceId,
+        spanId: opts.trace.parentSpanId,
+        traceFlags: parseInt(opts.trace.traceFlags ?? '01', 16),
+        isRemote: true,
+      })
+    : undefined;
   const root = tracer.startSpan(rootSpec.name, {
     kind: rootSpec.kind,
     startTime: toHrTime(rootSpec.startMs),
     attributes: rootSpec.attributes,
-  });
+  }, upstream);
   const parentCtx = trace.setSpan(ROOT_CONTEXT, root);
   const spans: Span[] = children.map((spec) => {
     const span = tracer.startSpan(

@@ -24,6 +24,7 @@ import {
 import { VerifyResultSchema, type VerifyResult } from "./verify.ts";
 import { PROVENANCE_CLASSES, type ProvenanceMap } from "./provenance.ts";
 import type { RunSeal } from "./hash-chain.ts";
+import { RunTraceContextSchema, type RunTraceContext } from "./trace-context.ts";
 
 // Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
 // record (source:"external") validates without inventing a local pid, cwd, or
@@ -119,6 +120,8 @@ export interface RunRecord {
   captureMode?: "off" | "metadata" | "full";
   /** #72: where that tier came from: `agent:<name>`, `flag`, `env:ACH_CAPTURE_MODE`, `config`, `spec` or `default`. */
   captureSource?: string;
+  /** #73: W3C trace context (trace id, this run's span id, upstream parent span id). */
+  trace?: RunTraceContext;
 }
 
 /** Desk membership of a run (#204). */
@@ -268,6 +271,7 @@ export const RunRecordSchema = z.object({
   profile: RunProfileInfoSchema.optional(),
   captureMode: z.enum(["off", "metadata", "full"]).optional(),
   captureSource: z.string().optional(),
+  trace: RunTraceContextSchema.optional(),
 });
 
 export function registryDir(stateDir: string): string {

@@ -34,6 +34,7 @@ import { CopilotAdapter } from '../adapters/copilot.js';
 import { CursorAdapter } from '../adapters/cursor.js';
 import { NullAdapter } from '../adapters/null.js';
 import { scrubEnvVars, takeOnOutput } from '../adapters/shared.js';
+import { childTraceEnv, resolveRunTraceContext } from './trace-context.ts';
 import { DEFAULT_COOLDOWN_MS, cooldownMsFromEnv, createRunAlerts, describeAlert, type AlertMetric, type FiredAlert } from './budget-alerts.ts';
 import type { BudgetAlertEvent } from './types.js';
 import { createLatencyAccumulator, hasLatency } from './latency.ts';
@@ -408,6 +409,15 @@ export function createDriver(options: DriverOptions): Driver {
       // describe the config the run launched with, not what it produced.
       for (const w of profileWarnings) warnings.push(`${agentName}: profile warning — ${w.field}: ${w.message}`);
       if (effortResolution !== undefined) warnings.push(...effortResolution.warnings);
+      // --- W3C trace context (#73) ---
+      // An incoming TRACEPARENT (the spec's env wins over the process env) makes
+      // this run a child span of that trace; none starts a fresh trace; an
+      // invalid one starts a fresh trace with one warning. Every adapter child
+      // gets TRACEPARENT naming THIS run's span (injected into launchSpec.env
+      // below), and the ids land on the RunRecord and RunResult.
+      const traceResolved = resolveRunTraceContext({ ...process.env, ...(parsed.env ?? {}) });
+      const runTrace = traceResolved.trace;
+      if (traceResolved.warning !== undefined) warnings.push(traceResolved.warning);
 
       // --- run-to-directory mode (#6) ---
       // When the spec carries outputDir, mirror the whole run into it and
@@ -454,6 +464,16 @@ export function createDriver(options: DriverOptions): Driver {
         void _a;
         void _m;
         launchSpec = { ...rest, prompt: composedPrompt };
+      }
+      // #73: per-spec (never process.env, so concurrent runs cannot race).
+      // An incoming TRACESTATE is replaced by the resolved one, or blanked:
+      // adapters merge process.env under spec.env, and spec.env cannot unset
+      // a key, so an inherited TRACESTATE would otherwise ride along with a
+      // fresh trace. W3C treats an empty tracestate as none.
+      {
+        const { TRACESTATE: _ts, ...envRest } = launchSpec.env ?? {};
+        void _ts;
+        launchSpec = { ...launchSpec, env: { ...envRest, TRACESTATE: '', ...childTraceEnv(runTrace) } };
       }
 
       // Raw stdout tap precedence: RunSpec.onOutput wins over the driver-wide
@@ -738,6 +758,7 @@ export function createDriver(options: DriverOptions): Driver {
             // #77: the agent profile and full option set, on the first write so
             // a run that fails or is aborted still carries it.
             ...(parsed.profile !== undefined ? { profile: parsed.profile } : {}),
+            trace: runTrace,
           };
           applyRunRecordExtras();
           writeRunRecordThrottled(true);
@@ -1247,6 +1268,7 @@ export function createDriver(options: DriverOptions): Driver {
           ...(effortResolution !== undefined ? { effort: effortResolution.provenance } : {}),
           ...(attachmentManifest !== undefined ? { attachments: attachmentManifest } : {}),
           ...(ancestorInstructions.length > 0 ? { ancestorInstructions } : {}),
+          trace: runTrace,
         };
         // Run-to-directory settle (#6): the terminal status.json lands last,
         // after every other artifact (result.json included) is on disk.

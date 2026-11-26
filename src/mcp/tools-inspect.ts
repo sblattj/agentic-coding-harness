@@ -9,6 +9,7 @@ import type { AgentEvent } from "../core/types.ts";
 import { readAllRecords } from "../core/store.ts";
 import { AtifWriter } from "../emitters/atif.ts";
 import { toOtlpJson } from "../emitters/otel.ts";
+import { readRunTraceContext } from "../core/trace-context.ts";
 import { emitToLangfuse } from "../emitters/langfuse.ts";
 import { sanitizeEnrichAttributes } from "../emitters/enrich.ts";
 import { loadTrials } from "../report/model.ts";
@@ -164,6 +165,11 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
   for (const w of enrich.warnings) process.stderr.write(`harness_emit: warning: ${w}\n`);
   const attributes = Object.keys(enrich.attributes).length > 0 ? enrich.attributes : undefined;
   const warn = enrich.warnings.length > 0 ? { warnings: enrich.warnings } : {};
+  // #73: a RunResult file carries the run's W3C ids; otel/langfuse adopt them.
+  const runTrace = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    ? readRunTraceContext((parsed as { trace?: unknown }).trace)
+    : undefined;
+  const traceOpt = runTrace !== undefined ? { trace: runTrace } : {};
 
   if (a.format === "atif") {
     const writer = AtifWriter.fromEvents(events, {
@@ -204,6 +210,7 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
         model: "unknown-model",
         ...resourceAttributes,
         attributes,
+        ...traceOpt,
       });
     } catch (e) {
       throw new Error(`endpoint: langfuse ingest to '${baseUrl}' failed: ${e instanceof Error ? e.message : e}`);
@@ -232,6 +239,7 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
     model: "unknown-model",
     ...resourceAttributes,
     attributes,
+    ...traceOpt,
   });
   const body = JSON.stringify(doc, null, 2) + "\n";
   if (a.out) {
