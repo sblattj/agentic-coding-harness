@@ -171,6 +171,7 @@ import { cmdAudit } from "./audit.ts";
 import { creditUnitOfAgent } from "../core/credit-units.ts";
 import { ccusageHintText, cmdImport, parseStatsOrigin, statsOriginIndex, type StatsOrigin } from "./import.ts";
 import { cmdVerifyRun } from "./verify-run.ts";
+import { cmdContext } from "./context.ts";
 import { cmdReplay } from "./replay-vet.ts";
 import { cmdSmoke } from "./smoke.ts";
 import { EXIT_CODES, noDataExitCode, parseExitCodesMode, repeatExitCode, runExitCode } from "./exit-codes.ts";
@@ -520,6 +521,13 @@ usage:
                 (recompute the run's sha256 hash-chained event log and check its
                  terminal seal + sealed totals (#59); exit 0 intact, 2 tampered
                  (names the first bad line), 3 unsealed legacy log, 4 open chain)
+  ach context <runId> [--json] [--state-dir <stateDir>]
+                (what filled the run's context window, from its stored events:
+                 % prompt/user, assistant text, reasoning, tool calls, tool
+                 results (top 5 tools) and the unattributed remainder; parts sum
+                 to the recorded context total, estimates past it within 10% are
+                 flagged; n/a when the adapter lacks a component; offline;
+                 --json emits the component map; docs/CONTEXT.md)
   ach replay vet <pr-number|pr-url> [--repo owner/name] [--clone PATH=.] [--fallback-clone PATH]...
                  [--trunk BRANCH] [--min-files N=3] [--test-regex RE] [--ticket-regex RE] [--json]
                 (read-only replay-case vetting (#115): merged, approved, trunk, size, tests,
@@ -2673,7 +2681,7 @@ const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
   "trial", "queue", "replay", "smoke", "gc", "config", "init", "attach", "desk", "lane", "listener", "update", "profiles",
-  "scrub", "export", "alerts",
+  "scrub", "export", "alerts", "context",
 ]);
 
 /** #98: commands that never get the automatic update line (stdio protocols and
@@ -2785,6 +2793,8 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdImport(rest);
     case "verify-run":
       return cmdVerifyRun(rest);
+    case "context":
+      return cmdContext(rest);
     case "replay":
       return cmdReplay(rest);
     case "smoke":

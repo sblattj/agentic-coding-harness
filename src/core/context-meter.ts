@@ -105,7 +105,8 @@ function usableModel(model: unknown): string | undefined {
   return m;
 }
 
-function charLength(v: unknown): number {
+/** Character size of an event payload: a string as is, anything else as its JSON. */
+export function charLength(v: unknown): number {
   if (v === undefined || v === null) return 0;
   if (typeof v === 'string') return v.length;
   try {

@@ -513,6 +513,10 @@ ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <
 ach verify-run <runId|runDir> [--json] [--records] [--state-dir <stateDir>]
             # prove the run's hash-chained event log + sealed totals are untouched
             # exit 0 intact, 2 tampered, 3 unsealed (legacy), 4 open (never sealed)
+ach context <runId> [--json] [--state-dir <stateDir>]
+            # what filled the run's context window, from its stored events (offline): % prompt/user,
+            # assistant text, reasoning, tool calls, tool results (top 5 tools), unattributed remainder;
+            # n/a where the adapter records no data; --json = component map (docs/CONTEXT.md)
 ach replay vet <pr-number|pr-url> [--repo owner/name] [--clone PATH] [--fallback-clone PATH]... [--json]
             # read-only vetting of a merged PR as a replay case: merged/approved/trunk/tests/ticket,
             # merge + base commits in the clone, squash vs merge; exit 0 pass/warn, 40 fail (docs/REPLAY.md)
@@ -1204,6 +1208,11 @@ API (`/api/runs`, `/api/stats`, `/api/compare`, `/health`) stay open on the loop
   `Agent` tool) activity has no parent link in the persisted events, so calls that start while
   exactly one sub-agent is open are nested under it by time; with parallel sub-agents open the
   attribution is ambiguous and those calls stay under the main session.
+  The metrics pane also has a **context composition** card (#87): a stacked bar of what filled the
+  latest model call's window (prompt, assistant text, reasoning, tool calls, tool results, and the
+  unattributed remainder), the top 5 tools by context share, and the compaction count, with n/a
+  for anything the adapter does not record. Same derivation as `ach context`, served as
+  `composition` on the observability route; see [docs/CONTEXT.md](docs/CONTEXT.md).
 - **Raw JSON inspector**: on `/`, `/grid` and `/trio`, hover a feed row (or a waterfall / tree node)
   and click `{}` to open the event's full pretty-printed JSON (original objects, nothing truncated;
   a span shows the span plus its start/end events). **copy JSON** copies the whole object; long or

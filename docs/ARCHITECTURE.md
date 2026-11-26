@@ -103,6 +103,12 @@ and free-form `metadata`, plus `corrections` — the additive log `ach audit --f
 (`{at, field, from, to, by}` per rewritten aggregate) when it re-derives totals from the raw
 transcript (`cli/audit.ts`).
 
+**Context composition (#87).** `core/context-composition.ts` `deriveContextComposition(events, input)` splits the
+latest model call's context window into prompt, assistant text, reasoning, tool calls, tool results (per tool)
+and the unattributed remainder, from the stored events plus the RunRecord's context reading (`compositionInput`).
+`ach context <runId>` (`cli/context.ts`) and the `/trio` composition card (via `/api/runs/:runId/observability`
+`composition`) both read it; nothing new is recorded. Rules and tolerance: [CONTEXT.md](CONTEXT.md).
+
 **Latency metrics (#32).** `core/latency.ts` `deriveLatency(events)` (re-exported by `web/derive.ts`) is the one pure derivation of
 run latency; the `/trio` metrics pane (via `/api/runs/:runId/observability` `latency`), the
 `ach run` summary, and `RunRecord.latency` all read it. The driver computes it once at finalize

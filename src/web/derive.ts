@@ -3,6 +3,7 @@ import { cacheHitRatio } from "../core/cache-ratio.ts";
 import { cachePanel, type CachePanel, type CacheSample } from "../core/cache-ttl.ts";
 import { buildSpanTree, type SpanTreeNode } from "./span-tree.ts";
 import { deriveLatency, toEventMs, type LatencyMetrics } from "../core/latency.ts";
+import { deriveContextComposition, type CompositionInput, type ContextComposition } from "../core/context-composition.ts";
 
 export { toEventMs };
 
@@ -429,6 +430,8 @@ export interface RunObservability {
   cache?: CachePanel;
   /** TTFT, throughput/TPOT, per-tool durations (#32). Present whenever the run has events. */
   latency?: LatencyMetrics;
+  /** Context window composition (#87), from the same events; present when the caller passes the run's context input. */
+  composition?: ContextComposition;
 }
 
 export interface ModelCacheRow {
@@ -522,7 +525,11 @@ export interface ReconciledCredits {
  * value, it replaces the event-derived total (the tap undercounts on kiro V3),
  * and the series is flagged partial if the tap is a known-incomplete source.
  */
-export function deriveRunObservability(events: AgentEvent[], credits?: ReconciledCredits | null): RunObservability {
+export function deriveRunObservability(
+  events: AgentEvent[],
+  credits?: ReconciledCredits | null,
+  context?: CompositionInput,
+): RunObservability {
   const spans = deriveSpans(events);
   const metrics = deriveMetrics(events);
   const logs = deriveLogs(events);
@@ -545,5 +552,6 @@ export function deriveRunObservability(events: AgentEvent[], credits?: Reconcile
     out.cache = deriveRunCache(events);
   }
   if (events.length > 0) out.latency = deriveLatency(events);
+  if (context !== undefined) out.composition = deriveContextComposition(events, context);
   return out;
 }

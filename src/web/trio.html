@@ -186,6 +186,18 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3f
 .toollat .tl b { color: var(--fg); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toollat .tl.hd { color: var(--faint); text-transform: uppercase; letter-spacing: .1em; font-size: 9px; }
 .toollat .err { color: var(--red); }
+/* context composition (#87): one stacked bar over the latest call's window */
+.ctxcomp { padding: 8px 10px 0; flex: none; font: 10.5px var(--mono); color: var(--dim); }
+.ctxcomp:empty { display: none; }
+.ctxcomp .hd { display: flex; justify-content: space-between; gap: 8px; color: var(--faint); text-transform: uppercase; letter-spacing: .1em; font-size: 9px; }
+.ctxcomp .bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--panel2); border: 1px solid var(--line); margin: 4px 0; }
+.ctxcomp .bar i { display: block; min-width: 1px; }
+.ctxcomp .lg { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.ctxcomp .na { color: var(--faint); }
+.ctxcomp .warn { color: var(--amber); }
+.cc-prompt { background: var(--blue); } .cc-assistantText { background: var(--purple); }
+.cc-reasoning { background: var(--cyan); } .cc-toolCalls { background: var(--green); }
+.cc-toolResults { background: var(--teal); } .cc-unattributed { background: var(--line2); }
 .chartwrap { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto auto; padding: 8px 10px 10px; gap: 4px; }
 .chartbox { position: relative; min-height: 0; }
 #chart { width: 100%; height: 100%; display: block; }
@@ -398,6 +410,7 @@ footer.min .tbody { display: none; }
     <div class="ph"><span>Metrics</span><span class="pmeta" id="chartMeta"></span></div>
     <div class="stats" id="stats"></div>
     <div class="toollat" id="toolLat" aria-label="per-tool execution durations"></div>
+    <div class="ctxcomp" id="ctxComp" aria-label="context window composition"></div>
     <div class="chartwrap">
       <div class="chartbox" id="chartbox">
         <span class="axl" id="ax2" style="top:100%">0</span>
@@ -1401,6 +1414,75 @@ function openFeed() {
   });
 }
 
+/* context-composition:begin */
+// #87: what filled the latest model call's context window, from
+// obs.composition (derived server-side from the run's stored events). A
+// component the adapter or the capture tier did not record renders n/a,
+// never a share.
+var COMPOSITION_TOP_TOOLS = 5;
+function compPct(share) { return share == null || !isFinite(share) ? "n/a" : (share * 100).toFixed(1) + "%"; }
+function compositionView(c) {
+  if (!c || !c.components) return null;
+  var of = c.denominator === "attributed" ? "of attributed" : "of context";
+  var segments = [];
+  var legend = [];
+  c.components.forEach(function (x) {
+    if (x.tokens == null) {
+      legend.push({ key: x.key, text: x.label + " n/a", na: true, title: x.reason || "" });
+      return;
+    }
+    if (x.tokens > 0 && x.share != null) segments.push({ key: x.key, grow: x.tokens, title: x.label + " " + compPct(x.share) + " (" + x.tokens + " tok)" });
+    legend.push({ key: x.key, text: x.label + " " + compPct(x.share), na: false, title: x.tokens + " tok" + (x.estimated ? " (estimated)" : " (measured remainder)") });
+  });
+  var tools = (c.tools || []).slice(0, COMPOSITION_TOP_TOOLS).map(function (t) {
+    return { name: t.name, text: t.name + " " + compPct(t.share), title: t.calls + " call(s), " + (t.tokens == null ? "n/a" : t.tokens + " tok") };
+  });
+  var total = c.total && c.total.tokens != null ? c.total.tokens + " tok " + (c.total.source === "record" ? "recorded" : "from events") : "total n/a" + (c.total && c.total.reason ? ": " + c.total.reason : "");
+  var note = "";
+  if (c.withinTolerance === false) note = "estimates exceed the total beyond the " + Math.round(c.tolerance * 100) + "% tolerance";
+  else if (c.overshoot != null && c.overshoot > 0) note = "estimates within the " + Math.round(c.tolerance * 100) + "% tolerance";
+  var compactions = c.compactions && c.compactions.count != null ? c.compactions.count + " compaction(s)" : "compactions n/a";
+  return { head: "context composition \u00b7 " + of, total: total, segments: segments, legend: legend, tools: tools, note: note, compactions: compactions };
+}
+function renderComposition() {
+  var box = $("ctxComp");
+  box.textContent = "";
+  var v = compositionView(obs && obs.composition);
+  if (!v) return;
+  var hd = el("div", "hd");
+  hd.appendChild(el("span", null, v.head));
+  hd.appendChild(el("span", null, v.total));
+  box.appendChild(hd);
+  var bar = el("div", "bar");
+  bar.setAttribute("role", "img");
+  bar.setAttribute("aria-label", v.legend.map(function (l) { return l.text; }).join(", "));
+  v.segments.forEach(function (sg) {
+    var i = el("i", "cc-" + sg.key);
+    i.style.flexGrow = String(sg.grow);
+    i.title = sg.title;
+    bar.appendChild(i);
+  });
+  box.appendChild(bar);
+  var lg = el("div", "lg");
+  v.legend.forEach(function (l) {
+    var s = el("span", l.na ? "na" : null, l.text);
+    if (l.title) s.title = l.title;
+    lg.appendChild(s);
+  });
+  box.appendChild(lg);
+  if (v.tools.length) {
+    var tl = el("div", "lg");
+    tl.appendChild(el("span", "na", "tools"));
+    v.tools.forEach(function (t) { var s = el("span", null, t.text); s.title = t.title; tl.appendChild(s); });
+    box.appendChild(tl);
+  }
+  var ft = el("div", "lg");
+  ft.appendChild(el("span", "na", v.compactions));
+  if (v.note) ft.appendChild(el("span", "warn", v.note));
+  box.appendChild(ft);
+}
+/* context-composition:end */
+
 /* ===== data loading ===== */
 function fetchObs() {
   return api("/api/runs/" + encodeURIComponent(RUN_ID) + "/observability")
@@ -1417,6 +1499,7 @@ function fetchObs() {
         cacheHitRatio: data && data.cacheHitRatio,
         byModel: data && data.byModel,
         latency: (data && data.latency) || null,
+        composition: (data && data.composition) || null,
         durationMs: (data && data.durationMs) || 0,
       };
     });
@@ -1435,6 +1518,7 @@ function renderAll() {
   renderTraces();
   renderTree();
   renderMetrics();
+  renderComposition();
   renderLogs();
 }
 function refreshLive() {

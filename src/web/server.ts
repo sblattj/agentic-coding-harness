@@ -38,6 +38,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { readLiveInfo } from "../interactive/live-registry.ts";
 import { connectLive, continueLive, listConfirmedLiveRuns, PendingInput, probeLive, type LiveClient } from "../interactive/live-socket.ts";
+import { compositionInput } from "../core/context-composition.ts";
 
 export interface WebServerOptions {
   port: number;
@@ -771,7 +772,7 @@ export async function startWebServer(rawOpts: WebServerOptions): Promise<WebServ
             return res.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(body);
           }
           if (action === "observability") {
-            return sendJson(res, 200, deriveRunObservability(events, rec.usage?.credits));
+            return sendJson(res, 200, deriveRunObservability(events, rec.usage?.credits, compositionInput(rec, hub.snapshotRuns())));
           }
           return notFound(res);
         }
