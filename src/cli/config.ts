@@ -11,18 +11,39 @@
 // command later is configurable with no edit here. The same hook, armed in
 // "capture" mode, reads the option tables for validation, `config --show` and
 // the published JSON schema without running the commands.
+//
+// Agent profiles (#77): a top-level `profiles.<name>` object whose keys are
+// the `run` section's keys (plus an `env` map for the agent process). `ach
+// run --profile <name>` (or `run.profile` in the file) expands it in the same
+// choke point, so precedence is flag > env > profile > file `run` > default.
 import { parseArgs as nodeParseArgs } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { HarnessError } from "../core/types.ts";
+import { HarnessError, type RunProfileInfo } from "../core/types.ts";
 import { EXIT_CODES } from "./exit-codes.ts";
 
 export const CONFIG_ENV = "AGENTIC_CODING_HARNESS_CONFIG";
 export const STATE_DIR_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
 export const CONFIG_SECTIONS = ["run", "stats", "web", "serve"] as const;
 export type ConfigSection = (typeof CONFIG_SECTIONS)[number];
+/** Top-level key holding the named agent profiles (#77). */
+export const PROFILES_KEY = "profiles";
+/** The `ach run` flag that selects a profile; never a key inside one. */
+export const PROFILE_FLAG = "profile";
+/** The section whose flags a profile body holds. */
+export const PROFILE_SECTION = "run" satisfies ConfigSection;
+/** Profile names: no dots (they would break `profiles.<name>.<key>` paths). */
+export const PROFILE_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+/** Env var names a profile's `env` map may set. */
+export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/**
+ * Repeatable flags whose value may be inline JSON that carries tokens (MCP
+ * server env/headers). The RunRecord copy of such a value is a size marker,
+ * the same redaction `describeSandbox` applies to `--mcp-config`.
+ */
+export const SECRET_JSON_FLAGS: ReadonlySet<string> = new Set(["mcp-config", "kiro-mcp-server"]);
 export const CONFIG_SCHEMA_URL =
   "https://raw.githubusercontent.com/sblattj/agentic-coding-harness/main/docs/config.schema.json";
 
@@ -156,14 +177,40 @@ interface ApplyEntry {
   value: unknown;
   /** The env var that beats this entry (section-aware), if any. */
   mirror?: string | undefined;
+  /** `file:<path>` or `profile:<name>`. */
+  source: string;
 }
 const DIR_ALIASES: ReadonlyArray<readonly [string, string]> = [
   ["dir", "state-dir"],
   ["dir", "transcript-dir"],
 ];
 
-type Armed ={ mode: "capture" } | { mode: "apply"; entries: ApplyEntry[] };
+type Armed =
+  | { mode: "capture" }
+  | { mode: "apply"; section: ConfigSection; entries: ApplyEntry[]; profiles: Map<string, MergedProfile> };
 let armed: Armed | null = null;
+
+/**
+ * What the armed parse resolved (#77): the selected profile (if any) and,
+ * for every option the run will use, its value and the layer it came from.
+ * `ach run` reads it right after its parseArgs call (takeResolution).
+ */
+export interface Resolution {
+  section: ConfigSection;
+  profile?: { name: string; values: Record<string, unknown>; env: Record<string, string> };
+  /** Effective options in the option table's order (the profile flag excluded). */
+  effective: Array<{ flag: string; value: unknown; source: string }>;
+  /** The effective options as argv, in command-line order. */
+  argv: string[];
+}
+let lastResolution: Resolution | null = null;
+
+/** The resolution of the last armed parse, once (null when nothing was armed). */
+export function takeResolution(): Resolution | null {
+  const r = lastResolution;
+  lastResolution = null;
+  return r;
+}
 
 /**
  * Drop-in for node:util `parseArgs`. Unarmed (every call but the armed
@@ -193,25 +240,136 @@ export const parseArgs = ((config?: Parameters<typeof nodeParseArgs>[0]) => {
     if (given.has(a)) given.add(b);
     if (given.has(b)) given.add(a);
   }
+  // #77: a selected profile's keys sit between env and the file's section.
+  let entries = a.entries;
+  let profile: Resolution["profile"];
+  if (options[PROFILE_FLAG] !== undefined) {
+    const fromFile = a.entries.find((e) => e.flag === PROFILE_FLAG);
+    const name = given.has(PROFILE_FLAG) ? (res.values[PROFILE_FLAG] as string) : fromFile !== undefined ? String(fromFile.value) : undefined;
+    if (name !== undefined) {
+      const p = pickProfile(name, a.profiles);
+      const own = [...p.flags].map(([flag, fv]) => ({ flag, value: fv.value, mirror: envMirror(a.section, flag), source: `profile:${name}` }));
+      entries = [...own, ...a.entries.filter((e) => !p.flags.has(e.flag))];
+      profile = {
+        name,
+        values: Object.fromEntries([...p.flags].map(([flag, fv]) => [flag, fv.value])),
+        env: Object.fromEntries([...p.env].map(([k, fv]) => [k, String(fv.value)])),
+      };
+    }
+  }
+  const sources = new Map<string, string>();
   const injected: Array<Record<string, unknown>> = [];
-  for (const e of a.entries) {
+  for (const e of entries) {
     const spec = options[e.flag];
     if (spec === undefined || given.has(e.flag)) continue;
     if (e.mirror !== undefined && isSet(process.env[e.mirror])) continue;
     const v = toOptionValue(spec, e.value);
+    if (spec.type === "boolean" && v !== true) continue; // false = unset (there is no --no-<flag>)
     res.values[e.flag] = v;
+    sources.set(e.flag, e.source);
     if (spec.type === "boolean") {
-      if (v === true) injected.push({ kind: "option", name: e.flag, rawName: `--${e.flag}`, index: -1, value: undefined, inlineValue: undefined });
+      injected.push({ kind: "option", name: e.flag, rawName: `--${e.flag}`, index: -1, value: undefined, inlineValue: undefined });
     } else {
       for (const one of Array.isArray(v) ? v : [v]) {
         injected.push({ kind: "option", name: e.flag, rawName: `--${e.flag}`, index: -1, value: one, inlineValue: true });
       }
     }
   }
+  lastResolution = resolution(a.section, options, res, given, sources, [...injected, ...(res.tokens ?? [])], profile);
   if (config?.tokens) res.tokens = [...injected, ...(res.tokens ?? [])];
   else delete res.tokens;
   return res;
 }) as typeof nodeParseArgs;
+
+/** Every option the parse settled on, with its layer, and the same set as argv. */
+function resolution(
+  section: ConfigSection,
+  options: OptionTable,
+  res: { values: Record<string, unknown> },
+  given: Set<string>,
+  sources: Map<string, string>,
+  tokens: Array<Record<string, unknown>>,
+  profile: Resolution["profile"],
+): Resolution {
+  const effective: Resolution["effective"] = [];
+  const fromEnv: string[] = [];
+  for (const [flag, spec] of Object.entries(options)) {
+    if (flag === PROFILE_FLAG) continue;
+    if (given.has(flag) && res.values[flag] !== undefined) {
+      effective.push({ flag, value: res.values[flag], source: "flag" });
+      continue;
+    }
+    const src = sources.get(flag);
+    if (src !== undefined) {
+      effective.push({ flag, value: res.values[flag], source: src });
+      continue;
+    }
+    // An env mirror the command reads itself (optNumWithEnv, ...): part of
+    // the option set the run used, though parseArgs never saw it.
+    const mirror = envMirror(section, flag);
+    const raw = mirror !== undefined ? process.env[mirror] : undefined;
+    if (mirror === undefined || !isSet(raw)) continue;
+    if (spec.type === "boolean") {
+      if (raw !== "1" && raw !== "true") continue;
+      effective.push({ flag, value: true, source: `env:${mirror}` });
+      fromEnv.push(`--${flag}`);
+    } else {
+      effective.push({ flag, value: raw, source: `env:${mirror}` });
+      fromEnv.push(`--${flag}=${raw}`);
+    }
+  }
+  const argv: string[] = [];
+  for (const t of tokens) {
+    if (t.kind !== "option" || t.name === PROFILE_FLAG || (t.name as string) === undefined) continue;
+    const name = t.name as string;
+    if (options[name] === undefined) continue;
+    argv.push(t.value === undefined ? `--${name}` : `--${name}=${String(t.value)}`);
+  }
+  return { section, ...(profile !== undefined ? { profile } : {}), effective, argv: [...argv, ...fromEnv] };
+}
+
+/** The RunRecord form of a profiled run's resolution (#77): env values and
+ *  inline MCP JSON never leave the process. */
+export function profileRecord(r: Resolution): RunProfileInfo | undefined {
+  if (r.profile === undefined) return undefined;
+  const redacted = new Set<string>();
+  const mask = (flag: string, v: unknown): unknown => {
+    if (!SECRET_JSON_FLAGS.has(flag)) return v;
+    const one = (x: unknown) => {
+      if (typeof x !== "string" || !x.trim().startsWith("{")) return x;
+      redacted.add(flag);
+      return `<inline JSON, ${x.length} bytes>`;
+    };
+    return Array.isArray(v) ? v.map(one) : one(v);
+  };
+  const expanded: Record<string, unknown> = {};
+  const sources: Record<string, string> = {};
+  const overridden: Record<string, unknown> = {};
+  for (const e of r.effective) {
+    expanded[e.flag] = mask(e.flag, e.value);
+    sources[e.flag] = e.source;
+    if (Object.hasOwn(r.profile.values, e.flag) && e.source !== `profile:${r.profile.name}`) {
+      overridden[e.flag] = mask(e.flag, r.profile.values[e.flag]);
+    }
+  }
+  const argv = r.argv.map((a) => {
+    const eq = a.indexOf("=");
+    if (eq === -1) return a;
+    const flag = a.slice(2, eq);
+    const masked = mask(flag, a.slice(eq + 1));
+    return `--${flag}=${String(masked)}`;
+  });
+  const envKeys = Object.keys(r.profile.env);
+  return {
+    name: r.profile.name,
+    expanded,
+    sources,
+    argv,
+    ...(Object.keys(overridden).length > 0 ? { overridden } : {}),
+    ...(envKeys.length > 0 ? { envKeys } : {}),
+    ...(redacted.size > 0 ? { redacted: [...redacted] } : {}),
+  };
+}
 
 /** A config value (already type-checked) in the shape parseArgs would return. */
 function toOptionValue(spec: OptionSpec, v: unknown): unknown {
@@ -362,8 +520,12 @@ export function validateConfig(file: LoadedFile, tables: SectionTables): void {
 /** Every problem in one file, as messages (empty = valid). */
 export function configProblems(file: LoadedFile, tables: SectionTables): string[] {
   const problems: string[] = [];
-  const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS];
+  const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS, PROFILES_KEY];
   for (const [section, body] of Object.entries(file.data)) {
+    if (section === PROFILES_KEY) {
+      problems.push(...profileProblems(file.path, body, tables));
+      continue;
+    }
     if (section === "$schema" || section === "stateDir") {
       if (typeof body !== "string" || body === "") {
         problems.push(`config ${file.path}: '${section}' expects a non-empty string, got ${typeName(body)}`);
@@ -402,6 +564,61 @@ export function configProblems(file: LoadedFile, tables: SectionTables): string[
   return problems;
 }
 
+/** camelCase key -> long flag for a profile body: the `run` section's keys,
+ *  minus `profile` itself (a profile cannot select another profile). */
+export function profileKeys(tables: Pick<SectionTables, "run">): Map<string, string> {
+  const keys = sectionKeys(tables[PROFILE_SECTION]);
+  keys.delete(flagToKey(PROFILE_FLAG));
+  return keys;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** Problems in the top-level `profiles` object of one file. */
+function profileProblems(file: string, body: unknown, tables: SectionTables): string[] {
+  const problems: string[] = [];
+  if (!isObject(body)) return [`config ${file}: '${PROFILES_KEY}' must be an object of named profiles, got ${typeName(body)}`];
+  const keys = profileKeys(tables);
+  for (const [name, prof] of Object.entries(body)) {
+    const at = `${PROFILES_KEY}.${name}`;
+    if (!PROFILE_NAME_RE.test(name)) {
+      problems.push(`config ${file}: profile name '${name}' is invalid (letters, digits, '_' and '-'; no dots)`);
+      continue;
+    }
+    if (!isObject(prof)) {
+      problems.push(`config ${file}: profile '${name}' (${at}) must be an object, got ${typeName(prof)}`);
+      continue;
+    }
+    for (const [key, value] of Object.entries(prof)) {
+      if (key === "env") {
+        if (!isObject(value)) {
+          problems.push(`config ${file}: profile '${name}' key 'env' (${at}.env) expects an object of env var names to strings, got ${typeName(value)}`);
+          continue;
+        }
+        for (const [k, v] of Object.entries(value)) {
+          if (!ENV_NAME_RE.test(k)) problems.push(`config ${file}: profile '${name}' env key '${k}' (${at}.env.${k}) is not a valid env var name`);
+          else if (typeof v !== "string") problems.push(`config ${file}: profile '${name}' env '${k}' (${at}.env.${k}) expects a string, got ${typeName(v)}`);
+        }
+        continue;
+      }
+      const flag = keys.get(key);
+      if (flag === undefined) {
+        const why = key === flagToKey(PROFILE_FLAG) ? " (a profile cannot select another profile)" : suggest(key, [...keys.keys(), "env"]);
+        problems.push(
+          `config ${file}: profile '${name}' has unknown key '${key}' (${at}.${key})${why}; ` +
+            `keys mirror \`ach run\` long flags in camelCase, plus 'env'`,
+        );
+        continue;
+      }
+      const problem = valueProblem(tables[PROFILE_SECTION][flag]!, value);
+      if (problem !== undefined) {
+        problems.push(`config ${file}: profile '${name}' key '${key}' (${at}.${key}, flag --${flag}) expects ${problem}, got ${typeName(value)}`);
+      }
+    }
+  }
+  return problems;
+}
+
 // ---------------------------------------------------------------- resolution
 
 export interface FileValue {
@@ -434,6 +651,75 @@ export function mergeFiles(files: LoadedFile[], tables: SectionTables): Map<stri
   return out;
 }
 
+/** One profile merged across the files: per key, the later file wins (the
+ *  same rule as the sections), so a project file can tweak a user profile. */
+export interface MergedProfile {
+  flags: Map<string, FileValue>;
+  env: Map<string, FileValue>;
+  files: string[];
+}
+
+export function mergeProfiles(files: LoadedFile[], tables: SectionTables): Map<string, MergedProfile> {
+  const out = new Map<string, MergedProfile>();
+  const keys = profileKeys(tables);
+  for (const f of files) {
+    const body = f.data[PROFILES_KEY];
+    if (!isObject(body)) continue;
+    for (const [name, prof] of Object.entries(body)) {
+      if (!PROFILE_NAME_RE.test(name) || !isObject(prof)) continue;
+      const m: MergedProfile = out.get(name) ?? { flags: new Map(), env: new Map(), files: [] };
+      if (!m.files.includes(f.path)) m.files.push(f.path);
+      for (const [key, value] of Object.entries(prof)) {
+        if (key === "env") {
+          if (isObject(value)) for (const [k, v] of Object.entries(value)) if (typeof v === "string") m.env.set(k, { value: v, file: f.path });
+          continue;
+        }
+        const flag = keys.get(key);
+        if (flag === undefined) continue;
+        m.flags.set(flag, { value: PATH_FLAGS.has(flag) ? resolvePathValue(value, f.path) : value, file: f.path });
+      }
+      out.set(name, m);
+    }
+  }
+  return out;
+}
+
+/** The named profile, or a USAGE error listing the ones that exist. */
+export function pickProfile(name: string, profiles: Map<string, MergedProfile>): MergedProfile {
+  if (name === "") throw new HarnessError("--profile requires a profile name", "USAGE");
+  const p = profiles.get(name);
+  if (p !== undefined) return p;
+  const names = [...profiles.keys()].sort();
+  throw new HarnessError(
+    names.length > 0
+      ? `unknown profile '${name}'${suggest(name, names)} (available: ${names.join(", ")})`
+      : `unknown profile '${name}' (no profiles are defined; add one with \`ach config --set profiles.${PROFILE_NAME_RE.test(name) ? name : "<name>"}.agent <agent>\`, see docs/CONFIG.md)`,
+    "USAGE",
+  );
+}
+
+/**
+ * A profile's flags as `ach run` argv (`--flag=value`, `--flag` for on/off),
+ * in the run option table's order. `--flag=value` keeps a value that starts
+ * with `-` a value. This is what `ach profiles list` prints, and what the
+ * save-time adapter check parses.
+ */
+export function profileArgv(flags: Map<string, FileValue> | Map<string, unknown>, table: OptionTable): string[] {
+  const argv: string[] = [];
+  for (const [flag, spec] of Object.entries(table)) {
+    if (!flags.has(flag)) continue;
+    const raw = flags.get(flag);
+    const value = raw !== null && typeof raw === "object" && !Array.isArray(raw) && "file" in raw ? (raw as FileValue).value : raw;
+    const v = toOptionValue(spec, value);
+    if (spec.type === "boolean") {
+      if (v === true) argv.push(`--${flag}`);
+      continue;
+    }
+    for (const one of Array.isArray(v) ? v : [v]) argv.push(`--${flag}=${String(one)}`);
+  }
+  return argv;
+}
+
 /** Path-typed values (string or array of strings) resolve like `stateDir`;
  *  anything else is left for validation to report. */
 function resolvePathValue(v: unknown, file: string): unknown {
@@ -455,22 +741,30 @@ function resolveStateDir(raw: string, file: string): string {
  */
 export async function applyConfig(cmd: string, explicit: string | undefined, commands: SectionCommands): Promise<void> {
   armed = null;
+  lastResolution = null;
   const files = loadConfigFiles({ explicit });
-  if (files.length === 0) return;
+  // `run` is armed even with no file, so `--profile <name>` there is an
+  // "unknown profile" error rather than silently ignored.
+  if (files.length === 0) {
+    if (cmd === PROFILE_SECTION) armed = { mode: "apply", section: PROFILE_SECTION, entries: [], profiles: new Map() };
+    return;
+  }
   const tables = await captureTables(commands);
   for (const f of files) validateConfig(f, tables);
   const merged = mergeFiles(files, tables);
   const sd = merged.get("stateDir");
   if (sd !== undefined && !isSet(process.env[STATE_DIR_ENV])) process.env[STATE_DIR_ENV] = sd.value as string;
   if (!(CONFIG_SECTIONS as readonly string[]).includes(cmd)) return;
+  const section = cmd as ConfigSection;
   const prefix = `${cmd}.`;
   const entries = [...merged]
     .filter(([k]) => k.startsWith(prefix))
     .map(([k, v]) => {
       const flag = k.slice(prefix.length);
-      return { flag, value: v.value, mirror: envMirror(cmd, flag) };
+      return { flag, value: v.value, mirror: envMirror(cmd, flag), source: `file:${v.file}` };
     });
-  if (entries.length > 0) armed = { mode: "apply", entries };
+  const profiles = section === PROFILE_SECTION ? mergeProfiles(files, tables) : new Map<string, MergedProfile>();
+  if (entries.length > 0 || section === PROFILE_SECTION) armed = { mode: "apply", section, entries, profiles };
 }
 
 /** Peel a leading global `--config <path>` / `--config=<path>` off argv. */
@@ -510,6 +804,8 @@ export function resolveRows(opts: {
   env?: Env;
   sections?: readonly ConfigSection[];
   flags?: { section: ConfigSection; values: Record<string, unknown> };
+  /** #77: the selected profile, a layer between env and the file's `run`. */
+  profile?: { name: string; profile: MergedProfile };
 }): ResolvedRow[] {
   const env = opts.env ?? process.env;
   const rows: ResolvedRow[] = [];
@@ -523,8 +819,10 @@ export function resolveRows(opts: {
       const flagVals = opts.flags?.section === section ? opts.flags.values : undefined;
       const mirror = envMirror(section, flag);
       const fileVal = opts.merged.get(`${section}.${flag}`);
+      const profVal = section === PROFILE_SECTION ? opts.profile?.profile.flags.get(flag) : undefined;
       if (flagVals !== undefined && flagVals[flag] !== undefined) rows.push({ key, flag, value: flagVals[flag], source: "flag" });
       else if (mirror !== undefined && isSet(env[mirror])) rows.push({ key, flag, value: env[mirror], source: `env:${mirror}` });
+      else if (profVal !== undefined) rows.push({ key, flag, value: profVal.value, source: `profile:${opts.profile!.name}` });
       else if (fileVal !== undefined) rows.push({ key, flag, value: fileVal.value, source: `file:${fileVal.file}` });
       else rows.push({ key, flag, value: spec.default ?? null, source: "default" });
     }
@@ -559,6 +857,7 @@ function renderResolved(files: LoadedFile[], candidates: Array<{ path: string; k
 export function configZodSchema(tables: SectionTables) {
   const scalarFor = (spec: OptionSpec) => (spec.type === "boolean" ? z.boolean() : z.union([z.string(), z.number()]));
   const sections: Record<string, z.ZodType> = {};
+  let profilesSchema: z.ZodType | undefined;
   for (const section of CONFIG_SECTIONS) {
     const shape: Record<string, z.ZodType> = {};
     for (const [flag, spec] of Object.entries(tables[section])) {
@@ -568,6 +867,22 @@ export function configZodSchema(tables: SectionTables) {
       shape[flagToKey(flag)] = t.optional().describe(`ach ${section} --${flag}${mirror ? ` (env ${mirror} wins over this)` : ""}`);
     }
     sections[section] = z.strictObject(shape).optional().describe(`defaults for \`ach ${section}\` flags`);
+    if (section === PROFILE_SECTION) {
+      const profShape: Record<string, z.ZodType> = {};
+      for (const [flag, spec] of Object.entries(tables[section])) {
+        if (flag === PROFILE_FLAG) continue;
+        const scalar = scalarFor(spec);
+        profShape[flagToKey(flag)] = (spec.multiple ? z.union([scalar, z.array(scalar)]) : scalar).optional().describe(`ach run --${flag}`);
+      }
+      profShape.env = z
+        .record(z.string().regex(ENV_NAME_RE), z.string())
+        .optional()
+        .describe("env vars set on the agent process only (plaintext file: no secrets; the RunRecord keeps the names, never the values)");
+      profilesSchema = z
+        .record(z.string().regex(PROFILE_NAME_RE), z.strictObject(profShape))
+        .optional()
+        .describe("named agent profiles: `ach run --profile <name>` expands one; keys are `run` keys plus `env`");
+    }
   }
   return z.strictObject({
     $schema: z.string().optional(),
@@ -577,6 +892,7 @@ export function configZodSchema(tables: SectionTables) {
       .optional()
       .describe(`state root for every command (env ${STATE_DIR_ENV} wins); relative to this file, ~ expands`),
     ...sections,
+    ...(profilesSchema !== undefined ? { [PROFILES_KEY]: profilesSchema } : {}),
   });
 }
 
@@ -652,24 +968,99 @@ function unsetKnownKey(dotted: string, tables: SectionTables): boolean {
   }
 }
 
-/** Delete `dotted` (`<top>` or `<section>.<key>`) from `doc` when it is
- *  there; false when the file does not hold that path. */
+/** Delete `dotted` (`<top>`, `<section>.<key>`, `profiles.<name>.env.<K>`,
+ *  ...) from `doc` when it is there, dropping objects it leaves empty; false
+ *  when the file does not hold that path. */
 function deleteExistingPath(doc: Record<string, unknown>, dotted: string): boolean {
-  const dot = dotted.indexOf(".");
-  if (dot === -1) {
-    if (!Object.hasOwn(doc, dotted)) return false;
-    delete doc[dotted];
+  const [head, ...tail] = dotted.split(".");
+  if (!Object.hasOwn(doc, head!)) return false;
+  if (tail.length === 0) {
+    delete doc[head!];
     return true;
   }
-  const section = dotted.slice(0, dot);
-  const key = dotted.slice(dot + 1);
-  const body = doc[section];
-  if (body === null || typeof body !== "object" || Array.isArray(body) || !Object.hasOwn(body, key)) return false;
-  const copy = { ...(body as Record<string, unknown>) };
-  delete copy[key];
-  if (Object.keys(copy).length === 0) delete doc[section];
-  else doc[section] = copy;
+  const body = doc[head!];
+  if (!isObject(body)) return false;
+  const copy = { ...body };
+  if (!deleteExistingPath(copy, tail.join("."))) return false;
+  if (Object.keys(copy).length === 0) delete doc[head!];
+  else doc[head!] = copy;
   return true;
+}
+
+/** A `profiles.<name>[.<key>|.env[.<NAME>]]` path, checked against the run table. */
+interface ProfilePath {
+  name: string;
+  /** camelCase key and its flag (a flag key). */
+  key?: string;
+  flag?: string;
+  spec?: OptionSpec;
+  /** `env` map (envKey undefined) or one env var. */
+  env?: boolean;
+  envKey?: string;
+}
+
+function parseProfilePath(dotted: string, tables: SectionTables): ProfilePath {
+  const seg = dotted.split(".");
+  const bad = (why: string) =>
+    new HarnessError(`config: '${dotted}': ${why} (expected ${PROFILES_KEY}.<name>.<key> or ${PROFILES_KEY}.<name>.env.<NAME>)`, "CONFIG");
+  const name = seg[1];
+  if (name === undefined || name === "") throw bad("missing the profile name");
+  if (!PROFILE_NAME_RE.test(name)) throw bad(`profile name '${name}' is invalid (letters, digits, '_' and '-'; no dots)`);
+  if (seg.length === 2) return { name };
+  if (seg[2] === "env") {
+    if (seg.length === 3) return { name, env: true };
+    if (seg.length > 4 || !ENV_NAME_RE.test(seg[3]!)) throw bad(`'${seg.slice(3).join(".")}' is not a valid env var name`);
+    return { name, env: true, envKey: seg[3]! };
+  }
+  if (seg.length > 3) throw bad("too many parts");
+  const key = seg[2]!;
+  const keys = profileKeys(tables);
+  const flag = keys.get(key);
+  if (flag === undefined) {
+    const why = key === flagToKey(PROFILE_FLAG) ? " (a profile cannot select another profile)" : suggest(key, [...keys.keys(), "env"]);
+    throw new HarnessError(`config: profile '${name}' has unknown key '${key}' (${dotted})${why}; keys mirror \`ach run\` long flags in camelCase, plus 'env'`, "CONFIG");
+  }
+  return { name, key, flag, spec: tables[PROFILE_SECTION][flag] };
+}
+
+/** Apply one `--set` / `--unset` of a profiles path to `doc`. */
+function editProfile(doc: Record<string, unknown>, dotted: string, raw: string | undefined, tables: SectionTables): string {
+  const pp = parseProfilePath(dotted, tables);
+  if (raw === undefined) {
+    deleteExistingPath(doc, dotted);
+    return pp.name;
+  }
+  if (pp.key === undefined && pp.envKey === undefined) {
+    throw new HarnessError(
+      `config --set ${dotted}: set one key at a time (${PROFILES_KEY}.${pp.name}.<key> <value> or ${PROFILES_KEY}.${pp.name}.env.<NAME> <value>)`,
+      "USAGE",
+    );
+  }
+  const all = isObject(doc[PROFILES_KEY]) ? { ...(doc[PROFILES_KEY] as Record<string, unknown>) } : {};
+  const prof = isObject(all[pp.name]) ? { ...(all[pp.name] as Record<string, unknown>) } : {};
+  if (pp.envKey !== undefined) {
+    const env = isObject(prof.env) ? { ...prof.env } : {};
+    env[pp.envKey] = raw;
+    prof.env = env;
+  } else {
+    const value = coerceSetValue(pp.spec, pp.flag, raw, dotted);
+    const problem = valueProblem(pp.spec!, value);
+    if (problem !== undefined) throw new HarnessError(`config --set ${dotted}: expects ${problem}, got ${typeName(value)}`, "USAGE");
+    prof[pp.key!] = value;
+  }
+  all[pp.name] = prof;
+  doc[PROFILES_KEY] = all;
+  return pp.name;
+}
+
+/** Hooks `ach config` / `ach profiles` get from ach.ts (which config.ts cannot import). */
+export interface ConfigHooks {
+  /**
+   * Save-time adapter check (#77): build the RunSpec `ach run <argv>` would
+   * build and run the agent's validateProfile on it, throwing the same
+   * error the driver throws at run time.
+   */
+  checkProfile?: (argv: string[], table: OptionTable) => Promise<void>;
 }
 
 export const CONFIG_USAGE = `  ach config --show [<section>] [--json] [-- <section flags>]
@@ -681,10 +1072,13 @@ export const CONFIG_USAGE = `  ach config --show [<section>] [--json] [-- <secti
                 (key is stateDir or <run|stats|web|serve>.<camelCaseFlag>, e.g.
                  run.budgetUsd; writes ./.ach/config.json, or the --config file;
                  --dry-run prints the resolved config after the change, writes nothing)
+                (also profiles.<name>.<key> and profiles.<name>.env.<NAME>: agent
+                 profiles for \`ach run --profile <name>\`; a profile the agent's
+                 validation rejects is not saved. <key>=<value> works too)
   ach config --schema
                 (prints the JSON schema published as docs/config.schema.json)`;
 
-export async function cmdConfig(rest: string[], explicit: string | undefined, commands: SectionCommands): Promise<number> {
+export async function cmdConfig(rest: string[], explicit: string | undefined, commands: SectionCommands, hooks: ConfigHooks = {}): Promise<number> {
   const dd = rest.indexOf("--");
   const own = dd === -1 ? rest : rest.slice(0, dd);
   const passFlags = dd === -1 ? undefined : rest.slice(dd + 1);
@@ -729,25 +1123,53 @@ export async function cmdConfig(rest: string[], explicit: string | undefined, co
         values: Object.fromEntries(Object.entries(parsed.values).filter(([k]) => given.has(k))),
       };
     }
-    const rows = resolveRows({ tables, merged: mergeFiles(files, tables), sections: section ? [section] : undefined, flags });
+    const merged = mergeFiles(files, tables);
+    // #77: `-- --profile <name>` (or the file's run.profile) adds the profile layer.
+    const fileProfile = merged.get(`${PROFILE_SECTION}.${PROFILE_FLAG}`);
+    const profName =
+      flags?.section === PROFILE_SECTION && typeof flags.values[PROFILE_FLAG] === "string"
+        ? (flags.values[PROFILE_FLAG] as string)
+        : fileProfile !== undefined && (section === undefined || section === PROFILE_SECTION)
+          ? String(fileProfile.value)
+          : undefined;
+    const profile = profName !== undefined ? { name: profName, profile: pickProfile(profName, mergeProfiles(files, tables)) } : undefined;
+    const rows = resolveRows({ tables, merged, sections: section ? [section] : undefined, flags, ...(profile ? { profile } : {}) });
     process.stdout.write(renderResolved(files, candidates, rows, v.json) + "\n");
     return 0;
   }
 
   // --set / --unset
   if (passFlags !== undefined) throw new HarnessError("config --set/--unset take no -- <flags>", "USAGE");
-  const dotted = (v.set ?? v.unset)!;
+  let dotted = (v.set ?? v.unset)!;
   const target = explicit !== undefined || isSet(process.env[CONFIG_ENV]) ? candidates[0]!.path : projectConfigPath();
   let raw: string | undefined;
   if (v.set !== undefined) {
-    if (args.positionals.length !== 1) throw new HarnessError(`config --set ${dotted} needs exactly one <value>`, "USAGE");
-    raw = args.positionals[0]!;
+    const eq = dotted.indexOf("=");
+    if (eq > 0 && args.positionals.length === 0) {
+      // `--set <key>=<value>`: no key contains '='.
+      raw = dotted.slice(eq + 1);
+      dotted = dotted.slice(0, eq);
+    } else {
+      if (args.positionals.length !== 1) throw new HarnessError(`config --set ${dotted} needs exactly one <value>`, "USAGE");
+      raw = args.positionals[0]!;
+    }
   } else if (args.positionals.length !== 0) {
     throw new HarnessError(`config --unset ${dotted} takes no value`, "USAGE");
   }
   const existing = files.find((f) => f.path === target) ?? readConfigFile(target, "project", true);
   const doc: Record<string, unknown> = existing ? structuredClone(existing.data) : { $schema: CONFIG_SCHEMA_URL };
-  if (raw === undefined && !unsetKnownKey(dotted, tables)) {
+  let editedProfile: string | undefined;
+  if (dotted === PROFILES_KEY || dotted.startsWith(`${PROFILES_KEY}.`)) {
+    if (dotted === PROFILES_KEY) {
+      if (raw !== undefined) throw new HarnessError(`config --set ${dotted}: set one key at a time (${PROFILES_KEY}.<name>.<key> <value>)`, "USAGE");
+      delete doc[PROFILES_KEY];
+    } else if (raw === undefined && deleteExistingPath(doc, dotted)) {
+      // --unset of a path the file holds, known key or not (like sections).
+      editedProfile = dotted.split(".")[1];
+    } else {
+      editedProfile = editProfile(doc, dotted, raw, tables);
+    }
+  } else if (raw === undefined && !unsetKnownKey(dotted, tables)) {
     // --unset accepts any key path the target file actually holds, known or
     // not (so a misspelled key can be removed); else the lookup error stands.
     if (!deleteExistingPath(doc, dotted)) lookupKey(dotted, tables);
@@ -775,6 +1197,19 @@ export async function cmdConfig(rest: string[], explicit: string | undefined, co
   const updated: LoadedFile = { path: target, kind, data: doc };
   const after = files.some((f) => f.path === target) ? files.map((f) => (f.path === target ? updated : f)) : [...files, updated];
   for (const f of after) for (const msg of configProblems(f, tables)) process.stderr.write(`config: warning: ${msg}\n`);
+  // #77: the edited profile, merged across the files as `ach run --profile`
+  // would see it, must pass the agent's own validation before it is saved.
+  if (editedProfile !== undefined && hooks.checkProfile !== undefined) {
+    const prof = mergeProfiles(after, tables).get(editedProfile);
+    if (prof !== undefined && prof.flags.has("agent")) {
+      try {
+        await hooks.checkProfile(profileArgv(prof.flags, tables[PROFILE_SECTION]), tables[PROFILE_SECTION]);
+      } catch (e) {
+        if (!(e instanceof HarnessError)) throw e;
+        throw new HarnessError(`config ${v.set !== undefined ? "--set" : "--unset"} ${dotted}: profile '${editedProfile}' not saved: ${e.message}`, e.code, EXIT_CODES.error);
+      }
+    }
+  }
   if (v["dry-run"]) {
     process.stderr.write(`config: dry run, ${target} not written\n`);
   } else {
@@ -785,5 +1220,51 @@ export async function cmdConfig(rest: string[], explicit: string | undefined, co
   const shownCandidates = candidates.some((c) => c.path === target) ? candidates : [...candidates, { path: target, kind }];
   const rows = resolveRows({ tables, merged: mergeFiles(after, tables) });
   process.stdout.write(renderResolved(after, shownCandidates, rows, v.json) + "\n");
+  return 0;
+}
+
+// ---------------------------------------------------------------- `ach profiles`
+
+export const PROFILES_USAGE = `  ach profiles list [--json]
+                (every agent profile in the config files with its flag expansion: what
+                 \`ach run --profile <name>\` adds to the command line; env values are
+                 not printed, only their names. Define one with
+                 \`ach config --set profiles.<name>.<key> <value>\`; docs/CONFIG.md)`;
+
+/** Quote one argv word for display (POSIX shell). */
+function shellWord(w: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, "'\\''")}'`;
+}
+
+export async function cmdProfiles(rest: string[], explicit: string | undefined, commands: SectionCommands): Promise<number> {
+  const args = nodeParseArgs({ args: rest, options: { json: { type: "boolean", default: false } }, allowPositionals: true });
+  const [sub = "list", ...extra] = args.positionals;
+  if (sub !== "list" || extra.length > 0) throw new HarnessError(`profiles: unknown subcommand '${[sub, ...extra].join(" ")}' (expected: list)`, "USAGE");
+  const tables = await captureTables(commands);
+  const files = loadConfigFiles({ explicit });
+  for (const f of files) validateConfig(f, tables);
+  const profiles = [...mergeProfiles(files, tables)].sort(([a], [b]) => a.localeCompare(b));
+  const rows = profiles.map(([name, p]) => ({
+    name,
+    flags: Object.fromEntries([...p.flags].map(([flag, fv]) => [flagToKey(flag), fv.value])),
+    argv: profileArgv(p.flags, tables[PROFILE_SECTION]),
+    envKeys: [...p.env.keys()],
+    files: p.files,
+  }));
+  if (args.values.json) {
+    process.stdout.write(JSON.stringify({ profiles: rows }, null, 2) + "\n");
+    return 0;
+  }
+  if (rows.length === 0) {
+    process.stdout.write("no profiles defined (add one: ach config --set profiles.<name>.agent <agent>; see docs/CONFIG.md)\n");
+    return 0;
+  }
+  const w = Math.max(...rows.map((r) => r.name.length));
+  const out: string[] = [];
+  for (const r of rows) {
+    out.push(`${r.name.padEnd(w)}  ach run ${r.argv.map(shellWord).join(" ")}`.trimEnd());
+    if (r.envKeys.length > 0) out.push(`${" ".repeat(w)}  env (agent process only): ${r.envKeys.join(", ")}`);
+  }
+  process.stdout.write(out.join("\n") + "\n");
   return 0;
 }

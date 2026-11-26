@@ -9,7 +9,7 @@ PRs), and the release follows the usual `chore(release): X` flow.
 
 Small pieces that mostly build on code that already exists.
 
-- [ ] #77 Agent profiles. Save a named setup and reuse it:
+- [x] #77 Agent profiles. Save a named setup and reuse it:
   `ach run --profile fast` instead of retyping `--agent claude --model sonnet --yolo`.
   Builds on the layered config file from 0.28 (#41, `docs/CONFIG.md`): add a
   `profiles.<name>` key and a `--profile` flag. Explicit flags still win.

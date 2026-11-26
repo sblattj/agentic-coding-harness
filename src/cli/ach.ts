@@ -9,11 +9,12 @@
 export * from "../index.ts";
 import fs from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import { parseArgs as nodeParseArgs } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 // #41: config-aware drop-in for node:util parseArgs (src/cli/config.ts).
-import { applyConfig, cmdConfig, CONFIG_USAGE, parseArgs, takeConfigFlag } from "./config.ts";
+import { applyConfig, cmdConfig, cmdProfiles, CONFIG_USAGE, PROFILES_USAGE, parseArgs, profileRecord, takeConfigFlag, takeResolution, type OptionTable } from "./config.ts";
 import { fileURLToPath } from "node:url";
 import { flushAndExit, trackStdioBackpressure } from "./stdio-flush.ts";
 import {
@@ -30,6 +31,7 @@ import {
   type KiroIdeConfig,
   type RunResult,
   type RunSpec,
+  type RunProfileInfo,
   type SandboxPolicy,
 } from "../core/types.ts";
 import { isEffortLevel } from "../core/effort.ts";
@@ -61,7 +63,8 @@ import {
 import { cmdRegrade } from "./regrade.ts";
 import { cmdTrial } from "./trial-matrix.ts";
 import { z } from "zod";
-import { createDriver, defaultAdapters } from "../core/driver.ts";
+import { checkAdapterProfile, createDriver, defaultAdapters } from "../core/driver.ts";
+import { parseRunSpec } from "../core/validate.ts";
 import { VERSION } from "../version.ts";
 import { stateDir, loadOffsets, saveOffsets, appendRecords, type StatRecord } from "../core/store.ts";
 import { AtifWriter } from "../emitters/atif.ts";
@@ -200,6 +203,10 @@ usage:
                             precedence flag > env > config file > default, see \`ach config\`
   ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cursor|null> [--model M] [--resume SID]
               [--budget-usd N] [--max-turns N] [--wall-ms MS] [--idle-ms MS] [--json] "<prompt>"
+              [--profile NAME]  (expand a named agent profile from the config file: its flags
+                           and env; precedence flag > env > profile > config run section >
+                           default; the RunRecord keeps profile.{name,expanded,argv}; see
+                           ach profiles list and docs/CONFIG.md "Agent profiles")
               [--pr N|auto]  (PR number stamped on the run record as pr + prSource; precedence
                            flag > AGENTIC_CODING_HARNESS_PR > branch name (482-slug, pr-482, issue-482);
                            'auto' also tries gh pr view; see ach stats --by pr)
@@ -587,6 +594,7 @@ ${QUEUE_USAGE}
   ach lane new <name> --goal "<objective>" [--agent A] [--model M] [--mcps a,b] [--cwd D] [--budget-usd N] [--brief TEXT]
   ach lane status [name] [--json] | stop <name> | approve <Ln> | reject <Ln> [--reason R]
 ${CONFIG_USAGE}
+${PROFILES_USAGE}
 
 env:
   AGENTIC_CODING_HARNESS_CONFIG      config file path (same as --config; replaces the default search)
@@ -759,11 +767,94 @@ function parseRunPr(raw: string): number | "auto" {
   }
 }
 
+/** The flag values `runSpecFromFlags` reads (the `ach run` option table's). */
+type RunSpecFlagValues = Parameters<typeof alertFlagsToBudget>[0] &
+  Parameters<typeof sandboxFromFlags>[0] &
+  Parameters<typeof kiroConfigFromFlags>[0] &
+  Parameters<typeof kiroIdeConfigFromFlags>[0] & {
+    model?: string;
+    effort?: string;
+    resume?: string;
+    pr?: string;
+    "budget-usd"?: string;
+    "max-turns"?: string;
+    "wall-ms"?: string;
+    "idle-ms"?: string;
+  };
+
+/**
+ * The RunSpec `ach run` builds from its parsed flags, before any agent
+ * launches: budget caps (with their env defaults), alerts, extra args in
+ * command-line order, sandbox policy and the per-agent typed config. Shared
+ * with the save-time profile check (#77, checkRunProfile) so a profile is
+ * validated against exactly the spec a run would get.
+ */
+function runSpecFromFlags(
+  agent: string,
+  values: RunSpecFlagValues,
+  tokens: Parameters<typeof orderedExtraArgs>[0],
+  prompt: string,
+  variant?: string,
+): { spec: RunSpec; budget: { usd?: number; maxTurns?: number; wallMs?: number; idleMs?: number }; sandbox: SandboxPolicy | undefined } {
+  const budget = {
+    usd: optNumWithEnv(values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
+    maxTurns: optIntWithEnv(values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
+    wallMs: optNumWithEnv(values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
+    idleMs: optNumWithEnv(values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
+  };
+  // Threshold alerts (#20): parsed with the other budget flags, before launch.
+  const alertBudget = alertFlagsToBudget(values, budget);
+  // #104: `--extra-args` is repeatable; each occurrence splits on spaces
+  // (backwards compatibility). `--extra-arg` is one verbatim token. Both
+  // accumulate in command-line order.
+  const extraArgs = orderedExtraArgs(tokens);
+  // #13: sandbox flags → the SandboxPolicy adapters already consume.
+  const sandbox = sandboxFromFlags(values);
+  const spec: RunSpec = {
+    prompt,
+    model: values.model,
+    ...(values.effort !== undefined ? { effort: parseEffortFlag(values.effort) } : {}),
+    resume: values.resume,
+    ...(values.pr !== undefined ? { pr: parseRunPr(values.pr) } : {}),
+    budget: { ...budget, ...alertBudget },
+    ...(extraArgs !== undefined ? { extraArgs } : {}),
+    ...(sandbox !== undefined ? { sandbox } : {}),
+    ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(values) } : {}),
+    ...(agent === "kiro-ide" ? { kiroIde: kiroIdeConfigFromFlags(values) } : {}),
+    ...(variant !== undefined ? { variant } : {}),
+  };
+  return { spec, budget, sandbox };
+}
+
+/**
+ * Save-time check of an agent profile (#77, `ach config --set profiles.*`):
+ * parse the profile's argv with the `ach run` option table, build the spec a
+ * run would build (placeholder prompt) and run the agent's validateProfile
+ * through the driver's own checkAdapterProfile, so an illegal combination is
+ * rejected with the message a run would print. Agents without a built-in
+ * adapter (agents.d descriptors, custom templates) have no hook to call.
+ */
+async function checkRunProfile(argv: string[], table: OptionTable): Promise<void> {
+  const parsed = nodeParseArgs({ args: argv, options: table as never, allowPositionals: true, tokens: true });
+  const values = parsed.values as Record<string, unknown>;
+  const agent = typeof values.agent === "string" ? values.agent : undefined;
+  if (agent === undefined) return;
+  const adapter = (await defaultAdapters())[agent];
+  if (adapter === undefined) return;
+  const { spec } = runSpecFromFlags(agent, values as RunSpecFlagValues, parsed.tokens, "(profile check)");
+  // Model pinning is not checked here: a profile may leave --model to the command line.
+  const valid = parseRunSpec(agent, spec.model === undefined ? { ...spec, model: "profile-check" } : spec);
+  if (spec.model === undefined) delete valid.model;
+  checkAdapterProfile(agent, adapter, valid);
+}
+
 async function cmdRun(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
     options: {
       agent: { type: "string" },
+      // #77: a named agent profile from the config file (docs/CONFIG.md).
+      profile: { type: "string" },
       model: { type: "string" },
       // #54: portable reasoning effort, mapped per agent (src/core/effort.ts).
       effort: { type: "string" },
@@ -831,6 +922,10 @@ async function cmdRun(rest: string[]): Promise<number> {
     allowPositionals: true,
     tokens: true,
   });
+  // #77: the profile the choke point expanded, recorded on the RunRecord.
+  const resolution = takeResolution();
+  const profileInfo = resolution !== null ? profileRecord(resolution) : undefined;
+  const profileEnv = resolution?.profile !== undefined && Object.keys(resolution.profile.env).length > 0 ? resolution.profile.env : undefined;
   const exitMode = parseExitCodesMode(args.values["exit-codes"]);
   const trialFlags = parseTrialFlags(args.values);
   const interactive = parseInteractiveFlags(args.values, trialFlags);
@@ -891,21 +986,10 @@ async function cmdRun(rest: string[]): Promise<number> {
     registry: { stateDir: stateDir() },
   });
 
-  const budget = {
-    usd: optNumWithEnv(args.values["budget-usd"], "--budget-usd", "AGENTIC_CODING_HARNESS_BUDGET_USD"),
-    maxTurns: optIntWithEnv(args.values["max-turns"], "--max-turns", "AGENTIC_CODING_HARNESS_MAX_TURNS"),
-    wallMs: optNumWithEnv(args.values["wall-ms"], "--wall-ms", "AGENTIC_CODING_HARNESS_WALL_MS"),
-    idleMs: optNumWithEnv(args.values["idle-ms"], "--idle-ms", "AGENTIC_CODING_HARNESS_IDLE_MS"),
-  };
-  // Threshold alerts (#20): parsed with the other budget flags, before launch.
-  const alertBudget = alertFlagsToBudget(args.values, budget);
-  // #104: `--extra-args` is repeatable; each occurrence splits on spaces
-  // (backwards compatibility). `--extra-arg` is one verbatim token. Both
-  // accumulate in command-line order.
-  const extraArgs = orderedExtraArgs(args.tokens);
-  // #13: sandbox flags → the SandboxPolicy adapters already consume. Warn once
-  // per field the chosen agent has no flag for, and print the resolved policy.
-  const sandbox = sandboxFromFlags(args.values);
+  const built = runSpecFromFlags(agent, args.values, args.tokens, prompt, trialFlags.labels.variant);
+  const { budget, sandbox } = built;
+  // #13: warn once per sandbox field the chosen agent has no flag for, and
+  // print the resolved policy.
   if (sandbox !== undefined) {
     for (const w of sandboxDropWarnings(agent, sandbox, { kiroToolsSet: args.values["kiro-tools"] !== undefined })) {
       process.stderr.write(`[warn] ${w}\n`);
@@ -914,20 +998,16 @@ async function cmdRun(rest: string[]): Promise<number> {
   }
   const evidenceDir = args.values["evidence-dir"];
   if (evidenceDir !== undefined && evidenceDir.trim() === "") throw new HarnessError("--evidence-dir needs a directory", "USAGE");
+  if (profileEnv !== undefined && ENV_IGNORING_AGENTS.has(agent)) {
+    process.stderr.write(`[warn] profile '${profileInfo!.name}' sets env (${Object.keys(profileEnv).join(", ")}), but agent '${agent}' starts no child process to pass it to; ignored\n`);
+  }
   const spec: RunSpec = {
-    prompt,
+    ...built.spec,
     // #195: an interactive run is keyed by runId before launch (live socket, .cast).
     ...(interactive !== null ? { runId: randomUUID() } : {}),
-    model: args.values.model,
-    ...(args.values.effort !== undefined ? { effort: parseEffortFlag(args.values.effort) } : {}),
-    resume: args.values.resume,
-    ...(args.values.pr !== undefined ? { pr: parseRunPr(args.values.pr) } : {}),
-    budget: { ...budget, ...alertBudget },
-    ...(extraArgs !== undefined ? { extraArgs } : {}),
-    ...(sandbox !== undefined ? { sandbox } : {}),
-    ...(agent === "kiro" ? { kiro: kiroConfigFromFlags(args.values) } : {}),
-    ...(agent === "kiro-ide" ? { kiroIde: kiroIdeConfigFromFlags(args.values) } : {}),
-    ...(trialFlags.labels.variant !== undefined ? { variant: trialFlags.labels.variant } : {}),
+    // #77: profile env goes to the agent process only, never into ach's own env.
+    ...(profileEnv !== undefined ? { env: profileEnv } : {}),
+    ...(profileInfo !== undefined ? { profile: profileInfo } : {}),
   };
   // #106: ancestor instruction files. Non-hermetic: warn BEFORE launch (the
   // driver records them on the RunRecord). Hermetic: announce the temp copy.
@@ -1009,10 +1089,11 @@ async function cmdRun(rest: string[]): Promise<number> {
       ...result,
       ...(outcome.verify !== undefined ? { verify: outcome.verify } : {}),
       ...(sandbox !== undefined ? { sandbox: describeSandbox(sandbox) } : {}),
+      ...(profileInfo !== undefined ? { profile: profileInfo } : {}),
     };
     process.stdout.write(JSON.stringify(out, null, 2) + "\n");
   } else {
-    process.stdout.write(runSummaryText(agent, result, args.values.model, outcome.verify) + "\n");
+    process.stdout.write(runSummaryText(agent, result, args.values.model, outcome.verify) + (profileInfo !== undefined ? `\n${formatProfileLine(profileInfo)}` : "") + "\n");
   }
   // A failed --verify checker is a task failure: exit 1 in both modes (the
   // ladder files task failure under 1). Otherwise the #31 ladder decides.
@@ -1080,6 +1161,15 @@ async function runRepeatCli(
   }
   // Most severe child code wins: 1 > 20 > 11 > 10 > 0 (docs/EXIT-CODES.md).
   return repeatExitCode(outcomes, { mode: exitMode, budget: opts.spec.budget, agent: opts.agent });
+}
+
+/** Agents that start no child process, so a profile's `env` cannot reach them. */
+const ENV_IGNORING_AGENTS: ReadonlySet<string> = new Set(["kiro-ide", "null"]);
+
+/** `profile    fast (budget-usd=0.2 from flag; profile had 0.5)` under the run summary. */
+function formatProfileLine(p: RunProfileInfo): string {
+  const over = Object.entries(p.overridden ?? {}).map(([flag, was]) => `${flag}=${String(p.expanded[flag])} from ${p.sources[flag]}; profile had ${String(was)}`);
+  return `profile    ${p.name}${over.length > 0 ? ` (${over.join(", ")})` : ""}`;
 }
 
 /** Validate the #29/#57 flags up front (before any agent launches). */
@@ -2333,7 +2423,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane", "listener", "update",
+  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane", "listener", "update", "profiles",
 ]);
 
 /** #98: commands that never get the automatic update line (stdio protocols and
@@ -2415,7 +2505,7 @@ async function main(argvIn: string[]): Promise<number> {
     return 0;
   }
   // #41: one choke point; `config` loads files itself (it may be fixing one).
-  if (cmd === "config") return cmdConfig(rest, config, CONFIG_COMMANDS);
+  if (cmd === "config") return cmdConfig(rest, config, CONFIG_COMMANDS, { checkProfile: checkRunProfile });
   if (cmd !== undefined && SUBCOMMANDS.has(cmd)) await applyConfig(cmd, config, CONFIG_COMMANDS);
   // #98: opt-in (env, default OFF) once-per-24h update line, stderr only.
   if (cmd !== undefined && SUBCOMMANDS.has(cmd) && !NO_AUTO_UPDATE_CHECK.has(cmd) && !rest.includes("--offline")) {
@@ -2483,6 +2573,8 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdQueue(rest);
     case "agents":
       return cmdAgents(rest);
+    case "profiles":
+      return cmdProfiles(rest, config, CONFIG_COMMANDS);
     case "help":
     case "--help":
     case "-h":

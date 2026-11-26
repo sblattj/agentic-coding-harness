@@ -10,7 +10,10 @@ have to be retyped on every command (#41).
   "run": { "budgetUsd": 5, "maxTurns": 40, "onBudget": "abort" },
   "stats": { "days": 7, "tz": "Europe/Berlin", "by": ["model"] },
   "web": { "port": 8399, "noOpen": true },
-  "serve": { "port": 8398 }
+  "serve": { "port": 8398 },
+  "profiles": {
+    "fast": { "agent": "claude", "model": "sonnet", "budgetUsd": 1, "maxTurns": 20 }
+  }
 }
 ```
 
@@ -43,6 +46,8 @@ is not an error. A missing `--config` / `AGENTIC_CODING_HARNESS_CONFIG` file is.
   - on/off flags take `true` / `false`;
   - repeatable flags (`run.extraArg`, `run.allowedTools`, `stats.by`, ...) take one value or an
     array.
+- `profiles`: named sets of `run` flags, selected with `ach run --profile <name>`; see
+  [Agent profiles](#agent-profiles).
 - `$schema`: optional, ignored by `ach`; point it at the published schema for editor validation
   and autocomplete.
 
@@ -53,7 +58,10 @@ test (regenerate with `ach config --schema > docs/config.schema.json`).
 
 ## Precedence
 
-**flag > `AGENTIC_CODING_HARNESS_*` env > config file > built-in default**, per key.
+**flag > `AGENTIC_CODING_HARNESS_*` env > config file > built-in default**, per key. For
+`ach run --profile <name>` the profile is a layer of its own:
+**flag > env > profile > the file's `run` section > built-in default** (see
+[Agent profiles](#agent-profiles)).
 
 | Example | Wins |
 |---|---|
@@ -82,7 +90,8 @@ leading `~` expands to your home dir. This covers `stateDir` and every path-type
 Two limits of flag parsing to know:
 
 - an on/off flag set to `true` in the file cannot be switched off from the command line (there is
-  no `--no-<flag>` form); remove the key or pass `--config` with another file;
+  no `--no-<flag>` form); remove the key, pass `--config` with another file, or select a profile
+  that sets it to `false`;
 - for a repeatable flag, any occurrence on the command line replaces the file's whole list.
 
 `--dir` and its long forms (`--state-dir`, `--transcript-dir`) count as one flag here: `--dir` on the
@@ -98,6 +107,10 @@ ach config --show [<section>] [--json] [-- <section flags>]
 ach config --set <key> <value> [--dry-run] [--json]
 ach config --unset <key> [--dry-run] [--json]
 ach config --schema
+ach config --set profiles.<name>.<key> <value>      # or profiles.<name>.<key>=<value>
+ach config --set profiles.<name>.env.<NAME> <value>
+ach config --unset profiles.<name>[.<key>|.env[.<NAME>]]
+ach profiles list [--json]
 ```
 
 - `--show` prints every key with its resolved value and where it came from: `flag`, `env:<NAME>`,
@@ -120,6 +133,104 @@ ach config --schema
 nothing is written). Other problems already in the file are printed as `config: warning: ...`
 lines instead of blocking the edit, so a file with a typo can still be repaired; `ach run` and
 the other commands still reject such a file until it is fixed.
+
+## Agent profiles
+
+A profile is a named set of `ach run` flags (#77), so a whole setup is one word:
+
+```json
+{
+  "profiles": {
+    "fast": { "agent": "claude", "model": "sonnet", "budgetUsd": 1, "maxTurns": 20 },
+    "kiro-dev": {
+      "agent": "kiro",
+      "kiroAgent": "dev",
+      "kiroTools": "all",
+      "extraArg": ["--trust-all-tools"],
+      "env": { "MY_TOOL_MODE": "ci" }
+    }
+  }
+}
+```
+
+```sh
+ach run --profile fast "fix the failing test"
+# same invocation as
+ach run --agent claude --model sonnet --budget-usd 1 --max-turns 20 "fix the failing test"
+```
+
+- **Keys** are exactly the `run` section's keys (every long flag of `ach run` in camelCase, taken
+  from its flag table, so a new run flag is a profile key with no profile-specific change), plus
+  `env`. Values are checked exactly like the `run` section. `profile` is not a profile key: a
+  profile cannot select another profile. Names match `[A-Za-z0-9_][A-Za-z0-9_-]*` (no dots, so
+  `profiles.<name>.<key>` stays unambiguous).
+- **Precedence**: flag > `AGENTIC_CODING_HARNESS_*` env > profile > the file's `run` section >
+  built-in default, per key. `ach run --profile fast --budget-usd 7` runs with 7 whatever the
+  profile says. A profile's on/off `false` means "not set", and it also hides a `true` for the
+  same key in the file's `run` section.
+- **Default profile**: `"run": { "profile": "fast" }` selects `fast` whenever `--profile` is not
+  given; `--profile other` on the command line wins.
+- **Merging**: the user and project files merge per profile key, like sections: the project
+  file's `profiles.fast.model` overrides the user file's, and keys only the user file sets still
+  apply. Relative paths (`evidenceDir`, `kiroIdeUserDataDir`) resolve against the file that set
+  them.
+- **Unknown name**: `ach run --profile nope` is a usage error, exit `1`, that lists the defined
+  names: `unknown profile 'nope' (available: fast, kiro-dev)`.
+- **`env`**: a map of `NAME: "value"` strings, set on the agent's child process only (not on `ach`
+  itself, and not on `--verify` commands). Adapters that do not spawn a child CLI (`kiro-ide`,
+  `null`) ignore it and `ach run` warns. The config file is plaintext and is often committed:
+  **do not put secrets in a profile's `env`** (or in an inline `mcpConfig` /
+  `kiroMcpServer` JSON). Export the secret in your shell or a secret manager instead; the agent
+  inherits it from `ach`'s own environment.
+
+### Saving: `ach config --set profiles.<name>.<key>`
+
+`--set profiles.fast.budgetUsd 1` (or `--set profiles.fast.budgetUsd=1`) creates the profile and
+the key; `--set profiles.fast.env.MY_TOOL_MODE ci` sets one env entry. `--unset` takes a key, an
+env entry, a profile's whole `env`, a whole profile or `profiles`, and drops what it leaves empty.
+
+The edited profile, merged across files, is checked as a whole before anything is written (also
+under `--dry-run`): once it has an `agent`, the same adapter check `ach run` does before launch
+runs on it, so an illegal flag combination is rejected at save time with the run-time message:
+
+```text
+harness: config --set profiles.k.kiroMcpServer: profile 'k' not saved: agent "kiro" profile validation failed: kiro.mcpServers.1.name: duplicate MCP server name 'a'
+```
+
+`ach config --show run -- --profile fast` previews a profiled run; keys from the profile show
+source `profile:fast`.
+
+### Listing: `ach profiles list`
+
+Prints each profile with the `ach run` flags it expands to, plus the names (never the values) of
+its env entries:
+
+```text
+fast      ach run --agent=claude --model=sonnet --budget-usd=1 --max-turns=20
+kiro-dev  ach run --agent=kiro --extra-arg=--trust-all-tools --kiro-agent=dev --kiro-tools=all
+          env (agent process only): MY_TOOL_MODE
+```
+
+`--json` prints `{ profiles: [{name, flags, argv, envKeys, files}] }`.
+
+### What the RunRecord keeps
+
+A run with a profile records `profile` on its RunRecord (`<stateDir>/runs/<runId>.json`):
+
+| Field | Holds |
+|---|---|
+| `name` | the profile name |
+| `expanded` | every effective `run` option, keyed by flag name, from any layer (flag, env, profile, file) |
+| `sources` | where each `expanded` value came from: `flag`, `env:<NAME>`, `profile:<name>`, `file:<path>` |
+| `argv` | `expanded` as `ach run` flags: `ach run <argv...> "<prompt>"` re-runs the same invocation with no profile and no config file |
+| `overridden` | profile values an explicit flag or env var beat, e.g. `{"budget-usd": 5}` when `--budget-usd 7` won |
+| `envKeys` | the profile's env names, never their values |
+| `redacted` | flags whose inline JSON value was replaced by `<inline JSON, N bytes>` (`mcp-config`, `kiro-mcp-server`; a file path is kept) |
+
+The prompt is not part of `profile` (the record keeps only a `promptPreview`), so pass it again.
+To re-run byte for byte, set the `envKeys` in the environment and pass the original inline MCP JSON
+if `redacted` lists one. Records written before profiles existed have no `profile` field and load
+as before.
 
 ## Errors
 

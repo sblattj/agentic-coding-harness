@@ -227,6 +227,28 @@ interface LaunchableAdapter {
  * so single-run adapters are never reused. Missing or incompatible adapters
  * are skipped with a warning, never fatal.
  */
+/**
+ * Adapter-owned profile validation (issue #9), the one place its verdict
+ * becomes an error: Driver.run() calls it before launch, and `ach config
+ * --set profiles.*` (#77) calls it at save time, so both reject an illegal
+ * flag combination with the same message. Returns the check (warnings
+ * included) when it passed, undefined when the adapter has no hook.
+ */
+export function checkAdapterProfile(
+  agentName: string,
+  adapter: Pick<AgentAdapter, 'validateProfile'>,
+  spec: RunSpec,
+): AdapterProfileCheck | undefined {
+  const profile = adapter.validateProfile?.(spec);
+  if (profile && !profile.ok) {
+    throw new HarnessError(
+      `agent "${agentName}" profile validation failed: ${profile.errors.map((e) => `${e.field}: ${e.message}`).join('; ')}`,
+      'INVALID_PROFILE',
+    );
+  }
+  return profile;
+}
+
 export async function defaultAdapters(): Promise<Record<string, AgentAdapter>> {
   const adapters: Record<string, AgentAdapter> = {};
   const makers: Record<string, () => LaunchableAdapter> = {
@@ -335,13 +357,7 @@ export function createDriver(options: DriverOptions): Driver {
       // --- adapter-owned profile validation (issue #9) ---
       // The adapter that owns the config validates it; the driver only
       // enforces the verdict. Warnings drain into the run's warnings.
-      const profile = adapter.validateProfile?.(parsed);
-      if (profile && !profile.ok) {
-        throw new HarnessError(
-          `agent "${agentName}" profile validation failed: ${profile.errors.map((e) => `${e.field}: ${e.message}`).join('; ')}`,
-          'INVALID_PROFILE',
-        );
-      }
+      const profile = checkAdapterProfile(agentName, adapter, parsed);
       const profileWarnings = profile?.warnings ?? [];
       // Caller-chosen run id (async job tools pass a uuid so the registry
       // record is addressable before spawn); generated otherwise.
@@ -657,6 +673,9 @@ export function createDriver(options: DriverOptions): Driver {
             // #204 lineage: desk engine per-turn runs (and lanes) name their parent run + desk.
             ...(typeof parsed.parentRunId === 'string' && parsed.parentRunId !== '' ? { parentRunId: parsed.parentRunId } : {}),
             ...(parsed.desk !== undefined ? { desk: { stack: parsed.desk.stack, name: parsed.desk.name, kind: parsed.desk.kind } } : {}),
+            // #77: the agent profile and full option set, on the first write so
+            // a run that fails or is aborted still carries it.
+            ...(parsed.profile !== undefined ? { profile: parsed.profile } : {}),
           };
           applyRunRecordExtras();
           writeRunRecordThrottled(true);

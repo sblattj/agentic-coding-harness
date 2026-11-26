@@ -421,6 +421,7 @@ estimates; quota output uses provider-reported values when available.
 ## CLI
 
 ```sh
+ach run [--profile NAME]   # a named set of these flags from the config file, see docs/CONFIG.md#agent-profiles
 ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cursor|null|custom|descriptor> [--model M] [--resume SID]
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
@@ -485,6 +486,9 @@ ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-f
             # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
 ach config --show [<section>] [--json]   # every resolved setting + its source (flag/env/file/default)
 ach config --set run.budgetUsd 5 [--dry-run]   # write ./.ach/config.json; ach --config <path> <cmd> to pick a file (docs/CONFIG.md)
+ach config --set profiles.fast.model sonnet     # a named set of run flags (docs/CONFIG.md#agent-profiles)
+ach run --profile fast "prompt"                 # expand it; explicit flags still win
+ach profiles list [--json]                      # every profile and the flags it expands to
 ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
             (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
              framing tolerated; same 10 tools and gateway flags as `ach serve`)
@@ -1235,7 +1239,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 ## Docs
 
 - [Cost modes and provenance](docs/PROVENANCE.md), [billing blocks and plan estimates](docs/USAGE-WINDOWS.md), [quota headroom](docs/QUOTA.md).
-- [Config file (`.ach/config.json`, `ach config`)](docs/CONFIG.md): per-command flag defaults, precedence flag > env > file > default, [JSON schema](docs/config.schema.json).
+- [Config file (`.ach/config.json`, `ach config`)](docs/CONFIG.md): per-command flag defaults, precedence flag > env > file > default, named agent profiles (`ach run --profile`), [JSON schema](docs/config.schema.json).
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).

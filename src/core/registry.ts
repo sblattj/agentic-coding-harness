@@ -14,6 +14,8 @@ import {
   KiroEffectiveSchema,
   UsageAvailabilitySchema,
   type EffortProvenance,
+  RunProfileInfoSchema,
+  type RunProfileInfo,
   type HermeticRunInfo,
   type WorktreeRunInfo,
   type KiroEffective,
@@ -111,6 +113,8 @@ export interface RunRecord {
   parentRunId?: string;
   /** Set on every desk/lane run (and the driver engine's per-turn child runs). */
   desk?: RunDeskInfo;
+  /** #77: the agent profile (`ach run --profile`) and the full option set the run used. */
+  profile?: RunProfileInfo;
 }
 
 /** Desk membership of a run (#204). */
@@ -257,6 +261,7 @@ export const RunRecordSchema = z.object({
   ancestorInstructions: z.array(z.string()).optional(),
   hermetic: HermeticRunInfoSchema.optional(),
   worktree: WorktreeRunInfoSchema.optional(),
+  profile: RunProfileInfoSchema.optional(),
 });
 
 export function registryDir(stateDir: string): string {

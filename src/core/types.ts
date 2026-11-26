@@ -1061,6 +1061,32 @@ export interface RunBudget {
   alertCooldownMs?: number;
 }
 
+/**
+ * Which agent profile (#77) produced a run, and the full option set it ran
+ * with, so the run can be repeated from the registry alone. Keys of
+ * `expanded`, `sources` and `overridden` are `ach run` long flag names.
+ * Options only: the prompt is not part of it (the registry keeps just
+ * `promptPreview`). Env override VALUES are never recorded, only `envKeys`;
+ * inline MCP JSON (which can carry tokens) is replaced by a size marker and
+ * its flag listed in `redacted`.
+ */
+export const RunProfileInfoSchema = z.object({
+  name: z.string().min(1),
+  /** Every option the run used, from any layer (flag, env, profile, file). */
+  expanded: z.record(z.string(), z.unknown()),
+  /** Per option: `flag`, `env:<NAME>`, `profile:<name>` or `file:<path>`. */
+  sources: z.record(z.string(), z.string()),
+  /** The same options as `ach run` argv (`--flag=value` / `--flag`), in command-line order. */
+  argv: z.array(z.string()),
+  /** Profile values that a flag or env var beat, with the profile's value. */
+  overridden: z.record(z.string(), z.unknown()).optional(),
+  /** Names of the env vars the profile set on the agent process (values not recorded). */
+  envKeys: z.array(z.string()).optional(),
+  /** Options whose value was replaced by a marker because it can hold secrets. */
+  redacted: z.array(z.string()).optional(),
+});
+export type RunProfileInfo = z.infer<typeof RunProfileInfoSchema>;
+
 /** Run request as accepted by Driver.run(). Extra keys pass through. */
 export interface RunSpec {
   prompt: string;
@@ -1090,6 +1116,8 @@ export interface RunSpec {
   parentRunId?: string;
   /** #204: persisted to RunRecord.desk. */
   desk?: { stack: string; name: string; kind: "desk" | "lane" | "turn" };
+  /** #77: persisted to RunRecord.profile (the agent profile the run used). */
+  profile?: RunProfileInfo;
   budget?: RunBudget;
   /**
    * Top-level alias for budget.wallMs (whole-run wall-clock cap, ms). Explicit
@@ -1204,6 +1232,7 @@ export const RunSpecSchema = z
     attachments: z.array(z.string()).optional(),
     attachmentsMaxBytes: z.number().int().positive().optional(),
     sandbox: SandboxPolicySchema.optional(),
+    profile: RunProfileInfoSchema.optional(),
   })
   .passthrough();
 

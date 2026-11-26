@@ -21,6 +21,13 @@
             "number"
           ]
         },
+        "profile": {
+          "description": "ach run --profile",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
         "model": {
           "description": "ach run --model",
           "type": [
@@ -920,6 +927,463 @@
         }
       },
       "additionalProperties": false
+    },
+    "profiles": {
+      "description": "named agent profiles: `ach run --profile <name>` expands one; keys are `run` keys plus `env`",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "description": "ach run --agent",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "model": {
+            "description": "ach run --model",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "effort": {
+            "description": "ach run --effort",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "resume": {
+            "description": "ach run --resume",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "pr": {
+            "description": "ach run --pr",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "budgetUsd": {
+            "description": "ach run --budget-usd",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "maxTurns": {
+            "description": "ach run --max-turns",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "wallMs": {
+            "description": "ach run --wall-ms",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "idleMs": {
+            "description": "ach run --idle-ms",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "budgetAlerts": {
+            "description": "ach run --budget-alerts",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "warnAt": {
+            "description": "ach run --warn-at",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "onBudget": {
+            "description": "ach run --on-budget",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "extraArgs": {
+            "description": "ach run --extra-args",
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                }
+              }
+            ]
+          },
+          "extraArg": {
+            "description": "ach run --extra-arg",
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                }
+              }
+            ]
+          },
+          "permissionMode": {
+            "description": "ach run --permission-mode",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "allowedTools": {
+            "description": "ach run --allowed-tools",
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                }
+              }
+            ]
+          },
+          "disallowedTools": {
+            "description": "ach run --disallowed-tools",
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                }
+              }
+            ]
+          },
+          "mcpConfig": {
+            "description": "ach run --mcp-config",
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                }
+              }
+            ]
+          },
+          "evidenceDir": {
+            "description": "ach run --evidence-dir",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroTransport": {
+            "description": "ach run --kiro-transport",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroAgent": {
+            "description": "ach run --kiro-agent",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroEngine": {
+            "description": "ach run --kiro-engine",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroEffort": {
+            "description": "ach run --kiro-effort",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroTools": {
+            "description": "ach run --kiro-tools",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroRequireMcpStartup": {
+            "description": "ach run --kiro-require-mcp-startup",
+            "type": "boolean"
+          },
+          "kiroStartupMs": {
+            "description": "ach run --kiro-startup-ms",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroRequireModelAck": {
+            "description": "ach run --kiro-require-model-ack",
+            "type": "boolean"
+          },
+          "claudeDefaultConfig": {
+            "description": "ach run --claude-default-config",
+            "type": "boolean"
+          },
+          "claudeNoBackgroundTasks": {
+            "description": "ach run --claude-no-background-tasks",
+            "type": "boolean"
+          },
+          "kiroMcpServer": {
+            "description": "ach run --kiro-mcp-server",
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                }
+              }
+            ]
+          },
+          "kiroIdeCdp": {
+            "description": "ach run --kiro-ide-cdp",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroIdePort": {
+            "description": "ach run --kiro-ide-port",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroIdeBin": {
+            "description": "ach run --kiro-ide-bin",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroIdeUserDataDir": {
+            "description": "ach run --kiro-ide-user-data-dir",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "kiroIdeNoNewSession": {
+            "description": "ach run --kiro-ide-no-new-session",
+            "type": "boolean"
+          },
+          "template": {
+            "description": "ach run --template",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "promptStdin": {
+            "description": "ach run --prompt-stdin",
+            "type": "boolean"
+          },
+          "templateShell": {
+            "description": "ach run --template-shell",
+            "type": "boolean"
+          },
+          "json": {
+            "description": "ach run --json",
+            "type": "boolean"
+          },
+          "exitCodes": {
+            "description": "ach run --exit-codes",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "verify": {
+            "description": "ach run --verify",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "verifyTimeoutMs": {
+            "description": "ach run --verify-timeout-ms",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "repeat": {
+            "description": "ach run --repeat",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "parallel": {
+            "description": "ach run --parallel",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "experiment": {
+            "description": "ach run --experiment",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "variant": {
+            "description": "ach run --variant",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "hermetic": {
+            "description": "ach run --hermetic",
+            "type": "boolean"
+          },
+          "isolate": {
+            "description": "ach run --isolate",
+            "type": "boolean"
+          },
+          "allowDirty": {
+            "description": "ach run --allow-dirty",
+            "type": "boolean"
+          },
+          "cleanup": {
+            "description": "ach run --cleanup",
+            "type": "boolean"
+          },
+          "isolateNodeModules": {
+            "description": "ach run --isolate-node-modules",
+            "type": "boolean"
+          },
+          "interactive": {
+            "description": "ach run --interactive",
+            "type": "boolean"
+          },
+          "tui": {
+            "description": "ach run --tui",
+            "type": "boolean"
+          },
+          "then": {
+            "description": "ach run --then",
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                }
+              }
+            ]
+          },
+          "pauseBetween": {
+            "description": "ach run --pause-between",
+            "type": "boolean"
+          },
+          "trustWorkspace": {
+            "description": "ach run --trust-workspace",
+            "type": "boolean"
+          },
+          "env": {
+            "description": "env vars set on the agent process only (plaintext file: no secrets; the RunRecord keeps the names, never the values)",
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false,
