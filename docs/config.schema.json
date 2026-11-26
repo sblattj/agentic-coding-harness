@@ -649,6 +649,17 @@
             "number"
           ]
         },
+        "spark": {
+          "description": "ach stats --spark",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "noSpark": {
+          "description": "ach stats --no-spark",
+          "type": "boolean"
+        },
         "origin": {
           "description": "ach stats --origin",
           "type": [
