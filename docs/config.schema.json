@@ -459,6 +459,72 @@
         "trustWorkspace": {
           "description": "ach run --trust-workspace",
           "type": "boolean"
+        },
+        "eventWebhook": {
+          "description": "ach run --event-webhook (env AGENTIC_CODING_HARNESS_EVENT_WEBHOOK wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "webhookEvents": {
+          "description": "ach run --webhook-events",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "webhookUsageMs": {
+          "description": "ach run --webhook-usage-ms",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "mask": {
+          "description": "ach run --mask",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "maskStyle": {
+          "description": "ach run --mask-style",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "maskEntropy": {
+          "description": "ach run --mask-entropy",
+          "type": "boolean"
+        },
+        "maskPattern": {
+          "description": "ach run --mask-pattern",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "privacy": {
+          "description": "ach run --privacy",
+          "type": [
+            "string",
+            "number"
+          ]
         }
       },
       "additionalProperties": false
@@ -1564,6 +1630,72 @@
             "description": "ach run --trust-workspace",
             "type": "boolean"
           },
+          "eventWebhook": {
+            "description": "ach run --event-webhook",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "webhookEvents": {
+            "description": "ach run --webhook-events",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "webhookUsageMs": {
+            "description": "ach run --webhook-usage-ms",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "mask": {
+            "description": "ach run --mask",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "maskStyle": {
+            "description": "ach run --mask-style",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "maskEntropy": {
+            "description": "ach run --mask-entropy",
+            "type": "boolean"
+          },
+          "maskPattern": {
+            "description": "ach run --mask-pattern",
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                }
+              }
+            ]
+          },
+          "privacy": {
+            "description": "ach run --privacy",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
           "env": {
             "description": "env vars set on the agent process only (plaintext file: no secrets; the RunRecord keeps the names, never the values)",
             "type": "object",
@@ -1666,6 +1798,15 @@
         },
         "export": {
           "description": "mask mode for ach export (beats mask.mode; built-in default 'none')",
+          "type": "string",
+          "enum": [
+            "none",
+            "preview",
+            "all"
+          ]
+        },
+        "webhook": {
+          "description": "mask mode for --event-webhook payloads (#64) (beats mask.mode; built-in default 'all')",
           "type": "string",
           "enum": [
             "none",

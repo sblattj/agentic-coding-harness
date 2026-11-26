@@ -64,6 +64,12 @@ export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * the same redaction `describeSandbox` applies to `--mcp-config`.
  */
 export const SECRET_JSON_FLAGS: ReadonlySet<string> = new Set(["mcp-config", "kiro-mcp-server"]);
+/**
+ * Flags whose value is a URL that is itself a credential (#64: a Slack
+ * incoming-webhook URL carries its token in the path). The RunRecord copy
+ * keeps the origin only.
+ */
+export const SECRET_URL_FLAGS: ReadonlySet<string> = new Set(["event-webhook"]);
 export const CONFIG_SCHEMA_URL =
   "https://raw.githubusercontent.com/sblattj/agentic-coding-harness/main/docs/config.schema.json";
 
@@ -113,6 +119,8 @@ export const ENV_MIRRORS: Readonly<Record<string, string>> = {
   "allow-extra-args": "AGENTIC_CODING_HARNESS_ALLOW_EXTRA_ARGS",
   // #72: the issue's name (short prefix), read by src/core/capture.ts.
   "capture-mode": CAPTURE_MODE_ENV,
+  // #64: the HTTP event tap URL (src/cli/event-webhook-cli.ts reads it).
+  "event-webhook": "AGENTIC_CODING_HARNESS_EVENT_WEBHOOK",
 };
 
 /**
@@ -357,6 +365,16 @@ export function profileRecord(r: Resolution): RunProfileInfo | undefined {
   if (r.profile === undefined) return undefined;
   const redacted = new Set<string>();
   const mask = (flag: string, v: unknown): unknown => {
+    if (SECRET_URL_FLAGS.has(flag) && typeof v === "string") {
+      redacted.add(flag);
+      let origin = "<invalid url>";
+      try {
+        origin = new URL(v).origin;
+      } catch {
+        // keep the placeholder
+      }
+      return `${origin}/<redacted>`;
+    }
     if (!SECRET_JSON_FLAGS.has(flag)) return v;
     const one = (x: unknown) => {
       if (typeof x !== "string" || !x.trim().startsWith("{")) return x;

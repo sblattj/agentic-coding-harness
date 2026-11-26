@@ -52,9 +52,9 @@ is not an error. A missing `--config` / `AGENTIC_CODING_HARNESS_CONFIG` file is.
 - `mask`: secret masking before export (#71). `mode` (`none` | `preview` | `all`, the mode for
   every sink), `style` (`replace` | `partial`), `entropy` (`true` turns on the high-entropy
   detector), `patterns` (extra regexes), and one mode per sink to override `mode`: `atif`, `otel`,
-  `langfuse`, `sft`, `report`, `scrub`, `export`. Precedence is `--mask` > env `AGENTIC_CODING_HARNESS_MASK` >
-  `mask.<sink>` > `mask.mode` > the sink's built-in default (`all` for the outbound `otel` and
-  `langfuse`, `none` for the rest). `ach config --set mask.otel none` writes one key (here, opting
+  `langfuse`, `sft`, `report`, `scrub`, `export`, `webhook`. Precedence is `--mask` > env `AGENTIC_CODING_HARNESS_MASK` >
+  `mask.<sink>` > `mask.mode` > the sink's built-in default (`all` for the outbound `otel`,
+  `langfuse` and `webhook`, `none` for the rest). `ach config --set mask.otel none` writes one key (here, opting
   otel out of the outbound default). `mask.privacy` (`off` | `redact` | `anon`, #46) sets the privacy mode for every
   export and report; precedence is `--privacy` > env `AGENTIC_CODING_HARNESS_PRIVACY` >
   `mask.privacy` > the built-in default (`off`). See [MASKING.md](MASKING.md) and its
@@ -90,7 +90,8 @@ The env layer applies to the flags that already have an env default: `--budget-u
 `--wall-ms`, `--idle-ms`, `--budget-alerts`, `--warn-at` (`_WARN_THRESHOLDS`), `--tz`, `--plan` and
 `--plan-window-*`, `--cost-mode`, `--project-aliases`, `--token` (`_HTTP_TOKEN`), `--source*`,
 `--gateway`, `--root`, `--max-jobs`, `--max-output-bytes`, `--allow-extra-args`,
-`--claude-default-config`, `--claude-no-background-tasks` and `--capture-mode`
+`--claude-default-config`, `--claude-no-background-tasks`, `--event-webhook`
+(`_EVENT_WEBHOOK`, docs/EVENT-WEBHOOK.md) and `--capture-mode`
 (`ACH_CAPTURE_MODE`, the one mirror without the long prefix); the full map is `ENV_MIRRORS` in
 `src/cli/config.ts`. Any other key goes straight from the file to the flag. `stateDir` follows the
 same rule against `AGENTIC_CODING_HARNESS_STATE_DIR`, and so do `web.stateDir` / `web.dir` (the

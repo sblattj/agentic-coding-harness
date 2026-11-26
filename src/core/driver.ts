@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeAuto } from './normalize.js';
 import { createPricer, isVendorMetered, pricedSources, sortModelCosts, type Pricer } from './pricing.js';
 import { notifyRunEnd, type NotifyExec } from './notify.ts';
+import { sumWebhookTokens, type EventWebhook } from './event-webhook.ts';
 import { writeRunRecord, type RunRecord } from './registry.ts';
 import { RunArtifacts, exitStatusToRunStatus, type RunInvocation } from './run-artifacts.ts';
 import { ChainWriter, canonicalTotals } from './hash-chain.ts';
@@ -169,6 +170,14 @@ export interface DriverOptions {
    * tests can inject env/platform/exec. Absent = real process.env + OS tools.
    */
   notify?: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; exec?: NotifyExec };
+  /**
+   * HTTP event tap (#64, src/core/event-webhook.ts): run start, exit, budget
+   * alerts and a periodic usage summary are queued to it (never blocking the
+   * event stream) and flushed, bounded by its flushMs, before run() settles.
+   * Fail open: a webhook failure never changes RunResult, the exit status or
+   * any artifact. Absent = nothing is posted.
+   */
+  webhook?: EventWebhook;
   /**
    * Workspace root for confinement (issue #9). Used only when
    * confineToWorkspace is true; defaults to process.cwd() at run time.
@@ -378,6 +387,24 @@ export function createDriver(options: DriverOptions): Driver {
       // Caller-chosen run id (async job tools pass a uuid so the registry
       // record is addressable before spawn); generated otherwise.
       const runId = typeof spec.runId === 'string' && spec.runId ? spec.runId : randomUUID();
+      // --- HTTP event tap (#64) --- every call is fail-open (post never throws).
+      const webhook = options.webhook;
+      const postWebhook = (type: 'start' | 'exit' | 'budget' | 'usage', payload: () => Record<string, unknown>): void => {
+        if (webhook === undefined || !webhook.wants(type)) return;
+        try {
+          webhook.post(runId, type, payload());
+        } catch {
+          // fail open
+        }
+      };
+      const flushWebhook = async (): Promise<void> => {
+        if (webhook === undefined) return;
+        try {
+          await webhook.flush(runId);
+        } catch {
+          // fail open
+        }
+      };
       // --- content-capture tier (#72) ---
       // Resolved once, before anything is written: every sink below (raw
       // transcript, RunRecord, outputDir, RunResult, onEvent) records only
@@ -510,6 +537,19 @@ export function createDriver(options: DriverOptions): Driver {
         const tierSpec: RunSpec = captureFull ? launchSpec : { ...launchSpec, captureMode: capture.mode };
         const handle = await adapter.launch(onOutput ? { ...tierSpec, onOutput } : tierSpec);
         const sessionId = handle.sessionId;
+        // #64: metadata only (never the prompt): who runs, on what, in which trace.
+        postWebhook('start', () => ({
+          agent: agentName,
+          ...(sessionId ? { sessionId } : {}),
+          ...(parsed.model !== undefined ? { model: parsed.model } : {}),
+          startedAt: new Date(start).toISOString(),
+          captureMode: capture.mode,
+          ...(budgetUsd !== undefined || maxTurns !== undefined || wallMs !== undefined
+            ? { budget: { ...(budgetUsd !== undefined ? { usd: budgetUsd } : {}), ...(maxTurns !== undefined ? { maxTurns } : {}), ...(wallMs !== undefined ? { wallMs } : {}) } }
+            : {}),
+          ...(typeof parsed.parentRunId === 'string' && parsed.parentRunId !== '' ? { parentRunId: parsed.parentRunId } : {}),
+          trace: { traceId: runTrace.traceId, spanId: runTrace.spanId },
+        }));
         // Cancellation hook for driver.abort(runId) until the run settles.
         activeRuns.set(runId, () => {
           void Promise.resolve(handle.abort()).catch(() => {});
@@ -864,12 +904,37 @@ export function createDriver(options: DriverOptions): Driver {
           writeTranscript(alertEvent);
           writeArtifactEvent(alertEvent);
           onEvent?.(shareable(alertEvent));
+          postWebhook('budget', () => ({
+            agent: agentName,
+            family: a.family,
+            metric: a.metric,
+            threshold: a.threshold,
+            value: a.value,
+            limit: a.limit,
+            description: alertEvent.data,
+          }));
           if (rec) {
             (rec.alerts ??= []).push({ ...a });
             rec.lastEvent = `budget.alert ${alertEvent.data}`;
             writeRunRecordThrottled(true);
           }
         };
+
+        // #64: the periodic usage summary, time-clocked (never per usage
+        // record, so a chatty stream posts no more often than the interval).
+        const webhookUsage = (): Record<string, unknown> => ({
+          agent: agentName,
+          ...(handle.sessionId ? { sessionId: handle.sessionId } : {}),
+          elapsedMs: Date.now() - start,
+          turns: steps,
+          costUsd: cumulativeCost,
+          tokens: sumWebhookTokens(tokens),
+        });
+        let webhookUsageTimer: ReturnType<typeof setInterval> | null = null;
+        if (webhook !== undefined && webhook.wants('usage') && webhook.usageIntervalMs > 0) {
+          webhookUsageTimer = setInterval(() => postWebhook('usage', webhookUsage), webhook.usageIntervalMs);
+          webhookUsageTimer.unref?.();
+        }
 
         try {
           for await (const event of handle.attach()) {
@@ -1023,6 +1088,8 @@ export function createDriver(options: DriverOptions): Driver {
           // final record write follows below.
           if (registryKeepalive !== null) clearInterval(registryKeepalive);
           registryKeepalive = null;
+          if (webhookUsageTimer !== null) clearInterval(webhookUsageTimer);
+          webhookUsageTimer = null;
           activeRuns.delete(runId);
         }
 
@@ -1276,6 +1343,27 @@ export function createDriver(options: DriverOptions): Driver {
         // Run lifecycle notification (#63): fired only here, after the RunRecord
         // (finalizeRunRecord) and status.json are durable. Metadata only.
         notifyRunEnd({ runId, agent: agentName, ...(captureFull ? { prompt: parsed.prompt } : {}), exitStatus, costUsd: cumulativeCost }, options.notify);
+        // #64: exit event with the full verdict and cost summary, built from the
+        // settled RunResult; then a bounded flush. Nothing below touches `result`.
+        postWebhook('exit', () => ({
+          agent: agentName,
+          ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+          exitStatus,
+          ...(unavailableReason !== null ? { unavailableReason } : {}),
+          ...(budgetTripKind !== null ? { timeoutKind: budgetTripKind } : {}),
+          durationMs: result.durationMs,
+          turns: steps,
+          cost: {
+            usd: cumulativeCost,
+            usdAvailable: usage.usd.available,
+            ...(costFromReported !== costFromComputed ? { source: costFromReported ? 'reported' : 'computed' } : {}),
+            ...(modelCosts.size >= 2 ? { byModel: sortModelCosts(modelCosts) } : {}),
+            ...(usage.credits.available && usage.credits.value !== undefined ? { credits: usage.credits.value } : {}),
+          },
+          tokens: sumWebhookTokens(tokens),
+          warnings: result.warnings.length,
+        }));
+        await flushWebhook();
         return result;
       } catch (err) {
         // A launch that cannot even start the CLI (#60) is an outage, not a
@@ -1284,10 +1372,14 @@ export function createDriver(options: DriverOptions): Driver {
         if (launchUnavailable !== null) {
           await settleArtifacts('unavailable');
           notifyRunEnd({ runId, agent: agentName, ...(captureFull ? { prompt: parsed.prompt } : {}), exitStatus: 'unavailable' }, options.notify);
+          postWebhook('exit', () => ({ agent: agentName, exitStatus: 'unavailable', unavailableReason: launchUnavailable, durationMs: Date.now() - start }));
+          await flushWebhook();
           throw new HarnessError(`agent "${agentName}" unavailable: ${launchUnavailable}`, 'UNAVAILABLE');
         }
         await settleArtifacts('error');
         notifyRunEnd({ runId, agent: agentName, ...(captureFull ? { prompt: parsed.prompt } : {}), exitStatus: 'error' }, options.notify);
+        postWebhook('exit', () => ({ agent: agentName, exitStatus: 'error', error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - start }));
+        await flushWebhook();
         throw err;
       }
     },

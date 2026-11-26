@@ -46,6 +46,7 @@ const EXPECTED: Record<MaskSink, MaskMode> = {
   report: "none",
   scrub: "none",
   export: "none",
+  webhook: "all",
 };
 
 const T0 = 1790000000000;

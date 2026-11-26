@@ -41,12 +41,12 @@ export type MaskStyle = (typeof MASK_STYLES)[number];
 export const DEFAULT_MASK_STYLE: MaskStyle = "replace";
 
 /** Export sinks with their own config toggle (`mask.<sink>` in the config file). */
-export const MASK_SINKS = ["atif", "otel", "langfuse", "sft", "report", "scrub", "export"] as const;
+export const MASK_SINKS = ["atif", "otel", "langfuse", "sft", "report", "scrub", "export", "webhook"] as const;
 export type MaskSink = (typeof MASK_SINKS)[number];
 
 /**
  * Owner decision (#71): the built-in mode per sink, the last step of the
- * precedence chain. Outbound sinks (otel, langfuse: the data leaves the
+ * precedence chain. Outbound sinks (otel, langfuse, webhook: the data leaves the
  * machine) mask everything; local sinks keep today's raw output. Typed as a
  * full Record, so a new sink without a default is a compile error. Any
  * `--mask`, env var, `mask.<sink>` or `mask.mode` setting beats it.
@@ -59,6 +59,7 @@ export const SINK_DEFAULT_MASK_MODE: Record<MaskSink, MaskMode> = {
   report: DEFAULT_MASK_MODE,
   scrub: DEFAULT_MASK_MODE,
   export: DEFAULT_MASK_MODE,
+  webhook: "all",
 };
 
 /** Env var that sets the global mode (beats the config file, loses to `--mask`). */
@@ -419,7 +420,7 @@ export const MaskConfigSchema = z
         }, "is not a valid regular expression"),
       )
       .optional().describe("extra regexes to mask (a named group 'secret' limits the replaced span)"),
-    ...Object.fromEntries(MASK_SINKS.map((s) => [s, z.enum(MASK_MODES).optional().describe(`${s === "export" ? "mask mode for ach export" : `mask mode for the ${s} export`} (beats mask.mode; built-in default '${SINK_DEFAULT_MASK_MODE[s]}')`)])),
+    ...Object.fromEntries(MASK_SINKS.map((s) => [s, z.enum(MASK_MODES).optional().describe(`${s === "export" ? "mask mode for ach export" : s === "webhook" ? "mask mode for --event-webhook payloads (#64)" : `mask mode for the ${s} export`} (beats mask.mode; built-in default '${SINK_DEFAULT_MASK_MODE[s]}')`)])),
     privacy: z
       .enum(PRIVACY_MODES)
       .optional()

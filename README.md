@@ -248,6 +248,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
 - **Emitters** — ATIF v1.7 trajectories (self-validating), OpenTelemetry `gen_ai` spans, Langfuse via OTLP.
   Custom static or env-sourced attributes (`--attr`, `--attr-env`, or the config file's `emit` section) ride on every exported span; `--enricher` adds a JS module for dynamic per-span attributes.
+- **HTTP event tap**: `ach run --event-webhook <url>` POSTs `start`, `exit`, `budget` and periodic `usage` events as versioned JSON (`{schemaVersion, runId, type, timestamp, payload}`), optionally HMAC-signed, queued off the event stream with a bounded retry budget so a dead receiver never fails or stalls the run; `ach watch --event-webhook` posts its live deltas. See [docs/EVENT-WEBHOOK.md](docs/EVENT-WEBHOOK.md).
 - **W3C trace context**: a run joins an incoming `TRACEPARENT` (or starts a trace), stamps `trace` on its record, hands its agent child and `--verify` checker a `TRACEPARENT` naming the run's span, and the OTel/Langfuse exports reuse those ids; the run summary and `ach web` show the copyable traceparent. See [docs/TRACE-CONTEXT.md](docs/TRACE-CONTEXT.md).
 - **Single-file HTML reports** — charts + timelines comparing every agent in a trial dir.
 - **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini/agy/prime transcript
@@ -433,6 +434,8 @@ ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cu
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
             [--effort low|medium|high|xhigh|max]   # one level, mapped per agent (docs/EFFORT.md)
             [--capture-mode full|metadata|off]     # how much prompt/tool text ach records (docs/CAPTURE.md)
+            [--event-webhook URL] [--webhook-events start,exit,budget,usage] [--webhook-usage-ms N]
+                                                   # POST run events, fail open (docs/EVENT-WEBHOOK.md)
             [--extra-args 'a b']... [--extra-arg TOKEN]...   # see "Passing extra CLI args"
             [--permission-mode MODE] [--allowed-tools LIST]... [--disallowed-tools LIST]...
             [--mcp-config PATH|JSON] [--evidence-dir DIR]   # see "Permission and sandbox flags"
@@ -452,6 +455,7 @@ ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] 
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach preflight --agent kiro-ide [--kiro-ide-cdp host:port] [--json]  # read-only CDP rows, same as doctor
 ach watch [--transcript-dir <root>]... [--rewrite FROM=TO]...   # live per-session token deltas
+            [--event-webhook URL]   # also POST each delta as a `usage` event (docs/EVENT-WEBHOOK.md)
 ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--json] [--state-only]
             [--transcript-dir <root>]... [--state-dir <stateDir>]... [--rewrite FROM=TO]...
             [--origin all|native|imported|transcript]

@@ -27,13 +27,14 @@ raw. The built-in default per sink (`SINK_DEFAULT_MASK_MODE` in `src/core/maskin
 |---|---|---|
 | `otel` | OTLP JSON (`ach emit --format otel`, MCP `harness_emit`), meant for a collector | `all` |
 | `langfuse` | POSTed to a Langfuse instance (`ach emit --format langfuse`, MCP `harness_emit`) | `all` |
+| `webhook` | POSTed to an `--event-webhook` receiver (`ach run`, `ach watch`, #64) | `all` |
 | `atif` | a local ATIF file (`ach emit --format atif`, MCP `harness_emit`) | `none` |
 | `sft` | a local JSONL file (`ach emit --format sft`) | `none` |
 | `report` | a local HTML or JSON report (`ach report`, the trial-suite report, MCP `harness_report`) | `none` |
 | `scrub` | `ach scrub` (always needs an explicit `--mask preview` or `--mask all`) | `none` |
 | `export` | a local dump (`ach export`) | `none` |
 
-So `ach emit --format otel` and `--format langfuse` mask with no flag set (and print the per-detector
+So `ach emit --format otel`, `--format langfuse` and `--event-webhook` payloads mask with no flag set (and print the per-detector
 count on stderr); the local sinks write byte-identical output to releases before #71. Privacy modes
 stay `off` by default for every sink.
 
@@ -42,11 +43,12 @@ Opting out of the outbound default, for one sink or both:
 ```sh
 ach config --set mask.otel none
 ach config --set mask.langfuse none
+ach config --set mask.webhook none
 ach emit --input run.json --format otel --mask none     # one run only
 ```
 
 A global `mask.mode` also beats the per-sink default: `{ "mask": { "mode": "none" } }` turns masking
-off for otel and langfuse too, and `"mode": "all"` turns it on for the local sinks.
+off for otel, langfuse and webhook too, and `"mode": "all"` turns it on for the local sinks.
 
 ## Capture time: `--mask` on every export
 
@@ -80,7 +82,12 @@ alone:
 { "mask": { "mode": "all", "style": "partial", "atif": "none", "patterns": ["ACME-\\d+"] } }
 ```
 
-Sinks: `atif`, `otel`, `langfuse`, `sft`, `report`, `scrub`, `export`. See [CONFIG.md](CONFIG.md).
+Sinks: `atif`, `otel`, `langfuse`, `sft`, `report`, `scrub`, `export`, `webhook`. See [CONFIG.md](CONFIG.md).
+
+`ach run --event-webhook <url>` and `ach watch --event-webhook <url>` (#64) take the same flags
+(sink `webhook`, per-sink key `mask.webhook`, built-in default `all`). `all` masks each event before it is signed and
+POSTed, so the signature covers the masked bytes; `preview` prints the findings and POSTs nothing.
+See [EVENT-WEBHOOK.md](EVENT-WEBHOOK.md#masking-and-privacy).
 
 `ach export --out <dir>` (#96) takes the same flags (sink `export`). With mode `none` (the
 default) every file is copied byte for byte. `preview` scans every file the dump would hold and

@@ -77,6 +77,7 @@ import { runSftEmit } from "../emitters/sft.ts";
 import { MASK_OPTIONS, maskForExport } from "../core/masking.ts";
 import { PRIVACY_OPTIONS, privacyId } from "../core/privacy.ts";
 import { maskPolicyFor, noteMasked, notePrivacy, writeMaskPreview } from "./mask-cli.ts";
+import { EVENT_WEBHOOK_OPTIONS, eventWebhookFromFlags } from "./event-webhook-cli.ts";
 import { cmdScrub } from "./scrub.ts";
 import { cmdExport, EXPORT_USAGE_LINES, STATS_ARGV } from "./export.ts";
 import {
@@ -238,6 +239,13 @@ usage:
                            off = lifecycle events and totals only. Env ACH_CAPTURE_MODE; config
                            run.captureMode / contentCapture (per-agent overrides beat both);
                            recorded as captureMode on the RunRecord; see docs/CAPTURE.md)
+              [--event-webhook URL [--webhook-events start,exit,budget,usage|all]
+               [--webhook-usage-ms MS=60000]]  (POST run start, exit, budget alerts and a
+                           periodic usage summary as JSON {schemaVersion, runId, type, timestamp,
+                           payload}; retries with backoff, HMAC-SHA256 header when
+                           AGENTIC_CODING_HARNESS_EVENT_WEBHOOK_SECRET is set; fail open, adds at
+                           most 5s at run end; --mask/--privacy apply (sink webhook);
+                           see docs/EVENT-WEBHOOK.md)
               [--extra-args '<a b>']... [--extra-arg <token>]...  (extra CLI args for the
                            launched agent, every launchable agent; both repeatable and kept in
                            command-line order. --extra-args splits each value on spaces;
@@ -392,6 +400,8 @@ usage:
                  --dir is an alias of --transcript-dir here; repeat it to tail
                  several roots in one stream, each line ending 'dir: <root>';
                  --rewrite maps that root path, e.g. /mnt/c=C:)
+            [--event-webhook URL [--webhook-events usage]]  (#64: POST each per-poll usage
+                 delta; watch has no run start, exit or budget; see docs/EVENT-WEBHOOK.md)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
             [--tz Z] [--by day|week|month] [--json] [--state-only] [--include-unavailable]
             [--compare prev|prev:<dur>] [--offline]
@@ -654,6 +664,8 @@ env:
   AGENTIC_CODING_HARNESS_BUDGET_ALERTS    default for --budget-alerts (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WARN_THRESHOLDS  default for --warn-at (CLI flags win over env)
   AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H  hours before a threshold may re-alert (default 24)
+  AGENTIC_CODING_HARNESS_EVENT_WEBHOOK         default for run/watch --event-webhook (CLI flags win over env)
+  AGENTIC_CODING_HARNESS_EVENT_WEBHOOK_SECRET  HMAC-SHA256 key for the webhook signature header (env only)
   AGENTIC_CODING_HARNESS_TZ          default for stats/watch --tz (CLI flags win over env)
   AGENTIC_CODING_HARNESS_PLAN        default for stats --plan (CLI flags win over env;
                                      also _PLAN_WINDOW_TOKENS/_USD/_MESSAGES)
@@ -978,6 +990,10 @@ async function cmdRun(rest: string[]): Promise<number> {
       then: { type: "string", multiple: true },
       "pause-between": { type: "boolean", default: false },
       "trust-workspace": { type: "boolean", default: false },
+      // #64: HTTP event tap (src/core/event-webhook.ts), masked as sink `webhook`.
+      ...EVENT_WEBHOOK_OPTIONS,
+      ...MASK_OPTIONS,
+      ...PRIVACY_OPTIONS,
     },
     allowPositionals: true,
     tokens: true,
@@ -1030,6 +1046,8 @@ async function cmdRun(rest: string[]): Promise<number> {
     const line = formatEventLine(e, callStarts);
     if (line !== null) process.stderr.write(line + "\n");
   };
+  // #64: built before launch so a bad URL / filter is a usage error, not a run.
+  const webhook = eventWebhookFromFlags(args.values);
   const basePricer = createPricer();
   const runAdapters = custom.adapter ? { ...(await defaultAdapters()), [agent]: custom.adapter } : await defaultAdapters();
   if (interactive !== null) {
@@ -1049,6 +1067,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     onEvent,
     registry: { stateDir: stateDir() },
     capture: captureOptions,
+    ...(webhook !== undefined ? { webhook } : {}),
   });
 
   const built = runSpecFromFlags(agent, args.values, args.tokens, prompt, trialFlags.labels.variant);
@@ -1454,9 +1473,17 @@ async function cmdWatch(rest: string[]): Promise<number> {
       tz: { type: "string" },
       "exit-codes": { type: "string" },
       offline: { type: "boolean", default: false },
+      // #64: watch posts its per-poll usage deltas (no run lifecycle to post).
+      ...EVENT_WEBHOOK_OPTIONS,
+      ...MASK_OPTIONS,
+      ...PRIVACY_OPTIONS,
     },
     allowPositionals: true,
   });
+  const webhook = eventWebhookFromFlags(args.values, { offline: args.values.offline === true });
+  if (webhook !== undefined && !webhook.wants("usage")) {
+    process.stderr.write("[warn] watch: --webhook-events excludes usage, the only event watch posts (it has no run start, exit or budget); nothing will be posted\n");
+  }
   if (args.values.offline) installOfflineGuard();
   // Accepted for uniformity (#31); watch only ends on SIGINT/SIGTERM (exit 0)
   // and never reaches a verdict, so the ladder has nothing to add here.
@@ -1480,6 +1507,9 @@ async function cmdWatch(rest: string[]): Promise<number> {
       : transcriptDirs.flatMap((d) => transcriptSources(scanOptionsForRoot(path.resolve(d))).map((s) => ({ ...s, root: path.resolve(d) })));
   const state = stateDir();
   const offsets = await loadOffsets();
+  // #64: the envelope runId for watch posts: one id per watch process (watch
+  // owns no run); each payload names the agent session it summarizes.
+  const watchId = `watch-${randomUUID()}`;
   type WatchTotals = { agent: string; sessionId: string; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number; vendorCost?: number; vendorMetered?: boolean };
   const seenByFile = new Map<string, Map<string, WatchTotals>>();
   const seenOpencode = new Set<string>();
@@ -1493,7 +1523,10 @@ async function cmdWatch(rest: string[]): Promise<number> {
   const stop = () => {
     if (stopping) return;
     stopping = true;
-    void saveOffsets(offsets).finally(() => flushAndExit(0));
+    // #64: queued webhook posts get the bounded flush before exit.
+    void saveOffsets(offsets)
+      .then(() => webhook?.flush(watchId))
+      .finally(() => flushAndExit(0));
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
@@ -1633,6 +1666,14 @@ async function cmdWatch(rest: string[]): Promise<number> {
     if (fresh.length > 0) await appendRecords(fresh);
     for (const w of drainTranscriptWarnings()) process.stderr.write(`[warn] ${w}\n`);
     for (const d of deltas.values()) {
+      webhook?.post(watchId, "usage", {
+        source: "watch",
+        agent: d.agent,
+        sessionId: d.sessionId,
+        ...(d.root !== undefined ? { root: rewritePath(d.root, rewrites) } : {}),
+        delta: { inputTokens: d.input, outputTokens: d.output, cacheReadTokens: d.cacheRead, cacheWriteTokens: d.cacheWrite },
+        costUsd: d.priced ? d.cost : null,
+      });
       process.stdout.write(
         `${d.agent.padEnd(8)} ${d.sessionId.slice(0, 12).padEnd(12)} +${fmtInt(d.input)} input +${fmtInt(d.output)} output +${fmtInt(d.cacheRead)} cacheR +${fmtInt(d.cacheWrite)} cacheW ${d.priced ? fmtUsd(d.cost) : "n/a"} source: transcript${d.root !== undefined ? ` dir: ${rewritePath(d.root, rewrites)}` : ""}\n`,
       );
