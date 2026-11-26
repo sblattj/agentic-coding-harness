@@ -10,6 +10,7 @@ import { repeatStats } from "../core/repeat-stats.ts";
 import { NO_BRANCH } from "../cli/stats-dims.ts";
 import { markerFor, PROVENANCE_LEGEND } from "../core/provenance.ts";
 import { modelProvenanceText, usageScopeBadge } from "../core/usage-scope.ts";
+import { describePrivacy, type PrivacyMode } from "../core/privacy.ts";
 
 const MESSAGE_CAP = 2000;
 const TIMELINE_CAP = 500;
@@ -722,6 +723,8 @@ const JS = `
 export interface RenderOptions {
   version: string;
   generatedAt: Date;
+  /** #46: the privacy mode the model was sanitized with; stamped in the page when set and not `off`. */
+  privacy?: PrivacyMode;
 }
 
 /** Render the complete self-contained HTML document for a loaded trial set. */
@@ -752,7 +755,7 @@ export function renderReport(trialSet: TrialSet, opts: RenderOptions): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentic-coding-harness report · ${esc(labels.join(", "))}</title>
-<style>${CSS}</style>
+${privacyMeta(opts.privacy)}<style>${CSS}</style>
 </head>
 <body>
 <main>
@@ -760,7 +763,7 @@ export function renderReport(trialSet: TrialSet, opts: RenderOptions): string {
     <h1>Agent trial report</h1>
     <p class="meta">${multiTrial ? `${labels.length} trials` : `trial ${esc(labels[0] ?? "")}`}<span class="sep">·</span>${agents.length} agent${agents.length === 1 ? "" : "s"}<span class="sep">·</span>task: ${task ? esc(clip(task, 120)) : "same-prompt comparison (task not captured)"}</p>
     <div class="chips">${tsChips}</div>
-  </header>
+${privacyStamp(opts.privacy)}  </header>
   <section>
     <h3>comparison</h3>
 ${renderComparisonTable(runs, multiTrial)}
@@ -781,6 +784,16 @@ ${runs.map(renderAgentSection).join("\n")}
 </body>
 </html>
 `;
+}
+
+/** #46: a machine-readable stamp in <head> (empty when privacy is off or unset, so the page is unchanged). */
+function privacyMeta(mode: PrivacyMode | undefined): string {
+  return mode === undefined || mode === "off" ? "" : `<meta name="ach-privacy" content="${esc(mode)}">\n`;
+}
+
+/** #46: the visible stamp under the header (empty when privacy is off or unset). */
+function privacyStamp(mode: PrivacyMode | undefined): string {
+  return mode === undefined || mode === "off" ? "" : `    <p class="meta privacy" data-privacy="${esc(mode)}">${esc(describePrivacy(mode))}</p>\n`;
 }
 
 /** Trial dir names are `YYYYMMDD-HHMMSS` timestamps; render them readably. */

@@ -72,7 +72,8 @@ import { toOtlpJson } from "../emitters/otel.ts";
 import { emitToLangfuse } from "../emitters/langfuse.ts";
 import { runSftEmit } from "../emitters/sft.ts";
 import { MASK_OPTIONS, maskForExport } from "../core/masking.ts";
-import { maskPolicyFor, noteMasked, writeMaskPreview } from "./mask-cli.ts";
+import { PRIVACY_OPTIONS, privacyId } from "../core/privacy.ts";
+import { maskPolicyFor, noteMasked, notePrivacy, writeMaskPreview } from "./mask-cli.ts";
 import { cmdScrub } from "./scrub.ts";
 import {
   parseClaudeTranscript,
@@ -530,9 +531,17 @@ usage:
                 and sends nothing, all masks keys, tokens, emails, home paths;
                 default none; env AGENTIC_CODING_HARNESS_MASK, config mask.*;
                 docs/MASKING.md)
-  ach report <trials-dir> [--out path] [--mask none|preview|all] [--mask-style ..]
+               [--privacy off|redact|anon]
+               (privacy mode for shared output: redact shortens paths to
+                basenames and $HOME to ~; anon also drops prompt text and hashes
+                run/session ids; numbers never change; the mode is stamped in
+                the output; default off; env AGENTIC_CODING_HARNESS_PRIVACY,
+                config mask.privacy; docs/MASKING.md)
+  ach report <trials-dir> [--out path] [--json] [--mask none|preview|all] [--mask-style ..]
+               [--privacy off|redact|anon]
                  (single-file HTML comparison; a trials/ root scans subdirs;
-                  --mask* as for emit)
+                  --json prints the report model (with a privacy field) instead,
+                  or writes it to --out; --mask* and --privacy as for emit)
   ach scrub <file|dir>... --mask preview|all [--out-dir <dir>] [--json]
                [--mask-style replace|partial] [--mask-entropy] [--mask-pattern <regex>]...
                  (share-time scrub of exported artifacts: preview lists every
@@ -2286,6 +2295,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
       exit: { type: "string" },
       "full-conversation": { type: "boolean" },
       ...MASK_OPTIONS,
+      ...PRIVACY_OPTIONS,
     },
     allowPositionals: true,
   });
@@ -2336,6 +2346,10 @@ async function cmdEmit(rest: string[]): Promise<number> {
   }
   if (gate.mode === "all") noteMasked(input, gate.findings);
   parsed = gate.value;
+  // #46: the privacy stamp each sink carries (none when off, so output stays today's).
+  const privacy = gate.privacy;
+  const stamped = privacy !== "off";
+  if (stamped) notePrivacy(input, privacy);
   const stream = EventStreamSchema.safeParse(parsed);
   if (!stream.success) {
     throw new HarnessError(`--input '${input}' must be an event array or {events: [...]}`, "IO");
@@ -2355,6 +2369,9 @@ async function cmdEmit(rest: string[]): Promise<number> {
   const defaultSessionId = typeof runResult.sessionId === "string" && runResult.sessionId !== ""
     ? runResult.sessionId
     : "unknown-session";
+  // #46: under anon a typed --session-id is hashed too (already-hashed ids stay as they are).
+  const sessionId = privacyId(args.values["session-id"] ?? defaultSessionId, privacy);
+  const resourceAttributes = stamped ? { "ach.privacy": privacy } : undefined;
   const defaultAgent =
     (typeof runResult.agent === "string" && runResult.agent !== "" && runResult.agent) ||
     (typeof firstToken.agent === "string" && firstToken.agent !== "" && firstToken.agent) ||
@@ -2370,7 +2387,8 @@ async function cmdEmit(rest: string[]): Promise<number> {
       agent: args.values.agent ?? defaultAgent,
       version: VERSION,
       modelName: args.values.model ?? defaultModel,
-      sessionId: args.values["session-id"] ?? defaultSessionId,
+      sessionId,
+      ...(stamped ? { extra: { privacy } } : {}),
     });
     if (args.values.out) {
       const doc = writer.finalize(args.values.out);
@@ -2403,9 +2421,10 @@ async function cmdEmit(rest: string[]): Promise<number> {
         baseUrl,
         publicKey,
         secretKey,
-        sessionId: args.values["session-id"] ?? defaultSessionId,
+        sessionId,
         agentName: args.values.agent ?? defaultAgent,
         model: args.values.model ?? defaultModel,
+        ...(resourceAttributes !== undefined ? { resourceAttributes } : {}),
       });
     } catch (e) {
       throw new HarnessError(
@@ -2425,14 +2444,16 @@ async function cmdEmit(rest: string[]): Promise<number> {
     process.stdout.write(
       `langfuse: posted ${result.spanCount} spans to ${result.url} — trace ${result.traceId} (HTTP ${result.status})` +
         (args.values.out ? `, wrote ${args.values.out}` : "") +
+        (stamped ? `, privacy ${privacy}` : "") +
         "\n",
     );
     return 0;
   } else {
     const doc = toOtlpJson(events, {
-      sessionId: args.values["session-id"] ?? defaultSessionId,
+      sessionId,
       agentName: args.values.agent ?? defaultAgent,
       model: args.values.model ?? defaultModel,
+      ...(resourceAttributes !== undefined ? { resourceAttributes } : {}),
     });
     body = JSON.stringify(doc, null, 2) + "\n";
     if (args.values.out) await fs.writeFile(args.values.out, body);

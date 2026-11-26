@@ -248,7 +248,11 @@ export interface OtlpResourceSpansJson {
  */
 export function toOtlpJson(
   events: AgentEvent[],
-  opts: Omit<EmitRunOptions, 'events'> & { serviceName?: string },
+  opts: Omit<EmitRunOptions, 'events'> & {
+    serviceName?: string;
+    /** Extra resource attributes after `service.name` (#46: `ach.privacy`). */
+    resourceAttributes?: Record<string, string>;
+  },
 ): OtlpResourceSpansJson {
   const serviceName = opts.serviceName ?? 'agentic-coding-harness';
   const { root, children } = deriveSpans(events, opts);
@@ -277,7 +281,10 @@ export function toOtlpJson(
     resourceSpans: [
       {
         resource: {
-          attributes: [{ key: 'service.name', value: { stringValue: serviceName } }],
+          attributes: [
+            { key: 'service.name', value: { stringValue: serviceName } },
+            ...Object.entries(opts.resourceAttributes ?? {}).map(([key, v]) => ({ key, value: { stringValue: v } })),
+          ],
         },
         scopeSpans: [
           {

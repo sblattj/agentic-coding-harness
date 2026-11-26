@@ -24,6 +24,7 @@ import { z } from "zod";
 import { HarnessError, type RunProfileInfo } from "../core/types.ts";
 import { EXIT_CODES } from "./exit-codes.ts";
 import { DEFAULT_MASK_MODE, MASK_ENV, MaskConfigSchema, type MaskConfig } from "../core/masking.ts";
+import { DEFAULT_PRIVACY_MODE, PRIVACY_ENV } from "../core/privacy.ts";
 
 export const CONFIG_ENV = "AGENTIC_CODING_HARNESS_CONFIG";
 export const STATE_DIR_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
@@ -877,8 +878,14 @@ export function resolveRows(opts: {
     if (isSet(envMode)) rows.push({ key: `${MASK_KEY}.mode`, value: envMode, source: `env:${MASK_ENV}` });
     else if (fileMode !== undefined) rows.push({ key: `${MASK_KEY}.mode`, value: fileMode.value, source: `file:${fileMode.file}` });
     else rows.push({ key: `${MASK_KEY}.mode`, value: DEFAULT_MASK_MODE, source: "default" });
+    // #46: the privacy mode, resolved the same way (env > file > default).
+    const envPrivacy = env[PRIVACY_ENV];
+    const filePrivacy = opts.merged.get(`${MASK_KEY}.privacy`);
+    if (isSet(envPrivacy)) rows.push({ key: `${MASK_KEY}.privacy`, value: envPrivacy, source: `env:${PRIVACY_ENV}` });
+    else if (filePrivacy !== undefined) rows.push({ key: `${MASK_KEY}.privacy`, value: filePrivacy.value, source: `file:${filePrivacy.file}` });
+    else rows.push({ key: `${MASK_KEY}.privacy`, value: DEFAULT_PRIVACY_MODE, source: "default" });
     for (const [k, v] of opts.merged) {
-      if (k.startsWith(`${MASK_KEY}.`) && k !== `${MASK_KEY}.mode`) rows.push({ key: k, value: v.value, source: `file:${v.file}` });
+      if (k.startsWith(`${MASK_KEY}.`) && k !== `${MASK_KEY}.mode` && k !== `${MASK_KEY}.privacy`) rows.push({ key: k, value: v.value, source: `file:${v.file}` });
     }
   }
   return rows;
@@ -1191,8 +1198,8 @@ export const CONFIG_USAGE = `  ach config --show [<section>] [--json] [-- <secti
                 (key is stateDir or <run|stats|web|serve>.<camelCaseFlag>, e.g.
                  run.budgetUsd; writes ./.ach/config.json, or the --config file;
                  --dry-run prints the resolved config after the change, writes nothing)
-                (also mask.<mode|style|entropy|patterns|atif|otel|langfuse|sft|report|scrub>:
-                 export secret masking, docs/MASKING.md)
+                (also mask.<mode|style|entropy|patterns|privacy|atif|otel|langfuse|sft|report|scrub>:
+                 export secret masking and privacy mode, docs/MASKING.md)
                 (also profiles.<name>.<key> and profiles.<name>.env.<NAME>: agent
                  profiles for \`ach run --profile <name>\`; a profile the agent's
                  validation rejects is not saved. <key>=<value> works too)

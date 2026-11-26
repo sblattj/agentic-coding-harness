@@ -14,6 +14,15 @@
 // Placeholders are stable and label the detector (`[REDACTED_API_KEY]`), so
 // masking is idempotent: no placeholder matches any detector.
 import { z } from "zod";
+import {
+  applyPrivacy,
+  DEFAULT_PRIVACY_MODE,
+  parsePrivacyMode,
+  PRIVACY_ENV,
+  PRIVACY_MODES,
+  type PrivacyMode,
+  type PrivacyPolicy,
+} from "./privacy.ts";
 
 export const MASK_MODES = ["none", "preview", "all"] as const;
 export type MaskMode = (typeof MASK_MODES)[number];
@@ -340,6 +349,8 @@ export function formatMaskedNote(source: string, findings: readonly Finding[]): 
 export interface MaskPolicy {
   mode: MaskMode;
   options: MaskOptions;
+  /** #46: privacy mode, applied before secret masking; absent = off. */
+  privacy?: PrivacyPolicy;
 }
 
 /** The policy that changes nothing (DEFAULT_MASK_MODE as shipped). */
@@ -350,7 +361,13 @@ export interface ExportGateResult<T> {
   value: T;
   findings: Finding[];
   mode: MaskMode;
+  /** #46: the privacy mode that was applied (stamp it into the output when not `off`). */
+  privacy: PrivacyMode;
 }
+
+/** #46: `[REDACTED_HOME]` for home dirs other than the collapsed $HOME (#71's home-path detector). */
+const HOME_DETECTORS = BUILTIN_DETECTORS.filter((d) => d.id === "home-path");
+const maskOtherHomes = (s: string): string => (/\/Users\/|\/home\/|Users\\/.test(s) ? maskText(s, {}, "$", HOME_DETECTORS).text : s);
 
 /**
  * The one chokepoint every export path calls on what it is about to write or
@@ -359,9 +376,12 @@ export interface ExportGateResult<T> {
  * caller must then write and send nothing); `all` returns a masked copy.
  */
 export function maskForExport<T>(value: T, policy: MaskPolicy = NO_MASK): ExportGateResult<T> {
-  if (policy.mode === "none") return { value, findings: [], mode: "none" };
-  const r = maskValue(value, policy.options);
-  return { value: policy.mode === "all" ? r.value : value, findings: r.findings, mode: policy.mode };
+  // #46: privacy first (off returns the same reference), then secret masking.
+  const privacy = policy.privacy?.mode ?? DEFAULT_PRIVACY_MODE;
+  const v = privacy === "off" ? value : applyPrivacy(value, policy.privacy, maskOtherHomes);
+  if (policy.mode === "none") return { value: v, findings: [], mode: "none", privacy };
+  const r = maskValue(v, policy.options);
+  return { value: policy.mode === "all" ? r.value : v, findings: r.findings, mode: policy.mode, privacy };
 }
 
 /** The config file's top-level `mask` object (validated by config.ts). */
@@ -383,6 +403,10 @@ export const MaskConfigSchema = z
       )
       .optional().describe("extra regexes to mask (a named group 'secret' limits the replaced span)"),
     ...Object.fromEntries(MASK_SINKS.map((s) => [s, z.enum(MASK_MODES).optional().describe(`mask mode for the ${s} export (beats mask.mode)`)])),
+    privacy: z
+      .enum(PRIVACY_MODES)
+      .optional()
+      .describe(`privacy mode for shared reports and exports (#46): off | redact | anon (default '${DEFAULT_PRIVACY_MODE}'); env ${PRIVACY_ENV} and --privacy win`),
   })
   .describe("secret masking before export (#71): see docs/MASKING.md");
 export type MaskConfig = {
@@ -390,6 +414,7 @@ export type MaskConfig = {
   style?: MaskStyle;
   entropy?: boolean;
   patterns?: string[];
+  privacy?: PrivacyMode;
 } & Partial<Record<MaskSink, MaskMode>>;
 
 function parseMode(v: string, label: string): MaskMode {
@@ -402,6 +427,8 @@ export interface MaskFlags {
   "mask-style"?: string | undefined;
   "mask-entropy"?: boolean | undefined;
   "mask-pattern"?: string[] | undefined;
+  /** #46: `--privacy off|redact|anon`. */
+  privacy?: string | undefined;
 }
 
 /** The parseArgs option table every masking command shares. */
@@ -423,6 +450,8 @@ export function resolveMaskPolicy(input: {
   flags?: MaskFlags;
   config?: MaskConfig | undefined;
   env?: Record<string, string | undefined>;
+  /** #46: the home dir privacy collapses to `~` (default env HOME, else USERPROFILE). */
+  home?: string;
 }): MaskPolicy {
   const flags = input.flags ?? {};
   const cfg = input.config ?? {};
@@ -442,5 +471,15 @@ export function resolveMaskPolicy(input: {
   const options: MaskOptions = { style: styleRaw as MaskStyle };
   if (flags["mask-entropy"] === true || cfg.entropy === true) options.entropy = true;
   if (patterns.length > 0) options.patterns = patterns;
-  return { mode, options };
+  // #46: --privacy > env PRIVACY_ENV > config mask.privacy > DEFAULT_PRIVACY_MODE.
+  const envPrivacy = env[PRIVACY_ENV];
+  const privacy =
+    flags.privacy !== undefined
+      ? parsePrivacyMode(flags.privacy, "--privacy")
+      : envPrivacy !== undefined && envPrivacy !== ""
+        ? parsePrivacyMode(envPrivacy, PRIVACY_ENV)
+        : cfg.privacy ?? DEFAULT_PRIVACY_MODE;
+  if (privacy === "off") return { mode, options };
+  const home = input.home ?? env.HOME ?? env.USERPROFILE;
+  return { mode, options, privacy: home !== undefined && home !== "" ? { mode: privacy, home } : { mode: privacy } };
 }

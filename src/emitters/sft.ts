@@ -20,6 +20,7 @@ import path from "node:path";
 import { HarnessError, RunResultSchema } from "../core/types.ts";
 import { maskForExport, formatMaskedNote, formatPreview, type Finding, type MaskMode, type MaskPolicy } from "../core/masking.ts";
 import type { AgentEvent } from "../core/types.ts";
+import type { PrivacyMode } from "../core/privacy.ts";
 import { looksLikeRunResult, repeatEnvelopeRuns } from "../report/model.ts";
 
 /** Valid --exit values: the RunResult exitStatus set. */
@@ -348,6 +349,8 @@ export interface SftResult {
   /** #71: what masking found (empty in mode none). */
   maskFindings: Finding[];
   maskMode: MaskMode;
+  /** #46: the privacy mode applied to the samples. */
+  privacy: PrivacyMode;
 }
 
 export async function buildSft(opts: SftOptions): Promise<SftResult> {
@@ -363,6 +366,7 @@ export async function buildSft(opts: SftOptions): Promise<SftResult> {
   return {
     maskFindings: gate.findings,
     maskMode: gate.mode,
+    privacy: gate.privacy,
     body: lines.length > 0 ? lines.join("\n") + "\n" : "",
     runsRead: runs.length,
     runsKept: kept.length,
@@ -378,12 +382,15 @@ export async function runSftEmit(opts: SftOptions): Promise<number> {
     return 0;
   }
   if (res.maskMode === "all") process.stderr.write(formatMaskedNote(opts.input, res.maskFindings));
+  // #46: JSONL lines keep the plain `{messages: [...]}` sample shape (no extra key),
+  // so the privacy stamp rides on the summary line.
+  const stamp = res.privacy !== "off" ? `, privacy ${res.privacy}` : "";
   if (opts.out) {
     await fs.writeFile(opts.out, res.body);
-    process.stdout.write(`wrote ${opts.out} (${res.samples} samples from ${res.runsKept}/${res.runsRead} runs)\n`);
+    process.stdout.write(`wrote ${opts.out} (${res.samples} samples from ${res.runsKept}/${res.runsRead} runs${stamp})\n`);
   } else {
     process.stdout.write(res.body);
-    process.stderr.write(`sft: ${res.samples} samples from ${res.runsKept}/${res.runsRead} runs\n`);
+    process.stderr.write(`sft: ${res.samples} samples from ${res.runsKept}/${res.runsRead} runs${stamp}\n`);
   }
   return 0;
 }

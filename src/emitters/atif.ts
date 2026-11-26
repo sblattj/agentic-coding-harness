@@ -97,6 +97,8 @@ export interface StartTrajectoryOptions {
   sessionId?: string;
   trajectoryId?: string;
   toolDefinitions?: unknown[];
+  /** Keys merged into the trajectory's top-level `extra` (#46: `{ privacy }`). */
+  extra?: Record<string, unknown>;
 }
 
 export interface AddStepOptions {
@@ -152,6 +154,7 @@ export class AtifWriter {
       sessionId: opts.sessionId ?? randomUUID(),
       trajectoryId: opts.trajectoryId ?? randomUUID(),
       toolDefinitions: opts.toolDefinitions,
+      ...(opts.extra !== undefined ? { extra: opts.extra } : {}),
     };
     this.started = true;
     return this;
@@ -214,7 +217,7 @@ export class AtifWriter {
         total_cost_usd: round6(totals.cost),
         total_steps: steps.length,
       },
-      extra: {},
+      extra: { ...(this.agent.extra ?? {}) },
     };
     if (this.agent.toolDefinitions) {
       trajectory.agent.tool_definitions = this.agent.toolDefinitions;
@@ -295,6 +298,7 @@ export class AtifWriter {
       modelName: opts?.modelName ?? 'unknown-model',
       sessionId: opts?.sessionId,
       trajectoryId: opts?.trajectoryId,
+      ...(opts?.extra !== undefined ? { extra: opts.extra } : {}),
     });
 
     let current: StepDraft | null = null;

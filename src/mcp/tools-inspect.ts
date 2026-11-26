@@ -16,6 +16,7 @@ import { aggregate, type AggregatableRecord } from "../cli/lib.ts";
 import { checkArtifactPath, type GatewayConfig } from "../serve/gateway.ts";
 import { countByDetector, MASK_MODES, maskForExport, resolveMaskPolicy, type Finding, type MaskSink } from "../core/masking.ts";
 import { loadedMaskConfig } from "../cli/config.ts";
+import { PRIVACY_MODES, privacyId, type PrivacyMode } from "../core/privacy.ts";
 import type { McpServer } from "./contract.ts";
 
 /** Opts shared by every register* function: state dir plus the optional
@@ -35,10 +36,14 @@ function parseArgs<T extends z.ZodTypeAny>(schema: T, args: Record<string, unkno
   return parsed.data;
 }
 
-/** #71: the mask policy for one MCP export (arg `mask` > env > config file > DEFAULT_MASK_MODE). */
-function mcpMaskPolicy(sink: MaskSink, mask: string | undefined) {
-  return resolveMaskPolicy({ sink, flags: { mask }, config: loadedMaskConfig() });
+/** #71: the mask policy for one MCP export (arg `mask` > env > config file > DEFAULT_MASK_MODE);
+ *  #46: the same for arg `privacy`. */
+function mcpMaskPolicy(sink: MaskSink, mask: string | undefined, privacy?: string) {
+  return resolveMaskPolicy({ sink, flags: { mask, privacy }, config: loadedMaskConfig() });
 }
+
+/** #46: the privacy field of a tool result (absent when off, so results stay today's). */
+const privacyField = (mode: PrivacyMode) => (mode !== "off" ? { privacy: mode } : {});
 
 /** A `mask: "preview"` result: findings (star samples only) and counts; nothing written or sent. */
 function previewResult(findings: Finding[], extra: Record<string, unknown>): unknown {
@@ -60,6 +65,7 @@ const ReportSchema = z.object({
   out: z.string().min(1).optional(),
   open: z.boolean().default(false),
   mask: z.enum(MASK_MODES).optional(),
+  privacy: z.enum(PRIVACY_MODES).optional(),
 });
 
 async function harnessReport(args: Record<string, unknown>, opts: ToolOpts): Promise<unknown> {
@@ -77,15 +83,19 @@ async function harnessReport(args: Record<string, unknown>, opts: ToolOpts): Pro
   for (const l of trialSet.labels) labels.add(l);
   const root = rootDir ?? path.resolve(a.dir);
   const out = a.out ?? path.join(root, "report.html");
-  const gate = maskForExport({ rootDir: root, labels: [...labels].sort(), runs }, mcpMaskPolicy("report", a.mask));
+  const gate = maskForExport({ rootDir: root, labels: [...labels].sort(), runs }, mcpMaskPolicy("report", a.mask, a.privacy));
   if (gate.mode === "preview") return previewResult(gate.findings, { out });
-  const html = renderReport(gate.value, { version: await readVersion(), generatedAt: new Date() });
+  const html = renderReport(gate.value, {
+    version: await readVersion(),
+    generatedAt: new Date(),
+    ...(gate.privacy !== "off" ? { privacy: gate.privacy } : {}),
+  });
   await fs.mkdir(path.dirname(path.resolve(out)), { recursive: true });
   await fs.writeFile(out, html);
   if (a.open && process.platform === "darwin") {
     spawnSync("open", [out], { stdio: "ignore" });
   }
-  return { out, runs: runs.length, bytes: await fileBytes(out) };
+  return { out, runs: runs.length, bytes: await fileBytes(out), ...privacyField(gate.privacy) };
 }
 
 // ---------------------------------------------------------------- emit
@@ -101,6 +111,7 @@ const EmitSchema = z.object({
   out: z.string().min(1).optional(),
   endpoint: z.string().min(1).optional(),
   mask: z.enum(MASK_MODES).optional(),
+  privacy: z.enum(PRIVACY_MODES).optional(),
 });
 
 async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promise<unknown> {
@@ -125,9 +136,14 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
     throw new Error(`runFile: '${a.runFile}' is not valid JSON: ${e instanceof Error ? e.message : e}`);
   }
   // #71: the export chokepoint (mode none passes the input through untouched).
-  const gate = maskForExport(parsed, mcpMaskPolicy(a.format, a.mask));
+  const gate = maskForExport(parsed, mcpMaskPolicy(a.format, a.mask, a.privacy));
   if (gate.mode === "preview") return previewResult(gate.findings, { format: a.format });
   parsed = gate.value;
+  // #46: stamps (none when off) and the session id the sinks share.
+  const privacy = gate.privacy;
+  const stamp = privacyField(privacy);
+  const resourceAttributes = privacy !== "off" ? { resourceAttributes: { "ach.privacy": privacy } } : {};
+  const sessionId = privacyId("unknown-session", privacy);
   const stream = EventStreamSchema.safeParse(parsed);
   if (!stream.success) {
     throw new Error(`runFile: '${a.runFile}' must be an event array or {events: [...]}`);
@@ -139,6 +155,7 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
       agent: "unknown-agent",
       version: "0.2.0",
       modelName: "unknown-model",
+      ...(privacy !== "off" ? { extra: { privacy } } : {}),
     });
     if (a.out) {
       writer.finalize(a.out);
@@ -146,9 +163,9 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
       if (!ok) {
         throw new Error(`out: ATIF validation failed for '${a.out}':\n${errors.join("\n")}`);
       }
-      return { format: a.format, out: a.out, detail: "validated" };
+      return { format: a.format, out: a.out, detail: "validated", ...stamp };
     }
-    return { format: a.format, detail: JSON.stringify(writer.toTrajectory()).length + " bytes rendered" };
+    return { format: a.format, detail: JSON.stringify(writer.toTrajectory()).length + " bytes rendered", ...stamp };
   }
 
   if (a.format === "langfuse") {
@@ -166,9 +183,10 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
         baseUrl,
         publicKey,
         secretKey,
-        sessionId: "unknown-session",
+        sessionId,
         agentName: "unknown-agent",
         model: "unknown-model",
+        ...resourceAttributes,
       });
     } catch (e) {
       throw new Error(`endpoint: langfuse ingest to '${baseUrl}' failed: ${e instanceof Error ? e.message : e}`);
@@ -185,22 +203,24 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
       format: a.format,
       out: a.out,
       sent: true,
+      ...stamp,
       detail: `posted ${result.spanCount} spans to ${result.url} — trace ${result.traceId} (HTTP ${result.status})`,
     };
   }
 
   const doc = toOtlpJson(events, {
-    sessionId: "unknown-session",
+    sessionId,
     agentName: "unknown-agent",
     model: "unknown-model",
+    ...resourceAttributes,
   });
   const body = JSON.stringify(doc, null, 2) + "\n";
   if (a.out) {
     await fs.mkdir(path.dirname(path.resolve(a.out)), { recursive: true });
     await fs.writeFile(a.out, body);
-    return { format: a.format, out: a.out, detail: "wrote" };
+    return { format: a.format, out: a.out, detail: "wrote", ...stamp };
   }
-  return { format: a.format, detail: body.length + " bytes rendered" };
+  return { format: a.format, detail: body.length + " bytes rendered", ...stamp };
 }
 
 // ---------------------------------------------------------------- stats
@@ -315,6 +335,7 @@ export function registerInspectTools(server: McpServer, opts: ToolOpts): void {
         out: { type: "string", description: "Output path (default <dir>/report.html)" },
         open: { type: "boolean", description: "Open the file with `open` on macOS" },
         mask: { type: "string", enum: [...MASK_MODES], description: "Secret masking: none | preview (list findings, write nothing) | all (mask before writing); default from config/env, else none" },
+        privacy: { type: "string", enum: [...PRIVACY_MODES], description: "Privacy mode (docs/MASKING.md): off | redact (paths to basenames, $HOME to ~) | anon (also drops prompt text, hashes run/session ids); default from config/env, else off" },
       },
       required: ["dir"],
     },
@@ -332,6 +353,7 @@ export function registerInspectTools(server: McpServer, opts: ToolOpts): void {
         out: { type: "string", description: "Output file for atif/otel (and langfuse payload dump)" },
         endpoint: { type: "string", description: "Langfuse OTLP base URL override" },
         mask: { type: "string", enum: [...MASK_MODES], description: "Secret masking: none | preview (list findings, write and send nothing) | all (mask before export); default from config/env, else none" },
+        privacy: { type: "string", enum: [...PRIVACY_MODES], description: "Privacy mode (docs/MASKING.md): off | redact (paths to basenames, $HOME to ~) | anon (also drops prompt text, hashes run/session ids); default from config/env, else off" },
       },
       required: ["runFile", "format"],
     },

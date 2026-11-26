@@ -1469,6 +1469,15 @@
             "preview",
             "all"
           ]
+        },
+        "privacy": {
+          "description": "privacy mode for shared reports and exports (#46): off | redact | anon (default 'off'); env AGENTIC_CODING_HARNESS_PRIVACY and --privacy win",
+          "type": "string",
+          "enum": [
+            "off",
+            "redact",
+            "anon"
+          ]
         }
       },
       "additionalProperties": false,

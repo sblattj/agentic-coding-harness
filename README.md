@@ -486,7 +486,11 @@ ach emit --input events.json --format atif|otel|langfuse|sft [--out path]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
             [--mask none|preview|all] [--mask-style replace|partial] [--mask-entropy] [--mask-pattern RE]...
             (secret masking before export; default none; docs/MASKING.md)
-ach report <trials-dir> [--out path] [--mask none|preview|all]   # single-file HTML comparison
+            [--privacy off|redact|anon]
+            (privacy mode for shared output: redact shortens paths, anon also drops prompt text
+             and hashes run/session ids; default off; docs/MASKING.md#privacy-modes)
+ach report <trials-dir> [--out path] [--json] [--mask none|preview|all] [--privacy off|redact|anon]
+            # single-file HTML comparison; --json prints the report model (with a privacy field)
 ach scrub <file|dir>... --mask preview|all [--out-dir DIR] [--json]
             # share-time scrub of exported artifacts: preview lists every key, email and home path
             # and touches nothing; all writes <name>.masked.<ext> copies, originals unchanged (docs/MASKING.md)
@@ -1253,7 +1257,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [Config file (`.ach/config.json`, `ach config`)](docs/CONFIG.md): per-command flag defaults, precedence flag > env > file > default, named agent profiles (`ach run --profile`), [JSON schema](docs/config.schema.json).
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
-- [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them.
+- [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them. Privacy modes (`--privacy redact|anon`) strip paths, prompt text and ids from shared reports and exports.
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
 - [Desks and lanes (`ach desk`, `ach lane`)](docs/DESKS.md): long-lived role agents plus goal-driven lanes that message each other, with per-desk cost.
 - [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).

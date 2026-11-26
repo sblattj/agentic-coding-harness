@@ -38,6 +38,8 @@ export interface LangfusePayloadOptions {
   sessionId: string;
   agentName: string;
   model: string;
+  /** Extra OTLP resource attributes (#46: `ach.privacy`). */
+  resourceAttributes?: Record<string, string>;
 }
 
 export interface LangfuseEmitOptions extends LangfuseIngestOptions, LangfusePayloadOptions {

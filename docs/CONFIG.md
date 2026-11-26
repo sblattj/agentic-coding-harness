@@ -53,7 +53,10 @@ is not an error. A missing `--config` / `AGENTIC_CODING_HARNESS_CONFIG` file is.
   detector), `patterns` (extra regexes), and one mode per sink to override `mode`: `atif`, `otel`,
   `langfuse`, `sft`, `report`, `scrub`. Precedence is `--mask` > env `AGENTIC_CODING_HARNESS_MASK` >
   `mask.<sink>` > `mask.mode` > the built-in default (`none`). `ach config --set mask.otel all`
-  writes one key. See [MASKING.md](MASKING.md).
+  writes one key. `mask.privacy` (`off` | `redact` | `anon`, #46) sets the privacy mode for every
+  export and report; precedence is `--privacy` > env `AGENTIC_CODING_HARNESS_PRIVACY` >
+  `mask.privacy` > the built-in default (`off`). See [MASKING.md](MASKING.md) and its
+  [privacy modes](MASKING.md#privacy-modes) section.
 - `$schema`: optional, ignored by `ach`; point it at the published schema for editor validation
   and autocomplete.
 
