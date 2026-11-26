@@ -293,6 +293,16 @@ Agents whose CLI is not installed are skipped with a printed reason. The suite w
 HTML report next to its ledger in the state dir. See
 [docs/TRIALS.md](docs/TRIALS.md#ach-trial---suite-core-the-bundled-task-suite).
 
+To add your own task, scaffold it instead of copying a bundled one:
+
+```sh
+ach trial new my-task --with-tests     # tasks/my-task/{task.md,task.json,verify.sh,tests/}
+ach trial --suite local --tasks-dir tasks --task my-task --agent claude
+```
+
+The new `verify.sh` fails until you write the check, and `trial new` runs it once to show
+that. See [docs/TRIALS.md](docs/TRIALS.md#ach-trial-new-scaffold-a-task).
+
 ![Cross-agent comparison table showing token usage, cost, duration, and status for Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro run on the same task](docs/assets/cli-compare.png)
 
 ## Live dashboards: terminal (`ach dash`) and web (`ach web`)
@@ -453,6 +463,8 @@ ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--jso
 ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--effort E] [--capture-mode C] [--tasks-dir DIR] [--ledger PATH]
             [--permission-mode M] [--allowed-tools L] [--disallowed-tools L] [--mcp-config PATH|JSON]
             # bundled task suite; missing agent CLIs skipped; HTML report next to the ledger
+ach trial new <name> [--with-tests] [--tasks-dir DIR=tasks] [--suite NAME=local] [--json]
+            # scaffold tasks/<name>/ (task.md, task.json, failing verify.sh); refuses to overwrite
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach preflight --agent kiro-ide [--kiro-ide-cdp host:port] [--json]  # read-only CDP rows, same as doctor
 ach watch [--transcript-dir <root>]... [--rewrite FROM=TO]...   # live per-session token deltas

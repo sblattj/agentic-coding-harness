@@ -395,6 +395,13 @@ usage:
                  already run in a new empty dir and are left alone); the four sandbox flags work as for ach run and
                  become the plan-level sandbox: per-cell drop warnings, listed in --dry-run
                  --json, recorded on every ledger row, not part of the cell identity)
+  ach trial new <name> [--with-tests] [--tasks-dir DIR=tasks] [--suite NAME=local] [--json]
+                (scaffold <tasks-dir>/<name>/: task.md (prompt), task.json (id, suites,
+                 workspace, verifyTimeoutMs) and a verify.sh that fails until written;
+                 --with-tests adds tests/example.test.sh and a verify.sh that runs
+                 tests/*.sh. An existing <name> is never overwritten (exit 1). The
+                 verifier runs once on an empty workspace and must fail; then it
+                 prints the ach trial --suite commands that run the task)
   ach watch [--transcript-dir <home-shaped-root>]... [--rewrite FROM=TO]...
             [--since DATE | --last D] [--tz Z] [--offline]
                 (--since/--last: print history newer than the bound on startup;

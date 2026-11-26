@@ -1,6 +1,6 @@
 // Bundled task suites (#51): `ach trial --suite core`.
 //
-// A suite is every task directory under `tasks/` whose meta.json lists the
+// A suite is every task directory under `tasks/` whose task.json or meta.json lists the
 // suite name in `suites`. `--suite` builds a MatrixPlan of `{dir}` tasks in
 // code and runs it through the same executeMatrixCli path as
 // `ach trial --matrix` (src/cli/trial-matrix.ts), so ledger, resume, outcome
@@ -84,12 +84,12 @@ export function resolveTasksDir(override?: string, moduleUrl?: string): string {
 }
 
 export interface SuiteTask {
-  /** Directory name (also the task id unless meta.json sets one). */
+  /** Directory name (also the task id unless task.json or meta.json sets one). */
   name: string;
   task: ResolvedTask;
 }
 
-/** Every task directory in `tasksDir` whose meta.json `suites` contains `suite`, sorted by name. */
+/** Every task directory in `tasksDir` whose task.json or meta.json `suites` contains `suite`, sorted by name. */
 export function listSuiteTasks(tasksDir: string, suite: string): SuiteTask[] {
   const out: SuiteTask[] = [];
   for (const e of fs.readdirSync(tasksDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {

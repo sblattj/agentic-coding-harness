@@ -10,6 +10,7 @@ whether it *worked*, and how confident you should be about that:
 | `/compare`, `ach report`, `ach stats` | #30 | pass@1 with a Wilson 95% interval, pass^k, and any-pass@k per group |
 | `ach regrade <run-id> --verify '<cmd>'` | #89 | re-runs a checker against a saved run without launching the agent |
 | `ach trial --matrix plan.json` | #56 | a resumable agents × tasks × models × trials grid; one run per cell, tagged `experiment`, `variant`, `cellId` |
+| `ach trial new <name>` | #88 | scaffolds a task directory whose `verify.sh` fails until you write the check ([below](#ach-trial-new-scaffold-a-task)) |
 
 ## `--verify`: outcome scoring
 
@@ -383,10 +384,11 @@ with `dir` relative to the plan's directory:
 | `task.md` | yes | the prompt |
 | `setup.sh` | no | run as `sh <abs path>` before the agent |
 | `verify.sh` | no | the checker, run after the agent |
-| `meta.json` | no | `{id?, description?, workspace?, setupTimeoutMs?, verifyTimeoutMs?, ...}`; unknown keys such as `suites` or `tags` are kept |
+| `task.json` | no | `{id?, description?, workspace?, setupTimeoutMs?, verifyTimeoutMs?, ...}`; unknown keys such as `suites` or `tags` are kept. What `ach trial new` writes |
+| `meta.json` | no | the same schema under its older name (the bundled tasks use it); a directory with both is a usage error |
 
-- The task id is the first one set among the plan's `id`, meta.json `id`, and
-  the directory name.
+- The task id is the first one set among the plan's `id`, the task.json or
+  meta.json `id`, and the directory name.
 - `workspace` defaults to `"fresh"`: each cell gets an emptied directory at
   `<ledger name>.work/<cellId>-<hash>/`, which is `<plan>.work/…` with the
   default ledger path.
@@ -615,3 +617,94 @@ The suite resolves the task tree relative to the running module at
   compiled binary's module URL is inside bun's virtual filesystem, and the
   wheel vendors only the JS bundle. Both fail with a usage error that asks for
   `--tasks-dir <checkout>/tasks`.
+
+## `ach trial new`: scaffold a task
+
+```
+ach trial new <name> [--with-tests] [--tasks-dir DIR=tasks] [--suite NAME=local] [--json]
+```
+
+Stamps `<tasks-dir>/<name>/` in the task-directory layout above, so the
+directory runs under `ach trial --suite` (and as a `{dir}` task in a
+`--matrix` plan) with no registration step:
+
+| File | What it holds |
+|---|---|
+| `task.md` | the prompt, a TODO placeholder to replace |
+| `task.json` | `id`, `description`, `suites` (`[<--suite>]`), `tags`, `workspace: "fresh"`, `verifyTimeoutMs: 120000` |
+| `verify.sh` | the checker (mode 755): exits 1 with `FAIL not implemented` until you write the check |
+| `tests/example.test.sh` | `--with-tests` only: a failing placeholder test. `verify.sh` then runs every `tests/*.sh` in the agent's workspace, stops at the first failure, and fails when there are none |
+
+Rules:
+
+- `<name>` must match `[A-Za-z0-9._-]+` and is not `.` or `..`.
+- An existing `<tasks-dir>/<name>` (a directory, empty or not, or a file) is
+  never touched: the command exits 1 with `already exists; refusing to
+  overwrite it`.
+- After writing, the directory is loaded through the same `loadTaskDir`
+  validation every trial run uses, and `verify.sh` runs once against an empty
+  temp workspace with `ACH_WORKSPACE` and `ACH_TASK_DIR` set, as in a trial
+  cell. It must **fail** (expect-fail mode): an unimplemented task is red, not
+  a silent pass. If it passes or errors, the files are kept and the command
+  exits 1.
+- `--json` prints `{dir, files, task, expectFail: {ok, verify}, next}`.
+
+### The scaffold, run, verify loop
+
+Scaffold it (real output):
+
+```
+$ ach trial new my-task --with-tests
+created    tasks/my-task/
+             task.md
+             task.json
+             verify.sh
+             tests/example.test.sh
+task       my-task (suite local, workspace fresh, verify timeout 120000ms)
+verify     fail (exit 1, 0.0s)  expect-fail: ok, an unimplemented task is red
+             not implemented: write tests/example.test.sh
+             FAIL example.test.sh
+next       edit tasks/my-task/task.md and tasks/my-task/verify.sh (and tasks/my-task/tests/), then:
+             sh tasks/my-task/verify.sh
+             ach trial --suite local --tasks-dir tasks --task my-task --agent null --dry-run
+             ach trial --suite local --tasks-dir tasks --task my-task --agent claude
+
+$ ach trial new my-task
+harness: <cwd>/tasks/my-task already exists; refusing to overwrite it (pick another name or remove it first)
+$ echo $?
+1
+```
+
+Run it. The `null` agent changes nothing, so the untouched task is a
+`verify-failed` cell, a real verdict (exit 0):
+
+```
+$ ach trial --suite local --tasks-dir tasks --task my-task --agent null
+suite      local: 1 task(s) × 1 agent(s) [null] from <cwd>/tasks
+[1/1] null:my-task:default:trial1  running
+[1/1]  null:my-task:default:trial1  verify-failed  run=cb65ccfe  verify=fail
+summary    1 cells · passed=0 verify-failed=1 error=0 skipped=0 · ran=1 resumed=0
+ledger     <state>/suites/local.ledger.jsonl
+report     <state>/suites/local.report.html (1 runs · 1 task)
+```
+
+Write the check, then verify it by hand against a workspace before pointing a
+real agent at the task:
+
+```
+$ printf '#!/bin/sh\nset -eu\n[ "$(cat ./answer.txt)" = "42" ]\n' > tasks/my-task/tests/example.test.sh
+$ mkdir ws && echo 42 > ws/answer.txt
+$ ACH_WORKSPACE=ws sh tasks/my-task/verify.sh; echo "exit=$?"
+ok   example.test.sh
+exit=0
+$ echo 41 > ws/answer.txt
+$ ACH_WORKSPACE=ws sh tasks/my-task/verify.sh; echo "exit=$?"
+FAIL example.test.sh
+exit=1
+```
+
+Then fill in `task.md` with the prompt and run the grid for real:
+`ach trial --suite local --tasks-dir tasks --task my-task --agent claude`
+(add more `--agent`, `--model` and `--repeat N` as for the bundled suite). To
+give the agent starter files, add a `setup.sh` that copies them into
+`$ACH_WORKSPACE`, as the bundled tasks do.

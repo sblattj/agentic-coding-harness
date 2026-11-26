@@ -20,7 +20,8 @@
 //
 // The task model is shared with the bundled task suite (#51): a task is
 // either inline ({id, prompt, setup?, verify?}) or a task directory
-// ({dir}: prompt from task.md, setup.sh / verify.sh when present, meta.json
+// ({dir}: prompt from task.md, setup.sh / verify.sh when present, task.json
+// or meta.json
 // passthrough). A suite is expanded in code with `loadTaskDir` + a
 // MatrixPlan literal, then run through `runMatrix`.
 import { createHash } from "node:crypto";
@@ -81,12 +82,12 @@ export const InlineTaskSchema = z
   })
   .strict();
 
-/** Task directory (#51 layout): task.md (required), setup.sh, verify.sh, meta.json (optional). */
+/** Task directory (#51 layout): task.md (required), setup.sh, verify.sh, task.json or meta.json (optional). */
 export const DirTaskSchema = z
   .object({
     /** Task directory, relative to the plan's directory. */
     dir: z.string().min(1),
-    /** Overrides meta.json `id`, then the directory basename. */
+    /** Overrides the task.json or meta.json `id`, then the directory basename. */
     id: TaskIdSchema.optional(),
     /** Default "fresh" for task directories. */
     workspace: WorkspaceSchema.optional(),
@@ -99,7 +100,7 @@ export const DirTaskSchema = z
 
 export const MatrixTaskSchema = z.union([InlineTaskSchema, DirTaskSchema]);
 
-/** meta.json inside a task directory. Unknown keys are kept (suites, tags, ...). */
+/** task.json (#88) or meta.json (#51) inside a task directory. Unknown keys are kept (suites, tags, ...). */
 export const TaskMetaSchema = z
   .object({
     id: TaskIdSchema.optional(),
@@ -241,7 +242,7 @@ const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 /**
  * Resolve a task directory: task.md → prompt (required, non-empty),
  * setup.sh / verify.sh → `sh '<abs path>'` commands when present,
- * meta.json → TaskMeta (optional). Id: `overrides.id` ?? meta.id ?? basename.
+ * task.json or meta.json → TaskMeta (optional, never both). Id: `overrides.id` ?? meta.id ?? basename.
  * Workspace defaults to "fresh" (setup.sh prepares an empty per-cell dir).
  */
 export function loadTaskDir(
@@ -257,7 +258,14 @@ export function loadTaskDir(
   }
   if (prompt === "") throw new HarnessError(`task directory ${abs}: task.md is empty`, "USAGE");
   let meta: TaskMeta | undefined;
-  const metaFile = path.join(abs, "meta.json");
+  // #88: `task.json` (what `ach trial new` stamps) and the #51 `meta.json`
+  // are the same TaskMeta under two names; a directory may carry one of them.
+  const taskJson = path.join(abs, "task.json");
+  const metaJson = path.join(abs, "meta.json");
+  if (fs.existsSync(taskJson) && fs.existsSync(metaJson)) {
+    throw new HarnessError(`task directory ${abs} has both task.json and meta.json; keep one`, "USAGE");
+  }
+  const metaFile = fs.existsSync(taskJson) ? taskJson : metaJson;
   if (fs.existsSync(metaFile)) {
     let json: unknown;
     try {
@@ -276,7 +284,7 @@ export function loadTaskDir(
   }
   const id = overrides.id ?? meta?.id ?? path.basename(abs);
   if (!ID_RE.test(id)) {
-    throw new HarnessError(`task directory ${abs}: id '${id}' must match [A-Za-z0-9._-]+ (set meta.json "id")`, "USAGE");
+    throw new HarnessError(`task directory ${abs}: id '${id}' must match [A-Za-z0-9._-]+ (set "id" in ${path.basename(metaFile)})`, "USAGE");
   }
   const setupFile = path.join(abs, "setup.sh");
   const verifyFile = path.join(abs, "verify.sh");
@@ -1082,6 +1090,11 @@ function parseTrialEffort(raw: string): EffortLevel {
  * [--repeat N] [--tasks-dir DIR] [...same flags]` (src/cli/trial-suite.ts).
  */
 export async function cmdTrial(rest: string[]): Promise<number> {
+  // #88: `ach trial new <name>` scaffolds a task directory (src/cli/trial-new.ts).
+  if (rest[0] === "new") {
+    const { cmdTrialNew } = await import("./trial-new.ts");
+    return cmdTrialNew(rest.slice(1));
+  }
   const args = parseArgs({
     args: rest,
     options: {
