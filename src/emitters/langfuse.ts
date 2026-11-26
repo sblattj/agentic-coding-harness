@@ -40,6 +40,8 @@ export interface LangfusePayloadOptions {
   model: string;
   /** Extra OTLP resource attributes (#46: `ach.privacy`). */
   resourceAttributes?: Record<string, string>;
+  /** #72: stamped as the `ach.capture_mode` resource attribute. */
+  captureMode?: string;
 }
 
 export interface LangfuseEmitOptions extends LangfuseIngestOptions, LangfusePayloadOptions {

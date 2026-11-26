@@ -13,6 +13,7 @@ import {
   type RunSpec as CoreRunSpec,
 } from "../core/types.ts";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
+import { configuredCapturePolicy } from "../cli/config.ts";
 import { createPricer } from "../core/pricing.ts";
 import { capabilities as claudeCapabilities } from "../adapters/claude.ts";
 import { OPENCODE_CAPABILITIES } from "../adapters/opencode.ts";
@@ -258,7 +259,7 @@ export function registerRunTools(
   server.registerTool({
     name: "harness_run",
     description:
-      "Run one harness agent (claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cursor) with a prompt and optional model/cwd/budget/turn limits and sandbox policy (permissionMode/allowedTools/disallowedTools/mcpConfig; fields the agent cannot honor are dropped and listed in warnings); resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings).",
+      "Run one harness agent (claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cursor) with a prompt and optional model/cwd/budget/turn limits and sandbox policy (permissionMode/allowedTools/disallowedTools/mcpConfig; fields the agent cannot honor are dropped and listed in warnings); resolves with the full RunResult (sessionId, events, tokens, totalCost, durationMs, exitStatus, warnings; below content-capture tier full, events and token extras are stripped, see docs/CAPTURE.md).",
     inputSchema: {
       type: "object",
       properties: {
@@ -308,6 +309,8 @@ export function registerRunTools(
         stateDir: opts.stateDir,
         registry: { stateDir: opts.stateDir },
         pricer: createPricer(),
+        // #72: the config file's content-capture policy (ACH_CAPTURE_MODE is read by the driver).
+        capture: { policy: configuredCapturePolicy() },
       });
       // #106: hermetic runs copy cwd to a clean temp dir and sync back; the
       // temp path is harness-minted, so the gateway cwd check above (on the

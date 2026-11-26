@@ -1118,6 +1118,12 @@ export interface RunSpec {
   desk?: { stack: string; name: string; kind: "desk" | "lane" | "turn" };
   /** #77: persisted to RunRecord.profile (the agent profile the run used). */
   profile?: RunProfileInfo;
+  /**
+   * #72: the global content-capture tier for this run (src/core/capture.ts).
+   * Beats ACH_CAPTURE_MODE; a per-agent policy entry (DriverOptions.capture)
+   * beats it. Absent = env, then the driver's policy default, then `full`.
+   */
+  captureMode?: "off" | "metadata" | "full";
   budget?: RunBudget;
   /**
    * Top-level alias for budget.wallMs (whole-run wall-clock cap, ms). Explicit
@@ -1233,6 +1239,7 @@ export const RunSpecSchema = z
     attachmentsMaxBytes: z.number().int().positive().optional(),
     sandbox: SandboxPolicySchema.optional(),
     profile: RunProfileInfoSchema.optional(),
+    captureMode: z.enum(["off", "metadata", "full"], { error: "captureMode must be one of off|metadata|full" }).optional(),
   })
   .passthrough();
 
@@ -1404,6 +1411,14 @@ export interface RunResult {
    *  inlined), so exports like `ach emit --format sft` can rebuild the user
    *  turn. Only on the returned result; registry records keep promptSha256. */
   prompt?: string;
+  /** #72: the content-capture tier, present only when it was below `full` (events are then stripped, prompt absent). */
+  captureMode?: "off" | "metadata" | "full";
+  /**
+   * #72: set (true) below `full` when an error-lane event read like a
+   * provider usage/rate limit. The stripped `events` no longer carry the text
+   * providerLimitReason() matches, so the driver keeps the verdict.
+   */
+  providerLimit?: true;
   /** Every event in order; only the trailing ones when eventSummary is set (#199). */
   events: AgentEvent[];
   /**
@@ -1497,6 +1512,8 @@ export const RunResultSchema = z.object({
   agent: z.string().optional(),
   variant: z.string().min(1).optional(),
   prompt: z.string().optional(),
+  captureMode: z.enum(["off", "metadata", "full"]).optional(),
+  providerLimit: z.literal(true).optional(),
   events: z.array(z.record(z.string(), z.unknown())),
   eventSummary: z
     .object({

@@ -16,12 +16,28 @@
 // the `run` section's keys (plus an `env` map for the agent process). `ach
 // run --profile <name>` (or `run.profile` in the file) expands it in the same
 // choke point, so precedence is flag > env > profile > file `run` > default.
+//
+// Content capture (#72): a top-level `contentCapture` (a bare tier, or
+// `{ default, agents: { <agent>: tier } }`) is the record-time policy
+// src/core/capture.ts applies; `run.captureMode` / `--capture-mode` /
+// ACH_CAPTURE_MODE set the global tier above its `default`, and an `agents`
+// entry beats every global tier for that agent.
 import { parseArgs as nodeParseArgs } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { HarnessError, type RunProfileInfo } from "../core/types.ts";
+import {
+  CAPTURE_MODES,
+  CAPTURE_MODE_ENV,
+  CONTENT_CAPTURE_KEY,
+  capturePolicyProblems,
+  isCaptureMode,
+  mergeCapturePolicies,
+  toCapturePolicy,
+  type CapturePolicy,
+} from "../core/capture.ts";
 import { EXIT_CODES } from "./exit-codes.ts";
 import { DEFAULT_MASK_MODE, MASK_ENV, MaskConfigSchema, type MaskConfig } from "../core/masking.ts";
 import { DEFAULT_PRIVACY_MODE, PRIVACY_ENV } from "../core/privacy.ts";
@@ -95,6 +111,8 @@ export const ENV_MIRRORS: Readonly<Record<string, string>> = {
   "max-jobs": "AGENTIC_CODING_HARNESS_MAX_JOBS",
   "max-output-bytes": "AGENTIC_CODING_HARNESS_MAX_OUTPUT_BYTES",
   "allow-extra-args": "AGENTIC_CODING_HARNESS_ALLOW_EXTRA_ARGS",
+  // #72: the issue's name (short prefix), read by src/core/capture.ts.
+  "capture-mode": CAPTURE_MODE_ENV,
 };
 
 /**
@@ -524,8 +542,12 @@ export function validateConfig(file: LoadedFile, tables: SectionTables): void {
 /** Every problem in one file, as messages (empty = valid). */
 export function configProblems(file: LoadedFile, tables: SectionTables): string[] {
   const problems: string[] = [];
-  const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS, PROFILES_KEY, MASK_KEY];
+  const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS, PROFILES_KEY, MASK_KEY, CONTENT_CAPTURE_KEY];
   for (const [section, body] of Object.entries(file.data)) {
+    if (section === CONTENT_CAPTURE_KEY) {
+      problems.push(...capturePolicyProblems(body, CONTENT_CAPTURE_KEY).map((m) => `config ${file.path}: ${m}`));
+      continue;
+    }
     if (section === MASK_KEY) {
       problems.push(...maskProblems(file.path, body));
       continue;
@@ -655,6 +677,13 @@ export function mergeFiles(files: LoadedFile[], tables: SectionTables): Map<stri
   for (const f of files) {
     for (const [section, body] of Object.entries(f.data)) {
       if (section === "$schema") continue;
+      if (section === CONTENT_CAPTURE_KEY) {
+        if (capturePolicyProblems(body, CONTENT_CAPTURE_KEY).length > 0) continue;
+        const p = toCapturePolicy(body);
+        if (p.default !== undefined) out.set(`${CONTENT_CAPTURE_KEY}.default`, { value: p.default, file: f.path });
+        for (const [agent, tier] of Object.entries(p.agents ?? {})) out.set(`${CONTENT_CAPTURE_KEY}.agents.${agent}`, { value: tier, file: f.path });
+        continue;
+      }
       if (section === "stateDir") {
         if (typeof body === "string" && body !== "") out.set("stateDir", { value: resolveStateDir(body, f.path), file: f.path });
         continue;
@@ -771,7 +800,17 @@ export async function applyConfig(cmd: string, explicit: string | undefined, com
   armed = null;
   lastResolution = null;
   loadedMask = undefined;
+  activeCapturePolicy = {};
   const files = loadConfigFiles({ explicit });
+  activeCapturePolicy = capturePolicyFromFiles(files);
+  // #72: child `ach` processes this one spawns (a desk host, a queue slice's
+  // `ach run`) must read the same file, or a per-agent `contentCapture` entry
+  // given through `--config` would not reach them. The env var names "that
+  // file only", exactly what `--config` meant here.
+  if (explicit !== undefined) {
+    const f = files.find((x) => x.kind === "explicit");
+    if (f !== undefined) process.env[CONFIG_ENV] = path.resolve(f.path);
+  }
   // `run` is armed even with no file, so `--profile <name>` there is an
   // "unknown profile" error rather than silently ignored.
   if (files.length === 0) {
@@ -809,6 +848,37 @@ export function maskConfigFrom(merged: Map<string, FileValue>): MaskConfig | und
   const out: Record<string, unknown> = {};
   for (const [k, v] of merged) if (k.startsWith(`${MASK_KEY}.`)) out[k.slice(MASK_KEY.length + 1)] = v.value;
   return Object.keys(out).length > 0 ? (out as MaskConfig) : undefined;
+}
+
+// ---------------------------------------------------------------- content capture (#72)
+
+let activeCapturePolicy: CapturePolicy = {};
+
+/**
+ * The `contentCapture` policy of the files this invocation loaded
+ * (applyConfig), for every createDriver site. Empty when no file set it, or
+ * when applyConfig never ran (library and in-process test callers): a hidden
+ * read of the user's config file there would change library behavior.
+ */
+export function configuredCapturePolicy(): CapturePolicy {
+  return activeCapturePolicy;
+}
+
+/** Test hook: set the policy configuredCapturePolicy() returns. */
+export function setConfiguredCapturePolicy(p: CapturePolicy): void {
+  activeCapturePolicy = p;
+}
+
+/** `contentCapture` merged across files (later file wins per key); throws on an invalid value. */
+export function capturePolicyFromFiles(files: LoadedFile[]): CapturePolicy {
+  const policies: CapturePolicy[] = [];
+  for (const f of files) {
+    if (!Object.hasOwn(f.data, CONTENT_CAPTURE_KEY)) continue;
+    const [first] = capturePolicyProblems(f.data[CONTENT_CAPTURE_KEY], CONTENT_CAPTURE_KEY);
+    if (first !== undefined) throw configError(`config ${f.path}: ${first}`);
+    policies.push(toCapturePolicy(f.data[CONTENT_CAPTURE_KEY]));
+  }
+  return mergeCapturePolicies(policies);
 }
 
 /** Peel a leading global `--config <path>` / `--config=<path>` off argv. */
@@ -888,6 +958,18 @@ export function resolveRows(opts: {
       if (k.startsWith(`${MASK_KEY}.`) && k !== `${MASK_KEY}.mode` && k !== `${MASK_KEY}.privacy`) rows.push({ key: k, value: v.value, source: `file:${v.file}` });
     }
   }
+  // #72: the file-level capture policy (a run-scoped value: shown with `run`).
+  if (opts.sections === undefined || opts.sections.includes(PROFILE_SECTION)) {
+    const def = opts.merged.get(`${CONTENT_CAPTURE_KEY}.default`);
+    rows.push(
+      def !== undefined
+        ? { key: `${CONTENT_CAPTURE_KEY}.default`, value: def.value, source: `file:${def.file}` }
+        : { key: `${CONTENT_CAPTURE_KEY}.default`, value: "full", source: "default" },
+    );
+    for (const [k, v] of opts.merged) {
+      if (k.startsWith(`${CONTENT_CAPTURE_KEY}.agents.`)) rows.push({ key: k, value: v.value, source: `file:${v.file}` });
+    }
+  }
   return rows;
 }
 
@@ -955,6 +1037,16 @@ export function configZodSchema(tables: SectionTables) {
     ...sections,
     ...(profilesSchema !== undefined ? { [PROFILES_KEY]: profilesSchema } : {}),
     [MASK_KEY]: MaskConfigSchema.optional(),
+    [CONTENT_CAPTURE_KEY]: z
+      .union([
+        z.enum(CAPTURE_MODES),
+        z.strictObject({
+          default: z.enum(CAPTURE_MODES).optional().describe(`global tier when no --capture-mode, ${CAPTURE_MODE_ENV} or run.captureMode is set`),
+          agents: z.record(z.string(), z.enum(CAPTURE_MODES)).optional().describe("per-agent tier; beats every global tier for that agent"),
+        }),
+      ])
+      .optional()
+      .describe("content-capture policy applied at record time (#72): full | metadata | off; a bare tier is the default"),
   });
 }
 
@@ -1163,6 +1255,10 @@ export interface ConfigHooks {
  * touched key/value is validated; the key is stateDir or <section>.<key>.
  */
 export function setConfigKey(doc: Record<string, unknown>, dotted: string, raw: string | undefined, tables: SectionTables): void {
+  if (dotted === CONTENT_CAPTURE_KEY || dotted.startsWith(`${CONTENT_CAPTURE_KEY}.`)) {
+    setCaptureKey(doc, dotted, raw);
+    return;
+  }
   if (raw === undefined && !unsetKnownKey(dotted, tables)) {
     // --unset accepts any key path the target file actually holds, known or
     // not (so a misspelled key can be removed); else the lookup error stands.
@@ -1189,6 +1285,32 @@ export function setConfigKey(doc: Record<string, unknown>, dotted: string, raw: 
   }
 }
 
+/** `--set/--unset` of `contentCapture`, `contentCapture.default` or `contentCapture.agents.<agent>` (#72). */
+function setCaptureKey(doc: Record<string, unknown>, dotted: string, raw: string | undefined): void {
+  const seg = dotted.split(".");
+  const bad = () =>
+    new HarnessError(
+      `config: '${dotted}': expected ${CONTENT_CAPTURE_KEY}, ${CONTENT_CAPTURE_KEY}.default or ${CONTENT_CAPTURE_KEY}.agents.<agent>`,
+      "CONFIG",
+    );
+  const ok = seg.length === 1 || (seg.length === 2 && seg[1] === "default") || (seg.length === 3 && seg[1] === "agents" && seg[2] !== "");
+  if (!ok) throw bad();
+  if (raw === undefined) {
+    deleteExistingPath(doc, dotted);
+    return;
+  }
+  if (!isCaptureMode(raw)) throw new HarnessError(`config --set ${dotted}: expects one of ${CAPTURE_MODES.join(", ")}, got '${raw}'`, "USAGE");
+  if (seg.length === 1) {
+    doc[CONTENT_CAPTURE_KEY] = raw;
+    return;
+  }
+  const cur = doc[CONTENT_CAPTURE_KEY];
+  const body: Record<string, unknown> = isCaptureMode(cur) ? { default: cur } : isObject(cur) ? { ...cur } : {};
+  if (seg[1] === "default") body.default = raw;
+  else body.agents = { ...(isObject(body.agents) ? body.agents : {}), [seg[2]!]: raw };
+  doc[CONTENT_CAPTURE_KEY] = body;
+}
+
 export const CONFIG_USAGE = `  ach config --show [<section>] [--json] [-- <section flags>]
                 (every resolved key with its value and source: flag, env:<NAME>,
                  file:<path> or default; flags after -- are parsed as that
@@ -1203,6 +1325,8 @@ export const CONFIG_USAGE = `  ach config --show [<section>] [--json] [-- <secti
                 (also profiles.<name>.<key> and profiles.<name>.env.<NAME>: agent
                  profiles for \`ach run --profile <name>\`; a profile the agent's
                  validation rejects is not saved. <key>=<value> works too)
+                (also contentCapture[.default|.agents.<agent>] <full|metadata|off>:
+                 the record-time content-capture policy, docs/CAPTURE.md)
   ach config --schema
                 (prints the JSON schema published as docs/config.schema.json)`;
 

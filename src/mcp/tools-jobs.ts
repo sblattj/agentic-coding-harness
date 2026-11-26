@@ -11,6 +11,7 @@ import type { McpServer } from "./contract.ts";
 import { EFFORT_INPUT_SCHEMA, KIRO_IDE_INPUT_SCHEMA, KIRO_INPUT_SCHEMA, RunArgsSchema, SANDBOX_INPUT_SCHEMA, sandboxResultParts } from "./tools-run.ts";
 import type { RunSpec as CoreRunSpec } from "../core/types.ts";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
+import { configuredCapturePolicy } from "../cli/config.ts";
 import { unchainedLines } from "../core/hash-chain.ts";
 import { createPricer } from "../core/pricing.ts";
 import { prepareHermeticWorkspace, runHermetic } from "../core/hermetic.ts";
@@ -169,6 +170,8 @@ export function registerJobTools(
         stateDir: opts.stateDir,
         pricer: createPricer(),
         registry: { stateDir: opts.stateDir },
+        // #72: the config file's content-capture policy (ACH_CAPTURE_MODE is read by the driver).
+        capture: { policy: configuredCapturePolicy() },
       });
       // Fire-and-forget: the registry record (heartbeats + final status) is
       // written by the driver; this promise is only kept alive and drained so

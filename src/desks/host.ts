@@ -24,6 +24,8 @@ import { createHostMeter as realCreateHostMeter, type HostMeter, type UsageSampl
 import { deskPaths } from "./roster.ts";
 import { achSelfArgv } from "./self.ts";
 import { VERSION } from "../version.ts";
+import { resolveCaptureMode, stripContent } from "../core/capture.ts";
+import { configuredCapturePolicy } from "../cli/config.ts";
 import {
   DESKS_API_VERSION,
   peerHeader,
@@ -281,17 +283,28 @@ export async function runHost(spec: HostSpec, deps: HostDeps = {}): Promise<numb
   let resolveDone!: (code: number) => void;
   const done = new Promise<number>((r) => (resolveDone = r));
 
+  // #72: the desk agent's content-capture tier governs the events FILE (and
+  // the heartbeat preview); the live SSE feed and in-memory ring are the desk
+  // conversation itself and keep the text.
+  const captureMode = resolveCaptureMode({ agent: spec.agent, env: process.env, policy: configuredCapturePolicy() }).mode;
+  const DESK_LIFECYCLE: ReadonlySet<string> = new Set(["status", "error", "turn_start", "turn_end", "usage"]);
   const record = (type: HostEventType, data: Record<string, unknown>): HostEvent => {
     const ev: HostEvent = { seq: ++seq, at: Date.now(), runId: spec.runId, name: spec.name, type, data };
     events.push(ev);
     if (events.length > memoryCap) events.splice(0, events.length - memoryCap);
+    const stored: HostEvent | null =
+      captureMode === "full" ? ev : captureMode === "off" && !DESK_LIFECYCLE.has(type) ? null : { ...ev, data: stripContent(data) };
     try {
-      mkdirSync(paths.events, { recursive: true });
-      appendFileSync(eventsFile, `${JSON.stringify(ev)}\n`);
+      if (stored !== null) {
+        mkdirSync(paths.events, { recursive: true });
+        appendFileSync(eventsFile, `${JSON.stringify(stored)}\n`);
+      }
     } catch (e) {
       process.stderr.write(`desk host ${spec.name}: cannot append event: ${errText(e)}\n`);
     }
-    if (type === "text" && typeof data.text === "string") lastPreview = data.text.slice(0, 200);
+    if (captureMode !== "full") {
+      if (type !== "usage" && type !== "status") lastPreview = `${type}`;
+    } else if (type === "text" && typeof data.text === "string") lastPreview = data.text.slice(0, 200);
     else if (type !== "usage" && type !== "status") lastPreview = `${type}`;
     const line = `data: ${JSON.stringify(ev)}\n\n`;
     for (const c of sseClients) c.write(line);

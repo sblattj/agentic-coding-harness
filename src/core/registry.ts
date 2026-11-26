@@ -115,6 +115,10 @@ export interface RunRecord {
   desk?: RunDeskInfo;
   /** #77: the agent profile (`ach run --profile`) and the full option set the run used. */
   profile?: RunProfileInfo;
+  /** #72: the content-capture tier applied at record time (src/core/capture.ts); absent on records written before #72. */
+  captureMode?: "off" | "metadata" | "full";
+  /** #72: where that tier came from: `agent:<name>`, `flag`, `env:ACH_CAPTURE_MODE`, `config`, `spec` or `default`. */
+  captureSource?: string;
 }
 
 /** Desk membership of a run (#204). */
@@ -262,6 +266,8 @@ export const RunRecordSchema = z.object({
   hermetic: HermeticRunInfoSchema.optional(),
   worktree: WorktreeRunInfoSchema.optional(),
   profile: RunProfileInfoSchema.optional(),
+  captureMode: z.enum(["off", "metadata", "full"]).optional(),
+  captureSource: z.string().optional(),
 });
 
 export function registryDir(stateDir: string): string {

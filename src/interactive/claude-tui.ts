@@ -136,8 +136,11 @@ export class ClaudeInteractiveAdapter implements AgentAdapter {
     const live = new LivePty(term, {
       cols,
       rows,
-      castPath: path.join(o.stateDir, "casts", `${runId}.cast`),
-      castTitle: `ach run --interactive ${runId}`,
+      // #72: the .cast is a full terminal recording (prompt, replies, tool
+      // output); below `full` content capture it is never written.
+      ...(spec.captureMode === undefined || spec.captureMode === "full"
+        ? { castPath: path.join(o.stateDir, "casts", `${runId}.cast`), castTitle: `ach run --interactive ${runId}` }
+        : {}),
       ...(o.sigtermAfterMs !== undefined ? { sigtermAfterMs: o.sigtermAfterMs } : {}),
       ...(o.sigkillAfterMs !== undefined ? { sigkillAfterMs: o.sigkillAfterMs } : {}),
     });

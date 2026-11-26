@@ -57,6 +57,11 @@ is not an error. A missing `--config` / `AGENTIC_CODING_HARNESS_CONFIG` file is.
   export and report; precedence is `--privacy` > env `AGENTIC_CODING_HARNESS_PRIVACY` >
   `mask.privacy` > the built-in default (`off`). See [MASKING.md](MASKING.md) and its
   [privacy modes](MASKING.md#privacy-modes) section.
+- `contentCapture`: how much prompt and tool text ach records (#72). A bare tier
+  (`"metadata"`) or `{ "default": "full|metadata|off", "agents": { "<agent>": "full|metadata|off" } }`.
+  `default` sits below `--capture-mode` / `run.captureMode` and `ACH_CAPTURE_MODE`; an
+  `agents` entry beats all of them for that agent, in both directions. See
+  [CAPTURE.md](CAPTURE.md).
 - `$schema`: optional, ignored by `ach`; point it at the published schema for editor validation
   and autocomplete.
 
@@ -83,7 +88,8 @@ The env layer applies to the flags that already have an env default: `--budget-u
 `--wall-ms`, `--idle-ms`, `--budget-alerts`, `--warn-at` (`_WARN_THRESHOLDS`), `--tz`, `--plan` and
 `--plan-window-*`, `--cost-mode`, `--project-aliases`, `--token` (`_HTTP_TOKEN`), `--source*`,
 `--gateway`, `--root`, `--max-jobs`, `--max-output-bytes`, `--allow-extra-args`,
-`--claude-default-config` and `--claude-no-background-tasks`; the full map is `ENV_MIRRORS` in
+`--claude-default-config`, `--claude-no-background-tasks` and `--capture-mode`
+(`ACH_CAPTURE_MODE`, the one mirror without the long prefix); the full map is `ENV_MIRRORS` in
 `src/cli/config.ts`. Any other key goes straight from the file to the flag. `stateDir` follows the
 same rule against `AGENTIC_CODING_HARNESS_STATE_DIR`, and so do `web.stateDir` / `web.dir` (the
 `web` command reads the same env var); a command's own `--state-dir` flag still wins. `stats.dir`
@@ -119,6 +125,9 @@ ach config --schema
 ach config --set profiles.<name>.<key> <value>      # or profiles.<name>.<key>=<value>
 ach config --set profiles.<name>.env.<NAME> <value>
 ach config --unset profiles.<name>[.<key>|.env[.<NAME>]]
+ach config --set contentCapture.default <full|metadata|off>
+ach config --set contentCapture.agents.<agent> <full|metadata|off>
+ach config --unset contentCapture[.default|.agents.<agent>]
 ach profiles list [--json]
 ```
 

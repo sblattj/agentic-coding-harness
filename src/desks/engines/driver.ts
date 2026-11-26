@@ -32,6 +32,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { ClaudeCodeAdapter } from "../../adapters/claude.ts";
 import { createDriver, defaultAdapters, type Driver } from "../../core/driver.ts";
+import { configuredCapturePolicy } from "../../cli/config.ts";
 import type { AgentAdapter, AgentEvent, RunResult, RunSpec } from "../../core/types.ts";
 import { roleNeedsRefresh, roleRefreshNote, writeRoleSent } from "../role-sent.ts";
 import { achSelfArgv, desksMcpDef } from "../self.ts";
@@ -205,6 +206,10 @@ export class DriverEngine implements Engine {
       adapters,
       stateDir: spec.stateDir,
       registry: { stateDir: spec.stateDir },
+      // #72: the config file's content-capture policy (ACH_CAPTURE_MODE is read by the driver).
+      // The live tap feeds the desk conversation itself; the host applies the
+      // tier to everything it records (src/desks/host.ts record()).
+      capture: { policy: configuredCapturePolicy(), liveEvents: "raw" },
       onEvent: (e) => this.#onAgentEvent(e),
       ...(this.#deps.onOutput ? { onOutput: this.#deps.onOutput } : {}),
     });

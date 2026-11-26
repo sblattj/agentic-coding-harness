@@ -39,6 +39,8 @@ import type { BudgetAlertEvent } from './types.js';
 import { createLatencyAccumulator, hasLatency } from './latency.ts';
 import { EventTail } from './event-retention.ts';
 import { findAncestorInstructions } from './ancestor-instructions.ts';
+import { providerLimitReason } from './provider-limit.ts';
+import { STRIPPED, captureEvent, captureEventPreview, resolveCaptureMode, stripContent, type CaptureMode, type CapturePolicy } from './capture.ts';
 
 /** Alert cooldown from AGENTIC_CODING_HARNESS_WARN_COOLDOWN_H; a bad value warns and keeps the 24h default (#20). */
 function envCooldownMs(warn: (w: string) => void): number {
@@ -184,6 +186,19 @@ export interface DriverOptions {
    * launched.
    */
   confineToWorkspace?: boolean;
+  /**
+   * Content-capture policy (#72, src/core/capture.ts). `mode` is the global
+   * tier the caller resolved (`ach run --capture-mode` or the config file's
+   * `run.captureMode`; it beats ACH_CAPTURE_MODE, RunSpec.captureMode beats
+   * it), `modeSource` labels it on the RunRecord, and `policy` is the config
+   * file's `contentCapture` (its `default` sits below the env var, its
+   * per-agent entries beat every global tier). Absent = env, else `full`.
+   * `liveEvents: 'raw'` hands `onEvent` the unstripped events: for a caller
+   * whose live tap IS the product (a desk conversation) and that applies the
+   * tier to its own records (src/desks/host.ts). Default: the tap gets the
+   * metadata form below `full`, since a CLI's stderr feed can land in a log.
+   */
+  capture?: { mode?: CaptureMode; modeSource?: string; policy?: CapturePolicy; liveEvents?: 'raw' | 'recorded' };
 }
 
 export interface Driver {
@@ -362,6 +377,24 @@ export function createDriver(options: DriverOptions): Driver {
       // Caller-chosen run id (async job tools pass a uuid so the registry
       // record is addressable before spawn); generated otherwise.
       const runId = typeof spec.runId === 'string' && spec.runId ? spec.runId : randomUUID();
+      // --- content-capture tier (#72) ---
+      // Resolved once, before anything is written: every sink below (raw
+      // transcript, RunRecord, outputDir, RunResult, onEvent) records only
+      // what this tier allows. Metering always reads the ORIGINAL events.
+      const capture = resolveCaptureMode({
+        agent: agentName,
+        explicit: parsed.captureMode ?? options.capture?.mode,
+        explicitSource: parsed.captureMode !== undefined ? 'spec' : (options.capture?.modeSource ?? 'flag'),
+        env: process.env,
+        policy: options.capture?.policy,
+      });
+      const captureFull = capture.mode === 'full';
+      /** The copy of an event a sink may record; null = not recorded at all (`off`). */
+      const recordable = (event: AgentEvent): AgentEvent | null => captureEvent(capture.mode, event);
+      /** Sinks that must see SOME event (onEvent, RunResult) get the metadata form under `off`. */
+      const rawLive = options.capture?.liveEvents === 'raw';
+      const shareable = (event: AgentEvent): AgentEvent =>
+        captureFull || rawLive ? event : (captureEvent('metadata', event) as AgentEvent);
       const budgetUsd = parsed.budget?.usd;
       const maxTurns = parsed.budget?.maxTurns;
       // Explicit budget.* wins; timeoutMs / idleTimeoutMs are watchdog-style
@@ -400,7 +433,8 @@ export function createDriver(options: DriverOptions): Driver {
           args: Array.isArray(parsed.extraArgs) ? parsed.extraArgs : [],
           cwd: typeof parsed.cwd === 'string' && parsed.cwd !== '' ? parsed.cwd : process.cwd(),
           startedAt: start,
-          prompt: parsed.prompt,
+          // #72: below `full` the prompt never reaches invocation.json.
+          prompt: captureFull ? parsed.prompt : STRIPPED,
           ...(parsed.model !== undefined ? { model: parsed.model } : {}),
         };
         artifacts = await RunArtifacts.open(outputDir, invocation);
@@ -427,10 +461,13 @@ export function createDriver(options: DriverOptions): Driver {
       // In outputDir mode the artifact mirror is chained ahead of the caller's
       // tap so stdout.txt still fills when neither caller provides one.
       const callerOutput = takeOnOutput(parsed) ?? options.onOutput;
+      // #72: raw stdout is unstructured agent output that cannot be stripped,
+      // so below `full` stdout.txt stays empty (the caller's own tap still
+      // runs: it is the caller's sink, not ach's record).
       const onOutput =
         artifacts !== null
           ? (chunk: string): void => {
-              artifacts?.stdoutChunk(chunk);
+              if (captureFull) artifacts?.stdoutChunk(chunk);
               callerOutput?.(chunk);
             }
           : callerOutput;
@@ -447,7 +484,11 @@ export function createDriver(options: DriverOptions): Driver {
         kiroPriorTurns = { id: resumeBare, count: prior.ok ? prior.store.turns.length : 0 };
       }
       try {
-        const handle = await adapter.launch(onOutput ? { ...launchSpec, onOutput } : launchSpec);
+        // #72: adapters that keep their own recordings (the interactive
+        // .cast) read the effective tier; set only below `full`, so a full
+        // run's launch spec is unchanged.
+        const tierSpec: RunSpec = captureFull ? launchSpec : { ...launchSpec, captureMode: capture.mode };
+        const handle = await adapter.launch(onOutput ? { ...tierSpec, onOutput } : tierSpec);
         const sessionId = handle.sessionId;
         // Cancellation hook for driver.abort(runId) until the run settles.
         activeRuns.set(runId, () => {
@@ -462,8 +503,17 @@ export function createDriver(options: DriverOptions): Driver {
         // this run (per run, so a resumed session's second run appends its
         // own chain to the same file) and the chain is sealed below.
         const chain = new ChainWriter(runId);
+        // #72: the chain frames the RECORDED (tier-stripped) bytes, so a
+        // metadata/off run seals and verifies exactly like a full one.
         const writeTranscript = (event: AgentEvent): void => {
-          transcript.write(`${chain.frame(JSON.stringify(event))}\n`);
+          const stored = recordable(event);
+          if (stored === null) return;
+          transcript.write(`${chain.frame(JSON.stringify(stored))}\n`);
+        };
+        const writeArtifactEvent = (event: AgentEvent): void => {
+          if (artifacts === null) return;
+          const stored = recordable(event);
+          if (stored !== null) artifacts.event(stored);
         };
 
         // #199: RunResult.events, capped to a tail when the adapter asks
@@ -472,8 +522,17 @@ export function createDriver(options: DriverOptions): Driver {
         const events = new EventTail(adapter.resultEventTail);
         const latencyAcc = createLatencyAccumulator();
         const availability = createAvailabilityTracker();
+        let providerLimitHit = false;
         const recordEvent = (event: AgentEvent): void => {
-          events.push(event);
+          // #72: RunResult.events holds the tier's recorded copy (callers such
+          // as trial cell artifacts persist it); latency/availability below
+          // read the original.
+          const stored = recordable(event);
+          if (stored !== null) events.push(stored);
+          // #72: provider-limit detection reads error-lane TEXT, which the
+          // stored copy no longer has below `full`; detect on the original and
+          // carry only the verdict.
+          if (!captureFull && !providerLimitHit && providerLimitReason([event]) !== null) providerLimitHit = true;
           latencyAcc.observe(event);
           availability.observe(event);
         };
@@ -662,7 +721,10 @@ export function createDriver(options: DriverOptions): Driver {
             cwd: runCwd,
             ...runGit,
             ...resolvePr({ flag: parsed.pr, env: process.env, ...prContextFor(runId, runCwd, runGit.branch) }),
-            promptPreview: parsed.prompt.slice(0, 120),
+            // #72: no prompt text below `full`.
+            ...(captureFull ? { promptPreview: parsed.prompt.slice(0, 120) } : {}),
+            captureMode: capture.mode,
+            captureSource: capture.source,
             startedAt: start,
             updatedAt: Date.now(),
             status: 'running',
@@ -779,8 +841,8 @@ export function createDriver(options: DriverOptions): Driver {
           };
           recordEvent(alertEvent);
           writeTranscript(alertEvent);
-          artifacts?.event(alertEvent);
-          onEvent?.(alertEvent);
+          writeArtifactEvent(alertEvent);
+          onEvent?.(shareable(alertEvent));
           if (rec) {
             (rec.alerts ??= []).push({ ...a });
             rec.lastEvent = `budget.alert ${alertEvent.data}`;
@@ -793,8 +855,8 @@ export function createDriver(options: DriverOptions): Driver {
             armIdleTimer(); // every AgentEvent defers the idle deadline
             recordEvent(event);
             writeTranscript(event);
-            artifacts?.event(event);
-            onEvent?.(event);
+            writeArtifactEvent(event);
+            onEvent?.(shareable(event));
             contextMeter?.observe(event);
             const context = contextMeter?.snapshot();
             if (context?.available && context.basis === 'last-call' && context.percentage !== undefined) {
@@ -802,7 +864,7 @@ export function createDriver(options: DriverOptions): Driver {
             }
 
             if (rec) {
-              rec.lastEvent = eventPreview(event);
+              rec.lastEvent = captureEventPreview(capture.mode, event, () => eventPreview(event));
               if (typeof event.sessionId === 'string' && event.sessionId) rec.sessionId = event.sessionId;
             }
             // Wall near-limit warnings are event-clocked: checked per event.
@@ -1166,8 +1228,10 @@ export function createDriver(options: DriverOptions): Driver {
           runId,
           sessionId: handle.sessionId,
           events: events.toArray(),
-          ...(events.cap !== undefined ? { eventSummary: { total: events.total, retained: events.retained, turns: steps, latency: latencyAcc.result() } } : {}),
-          tokens,
+          ...(events.cap !== undefined || !captureFull ? { eventSummary: { total: events.total, retained: events.retained, turns: steps, latency: latencyAcc.result() } } : {}),
+          // #72: token records carry the adapter's native `extra` (free-form
+          // strings); below `full` only their numbers and structural fields stay.
+          tokens: captureFull ? tokens : stripContent(tokens),
           totalCost: cumulativeCost,
           durationMs: Date.now() - start,
           exitStatus,
@@ -1175,7 +1239,10 @@ export function createDriver(options: DriverOptions): Driver {
           usage,
           ...(typeof parsed.variant === 'string' && parsed.variant !== '' ? { variant: parsed.variant } : {}),
           // #78: the caller's prompt (pre-attachment), for SFT export; not in the registry record.
-          ...(typeof parsed.prompt === 'string' && parsed.prompt !== '' ? { prompt: parsed.prompt } : {}),
+          // #72: below `full` it is not carried (trial cell artifacts persist RunResult).
+          ...(captureFull && typeof parsed.prompt === 'string' && parsed.prompt !== '' ? { prompt: parsed.prompt } : {}),
+          ...(!captureFull ? { captureMode: capture.mode } : {}),
+          ...(providerLimitHit ? { providerLimit: true } : {}),
           ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
           ...(effortResolution !== undefined ? { effort: effortResolution.provenance } : {}),
           ...(attachmentManifest !== undefined ? { attachments: attachmentManifest } : {}),
@@ -1186,7 +1253,7 @@ export function createDriver(options: DriverOptions): Driver {
         await settleArtifacts(exitStatusToRunStatus(exitStatus, budgetTripKind), result);
         // Run lifecycle notification (#63): fired only here, after the RunRecord
         // (finalizeRunRecord) and status.json are durable. Metadata only.
-        notifyRunEnd({ runId, agent: agentName, prompt: parsed.prompt, exitStatus, costUsd: cumulativeCost }, options.notify);
+        notifyRunEnd({ runId, agent: agentName, ...(captureFull ? { prompt: parsed.prompt } : {}), exitStatus, costUsd: cumulativeCost }, options.notify);
         return result;
       } catch (err) {
         // A launch that cannot even start the CLI (#60) is an outage, not a
@@ -1194,11 +1261,11 @@ export function createDriver(options: DriverOptions): Driver {
         const launchUnavailable = classifyLaunchError(err, typeof parsed.cwd === 'string' ? parsed.cwd : undefined);
         if (launchUnavailable !== null) {
           await settleArtifacts('unavailable');
-          notifyRunEnd({ runId, agent: agentName, prompt: parsed.prompt, exitStatus: 'unavailable' }, options.notify);
+          notifyRunEnd({ runId, agent: agentName, ...(captureFull ? { prompt: parsed.prompt } : {}), exitStatus: 'unavailable' }, options.notify);
           throw new HarnessError(`agent "${agentName}" unavailable: ${launchUnavailable}`, 'UNAVAILABLE');
         }
         await settleArtifacts('error');
-        notifyRunEnd({ runId, agent: agentName, prompt: parsed.prompt, exitStatus: 'error' }, options.notify);
+        notifyRunEnd({ runId, agent: agentName, ...(captureFull ? { prompt: parsed.prompt } : {}), exitStatus: 'error' }, options.notify);
         throw err;
       }
     },

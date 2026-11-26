@@ -42,6 +42,13 @@
             "number"
           ]
         },
+        "captureMode": {
+          "description": "ach run --capture-mode (env ACH_CAPTURE_MODE wins over this)",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
         "resume": {
           "description": "ach run --resume",
           "type": [
@@ -959,6 +966,13 @@
               "number"
             ]
           },
+          "captureMode": {
+            "description": "ach run --capture-mode",
+            "type": [
+              "string",
+              "number"
+            ]
+          },
           "resume": {
             "description": "ach run --resume",
             "type": [
@@ -1491,6 +1505,49 @@
       },
       "additionalProperties": false,
       "description": "secret masking before export (#71): see docs/MASKING.md"
+    },
+    "contentCapture": {
+      "description": "content-capture policy applied at record time (#72): full | metadata | off; a bare tier is the default",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "metadata",
+            "full"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "default": {
+              "description": "global tier when no --capture-mode, ACH_CAPTURE_MODE or run.captureMode is set",
+              "type": "string",
+              "enum": [
+                "off",
+                "metadata",
+                "full"
+              ]
+            },
+            "agents": {
+              "description": "per-agent tier; beats every global tier for that agent",
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "metadata",
+                  "full"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     }
   },
   "additionalProperties": false,

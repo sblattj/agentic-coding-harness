@@ -17,6 +17,8 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { listRunRecords, type RunRecord } from "../core/registry.ts";
 import { AGENTS, isKnownAgent } from "../core/types.ts";
+import { resolveCaptureMode, STRIPPED } from "../core/capture.ts";
+import { configuredCapturePolicy } from "../cli/config.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { loadLayout, deskPort, roleFiles } from "./config.ts";
 import { engineKindFor } from "./engines/index.ts";
@@ -814,7 +816,11 @@ export async function deskSend(o: StackOpts & { from: Sender; to: string; text: 
   if (!live.includes(o.to)) throw new Error(`desks: ${o.to} is not running (dead) in stack "${stack}"; live: ${known}`);
   const r = await hostSend(entryTarget(stateDir, stack, target), o.from, o.text);
   const message: DeskMessage = { id: r.id, from: o.from, to: o.to, text: o.text, at: Date.now(), delivered: r.delivered };
-  appendMessage(stateDir, stack, message);
+  // #72: messages.jsonl is a display log (deskInbox), delivery already went
+  // through hostSend: below `full` for the recipient's agent it keeps the
+  // routing fields and drops the text, like that desk's events file.
+  const tier = resolveCaptureMode({ agent: target.agent, env: process.env, policy: configuredCapturePolicy() }).mode;
+  appendMessage(stateDir, stack, tier === "full" ? message : { ...message, text: STRIPPED });
   const sender = roster.entries[o.from];
   if (sender && live.includes(o.from)) {
     try {

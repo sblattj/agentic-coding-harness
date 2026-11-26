@@ -430,6 +430,7 @@ ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cu
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
             [--effort low|medium|high|xhigh|max]   # one level, mapped per agent (docs/EFFORT.md)
+            [--capture-mode full|metadata|off]     # how much prompt/tool text ach records (docs/CAPTURE.md)
             [--extra-args 'a b']... [--extra-arg TOKEN]...   # see "Passing extra CLI args"
             [--permission-mode MODE] [--allowed-tools LIST]... [--disallowed-tools LIST]...
             [--mcp-config PATH|JSON] [--evidence-dir DIR]   # see "Permission and sandbox flags"
@@ -440,10 +441,10 @@ ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cu
                            [--kiro-ide-user-data-dir DIR] [--kiro-ide-no-new-session]
             claude only: [--claude-default-config]   # default CLAUDE_CONFIG_DIR (keychain OAuth)
                          [--claude-no-background-tasks]  # claude -p waits for spawned sub-agents
-ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json] [--effort E]
+ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json] [--effort E] [--capture-mode C]
             # resumable agents x tasks x models x trials grid; re-run the same command
             # after an interruption and finalized cells are skipped (docs/TRIALS.md)
-ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--effort E] [--tasks-dir DIR] [--ledger PATH]
+ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--effort E] [--capture-mode C] [--tasks-dir DIR] [--ledger PATH]
             [--permission-mode M] [--allowed-tools L] [--disallowed-tools L] [--mcp-config PATH|JSON]
             # bundled task suite; missing agent CLIs skipped; HTML report next to the ledger
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
@@ -608,6 +609,22 @@ records `effort: {requested, applied, mechanism}` on its RunRecord and fills
 `usage.model.requestedEffort`. `ach trial --effort`, a plan's `effort` key and the MCP
 `effort` param go through the same table. Full table and the help lines it relies on:
 [docs/EFFORT.md](docs/EFFORT.md).
+
+### Content capture: `--capture-mode`
+
+`--capture-mode full|metadata|off` (or `ACH_CAPTURE_MODE`, or `contentCapture` in the config
+file, with per-agent overrides) sets how much of a run's text ach writes. `full` is the
+default and changes nothing. `metadata` keeps every event's type, ids, timings, model and tool
+names, token counts and costs, and replaces every other string with `[STRIPPED]`. `off` keeps
+only the lifecycle and the token lines. The tier is applied when ach records, so the prompt and
+tool output never reach the state dir; `ach stats`, `ach audit` and `ach verify-run` work the
+same in every tier, and each RunRecord says which tier it ran under. Sinks and precedence:
+[docs/CAPTURE.md](docs/CAPTURE.md).
+
+```sh
+ach run --agent codex --capture-mode metadata "refactor the parser"
+ach config --set contentCapture.agents.codex off
+```
 
 ### Passing extra CLI args to the agent: `--extra-args` / `--extra-arg`
 
@@ -1259,6 +1276,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 
 - [Cost modes and provenance](docs/PROVENANCE.md), [billing blocks and plan estimates](docs/USAGE-WINDOWS.md), [quota headroom](docs/QUOTA.md).
 - [Config file (`.ach/config.json`, `ach config`)](docs/CONFIG.md): per-command flag defaults, precedence flag > env > file > default, named agent profiles (`ach run --profile`), [JSON schema](docs/config.schema.json).
+- [Content capture (`--capture-mode full|metadata|off`, `contentCapture`)](docs/CAPTURE.md): how much prompt and tool text ach records, per run and per agent.
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
 - [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them. Privacy modes (`--privacy redact|anon`) strip paths, prompt text and ids from shared reports and exports.

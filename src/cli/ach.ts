@@ -14,7 +14,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 // #41: config-aware drop-in for node:util parseArgs (src/cli/config.ts).
-import { applyConfig, cmdConfig, cmdProfiles, CONFIG_USAGE, PROFILES_USAGE, parseArgs, profileRecord, takeConfigFlag, takeResolution, type OptionTable } from "./config.ts";
+import { applyConfig, cmdConfig, cmdProfiles, CONFIG_USAGE, PROFILES_USAGE, configuredCapturePolicy, parseArgs, profileRecord, takeConfigFlag, takeResolution, type OptionTable } from "./config.ts";
+import { parseCaptureMode } from "../core/capture.ts";
 import { fileURLToPath } from "node:url";
 import { flushAndExit, trackStdioBackpressure } from "./stdio-flush.ts";
 import {
@@ -63,7 +64,7 @@ import {
 import { cmdRegrade } from "./regrade.ts";
 import { cmdTrial } from "./trial-matrix.ts";
 import { z } from "zod";
-import { checkAdapterProfile, createDriver, defaultAdapters } from "../core/driver.ts";
+import { checkAdapterProfile, createDriver, defaultAdapters, type DriverOptions } from "../core/driver.ts";
 import { parseRunSpec } from "../core/validate.ts";
 import { VERSION } from "../version.ts";
 import { stateDir, loadOffsets, saveOffsets, appendRecords, type StatRecord } from "../core/store.ts";
@@ -229,6 +230,12 @@ usage:
                            cursor <model>[effort=]; gemini/prime/kiro-ide/null/custom have none and
                            run anyway with a warning. Recorded as effort {requested, applied,
                            mechanism} on the RunRecord; see docs/EFFORT.md)
+              [--capture-mode full|metadata|off]  (what ach records of the run's text, applied
+                           at record time: full = everything (default); metadata = types, ids,
+                           model/tool names, timings and tokens, every other string [STRIPPED];
+                           off = lifecycle events and totals only. Env ACH_CAPTURE_MODE; config
+                           run.captureMode / contentCapture (per-agent overrides beat both);
+                           recorded as captureMode on the RunRecord; see docs/CAPTURE.md)
               [--extra-args '<a b>']... [--extra-arg <token>]...  (extra CLI args for the
                            launched agent, every launchable agent; both repeatable and kept in
                            command-line order. --extra-args splits each value on spaces;
@@ -354,6 +361,7 @@ usage:
                 [--isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]]
                 [--claude-no-background-tasks]
                 [--effort low|medium|high|xhigh|max]  (every cell, as ach run --effort; overrides plan effort)
+                [--capture-mode full|metadata|off]  (every cell, as ach run --capture-mode)
                 (resumable agents x tasks x models x trials grid; every cell is one
                  run labelled experiment/variant/cellId=agent:task:model:trialN;
                  <plan>.ledger.jsonl records finalized cells, so re-running the same
@@ -361,7 +369,7 @@ usage:
                  cells re-run only with --retry-failed; unavailable-CLI and
                  provider-limit (usage/rate limit, 429) cells have no verdict and
                  run again; exit 1 only on errors or interruption; see docs/TRIALS.md)
-  ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--effort E]
+  ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--effort E] [--capture-mode C]
                 [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json] [--hermetic]
                 [--isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]]
                 [--claude-no-background-tasks]
@@ -819,6 +827,17 @@ type RunSpecFlagValues = Parameters<typeof alertFlagsToBudget>[0] &
  * with the save-time profile check (#77, checkRunProfile) so a profile is
  * validated against exactly the spec a run would get.
  */
+/** DriverOptions.capture for a CLI run (#72): `--capture-mode` (any layer) + the config file's policy. */
+export function runCaptureOptions(
+  raw: string | undefined,
+  resolution: { effective: Array<{ flag: string; source: string }> } | null,
+): NonNullable<DriverOptions["capture"]> {
+  const policy = configuredCapturePolicy();
+  if (raw === undefined) return { policy };
+  const layer = resolution?.effective.find((e) => e.flag === "capture-mode")?.source ?? "flag";
+  return { mode: parseCaptureMode(raw, "--capture-mode"), modeSource: layer.startsWith("file:") ? "config" : layer, policy };
+}
+
 function runSpecFromFlags(
   agent: string,
   values: RunSpecFlagValues,
@@ -888,6 +907,8 @@ async function cmdRun(rest: string[]): Promise<number> {
       model: { type: "string" },
       // #54: portable reasoning effort, mapped per agent (src/core/effort.ts).
       effort: { type: "string" },
+      // #72: record-time content-capture tier (src/core/capture.ts).
+      "capture-mode": { type: "string" },
       resume: { type: "string" },
       pr: { type: "string" },
       "budget-usd": { type: "string" },
@@ -981,6 +1002,10 @@ async function cmdRun(rest: string[]): Promise<number> {
   const prompt = args.positionals.join(" ").trim();
   if (!prompt) throw new HarnessError("run requires a prompt argument", "USAGE");
   if (interactive !== null) assertInteractiveSupported(agent, args.values.resume);
+  // #72: the global tier from the flag (or the file's run.captureMode / a
+  // profile, injected by the choke point), labeled with its layer; the env
+  // var and the file's contentCapture policy are resolved by the driver.
+  const captureOptions = runCaptureOptions(args.values["capture-mode"], resolution);
 
   // The adapter registry takes no options (driver.ts defaultAdapters), so the
   // flag travels as the env var the Claude adapter already honours.
@@ -1014,6 +1039,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     pricer: custom.wrapPricer ? custom.wrapPricer(basePricer) : basePricer,
     onEvent,
     registry: { stateDir: stateDir() },
+    capture: captureOptions,
   });
 
   const built = runSpecFromFlags(agent, args.values, args.tokens, prompt, trialFlags.labels.variant);
@@ -2362,8 +2388,12 @@ async function cmdEmit(rest: string[]): Promise<number> {
   // When --input is a full RunResult (not just an event stream), inherit its
   // sessionId/agent/model so callers don't have to restate them per-flag.
   const runResult = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-    ? parsed as { sessionId?: unknown; agent?: unknown; model?: unknown; tokens?: unknown }
+    ? parsed as { sessionId?: unknown; agent?: unknown; model?: unknown; tokens?: unknown; captureMode?: unknown }
     : {};
+  // #72: a RunResult carries captureMode only below `full`; stamp it then,
+  // so a full run's export stays byte-for-byte what it was.
+  const captureStamp: { captureMode?: string } =
+    typeof runResult.captureMode === "string" && runResult.captureMode !== "full" ? { captureMode: runResult.captureMode } : {};
   // RunResult doesn't carry top-level agent/model — fall back to the first
   // token record's fields so Langfuse span names stay meaningful.
   const firstToken = Array.isArray(runResult.tokens) && runResult.tokens.length > 0
@@ -2428,6 +2458,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
         agentName: args.values.agent ?? defaultAgent,
         model: args.values.model ?? defaultModel,
         ...(resourceAttributes !== undefined ? { resourceAttributes } : {}),
+        ...captureStamp,
       });
     } catch (e) {
       throw new HarnessError(
@@ -2457,6 +2488,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
       agentName: args.values.agent ?? defaultAgent,
       model: args.values.model ?? defaultModel,
       ...(resourceAttributes !== undefined ? { resourceAttributes } : {}),
+      ...captureStamp,
     });
     body = JSON.stringify(doc, null, 2) + "\n";
     if (args.values.out) await fs.writeFile(args.values.out, body);

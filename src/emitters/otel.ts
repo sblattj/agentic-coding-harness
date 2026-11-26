@@ -252,6 +252,7 @@ export function toOtlpJson(
     serviceName?: string;
     /** Extra resource attributes after `service.name` (#46: `ach.privacy`). */
     resourceAttributes?: Record<string, string>;
+    captureMode?: string;
   },
 ): OtlpResourceSpansJson {
   const serviceName = opts.serviceName ?? 'agentic-coding-harness';
@@ -284,6 +285,9 @@ export function toOtlpJson(
           attributes: [
             { key: 'service.name', value: { stringValue: serviceName } },
             ...Object.entries(opts.resourceAttributes ?? {}).map(([key, v]) => ({ key, value: { stringValue: v } })),
+            // #72: the run's content-capture tier, so a consumer can tell a
+            // metadata-only trace from one whose content is just empty.
+            ...(opts.captureMode !== undefined ? [{ key: 'ach.capture_mode', value: { stringValue: opts.captureMode } }] : []),
           ],
         },
         scopeSpans: [

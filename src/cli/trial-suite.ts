@@ -246,6 +246,8 @@ export interface SuiteCliOptions {
   sandbox?: SandboxPolicy;
   /** #54: `--effort` for every cell. */
   effort?: EffortLevel;
+  /** #72: content-capture options for every cell (ExecuteMatrixCliOptions.capture). */
+  capture?: ExecuteMatrixCliOptions["capture"];
   /** Tests: the agent-availability probe. */
   probe?: (name: string) => { command: string | null; available: boolean };
 }
@@ -323,6 +325,7 @@ export async function runSuiteCli(o: SuiteCliOptions): Promise<number> {
     json: o.json,
     ...(o.hermetic === true ? { hermetic: true } : {}),
     ...(o.isolate !== undefined ? { isolate: o.isolate } : {}),
+    ...(o.capture !== undefined ? { capture: o.capture } : {}),
     jsonExtra,
     onOutcome: (cell, outcome) => {
       if (outcome.result !== undefined) writeCellArtifact(paths.runs, cell, outcome);

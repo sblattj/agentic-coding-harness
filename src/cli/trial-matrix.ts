@@ -29,7 +29,9 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 
-import { createDriver, defaultAdapters, type Driver } from "../core/driver.ts";
+import { createDriver, defaultAdapters, type Driver, type DriverOptions } from "../core/driver.ts";
+import { parseCaptureMode } from "../core/capture.ts";
+import { configuredCapturePolicy } from "./config.ts";
 import { createPricer, type Pricer } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { sandboxFromFlags } from "./run-sandbox.ts";
@@ -892,7 +894,9 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
   }
   const result = outcome.result!;
   opts.onOutcome?.(cell, outcome);
-  const limitReason = providerLimitReason(result.events);
+  // #72: below `full` the events are stripped; the driver's verdict stands in for the text.
+  const limitReason =
+    providerLimitReason(result.events) ?? (result.providerLimit === true ? `rate or usage limit (text not recorded: capture mode ${result.captureMode ?? "metadata"})` : null);
   const status = classifyCell({
     exitStatus: result.exitStatus,
     ...(outcome.verify !== undefined ? { verify: outcome.verify.status } : {}),
@@ -996,7 +1000,11 @@ export async function runMatrix(opts: RunMatrixOptions): Promise<MatrixSummary> 
  * descriptors. `custom` (needs --template) and read-only transcript sources
  * are rejected up front, before anything launches.
  */
-export async function createMatrixDriver(agents: readonly string[], stateDir: string): Promise<Driver> {
+export async function createMatrixDriver(
+  agents: readonly string[],
+  stateDir: string,
+  capture: NonNullable<DriverOptions["capture"]> = { policy: configuredCapturePolicy() },
+): Promise<Driver> {
   const unique = [...new Set(agents)];
   const extra: Record<string, AgentAdapter> = {};
   let pricer: Pricer = createPricer();
@@ -1017,6 +1025,8 @@ export async function createMatrixDriver(agents: readonly string[], stateDir: st
     stateDir,
     pricer,
     registry: { stateDir },
+    // #72: the content-capture policy (per-agent entries, --capture-mode).
+    capture,
   });
 }
 
@@ -1082,6 +1092,8 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       model: { type: "string", multiple: true },
       // #54: portable reasoning effort for every cell (overrides a plan's `effort`).
       effort: { type: "string" },
+      // #72: record-time content-capture tier for every cell (src/core/capture.ts).
+      "capture-mode": { type: "string" },
       repeat: { type: "string" },
       "tasks-dir": { type: "string" },
       "dry-run": { type: "boolean", default: false },
@@ -1101,6 +1113,11 @@ export async function cmdTrial(rest: string[]): Promise<number> {
   });
   const isolate = isolateOptionsFromFlags(args.values, { hermetic: args.values.hermetic === true, resume: false });
   const effort = args.values.effort !== undefined ? parseTrialEffort(args.values.effort) : undefined;
+  const rawCapture = args.values["capture-mode"];
+  const capture: NonNullable<DriverOptions["capture"]> = {
+    policy: configuredCapturePolicy(),
+    ...(rawCapture !== undefined ? { mode: parseCaptureMode(rawCapture, "--capture-mode"), modeSource: "flag" } : {}),
+  };
   const planFile = args.values.matrix;
   const suite = args.values.suite;
   // Same channel as `ach run`: the env var the Claude adapter honours (cells run in-process).
@@ -1126,6 +1143,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       json: args.values.json,
       ...(args.values.hermetic ? { hermetic: true } : {}),
       ...(isolate !== undefined ? { isolate } : {}),
+      capture,
     });
   }
   if (planFile === undefined || planFile.trim() === "") {
@@ -1144,10 +1162,13 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     json: args.values.json,
     ...(args.values.hermetic ? { hermetic: true } : {}),
     ...(isolate !== undefined ? { isolate } : {}),
+    capture,
   });
 }
 
 export interface ExecuteMatrixCliOptions {
+  /** #72: DriverOptions.capture for every cell (default: the loaded config's policy). */
+  capture?: NonNullable<DriverOptions["capture"]>;
   /** A parsed plan (loadMatrixPlan / parseMatrixPlan, or built in code by a suite). */
   plan: MatrixPlan;
   /** Directory relative task `dir` / `cwd` entries resolve against. */
@@ -1240,7 +1261,7 @@ export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<numb
   }
 
   const state = defaultStateDir();
-  const driver = await createMatrixDriver(cells.map((c) => c.agent), state);
+  const driver = await createMatrixDriver(cells.map((c) => c.agent), state, o.capture);
   const { malformed } = readLedger(ledgerPath);
   if (malformed > 0) process.stderr.write(`[warn] ledger: ${malformed} malformed line(s) ignored\n`);
   let i = 0;
