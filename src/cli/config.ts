@@ -39,7 +39,7 @@ import {
   type CapturePolicy,
 } from "../core/capture.ts";
 import { EXIT_CODES } from "./exit-codes.ts";
-import { DEFAULT_MASK_MODE, MASK_ENV, MaskConfigSchema, type MaskConfig } from "../core/masking.ts";
+import { DEFAULT_MASK_MODE, MASK_ENV, MASK_SINKS, MaskConfigSchema, SINK_DEFAULT_MASK_MODE, type MaskConfig } from "../core/masking.ts";
 import { DEFAULT_PRIVACY_MODE, PRIVACY_ENV } from "../core/privacy.ts";
 
 export const CONFIG_ENV = "AGENTIC_CODING_HARNESS_CONFIG";
@@ -949,6 +949,16 @@ export function resolveRows(opts: {
     if (isSet(envMode)) rows.push({ key: `${MASK_KEY}.mode`, value: envMode, source: `env:${MASK_ENV}` });
     else if (fileMode !== undefined) rows.push({ key: `${MASK_KEY}.mode`, value: fileMode.value, source: `file:${fileMode.file}` });
     else rows.push({ key: `${MASK_KEY}.mode`, value: DEFAULT_MASK_MODE, source: "default" });
+    // #71 owner decision: a sink whose built-in default differs (otel, langfuse: all) gets its own
+    // default row, but only when no env var, mask.mode or mask.<sink> already decides it.
+    if (!isSet(envMode) && fileMode === undefined) {
+      for (const sink of MASK_SINKS) {
+        const builtIn = SINK_DEFAULT_MASK_MODE[sink];
+        if (builtIn !== DEFAULT_MASK_MODE && !opts.merged.has(`${MASK_KEY}.${sink}`)) {
+          rows.push({ key: `${MASK_KEY}.${sink}`, value: builtIn, source: "default" });
+        }
+      }
+    }
     // #46: the privacy mode, resolved the same way (env > file > default).
     const envPrivacy = env[PRIVACY_ENV];
     const filePrivacy = opts.merged.get(`${MASK_KEY}.privacy`);

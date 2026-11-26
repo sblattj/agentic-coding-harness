@@ -287,11 +287,13 @@ describe("masking: JSON values", () => {
 
 // ---------------------------------------------------------------- policy and default
 
-describe("masking: policy and the pending default", () => {
-  test("DEFAULT_MASK_MODE is none (today's behavior; pending an owner decision)", () => {
+describe("masking: policy and the per-sink defaults", () => {
+  test("DEFAULT_MASK_MODE is none for local sinks; otel and langfuse default to all (#71 owner decision)", () => {
     assert.equal(DEFAULT_MASK_MODE, "none");
     assert.equal(NO_MASK.mode, "none");
-    assert.equal(resolveMaskPolicy({ sink: "otel", env: {} }).mode, DEFAULT_MASK_MODE);
+    assert.equal(resolveMaskPolicy({ sink: "atif", env: {} }).mode, DEFAULT_MASK_MODE);
+    assert.equal(resolveMaskPolicy({ sink: "otel", env: {} }).mode, "all");
+    assert.equal(resolveMaskPolicy({ sink: "langfuse", env: {} }).mode, "all");
   });
 
   test("mode none returns the same reference without scanning", () => {
@@ -312,7 +314,8 @@ describe("masking: policy and the pending default", () => {
 
   test("precedence: --mask > env > mask.<sink> > mask.mode > default", () => {
     const config = { mode: "all" as const, atif: "none" as const };
-    assert.equal(resolveMaskPolicy({ sink: "otel", config, env: {} }).mode, "all");
+    // sft, a local sink (built-in none), so mask.mode all is what turns it on.
+    assert.equal(resolveMaskPolicy({ sink: "sft", config, env: {} }).mode, "all");
     assert.equal(resolveMaskPolicy({ sink: "atif", config, env: {} }).mode, "none");
     assert.equal(resolveMaskPolicy({ sink: "atif", config, env: { [MASK_ENV]: "preview" } }).mode, "preview");
     assert.equal(resolveMaskPolicy({ sink: "atif", config, env: { [MASK_ENV]: "preview" }, flags: { mask: "all" } }).mode, "all");
@@ -330,10 +333,12 @@ describe("masking: policy and the pending default", () => {
 // ---------------------------------------------------------------- capture-time: emit
 
 describe("ach emit: default output is byte-for-byte today's", () => {
-  test("otel/atif/sft with no mask flag or config equal the untouched builders (secrets included)", () => {
+  // otel masks by default since the #71 owner decision; `--mask none` keeps pinning its unmasked
+  // builder output here (tests/mask-sink-defaults.test.ts pins the new default).
+  test("atif/sft with no mask flag or config, and otel with --mask none, equal the untouched builders (secrets included)", () => {
     const run = plantedRun();
     const events = run.events as AgentEvent[];
-    const otel = cli(["emit", "--input", runFile, "--format", "otel"], baseEnv());
+    const otel = cli(["emit", "--input", runFile, "--format", "otel", "--mask", "none"], baseEnv());
     assert.equal(otel.code, 0, otel.stderr);
     const want = JSON.stringify(toOtlpJson(events, { sessionId: run.sessionId as string, agentName: "claude", model: "unknown-model" }), null, 2) + "\n";
     assert.equal(stableIds(otel.stdout), stableIds(want));
@@ -368,7 +373,7 @@ describe("ach emit --mask all: no planted secret reaches any sink", () => {
   test("otel span attributes (session id) are masked", () => {
     const r = cli(["emit", "--input", runFile, "--format", "otel", "--mask", "all"], baseEnv());
     assert.equal(r.code, 0, r.stderr);
-    assert.ok(cli(["emit", "--input", runFile, "--format", "otel"], baseEnv()).stdout.includes(S.email), "control: today's otel carries the email");
+    assert.ok(cli(["emit", "--input", runFile, "--format", "otel", "--mask", "none"], baseEnv()).stdout.includes(S.email), "control: unmasked otel carries the email");
     assert.deepEqual(leaks(r.stdout, PLANTED_IN_RUN), []);
     assert.match(r.stdout, /"gen_ai\.conversation\.id",\s*"value": \{\s*"stringValue": "\[REDACTED_EMAIL\]"/);
   });
@@ -401,10 +406,10 @@ describe("ach emit --mask all: no planted secret reaches any sink", () => {
     try {
       const port = (server.address() as { port: number }).port;
       const lf = ["--langfuse-url", `http://127.0.0.1:${port}`, "--langfuse-public-key", "pk-test", "--langfuse-secret-key", "sk-test"];
-      const plain = await cliAsync(["emit", "--input", runFile, "--format", "langfuse", ...lf], baseEnv());
+      const plain = await cliAsync(["emit", "--input", runFile, "--format", "langfuse", "--mask", "none", ...lf], baseEnv());
       assert.equal(plain.code, 0, plain.stderr);
       assert.equal(bodies.length, 1);
-      assert.ok(bodies[0]!.includes(S.email), "control: today's POST carries the email");
+      assert.ok(bodies[0]!.includes(S.email), "control: an unmasked (--mask none) POST carries the email");
       const masked = await cliAsync(["emit", "--input", runFile, "--format", "langfuse", "--mask", "all", ...lf], baseEnv());
       assert.equal(masked.code, 0, masked.stderr);
       assert.equal(bodies.length, 2);
@@ -441,9 +446,10 @@ describe("config file and env: global and per-emitter toggles", () => {
     const cfg = path.join(tmp, "mask-config.json");
     await fs.writeFile(cfg, JSON.stringify({ mask: { mode: "all", atif: "none" } }));
     const env = { ...baseEnv(), AGENTIC_CODING_HARNESS_CONFIG: cfg };
-    const otel = cli(["emit", "--input", runFile, "--format", "otel"], env);
-    assert.equal(otel.code, 0, otel.stderr);
-    assert.deepEqual(leaks(otel.stdout, PLANTED_IN_RUN), []);
+    // sft, a local sink (built-in none), so the masking comes from mask.mode all.
+    const sft = cli(["emit", "--input", runFile, "--format", "sft"], env);
+    assert.equal(sft.code, 0, sft.stderr);
+    assert.deepEqual(leaks(sft.stdout, PLANTED_IN_RUN), []);
     const atif = cli(["emit", "--input", runFile, "--format", "atif"], env);
     assert.ok(atif.stdout.includes(S.anthropic), "mask.atif none keeps atif unmasked");
     const envAll = cli(["emit", "--input", runFile, "--format", "atif"], { ...env, [MASK_ENV]: "all" });
@@ -627,7 +633,8 @@ describe("ach scrub: share-time preview and apply over an exported artifact set"
     const d = await trialDir();
     assert.equal(cli(["report", d, "--out", path.join(real, "report.html")], baseEnv()).code, 0);
     assert.equal(cli(["emit", "--input", runFile, "--format", "atif", "--out", path.join(real, "run.atif.json")], baseEnv()).code, 0);
-    const otel = cli(["emit", "--input", runFile, "--format", "otel"], baseEnv());
+    // --mask none: scrub needs a raw otel artifact (otel masks by default since the #71 owner decision).
+    const otel = cli(["emit", "--input", runFile, "--format", "otel", "--mask", "none"], baseEnv());
     await fs.writeFile(path.join(real, "run.otel.json"), otel.stdout);
     const html = await fs.readFile(path.join(real, "report.html"), "utf8");
     const inHtml = PLANTED_IN_RUN.filter((v) => html.includes(v));

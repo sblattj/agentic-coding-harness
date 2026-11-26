@@ -38,7 +38,8 @@ function parseArgs<T extends z.ZodTypeAny>(schema: T, args: Record<string, unkno
   return parsed.data;
 }
 
-/** #71: the mask policy for one MCP export (arg `mask` > env > config file > DEFAULT_MASK_MODE);
+/** #71: the mask policy for one MCP export (arg `mask` > env > config file > the sink's
+ *  built-in default, SINK_DEFAULT_MASK_MODE: otel and langfuse `all`, atif and report `none`);
  *  #46: the same for arg `privacy`. */
 function mcpMaskPolicy(sink: MaskSink, mask: string | undefined, privacy?: string) {
   return resolveMaskPolicy({ sink, flags: { mask, privacy }, config: loadedMaskConfig() });
@@ -379,7 +380,7 @@ export function registerInspectTools(server: McpServer, opts: ToolOpts): void {
         format: { type: "string", enum: ["atif", "otel", "langfuse"] },
         out: { type: "string", description: "Output file for atif/otel (and langfuse payload dump)" },
         endpoint: { type: "string", description: "Langfuse OTLP base URL override" },
-        mask: { type: "string", enum: [...MASK_MODES], description: "Secret masking: none | preview (list findings, write and send nothing) | all (mask before export); default from config/env, else none" },
+        mask: { type: "string", enum: [...MASK_MODES], description: "Secret masking: none | preview (list findings, write and send nothing) | all (mask before export); default from config/env, else all for otel and langfuse, none for atif" },
         privacy: { type: "string", enum: [...PRIVACY_MODES], description: "Privacy mode (docs/MASKING.md): off | redact (paths to basenames, $HOME to ~) | anon (also drops prompt text, hashes run/session ids); default from config/env, else off" },
         attributes: {
           type: "object",

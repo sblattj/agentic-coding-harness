@@ -13,7 +13,8 @@ import {
 import { loadedMaskConfig } from "./config.ts";
 import { describePrivacy, type PrivacyMode } from "../core/privacy.ts";
 
-/** The policy for `sink`: --mask flags > env > config file `mask` > DEFAULT_MASK_MODE
+/** The policy for `sink`: --mask flags > env > config file `mask` > the sink's built-in default
+ *  (SINK_DEFAULT_MASK_MODE: otel and langfuse `all`, local sinks `none`)
  *  (#46: and the privacy mode, --privacy > env > config `mask.privacy` > off). */
 export function maskPolicyFor(sink: MaskSink, flags: MaskFlags): MaskPolicy {
   try {

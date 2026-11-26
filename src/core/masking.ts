@@ -28,10 +28,10 @@ export const MASK_MODES = ["none", "preview", "all"] as const;
 export type MaskMode = (typeof MASK_MODES)[number];
 
 /**
- * The mode every export path uses when no flag, env var or config key sets
- * one. PENDING AN OWNER DECISION: it stays `none` (no masking, byte-identical
- * output to the pre-#71 releases) until the owner picks a default. Every
- * default in the code reads this one constant; change it here only.
+ * The built-in mode for LOCAL sinks (atif, sft, report, scrub, export): `none`,
+ * so a file written on this machine stays byte-identical to the pre-#71
+ * releases. Outbound sinks default to `all`; the per-sink table
+ * `SINK_DEFAULT_MASK_MODE` below is what `resolveMaskPolicy` falls back to.
  */
 export const DEFAULT_MASK_MODE: MaskMode = "none";
 
@@ -43,6 +43,23 @@ export const DEFAULT_MASK_STYLE: MaskStyle = "replace";
 /** Export sinks with their own config toggle (`mask.<sink>` in the config file). */
 export const MASK_SINKS = ["atif", "otel", "langfuse", "sft", "report", "scrub", "export"] as const;
 export type MaskSink = (typeof MASK_SINKS)[number];
+
+/**
+ * Owner decision (#71): the built-in mode per sink, the last step of the
+ * precedence chain. Outbound sinks (otel, langfuse: the data leaves the
+ * machine) mask everything; local sinks keep today's raw output. Typed as a
+ * full Record, so a new sink without a default is a compile error. Any
+ * `--mask`, env var, `mask.<sink>` or `mask.mode` setting beats it.
+ */
+export const SINK_DEFAULT_MASK_MODE: Record<MaskSink, MaskMode> = {
+  atif: DEFAULT_MASK_MODE,
+  otel: "all",
+  langfuse: "all",
+  sft: DEFAULT_MASK_MODE,
+  report: DEFAULT_MASK_MODE,
+  scrub: DEFAULT_MASK_MODE,
+  export: DEFAULT_MASK_MODE,
+};
 
 /** Env var that sets the global mode (beats the config file, loses to `--mask`). */
 export const MASK_ENV = "AGENTIC_CODING_HARNESS_MASK";
@@ -353,7 +370,7 @@ export interface MaskPolicy {
   privacy?: PrivacyPolicy;
 }
 
-/** The policy that changes nothing (DEFAULT_MASK_MODE as shipped). */
+/** The policy that changes nothing (mode none; the local sinks' built-in default). */
 export const NO_MASK: MaskPolicy = { mode: DEFAULT_MASK_MODE, options: {} };
 
 export interface ExportGateResult<T> {
@@ -387,7 +404,7 @@ export function maskForExport<T>(value: T, policy: MaskPolicy = NO_MASK): Export
 /** The config file's top-level `mask` object (validated by config.ts). */
 export const MaskConfigSchema = z
   .strictObject({
-    mode: z.enum(MASK_MODES).optional().describe(`global mask mode for every export (default '${DEFAULT_MASK_MODE}', pending an owner decision); env ${MASK_ENV} and --mask win`),
+    mode: z.enum(MASK_MODES).optional().describe(`global mask mode for every export; unset, each sink uses its built-in default (otel and langfuse 'all', the local sinks '${DEFAULT_MASK_MODE}'); mask.<sink>, env ${MASK_ENV} and --mask win`),
     style: z.enum(MASK_STYLES).optional().describe("replace = [REDACTED_<LABEL>], partial = short prefix + ...****"),
     entropy: z.boolean().optional().describe("enable the high-entropy detector (off by default)"),
     patterns: z
@@ -402,7 +419,7 @@ export const MaskConfigSchema = z
         }, "is not a valid regular expression"),
       )
       .optional().describe("extra regexes to mask (a named group 'secret' limits the replaced span)"),
-    ...Object.fromEntries(MASK_SINKS.map((s) => [s, z.enum(MASK_MODES).optional().describe(s === "export" ? "mask mode for ach export (beats mask.mode)" : `mask mode for the ${s} export (beats mask.mode)`)])),
+    ...Object.fromEntries(MASK_SINKS.map((s) => [s, z.enum(MASK_MODES).optional().describe(`${s === "export" ? "mask mode for ach export" : `mask mode for the ${s} export`} (beats mask.mode; built-in default '${SINK_DEFAULT_MASK_MODE[s]}')`)])),
     privacy: z
       .enum(PRIVACY_MODES)
       .optional()
@@ -441,7 +458,7 @@ export const MASK_OPTIONS = {
 
 /**
  * Resolve one sink's policy. Mode precedence: `--mask` > env MASK_ENV >
- * config `mask.<sink>` > config `mask.mode` > DEFAULT_MASK_MODE. Style,
+ * config `mask.<sink>` > config `mask.mode` > SINK_DEFAULT_MASK_MODE[sink]. Style,
  * entropy and patterns: flag > config > default; flag patterns add to the
  * config's. Throws Error on a bad value (callers wrap it as a usage error).
  */
@@ -462,7 +479,7 @@ export function resolveMaskPolicy(input: {
       ? parseMode(flags.mask, "--mask")
       : envMode !== undefined && envMode !== ""
         ? parseMode(envMode, MASK_ENV)
-        : cfg[input.sink] ?? cfg.mode ?? DEFAULT_MASK_MODE;
+        : cfg[input.sink] ?? cfg.mode ?? SINK_DEFAULT_MASK_MODE[input.sink];
   const styleRaw = flags["mask-style"] ?? cfg.style ?? DEFAULT_MASK_STYLE;
   if (!(MASK_STYLES as readonly string[]).includes(styleRaw)) {
     throw new Error(`--mask-style expects one of ${MASK_STYLES.join("|")}, got '${styleRaw}'`);

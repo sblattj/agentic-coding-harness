@@ -546,7 +546,8 @@ usage:
                [--mask-entropy] [--mask-pattern <regex>]...
                (secret masking before export: preview lists findings and writes
                 and sends nothing, all masks keys, tokens, emails, home paths;
-                default none; env AGENTIC_CODING_HARNESS_MASK, config mask.*;
+                default all for otel and langfuse, none for atif and sft;
+                env AGENTIC_CODING_HARNESS_MASK, config mask.*;
                 docs/MASKING.md)
                [--privacy off|redact|anon]
                (privacy mode for shared output: redact shortens paths to
@@ -2434,7 +2435,8 @@ async function cmdEmit(rest: string[]): Promise<number> {
   } catch (e) {
     throw new HarnessError(`--input '${input}' is not valid JSON: ${e instanceof Error ? e.message : e}`, "IO");
   }
-  // #71: the export chokepoint. Mode none (DEFAULT_MASK_MODE) passes the input through untouched.
+  // #71: the export chokepoint. Mode none (atif's built-in default) passes the input through
+  // untouched; otel and langfuse default to all (SINK_DEFAULT_MASK_MODE).
   const gate = maskForExport(parsed, maskPolicyFor(format, args.values));
   if (gate.mode === "preview") {
     writeMaskPreview(input, gate.findings);

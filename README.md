@@ -492,7 +492,7 @@ ach emit --input events.json --format atif|otel|langfuse|sft [--out path]
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
             (otel/langfuse: a RunResult input's `trace` ids are adopted, docs/TRACE-CONTEXT.md)
             [--mask none|preview|all] [--mask-style replace|partial] [--mask-entropy] [--mask-pattern RE]...
-            (secret masking before export; default none; docs/MASKING.md)
+            (secret masking before export; default all for otel and langfuse, none for atif and sft; docs/MASKING.md)
             [--privacy off|redact|anon]
             (privacy mode for shared output: redact shortens paths, anon also drops prompt text
              and hashes run/session ids; default off; docs/MASKING.md#privacy-modes)
@@ -1286,7 +1286,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [W3C trace context (`TRACEPARENT` in, child spans out)](docs/TRACE-CONTEXT.md).
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
-- [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them. Privacy modes (`--privacy redact|anon`) strip paths, prompt text and ids from shared reports and exports.
+- [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them. Outbound exports (`otel`, `langfuse`) mask by default; local files stay raw unless you ask (`ach config --set mask.otel none` opts otel out). Privacy modes (`--privacy redact|anon`) strip paths, prompt text and ids from shared reports and exports.
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
 - [Desks and lanes (`ach desk`, `ach lane`)](docs/DESKS.md): long-lived role agents plus goal-driven lanes that message each other, with per-desk cost.
 - [Full data export (`ach export`)](docs/EXPORT.md): everything the harness recorded in one portable, sha256-verifiable dump, for backup, migration or knowing exactly what exists before erasing it.

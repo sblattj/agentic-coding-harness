@@ -450,7 +450,8 @@ describe("--privacy off (the default) is byte-identical to today's output", () =
 
       const run = plantedRun();
       const events = run.events as AgentEvent[];
-      const otel = cli(["emit", "--input", runFile, "--format", "otel", ...extra]);
+      // --mask none: this pins privacy off, and otel masks secrets by default since the #71 owner decision.
+      const otel = cli(["emit", "--input", runFile, "--format", "otel", "--mask", "none", ...extra]);
       assert.equal(otel.stderr, "");
       assert.equal(stableIds(otel.stdout), stableIds(JSON.stringify(toOtlpJson(events, { sessionId: SESSION_ID, agentName: "claude", model: "claude-sonnet" }), null, 2) + "\n"));
       assert.ok(!otel.stdout.includes('"ach.privacy"'), "off OTel carries no stamp");

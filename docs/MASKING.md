@@ -12,14 +12,41 @@ chokepoint, `maskForExport`), [`src/cli/scrub.ts`](../src/cli/scrub.ts) (`ach sc
 
 | Mode | What happens |
 |---|---|
-| `none` | Today's behavior: the export is written exactly as before, nothing is scanned. **The default.** |
+| `none` | Today's behavior: the export is written exactly as before, nothing is scanned. **The default for local sinks.** |
 | `preview` | Every finding is listed (location, detector, a starred sample, the replacement). Nothing is written, posted or sent. |
-| `all` | Every finding is replaced, and a per-detector count goes to stderr. |
-
-The built-in default is `none` (`DEFAULT_MASK_MODE`). Whether masking should be on by default is
-pending an owner decision; until then turn it on with a flag, the env var or the config file.
+| `all` | Every finding is replaced, and a per-detector count goes to stderr. **The default for outbound sinks (`otel`, `langfuse`).** |
 
 Preview never prints a secret: a sample keeps at most a short prefix (`sk-ant-api...****`).
+
+## Defaults per sink
+
+Data that leaves the machine is masked unless you say otherwise; files written on this machine stay
+raw. The built-in default per sink (`SINK_DEFAULT_MASK_MODE` in `src/core/masking.ts`):
+
+| Sink | Where the data goes | Built-in default |
+|---|---|---|
+| `otel` | OTLP JSON (`ach emit --format otel`, MCP `harness_emit`), meant for a collector | `all` |
+| `langfuse` | POSTed to a Langfuse instance (`ach emit --format langfuse`, MCP `harness_emit`) | `all` |
+| `atif` | a local ATIF file (`ach emit --format atif`, MCP `harness_emit`) | `none` |
+| `sft` | a local JSONL file (`ach emit --format sft`) | `none` |
+| `report` | a local HTML or JSON report (`ach report`, the trial-suite report, MCP `harness_report`) | `none` |
+| `scrub` | `ach scrub` (always needs an explicit `--mask preview` or `--mask all`) | `none` |
+| `export` | a local dump (`ach export`) | `none` |
+
+So `ach emit --format otel` and `--format langfuse` mask with no flag set (and print the per-detector
+count on stderr); the local sinks write byte-identical output to releases before #71. Privacy modes
+stay `off` by default for every sink.
+
+Opting out of the outbound default, for one sink or both:
+
+```sh
+ach config --set mask.otel none
+ach config --set mask.langfuse none
+ach emit --input run.json --format otel --mask none     # one run only
+```
+
+A global `mask.mode` also beats the per-sink default: `{ "mask": { "mode": "none" } }` turns masking
+off for otel and langfuse too, and `"mode": "all"` turns it on for the local sinks.
 
 ## Capture time: `--mask` on every export
 
@@ -46,7 +73,7 @@ Flags (`ach emit`, `ach report`, `ach scrub`, `ach export`):
   named group `secret` limits the replaced span: `code=(?<secret>[A-Z]+-\d+)`.
 
 Precedence: `--mask` > env `AGENTIC_CODING_HARNESS_MASK` > config `mask.<sink>` > config
-`mask.mode` > the default. A config file can turn masking on for everything and leave one sink
+`mask.mode` > the sink's built-in default (table above). A config file can turn masking on for everything and leave one sink
 alone:
 
 ```json
