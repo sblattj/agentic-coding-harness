@@ -4,6 +4,12 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-11-26
+
+### Added
+
+- `ach stats --spark cost|tokens` appends a 14-day trend bar to the totals line (`spark(cost,14d)=▁▂▃▅█`). The bar ends at the window's last day (today unless `--until`), so quiet recent days show as low bars, and `--cost-mode` applies to the cost series. `--json` adds a top-level `spark: {metric, days, values}` only when `--spark` is given. `ach dash --spark` adds a `cost trend:` line under the footer, built from the visible runs' cost per UTC day over the days they span (at most 30). Both are off by default. `--no-spark`, `TERM=dumb`/`linux`, or a non-UTF locale print plain `min=.. max=..` text instead of block characters, and all-zero or single-day inputs render a flat bar. No new dependency. Fixes #85.
+
 ### Changed
 
 - Smaller install (#236). `dist/cli/ach.js` and `dist/index.js` already bundle OpenTelemetry, zod, ws and yaml, so those seven packages move from `dependencies` to `devDependencies` and an install no longer downloads them a second time. `bun-pty` stays: the bundles load it lazily for PTY features under Bun. A scratch `npm install` drops from 27 packages and about 62 MB to 2 packages and about 11 MB. `tests/package-deps.test.ts` rebuilds both bundles and fails if one imports a package that is not a runtime dependency.
