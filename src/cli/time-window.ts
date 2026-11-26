@@ -300,3 +300,27 @@ export function parseBy(values: string[] | undefined): TimeGranularity[] {
   if (picked.size === 0) return ["day"];
   return TIME_GRANULARITIES.filter((g) => picked.has(g));
 }
+
+/**
+ * Move an instant by whole calendar days in `tz`, keeping the local time of
+ * day (DST-safe: Sep 1 00:00 minus 7 days is Aug 25 00:00, whatever the zone
+ * did in between). Negative `days` goes back.
+ */
+export function shiftCivilDays(ms: number, days: number, tz: string): number {
+  const c = civil(ms, tz);
+  const tod = ms - zonedMidnight(c.y, c.m, c.d, tz);
+  return zonedMidnight(c.y, c.m, c.d + days, tz) + tod;
+}
+
+/** True when `ms` is exactly 00:00:00.000 local time in `tz`. */
+export function isLocalMidnight(ms: number, tz: string): boolean {
+  const c = civil(ms, tz);
+  return zonedMidnight(c.y, c.m, c.d, tz) === ms;
+}
+
+/** Whole calendar days from `a` to `b` in `tz` (civil dates, not elapsed ms). */
+export function civilDaysBetween(a: number, b: number, tz: string): number {
+  const ca = civil(a, tz);
+  const cb = civil(b, tz);
+  return Math.round((Date.UTC(cb.y, cb.m - 1, cb.d) - Date.UTC(ca.y, ca.m - 1, ca.d)) / 86_400_000);
+}

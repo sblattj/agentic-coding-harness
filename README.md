@@ -395,6 +395,8 @@ ach run --agent null --verify 'true' --repeat 3 "offline smoke"
 ach stats --last 7d --tz America/Los_Angeles --by week,model,project
 ach stats --cost-mode calculate --blocks         # computed cost and Claude 5-hour blocks
 ach stats --spark cost                           # 14-day trend bar on the totals line
+ach stats --days 7 --compare prev                # this week vs the 7 days before it
+ach stats --since 2026-09-01 --until 2026-09-08 --compare prev:7d   # Sep 1-7 vs Aug 25-31
 ach quota --json                                # vendor-reported headroom, n/a when absent
 ach quota wait --max-used 90 -- ./batch.sh       # start a job once the quota window has room
 ach status --compact
@@ -445,6 +447,13 @@ ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--jso
             [--transcript-dir <root>] [--origin all|native|imported|transcript]
             # window is [--since, --until): since inclusive, until EXCLUSIVE (a record
             # stamped exactly at --until is not counted); --until alone = everything before it
+            # --compare prev | prev:<dur>: add a compare block (tokens, cost, runs: current,
+            # previous, delta, signed %) and, with --json, a top-level `compare` object.
+            # prev = the window of the same length right before the selected one; prev:7d =
+            # the selected window shifted 7 days earlier (calendar-exact in --tz, so Sep 1-7
+            # compares to Aug 25-31). Needs a bounded window (--days/--since/--last).
+            # A zero previous base prints n/a (JSON null), never -100%. Days whose run
+            # transcripts were pruned (`ach gc`) are listed as `unexplained`, not in totals.
 ach audit [--agent A] [--days N] [--json] [--tolerance-pct P] [--fix] [--state-dir <stateDir>]
             # re-derive RunRecord totals from raw transcripts; exit 1 on drift
 ach import --agent claude [--days N=30] [--transcript-dir <root>] [--state-dir <stateDir>]

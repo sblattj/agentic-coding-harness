@@ -508,6 +508,13 @@
             }
           ]
         },
+        "compare": {
+          "description": "ach stats --compare",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
         "json": {
           "description": "ach stats --json",
           "type": "boolean"

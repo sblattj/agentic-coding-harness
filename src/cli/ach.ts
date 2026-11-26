@@ -130,11 +130,20 @@ import {
   TIME_GRANULARITIES,
   TZ_ENV,
   windowJson,
+  type TimeWindow,
 } from "./time-window.ts";
+import {
+  compareJson,
+  parseCompareSpec,
+  periodTotals,
+  renderCompareText,
+  resolveComparePeriods,
+  unexplainedDays,
+} from "./compare-periods.ts";
 import { cmdReport } from "./report.ts";
 import { runContextRows } from "./context-stats.ts";
 import { cmdDesk, cmdLane, cmdListener } from "./desk.ts";
-import { scanRunRecords, skippedRunRecordsWarning } from "../core/registry.ts";
+import { scanRunRecords, skippedRunRecordsWarning, type RunRecord } from "../core/registry.ts";
 import { cmdDash } from "./dash.ts";
 import { statsExtras } from "./usage-render.ts";
 import { resolvePlan } from "../core/plans.ts";
@@ -348,7 +357,13 @@ usage:
                  --dir is an alias of --transcript-dir here)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
             [--tz Z] [--by day|week|month] [--json] [--state-only] [--include-unavailable]
-            [--offline]
+            [--compare prev|prev:<dur>] [--offline]
+                (--compare prev: the selected window vs the window of the same length right
+                 before it; --compare prev:7d: vs the same window shifted 7 days earlier
+                 (calendar-exact in --tz). Needs a bounded window (--days/--since/--last).
+                 Adds a compare block with tokens, cost and run deltas (n/a on a zero
+                 base) and, with --json, a top-level "compare" object; days whose run
+                 transcripts were pruned are named unexplained)
                 (machine claude/codex/gemini transcripts, read-only
                  amp/goose/qwen stores, + harness state;
                  --state-only skips machine transcript dirs; agents.d usage taps
@@ -1506,6 +1521,8 @@ async function cmdStats(rest: string[]): Promise<number> {
       last: { type: "string" },
       tz: { type: "string" },
       by: { type: "string", multiple: true },
+      // #42: period-over-period comparison: prev | prev:<dur>
+      compare: { type: "string" },
       json: { type: "boolean", default: false },
       "state-only": { type: "boolean", default: false },
       "include-unavailable": { type: "boolean", default: false },
@@ -1645,14 +1662,21 @@ async function cmdStats(rest: string[]): Promise<number> {
     timeZone,
   });
   const sinceTs = window.sinceMs;
+  // #42: --compare reads from the earlier window's start and buckets into the two windows below.
+  const compareSpec = args.values.compare !== undefined ? parseCompareSpec(args.values.compare) : undefined;
+  const periods = compareSpec ? resolveComparePeriods(compareSpec, window, Date.now(), timeZone) : undefined;
+  const loadWindow: TimeWindow = periods
+    ? { sinceMs: Math.min(periods.previous.sinceMs, periods.current.sinceMs), ...(window.untilMs !== undefined ? { untilMs: window.untilMs } : {}) }
+    : window;
+  const loadSinceTs = loadWindow.sinceMs;
 
   // Harness state (driver-run NDJSON + watch-persisted opencode) ...
   const withWarehouse = args.values["with-warehouse"];
   const stateRecords = [
-    ...(await readAllRecords({ agent, sinceTs })),
-    ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs }) : []),
+    ...(await readAllRecords({ agent, sinceTs: loadSinceTs })),
+    ...(withWarehouse ? await warehouseStateRecords(stateDir(), { agent, sinceTs: loadSinceTs }) : []),
   ].filter((r) => {
-    if (inWindow(Date.parse(r.ts), window)) return true;
+    if (inWindow(Date.parse(r.ts), loadWindow)) return true;
     // A desk message with a line outside the window is partial in-window: its reported cost can't be compared to the in-window tokens.
     const ex = r.extra as Record<string, unknown> | undefined;
     if (ex && ex.source === "desk-host" && typeof ex.messageId === "string" && ex.messageId !== "") {
@@ -1709,7 +1733,7 @@ async function cmdStats(rest: string[]): Promise<number> {
   if (!agent || agent === "cursor") {
     const dashAll = readCursorDashboardStore(stateDir());
     dashSpan = dashboardSpan(dashAll);
-    const dash = dashAll.filter((d) => inWindow(d.timestamp ? Date.parse(d.timestamp) : NaN, window));
+    const dash = dashAll.filter((d) => inWindow(d.timestamp ? Date.parse(d.timestamp) : NaN, loadWindow));
     const rec = reconcileDashboardWithState(dash, records);
     records = records.filter((r) => !rec.dropped.has(r));
     for (const m of rec.matches) {
@@ -1744,7 +1768,7 @@ async function cmdStats(rest: string[]): Promise<number> {
     for await (const rec of machine) {
       if (agent && rec.agent !== agent) continue;
       const tsMs = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
-      if (!inWindow(tsMs, window)) continue;
+      if (!inWindow(tsMs, loadWindow)) continue;
       // The dashboard export covers this span with billed numbers: its rows replace the IDE store's.
       if (rec.agent === "cursor" && inDashboardSpan(dashSpan, tsMs)) continue;
       const row = {
@@ -1773,10 +1797,10 @@ async function cmdStats(rest: string[]): Promise<number> {
       records.push({ ...row, ...costFor(row, rec.costUsd), ...(cwd ? { cwd } : {}), ...(branch ? { branch } : {}), ...(pr ? { pr } : {}), source: "transcript" });
     }
     // agents.d usage taps (#38): descriptor-declared transcript sources.
-    const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs, costMode });
+    const tap = await descriptorTapRows(catalog, pricer, { agent, sinceTs: loadSinceTs, costMode });
     for (const row of tap.rows) {
       // Tap rows honour the full #26 [since, until) window, not only sinceTs.
-      if (!inWindow(row.ts ? Date.parse(row.ts) : NaN, window)) continue;
+      if (!inWindow(row.ts ? Date.parse(row.ts) : NaN, loadWindow)) continue;
       const key = dedupeKey(row);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1798,6 +1822,14 @@ async function cmdStats(rest: string[]): Promise<number> {
   // #25: label every row with its origin (numbers unchanged), then --origin filters.
   for (const r of records) r.origin = originIndex.originOf(r);
   if (wantOrigin !== "all") records = records.filter((r) => r.origin === wantOrigin);
+  // #42: split the wide read into the selected and the comparison window. Everything below
+  // (totals, byDay, dims, blocks) sees only the selected window, exactly as without --compare.
+  let previousRecords: typeof records = [];
+  if (periods) {
+    const inP = (r: { ts: string | null }, w: { sinceMs: number; untilMs: number }) => inWindow(r.ts ? Date.parse(r.ts) : NaN, { sinceMs: w.sinceMs, untilMs: w.untilMs });
+    previousRecords = records.filter((r) => inP(r, periods.previous));
+    records = records.filter((r) => inP(r, periods.current));
+  }
   disagreements.push(...records.flatMap((r) => r.costDisagreement ? [r.costDisagreement] : []));
   {
     // Per message: the sum of a desk message's reported deltas vs the price of the sum of its token deltas.
@@ -1901,6 +1933,25 @@ async function cmdStats(rest: string[]): Promise<number> {
   }
 
   const view = (b: typeof agg.totals) => applyCostMode(b, costMode);
+  // #42: the compare section (only with --compare).
+  let compare: ReturnType<typeof compareJson> | undefined;
+  if (periods && compareSpec) {
+    const runFilter = (r: RunRecord) =>
+      (wantProject === undefined || projectMatches(r.cwd, wantProject, projectAliases)) &&
+      (wantOrigin === "all" || originIndex.runOrigin(r) === wantOrigin) &&
+      (!agent || r.agent === agent) &&
+      r.source !== "imported";
+    const hasData = new Set(stateRecords.map((r) => r.runId).filter((x): x is string => typeof x === "string"));
+    const period = (w: { sinceMs: number; untilMs: number }, rows: typeof records) => {
+      const runsIn = registryScan.records.filter((r) => inWindow(r.startedAt, w) && runFilter(r));
+      return {
+        window: w,
+        totals: periodTotals(view(aggregate(rows, { timeZone, by }).totals), runsIn.length),
+        unexplained: unexplainedDays(runsIn, w, timeZone, hasData),
+      };
+    };
+    compare = compareJson(period(periods.current, records), period(periods.previous, previousRecords), compareSpec);
+  }
   // Preserve origin through aggregation so readers can distinguish harness
   // state from read-only transcripts even when both contain the same agent.
   const sources = Object.fromEntries((["state", "transcript"] as const).map((source) => {
@@ -1943,6 +1994,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           ...(sparkValues !== undefined ? { spark: { metric: sparkMetric, days: SPARK_DAYS, values: sparkValues } } : {}),
           timezone: timeZone,
           window: windowJson(window),
+          ...(compare !== undefined ? { compare } : {}),
           pricing: pricingInfo,
           byModel: dims.byModel,
           unpricedModels: dims.unpricedModels,
@@ -2015,6 +2067,9 @@ async function cmdStats(rest: string[]): Promise<number> {
       for (const [a, b] of Object.entries(outcomes.byAgent)) process.stdout.write(formatOutcomeLine(a, b) + "\n");
     }
     for (const l of extras.text) process.stdout.write(l + "\n");
+    if (compare !== undefined && periods) {
+      for (const l of renderCompareText(compare, periods.current, periods.previous, timeZone)) process.stdout.write(l + "\n");
+    }
     for (const g of repeatGroups) process.stdout.write(formatRepeatGroupLine(g, fmtUsd) + "\n");
     process.stdout.write(`${"legend".padEnd(9)} ${PROVENANCE_LEGEND}
 `);

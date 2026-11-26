@@ -118,3 +118,36 @@ unavailable shows `n/a`.
   window is active.
 - A monthly allowance is **not** modeled, because no source gives an
   authoritative monthly quota.
+
+## Period comparison: `ach stats --compare prev|prev:<dur>`
+
+`--compare` puts the selected window next to an earlier one and prints the change.
+It needs a bounded window (`--days N`, `--since DATE [--until DATE]` or `--last D`).
+
+- `--compare prev`: the window of the same length right before the selected one.
+  `--days 7 --compare prev` is the last 7 days against the 7 before. A window made of
+  whole local days steps back by calendar days in `--tz`, so Sep 1-7 compares to
+  Aug 25-31 (never a 30-day shift, and DST-safe).
+- `--compare prev:<dur>` (`7d`, `2w`, `12h`): the selected window shifted `<dur>` earlier,
+  same length. Whole-day offsets are calendar-exact in `--tz`.
+- Anything else is a usage error. `[since, until)` semantics apply to both windows.
+
+Text output keeps the normal table (the selected window) and appends a block with
+current, previous, delta and signed delta% for tokens (input + output + cache read +
+cache write), cost and runs (registry run records). A zero previous base prints `n/a`.
+`--json` gains a top-level `compare` object (only with `--compare`; plain JSON is
+unchanged):
+
+```json
+{"compare": {"mode": "prev",
+  "current":  {"since": "...", "until": "...", "totals": {"tokens": 0, "costUsd": 0, "runs": 0}, "unexplained": {"days": []}},
+  "previous": {"since": "...", "until": "...", "totals": {"tokens": 0, "costUsd": 0, "runs": 0}, "unexplained": {"days": []}},
+  "delta": {"tokens": 0, "costUsd": 0, "runs": 0, "tokensPct": null, "costUsdPct": null, "runsPct": null}}}
+```
+
+`totals` also carries the input/output/cacheRead/cacheWrite/reasoning split and `records`.
+`unexplained` lists days (in `--tz`) holding runs whose run record names a raw transcript
+that no longer exists (pruned by `ach gc`) and whose usage the read did not recover (an
+`ach archive` copy read with `--with-warehouse` counts as recovered). Their tokens and cost
+come from the run record's own totals and are NOT added to `totals`: they name the gap
+instead of letting the older window shrink silently.
