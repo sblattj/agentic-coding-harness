@@ -243,7 +243,7 @@ describe("resolveCaptureMode precedence (#72)", () => {
 // ---------------------------------------------------------------- config
 
 describe("contentCapture config (#72)", () => {
-  const T = { run: {}, stats: {}, web: {}, serve: {} } as SectionTables;
+  const T = { run: {}, stats: {}, web: {}, serve: {}, emit: {} } as SectionTables;
   const file = (data: Record<string, unknown>) => ({ path: "/x/config.json", kind: "explicit" as const, data });
 
   it("accepts a bare tier and { default, agents }", () => {
