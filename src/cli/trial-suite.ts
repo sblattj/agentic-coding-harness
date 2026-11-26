@@ -40,7 +40,7 @@ const NULL_AGENT = "null";
 /**
  * Where the bundled `tasks/` directory would be relative to this module:
  * `<repo>/tasks` from `src/cli/trial-suite.ts` (checkout, tsx), and
- * `<package>/tasks` from `dist/cli/ach.js` / `dist/bun/ach.js` (npm install,
+ * `<package>/tasks` from `dist/cli/ach.js` (npm install,
  * Homebrew — both ship the npm tarball, whose `files` includes `tasks`).
  * null inside a `bun build --compile` binary, whose modules live on the
  * virtual `/$bunfs/` filesystem and carry no task files.

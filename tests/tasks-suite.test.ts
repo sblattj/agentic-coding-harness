@@ -117,7 +117,6 @@ describe("suite resolution", () => {
   it("bundled tasks dir: <repo>/tasks from src/cli, <package>/tasks from dist/cli, none in a compiled binary", () => {
     assert.equal(bundledTasksDir(), TASKS);
     assert.equal(bundledTasksDir("file:///opt/pkg/dist/cli/ach.js"), "/opt/pkg/tasks");
-    assert.equal(bundledTasksDir("file:///opt/pkg/dist/bun/ach.js"), "/opt/pkg/tasks");
     assert.equal(bundledTasksDir("file:///$bunfs/root/ach"), null);
     assert.equal(resolveTasksDir(), TASKS);
     assert.throws(() => resolveTasksDir(undefined, "file:///$bunfs/root/ach"), /compiled single-binary.*--tasks-dir/);

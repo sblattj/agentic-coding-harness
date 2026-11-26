@@ -4,6 +4,14 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+### Changed
+
+- Smaller install (#236). `dist/cli/ach.js` and `dist/index.js` already bundle OpenTelemetry, zod, ws and yaml, so those seven packages move from `dependencies` to `devDependencies` and an install no longer downloads them a second time. `bun-pty` stays: the bundles load it lazily for PTY features under Bun. A scratch `npm install` drops from 27 packages and about 62 MB to 2 packages and about 11 MB. `tests/package-deps.test.ts` rebuilds both bundles and fails if one imports a package that is not a runtime dependency.
+
+### Removed
+
+- `dist/bun/ach.js`, the second full `--target bun` build of the CLI (about 4.1 MB), is no longer built or shipped (#236). Nothing used it: `bin` and the Homebrew formula run `dist/cli/ach.js`, which also runs under Bun (`bun dist/cli/ach.js`).
+
 ## [0.32.1] - 2026-11-22
 
 ### Fixed

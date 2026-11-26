@@ -605,7 +605,7 @@ The suite resolves the task tree relative to the running module at
 `<module dir>/../../tasks`:
 
 - **Checkout:** `src/cli/` gives `<repo>/tasks`.
-- **npm install or Homebrew:** `dist/cli/` or `dist/bun/` gives
+- **npm install or Homebrew:** `dist/cli/` gives
   `<package>/tasks`. `tasks` is in the package `files`, and the Homebrew formula
   installs the npm tarball.
 - **Compiled single binary and pip wheel:** neither carries the tree. The

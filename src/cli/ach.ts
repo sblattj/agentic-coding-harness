@@ -2304,7 +2304,7 @@ async function main(argvIn: string[]): Promise<number> {
  * entry (argv[1]) and this file are the same file on disk (realpath on both
  * sides, so npm bin symlinks and launchers resolve to the real bundle).
  *
- * - bin execution (`ach …`, `node dist/cli/ach.js …`, `bun dist/bun/ach.js …`,
+ * - bin execution (`ach …`, `node dist/cli/ach.js …`, `bun dist/cli/ach.js …`,
  *   `tsx src/cli/ach.ts …`): argv[1] is this file -> run the CLI.
  * - library import (`import('agentic-coding-harness')`,
  *   `await import(pathToFileURL('…/dist/cli/ach.js').href)`): argv[1] is the
