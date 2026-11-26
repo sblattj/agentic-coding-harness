@@ -82,7 +82,11 @@ the agent, it does not install it. The examples use Claude Code:
 npm install -g @anthropic-ai/claude-code
 ```
 
-Then run `claude` once and sign in. `ach doctor` shows which agents `ach` can find. Run the
+Then run `claude` once and sign in. `ach doctor` shows which agents `ach` can find. `ach init` does the
+first-run setup for you: it detects the agent CLIs on PATH, asks for a default agent, model, budget cap
+and max turns (or takes them as flags with `--yes`), runs the doctor checks for the chosen agent and
+writes `run.agent` / `run.model` / `run.budgetUsd` / `run.maxTurns` into the config file (docs/CONFIG.md),
+so `ach run "..."` needs no flags afterwards. Run the
 commands below inside the repository you want the agent to change.
 
 Each `ach run` gives Claude Code a fresh config dir, which cannot see the session from
@@ -489,6 +493,8 @@ ach config --set run.budgetUsd 5 [--dry-run]   # write ./.ach/config.json; ach -
 ach config --set profiles.fast.model sonnet     # a named set of run flags (docs/CONFIG.md#agent-profiles)
 ach run --profile fast "prompt"                 # expand it; explicit flags still win
 ach profiles list [--json]                      # every profile and the flags it expands to
+ach init [--agent A] [--model M] [--budget-usd N] [--max-turns N] [--yes] [--dry-run] [--show] [--project]
+            # first-run wizard: detect agent CLIs, doctor-check the chosen one, write the user config (--project: ./.ach/config.json)
 ach mcp [--gateway --root R] [--max-jobs N] [--max-output-bytes N] [--allow-extra-args A]
             (MCP over stdio: newline-delimited JSON-RPC on stdin/stdout, Content-Length
              framing tolerated; same 10 tools and gateway flags as `ach serve`)

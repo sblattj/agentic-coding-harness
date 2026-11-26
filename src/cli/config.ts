@@ -1063,6 +1063,38 @@ export interface ConfigHooks {
   checkProfile?: (argv: string[], table: OptionTable) => Promise<void>;
 }
 
+/**
+ * Set (`raw` given) or unset (`raw` undefined) one key in `doc`, in place:
+ * the shared write step of `ach config --set/--unset` and `ach init`. Only the
+ * touched key/value is validated; the key is stateDir or <section>.<key>.
+ */
+export function setConfigKey(doc: Record<string, unknown>, dotted: string, raw: string | undefined, tables: SectionTables): void {
+  if (raw === undefined && !unsetKnownKey(dotted, tables)) {
+    // --unset accepts any key path the target file actually holds, known or
+    // not (so a misspelled key can be removed); else the lookup error stands.
+    if (!deleteExistingPath(doc, dotted)) lookupKey(dotted, tables);
+  } else {
+    const { section, key, flag, spec } = lookupKey(dotted, tables);
+    if (section === undefined) {
+      if (raw === undefined) delete doc.stateDir;
+      else doc.stateDir = coerceSetValue(undefined, undefined, raw, dotted);
+    } else {
+      const body = { ...((doc[section] as Record<string, unknown> | undefined) ?? {}) };
+      if (raw === undefined) delete body[key];
+      else {
+        // Only the new key/value is validated here; other problems in the
+        // file are reported as warnings below, never a reason to refuse.
+        const value = coerceSetValue(spec, flag, raw, dotted);
+        const problem = valueProblem(spec!, value);
+        if (problem !== undefined) throw new HarnessError(`config --set ${dotted}: expects ${problem}, got ${typeName(value)}`, "USAGE");
+        body[key] = value;
+      }
+      if (Object.keys(body).length === 0) delete doc[section];
+      else doc[section] = body;
+    }
+  }
+}
+
 export const CONFIG_USAGE = `  ach config --show [<section>] [--json] [-- <section flags>]
                 (every resolved key with its value and source: flag, env:<NAME>,
                  file:<path> or default; flags after -- are parsed as that
@@ -1169,29 +1201,8 @@ export async function cmdConfig(rest: string[], explicit: string | undefined, co
     } else {
       editedProfile = editProfile(doc, dotted, raw, tables);
     }
-  } else if (raw === undefined && !unsetKnownKey(dotted, tables)) {
-    // --unset accepts any key path the target file actually holds, known or
-    // not (so a misspelled key can be removed); else the lookup error stands.
-    if (!deleteExistingPath(doc, dotted)) lookupKey(dotted, tables);
   } else {
-    const { section, key, flag, spec } = lookupKey(dotted, tables);
-    if (section === undefined) {
-      if (raw === undefined) delete doc.stateDir;
-      else doc.stateDir = coerceSetValue(undefined, undefined, raw, dotted);
-    } else {
-      const body = { ...((doc[section] as Record<string, unknown> | undefined) ?? {}) };
-      if (raw === undefined) delete body[key];
-      else {
-        // Only the new key/value is validated here; other problems in the
-        // file are reported as warnings below, never a reason to refuse.
-        const value = coerceSetValue(spec, flag, raw, dotted);
-        const problem = valueProblem(spec!, value);
-        if (problem !== undefined) throw new HarnessError(`config --set ${dotted}: expects ${problem}, got ${typeName(value)}`, "USAGE");
-        body[key] = value;
-      }
-      if (Object.keys(body).length === 0) delete doc[section];
-      else doc[section] = body;
-    }
+    setConfigKey(doc, dotted, raw, tables);
   }
   const kind = candidates.find((c) => c.path === target)?.kind ?? "project";
   const updated: LoadedFile = { path: target, kind, data: doc };

@@ -188,6 +188,7 @@ import {
   unmeteredRuns,
 } from "./custom-agents.ts";
 import { cmdDoctor, checkKiroIde } from "./doctor.ts";
+import { cmdInit, INIT_USAGE } from "./init.ts";
 import { endpointFrom } from "../adapters/kiro-ide-cdp.ts";
 import { lastNDays, sparkline, sparkSupported } from "./sparkline.ts";
 
@@ -595,6 +596,7 @@ ${QUEUE_USAGE}
   ach lane status [name] [--json] | stop <name> | approve <Ln> | reject <Ln> [--reason R]
 ${CONFIG_USAGE}
 ${PROFILES_USAGE}
+${INIT_USAGE}
 
 env:
   AGENTIC_CODING_HARNESS_CONFIG      config file path (same as --config; replaces the default search)
@@ -2423,7 +2425,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane", "listener", "update", "profiles",
+  "trial", "queue", "replay", "smoke", "gc", "config", "init", "attach", "desk", "lane", "listener", "update", "profiles",
 ]);
 
 /** #98: commands that never get the automatic update line (stdio protocols and
@@ -2506,6 +2508,8 @@ async function main(argvIn: string[]): Promise<number> {
   }
   // #41: one choke point; `config` loads files itself (it may be fixing one).
   if (cmd === "config") return cmdConfig(rest, config, CONFIG_COMMANDS, { checkProfile: checkRunProfile });
+  // #80: init edits the config file itself, like `config` (it may be repairing one).
+  if (cmd === "init") return cmdInit(rest, config, CONFIG_COMMANDS);
   if (cmd !== undefined && SUBCOMMANDS.has(cmd)) await applyConfig(cmd, config, CONFIG_COMMANDS);
   // #98: opt-in (env, default OFF) once-per-24h update line, stderr only.
   if (cmd !== undefined && SUBCOMMANDS.has(cmd) && !NO_AUTO_UPDATE_CHECK.has(cmd) && !rest.includes("--offline")) {

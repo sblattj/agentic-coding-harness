@@ -245,3 +245,44 @@ Rejected: an unknown section, an unknown key, a kebab-case key (`budget-usd`), a
 type, invalid JSON, a top level that is not an object, and a missing `--config` file. Every section
 is checked on every command, so a typo in `run` also stops `ach stats`: a misspelled cap never
 silently turns into no cap.
+
+## `ach init` (first-run setup)
+
+```text
+ach init [--agent A] [--model M] [--budget-usd N] [--max-turns N] [--yes] [--dry-run] [--show] [--project]
+```
+
+`ach init` populates this config file (it does not invent a second format). It writes four keys of
+the `run` section, through the same key machinery as `ach config --set`:
+
+| Choice | Config key |
+|---|---|
+| default agent | `run.agent` |
+| default model (blank = none) | `run.model` |
+| budget cap in USD | `run.budgetUsd` |
+| max turns | `run.maxTurns` |
+
+Because those are ordinary `run` keys, a later `ach run "..."` with no flags uses them (flag > env >
+file > default still applies).
+
+- **Target file**: the user file (`~/.config/agentic-coding-harness/config.json`) by default;
+  `--project` writes `./.ach/config.json`; `--config <file>` (or `AGENTIC_CODING_HARNESS_CONFIG`)
+  writes that file. `--project` together with a pinned file is an error.
+- **Detection**: the agent CLIs (claude, codex, gemini, agy, opencode, copilot, cursor, prime, kiro) are
+  looked up on `PATH` and listed as found / missing with the install hint.
+- **Doctor step**: the chosen agent goes through the same checks as `ach doctor --agent A`, printed to
+  stderr. A failed `binary`, `version` or `cdp` row (the agent is not installed or will not start)
+  prints the install hint, writes nothing and exits `1`. Other failures (no credential yet, an
+  unverifiable model) are shown as a warning but do not block: you can sign in afterwards.
+- **Interactive**: only when stdin AND stdout are terminals and `--yes` is absent. It lists what it
+  found, then asks for the agent, model, budget, max turns and a final confirmation. A blank answer keeps
+  the value shown in brackets (the existing config, or the first detected agent); `none` clears a
+  model, budget or max turns.
+- **Non-interactive** (piped stdin, CI, images): never prompts. `--yes` or `--agent` proceeds; with
+  neither it prints what it would write and exits `1` with a hint to pass `--yes`. With no `--agent`
+  the first detected agent is used; none installed is an error.
+- **Idempotent**: re-running overwrites the same keys in place. Flags you leave out keep the existing
+  value; other sections and keys are untouched; there are no duplicate keys or stale sections.
+- `--dry-run` prints the config JSON on stdout and writes nothing (with a missing binary it still prints
+  the JSON but exits `1`, like the real run would). `--show` prints the current config file(s) and exits `0`.
+- After writing, it prints a quickstart: one `ach run`, one `ach dash`, one `ach web`.

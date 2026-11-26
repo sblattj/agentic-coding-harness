@@ -112,7 +112,7 @@ export interface DoctorOptions {
   skipNotInstalled?: boolean;
 }
 
-const INSTALL_HINT: Record<AgentName, string> = {
+export const INSTALL_HINT: Record<AgentName, string> = {
   claude: "install Claude Code (npm i -g @anthropic-ai/claude-code) or put `claude` on PATH",
   codex: "install the Codex CLI (npm i -g @openai/codex) or put `codex` on PATH",
   gemini: "install the Gemini CLI (npm i -g @google/gemini-cli) or put `gemini` on PATH",
@@ -127,7 +127,7 @@ const INSTALL_HINT: Record<AgentName, string> = {
 };
 
 /** The binary each agent's adapter spawns, when it differs from the agent name. */
-const AGENT_BINARY: Partial<Record<AgentName, string>> = {
+export const AGENT_BINARY: Partial<Record<AgentName, string>> = {
   prime: "prime-agent",
   cursor: "cursor-agent",
 };
