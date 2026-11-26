@@ -527,6 +527,14 @@ silent. `--json` emits `{rows, summary, total}`; each row carries `recorded`, `r
 `delta` objects keyed by the same field names as `ach stats --json`. Each row also carries
 `chain`, the run's `ach verify-run` verdict (below), taken before any `--fix`.
 
+### Knowing about new releases: `ach update --check`
+
+`ach update --check [--json]` reads the GitHub release feed once and prints `up to date` or
+`new version X available: <url>`. It never downloads, installs, replaces or modifies anything.
+An opt-in once-per-24h stderr line is available with `AGENTIC_CODING_HARNESS_UPDATE_CHECK=1`
+(default off: no command makes a network call). Feed URL, fields read and cache file:
+[docs/UPDATE-CHECK.md](docs/UPDATE-CHECK.md).
+
 ### Reclaiming disk: `ach gc`
 
 `ach gc` deletes old artifacts from the state dir (`AGENTIC_CODING_HARNESS_STATE_DIR`, default

@@ -85,6 +85,7 @@ import { statsFromDb } from "../adapters/opencode.ts";
 import { cacheHitRatio, fmtCacheHit } from "../core/cache-ratio.ts";
 import { createPricer, pricingMeta, pricingStaleNotice } from "../core/pricing.ts";
 import { OfflineViolation, installOfflineGuard } from "../core/offline.ts";
+import { autoUpdateNotice, checkForUpdate, formatUpdateResult } from "./update-check.ts";
 import { aggregate, fmtInt, fmtUsd, formatEventLine, formatLatencyLines, formatSummary, joinOptionValues, orderedExtraArgs, resolveDirFlag, wantsHelp } from "./lib.ts";
 import { runLatency } from "../core/latency.ts";
 import {
@@ -296,6 +297,11 @@ usage:
   ach run --agent <agents.d name> ...  drop-in descriptor (.ach/agents.d/ or <state>/agents.d/;
               see docs/CUSTOM-AGENTS.md)
   ach agents [--json]       list built-in agents, agents.d descriptors and descriptor errors
+  ach update --check [--json] [--offline]
+              one GET of the GitHub release feed: prints "up to date" or "new version X available: <url>"
+              (exit 1 and a plain message if the feed is unreachable). NEVER downloads, installs, replaces
+              or modifies anything, including this binary: it only reports. Writes only
+              <state>/update-check.json (last check time). Without --check this usage is shown.
   ach preflight --agent kiro-ide [--kiro-ide-cdp HOST:PORT] [--kiro-ide-port N] [--kiro-ide-bin PATH] [--json]
                     (read-only: binary, CDP reachability, signed-in chat; same rows as doctor)
   ach preflight --agent kiro [--model M] [--kiro-agent A] [--kiro-transport acp]
@@ -561,6 +567,9 @@ env:
                                      also _PLAN_WINDOW_TOKENS/_USD/_MESSAGES)
   AGENTIC_CODING_HARNESS_QUOTA_CODEX_DIR    quota: Codex rollouts dir (default ~/.codex/sessions)
   AGENTIC_CODING_HARNESS_QUOTA_CLAUDE_FILE  quota: Claude snapshot (default <state>/quota/claude.json)
+  AGENTIC_CODING_HARNESS_UPDATE_CHECK=1     opt in to one stderr line at most every 24h when a newer release exists
+                                     (default off: no network call from any command; see docs/UPDATE-CHECK.md)
+  AGENTIC_CODING_HARNESS_UPDATE_FEED_URL    override the release feed URL (default: GitHub releases/latest)
   AGENTIC_CODING_HARNESS_NULL_EXIT   --agent null only: force exitStatus (error|timeout|budget_exceeded)
   AGENTIC_CODING_HARNESS_NULL_TURNS  --agent null only: scripted turn count (default 1)`;
 
@@ -2207,8 +2216,42 @@ async function cmdEmit(rest: string[]): Promise<number> {
 const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
-  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane", "listener",
+  "trial", "queue", "replay", "smoke", "gc", "config", "attach", "desk", "lane", "listener", "update",
 ]);
+
+/** #98: commands that never get the automatic update line (stdio protocols and
+ *  per-prompt hot paths), besides `update` itself and --version/help. */
+const NO_AUTO_UPDATE_CHECK = new Set(["update", "mcp", "statusline"]);
+
+/**
+ * `ach update --check [--json] [--offline]` (#98). Reads the release feed and
+ * says whether a newer version exists. Never downloads, replaces or modifies
+ * anything: the only write is the small cache file in the state dir.
+ */
+async function cmdUpdate(argv: string[]): Promise<number> {
+  const args = parseArgs({
+    args: argv,
+    options: {
+      check: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+      offline: { type: "boolean", default: false },
+    },
+  });
+  if (!args.values.check) {
+    process.stderr.write(subcommandHelp("update") + "\n");
+    return 1;
+  }
+  if (args.values.offline) installOfflineGuard();
+  let r;
+  try {
+    r = await checkForUpdate(VERSION);
+  } catch (e) {
+    if (e instanceof OfflineViolation) throw e;
+    throw new HarnessError(`update check failed: ${e instanceof Error ? e.message : String(e)}`, "UPDATE_CHECK", 1);
+  }
+  process.stdout.write(args.values.json ? JSON.stringify(r) + "\n" : formatUpdateResult(r) + "\n");
+  return 0;
+}
 
 /**
  * The lines of the top-level USAGE block that describe one subcommand: from
@@ -2257,7 +2300,14 @@ async function main(argvIn: string[]): Promise<number> {
   // #41: one choke point; `config` loads files itself (it may be fixing one).
   if (cmd === "config") return cmdConfig(rest, config, CONFIG_COMMANDS);
   if (cmd !== undefined && SUBCOMMANDS.has(cmd)) await applyConfig(cmd, config, CONFIG_COMMANDS);
+  // #98: opt-in (env, default OFF) once-per-24h update line, stderr only.
+  if (cmd !== undefined && SUBCOMMANDS.has(cmd) && !NO_AUTO_UPDATE_CHECK.has(cmd) && !rest.includes("--offline")) {
+    const notice = await autoUpdateNotice(VERSION);
+    if (notice !== null) process.stderr.write(notice + "\n");
+  }
   switch (cmd) {
+    case "update":
+      return cmdUpdate(rest);
     case "run":
       return cmdRun(rest);
     case "attach":
