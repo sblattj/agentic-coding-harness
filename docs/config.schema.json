@@ -935,6 +935,186 @@
       },
       "additionalProperties": false
     },
+    "emit": {
+      "description": "defaults for `ach emit` flags",
+      "type": "object",
+      "properties": {
+        "input": {
+          "description": "ach emit --input",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "format": {
+          "description": "ach emit --format",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "out": {
+          "description": "ach emit --out",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "agent": {
+          "description": "ach emit --agent",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "model": {
+          "description": "ach emit --model",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "sessionId": {
+          "description": "ach emit --session-id",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "langfuseUrl": {
+          "description": "ach emit --langfuse-url",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "langfusePublicKey": {
+          "description": "ach emit --langfuse-public-key",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "langfuseSecretKey": {
+          "description": "ach emit --langfuse-secret-key",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "minScore": {
+          "description": "ach emit --min-score",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "exit": {
+          "description": "ach emit --exit",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "fullConversation": {
+          "description": "ach emit --full-conversation",
+          "type": "boolean"
+        },
+        "mask": {
+          "description": "ach emit --mask",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "maskStyle": {
+          "description": "ach emit --mask-style",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "maskEntropy": {
+          "description": "ach emit --mask-entropy",
+          "type": "boolean"
+        },
+        "maskPattern": {
+          "description": "ach emit --mask-pattern",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "privacy": {
+          "description": "ach emit --privacy",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "attr": {
+          "description": "ach emit --attr",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "attrEnv": {
+          "description": "ach emit --attr-env",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "number"
+                ]
+              }
+            }
+          ]
+        },
+        "enricher": {
+          "description": "ach emit --enricher",
+          "type": [
+            "string",
+            "number"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "profiles": {
       "description": "named agent profiles: `ach run --profile <name>` expands one; keys are `run` keys plus `env`",
       "type": "object",

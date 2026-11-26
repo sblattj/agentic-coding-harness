@@ -11,6 +11,7 @@ have to be retyped on every command (#41).
   "stats": { "days": 7, "tz": "Europe/Berlin", "by": ["model"] },
   "web": { "port": 8399, "noOpen": true },
   "serve": { "port": 8398 },
+  "emit": { "attr": ["team=platform"], "attrEnv": ["ci.build_id=BUILD_NUMBER"] },
   "profiles": {
     "fast": { "agent": "claude", "model": "sonnet", "budgetUsd": 1, "maxTurns": 20 }
   }
@@ -39,7 +40,7 @@ is not an error. A missing `--config` / `AGENTIC_CODING_HARNESS_CONFIG` file is.
 
 - `stateDir`: the state root for every command (same as `AGENTIC_CODING_HARNESS_STATE_DIR`). A
   leading `~` expands to your home dir; a relative path is relative to the config file's dir.
-- `run`, `stats`, `web`, `serve`: one section per command. Each key is a long flag name of that
+- `run`, `stats`, `web`, `serve`, `emit`: one section per command. Each key is a long flag name of that
   command in camelCase: `--budget-usd` is `run.budgetUsd`, `--no-open` is `web.noOpen`,
   `--source-poll-ms` is `web.sourcePollMs`. Every long flag of the command is a valid key.
   - flags that take a value accept a string or a number (`"budgetUsd": 5` or `"5"`);
@@ -100,7 +101,7 @@ or a list, #99) has no env mirror either; a command-line `--dir` on `stats` repl
 Relative paths in a file resolve against that file's directory, never the process cwd, and a
 leading `~` expands to your home dir. This covers `stateDir` and every path-typed key:
 `run.evidenceDir`, `run.kiroIdeUserDataDir`, `stats.dir`, `stats.transcriptDir`, `stats.stateDir`, `web.dir`,
-`web.stateDir` and `serve.root` (`PATH_FLAGS` in `src/cli/config.ts`).
+`web.stateDir`, `serve.root` and `emit.enricher` (`PATH_FLAGS` in `src/cli/config.ts`).
 
 Two limits of flag parsing to know:
 
@@ -114,6 +115,70 @@ command line beats `web.stateDir` from the file instead of tripping the "disagre
 
 Value checks (a negative `maxTurns`, an unknown `onBudget`) run in the command, exactly as for the
 flag, so their message names the flag (`--max-turns expects ...`), not the file.
+
+## Export enrichers
+
+`ach emit` stamps custom attributes on what it exports (#95), so a team tag or a CI build id does
+not have to be patched in by a collector:
+
+```sh
+ach emit --input run.json --format otel --out spans.json \
+  --attr team=platform --attr environment=staging \
+  --attr-env ci.build_id=BUILD_NUMBER --attr-env vcs.sha=GIT_COMMIT
+```
+
+or once in the config file:
+
+```json
+{ "emit": { "attr": ["team=platform"], "attrEnv": ["ci.build_id=BUILD_NUMBER", "vcs.sha=GIT_COMMIT"] } }
+```
+
+- `--attr key=value` adds a static attribute (split on the first `=`, so the value may contain `=`).
+- `--attr-env key=ENVVAR` reads `ENVVAR` from the environment at export time; it overrides an
+  `--attr` with the same key. An unset or empty variable is skipped with one stderr warning, never
+  exported as an empty attribute.
+- Where they land: every OTel span and the OTLP resource (`--format otel`); every Langfuse span,
+  including the per-model generation spans of a multi-model run (`--format langfuse`, the POSTed
+  payload and the `--out` dump); the trajectory's top-level `extra.attributes` object for
+  `--format atif` (ATIF has no per-step attribute field). `--format sft` has no attribute field and
+  ignores them. Built-in keys (`gen_ai.*`, `langfuse.*`, `service.name`) win a clash.
+- Fail open: a malformed entry (`--attr noequals`) or a missing env var prints a warning and is
+  skipped; the export itself never fails because of an enricher.
+- Precedence follows the repeatable-flag rule above: any `--attr` on the command line replaces the
+  file's whole `emit.attr` list (and `--attr-env` the `emit.attrEnv` list); the other list still
+  comes from the file.
+- MCP: `harness_emit` takes a static `attributes` object (`{"team": "platform"}`). It has no env
+  mapping and no enricher module on purpose: a client-chosen env var name plus a client-chosen
+  output would let any MCP client read the server's environment, and a module path would let it
+  run local code. An `enricher` argument is ignored with a warning. Non-string values are skipped
+  and listed in the result's `warnings`.
+- `--enricher <path>` (or `emit.enricher` in the file) loads a user JS module for dynamic
+  attributes. Opt-in only, and never accepted over MCP. A relative flag value resolves against the
+  cwd; a relative file value against the config file's directory, like the other path keys. The
+  module's default export is called with span-like info and returns an attributes object, sync or
+  async:
+
+  ```js
+  // enrich.mjs
+  export default (info) => ({
+    "skill.class": info.operation === "execute_tool" ? "tooling" : "reasoning",
+    "ci.job": process.env.CI_JOB_ID ?? "local",
+  });
+  ```
+
+  `info` is `{ kind, name, operation, attributes, startTimeMs, endTimeMs, run: { format, sessionId,
+  agent, model } }`. For OTel and Langfuse it is called once per span (`kind: "span"`,
+  `attributes` is a copy of the span's built-in attributes), and the result lands on that span.
+  For ATIF it is called once (`kind: "trajectory"`), and the result is merged into
+  `extra.attributes`. The module can only add attributes: built-in keys still win, and values
+  that are not strings, numbers or booleans are dropped. Fail open: a load failure, a missing
+  default export, a throw, a non-object return or an async call that runs over 5 s
+  (`ENRICHER_TIMEOUT_MS`) prints one warning. The enricher then stops for the rest of that
+  export, and the export continues without it. It runs with your own permissions, the same trust
+  as a queue hook or a checker command; only point it at code you trust.
+
+Every other `ach emit` flag is also a valid `emit.*` key. `emit.langfuseSecretKey` works but puts a
+secret in a plain file; prefer the `LANGFUSE_SECRET_KEY` env var.
 
 ## `ach config`
 

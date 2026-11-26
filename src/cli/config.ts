@@ -44,7 +44,7 @@ import { DEFAULT_PRIVACY_MODE, PRIVACY_ENV } from "../core/privacy.ts";
 
 export const CONFIG_ENV = "AGENTIC_CODING_HARNESS_CONFIG";
 export const STATE_DIR_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
-export const CONFIG_SECTIONS = ["run", "stats", "web", "serve"] as const;
+export const CONFIG_SECTIONS = ["run", "stats", "web", "serve", "emit"] as const;
 export type ConfigSection = (typeof CONFIG_SECTIONS)[number];
 /** Top-level key holding the named agent profiles (#77). */
 export const PROFILES_KEY = "profiles";
@@ -142,6 +142,7 @@ export const PATH_FLAGS: ReadonlySet<string> = new Set([
   "evidence-dir",
   "kiro-ide-user-data-dir",
   "root",
+  "enricher",
 ]);
 
 /**

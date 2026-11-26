@@ -66,6 +66,7 @@ const fakeCommands: SectionCommands = {
   stats: async (rest) => (parseArgs({ args: rest, options: { days: { type: "string" } } }), 0),
   web: async (rest) => (parseArgs({ args: rest, options: { port: { type: "string" } } }), 0),
   serve: async (rest) => (parseArgs({ args: rest, options: { port: { type: "string" } } }), 0),
+  emit: async (rest) => (parseArgs({ args: rest, options: { attr: { type: "string", multiple: true } } }), 0),
 };
 
 /** Drive the TTY wizard in-process: answer each prompt in order. */

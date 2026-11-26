@@ -42,6 +42,10 @@ export interface LangfusePayloadOptions {
   resourceAttributes?: Record<string, string>;
   /** #72: stamped as the `ach.capture_mode` resource attribute. */
   captureMode?: string;
+  /** #95: custom enricher attributes, passed through to toOtlpJson. */
+  attributes?: Record<string, string>;
+  /** #95: per-span user-enricher attributes (see EmitRunOptions). */
+  spanAttributes?: readonly (Record<string, string> | undefined)[];
 }
 
 export interface LangfuseEmitOptions extends LangfuseIngestOptions, LangfusePayloadOptions {

@@ -102,6 +102,12 @@ export interface EmitRunOptions {
   agentName: string;
   model: string;
   events: AgentEvent[];
+  /** #95: custom enricher attributes (src/emitters/enrich.ts) stamped on every
+   *  span and the OTLP resource; built-in keys win on a clash. */
+  attributes?: Record<string, string>;
+  /** #95: per-span attributes from a user enricher, indexed in deriveSpans
+   *  order (root first, then children); layered over `attributes`. */
+  spanAttributes?: readonly (Record<string, string> | undefined)[];
 }
 
 export interface DerivedSpans {
@@ -196,6 +202,11 @@ export function deriveSpans(
       });
     }
   }
+  if (opts.attributes || opts.spanAttributes) {
+    [root, ...children].forEach((spec, i) => {
+      spec.attributes = { ...opts.attributes, ...opts.spanAttributes?.[i], ...spec.attributes };
+    });
+  }
   return { root, children };
 }
 
@@ -288,6 +299,9 @@ export function toOtlpJson(
             // #72: the run's content-capture tier, so a consumer can tell a
             // metadata-only trace from one whose content is just empty.
             ...(opts.captureMode !== undefined ? [{ key: 'ach.capture_mode', value: { stringValue: opts.captureMode } }] : []),
+            ...Object.entries(opts.attributes ?? {})
+              .filter(([key]) => key !== 'service.name')
+              .map(([key, value]) => ({ key, value: { stringValue: value } })),
           ],
         },
         scopeSpans: [

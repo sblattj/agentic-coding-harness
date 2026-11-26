@@ -99,6 +99,9 @@ export interface StartTrajectoryOptions {
   toolDefinitions?: unknown[];
   /** Keys merged into the trajectory's top-level `extra` (#46: `{ privacy }`). */
   extra?: Record<string, unknown>;
+  /** #95: custom enricher attributes, written to the trajectory's top-level
+   *  `extra.attributes` (ATIF has no per-step attribute field). */
+  attributes?: Record<string, string>;
 }
 
 export interface AddStepOptions {
@@ -155,6 +158,7 @@ export class AtifWriter {
       trajectoryId: opts.trajectoryId ?? randomUUID(),
       toolDefinitions: opts.toolDefinitions,
       ...(opts.extra !== undefined ? { extra: opts.extra } : {}),
+      attributes: opts.attributes,
     };
     this.started = true;
     return this;
@@ -224,6 +228,9 @@ export class AtifWriter {
     }
     if (this.subagents.length > 0) {
       trajectory.extra.subagents = this.subagents;
+    }
+    if (this.agent.attributes && Object.keys(this.agent.attributes).length > 0) {
+      trajectory.extra.attributes = { ...this.agent.attributes };
     }
     return trajectory;
   }
@@ -299,6 +306,7 @@ export class AtifWriter {
       sessionId: opts?.sessionId,
       trajectoryId: opts?.trajectoryId,
       ...(opts?.extra !== undefined ? { extra: opts.extra } : {}),
+      attributes: opts?.attributes,
     });
 
     let current: StepDraft | null = null;

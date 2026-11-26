@@ -69,7 +69,8 @@ import { parseRunSpec } from "../core/validate.ts";
 import { VERSION } from "../version.ts";
 import { stateDir, loadOffsets, saveOffsets, appendRecords, type StatRecord } from "../core/store.ts";
 import { AtifWriter } from "../emitters/atif.ts";
-import { toOtlpJson } from "../emitters/otel.ts";
+import { deriveSpans, toOtlpJson } from "../emitters/otel.ts";
+import { loadEnricher, resolveEnrichAttributes, resolveEnricherPath, runEnricher, type EnricherInput } from "../emitters/enrich.ts";
 import { emitToLangfuse } from "../emitters/langfuse.ts";
 import { runSftEmit } from "../emitters/sft.ts";
 import { MASK_OPTIONS, maskForExport } from "../core/masking.ts";
@@ -524,6 +525,12 @@ usage:
                  terminal prints plain min=.. max=.. text)
   ach emit --input <events.json> --format <atif|otel|langfuse|sft> [--out path]
                [--agent A] [--model M] [--session-id SID]
+               [--attr key=value]... [--attr-env key=ENVVAR]... [--enricher ./enrich.mjs]
+               (custom attributes on every OTel/Langfuse span and the OTLP resource,
+                ATIF extra.attributes; an unset ENVVAR is skipped with a warning;
+                --enricher: a JS module whose default export maps each span to
+                extra attributes (sync or async, 5s per call, fail open);
+                config file section "emit"; ignored for sft; docs/CONFIG.md#export-enrichers)
                (sft: OpenAI chat JSONL for fine-tuning; --input may be a RunResult
                 JSON or a trials directory; [--min-score N] [--exit <status>]
                 [--agent A] filter runs (--exit takes an exitStatus such as
@@ -2307,6 +2314,58 @@ const EventStreamSchema = z.union([
   z.object({ events: z.array(z.unknown()) }).transform((o) => o.events),
 ]);
 
+/** #95: resolve `ach emit --attr/--attr-env` into the enricher attribute map,
+ *  printing one stderr warning per skipped entry. Never throws. */
+function emitEnrichAttributes(attrs: string[] | undefined, attrEnv: string[] | undefined): Record<string, string> | undefined {
+  try {
+    const r = resolveEnrichAttributes({ attrs, attrEnv });
+    for (const w of r.warnings) process.stderr.write(`ach emit: warning: ${w}\n`);
+    return Object.keys(r.attributes).length > 0 ? r.attributes : undefined;
+  } catch (e) {
+    process.stderr.write(`ach emit: warning: enrichers failed, exporting without them: ${e instanceof Error ? e.message : e}\n`);
+    return undefined;
+  }
+}
+
+/** #95: run the opt-in `--enricher` module. OTel/Langfuse get one result per
+ *  span (deriveSpans order); ATIF gets one trajectory-level map merged over
+ *  the static attributes. Fail open: every problem is one stderr warning. */
+async function emitUserEnricher(
+  enricher: string | undefined,
+  format: "atif" | "otel" | "langfuse",
+  events: AgentEvent[],
+  run: { sessionId: string; agent: string; model: string },
+  attributes: Record<string, string> | undefined,
+): Promise<{ attributes: Record<string, string> | undefined; spanAttributes?: (Record<string, string> | undefined)[] }> {
+  if (enricher === undefined || enricher === "") return { attributes };
+  const warn = (w: string): void => void process.stderr.write(`ach emit: warning: ${w}\n`);
+  const loaded = await loadEnricher(resolveEnricherPath(enricher));
+  if (!loaded.fn) {
+    if (loaded.warning) warn(loaded.warning);
+    return { attributes };
+  }
+  const ctx = { format, ...run };
+  if (format === "atif") {
+    const r = await runEnricher(loaded.fn, [{ kind: "trajectory", name: run.agent, operation: "trajectory", attributes: {}, run: ctx }]);
+    r.warnings.forEach(warn);
+    const dyn = r.results[0];
+    return { attributes: dyn ? { ...attributes, ...dyn } : attributes };
+  }
+  const { root, children } = deriveSpans(events, { sessionId: run.sessionId, agentName: run.agent, model: run.model });
+  const inputs: EnricherInput[] = [root, ...children].map((s) => ({
+    kind: "span",
+    name: s.name,
+    operation: String(s.attributes["gen_ai.operation.name"] ?? s.role),
+    attributes: { ...s.attributes },
+    startTimeMs: s.startMs,
+    endTimeMs: s.endMs,
+    run: ctx,
+  }));
+  const r = await runEnricher(loaded.fn, inputs);
+  r.warnings.forEach(warn);
+  return { attributes, spanAttributes: r.results };
+}
+
 async function cmdEmit(rest: string[]): Promise<number> {
   const args = parseArgs({
     args: rest,
@@ -2325,9 +2384,16 @@ async function cmdEmit(rest: string[]): Promise<number> {
       "full-conversation": { type: "boolean" },
       ...MASK_OPTIONS,
       ...PRIVACY_OPTIONS,
+      attr: { type: "string", multiple: true },
+      "attr-env": { type: "string", multiple: true },
+      enricher: { type: "string" },
     },
     allowPositionals: true,
   });
+  // #95: keys the config file's emit section filled in are not typed flags, so
+  // the cross-format rejections below must not fire on them.
+  const fromFile = new Set((takeResolution()?.effective ?? []).filter((e) => e.source !== "flag").map((e) => e.flag));
+  const typed = (k: string): boolean => args.values[k as keyof typeof args.values] !== undefined && !fromFile.has(k);
   const input = args.values.input;
   if (!input) throw new HarnessError("emit requires --input <events.json>", "USAGE");
   const format = args.values.format;
@@ -2335,9 +2401,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
     throw new HarnessError(`emit requires --format <atif|otel|langfuse|sft> (got '${format ?? ""}')`, "USAGE");
   }
   if (format === "sft") {
-    const otherOnly = (["model", "session-id", "langfuse-url", "langfuse-public-key", "langfuse-secret-key"] as const).filter(
-      (k) => args.values[k] !== undefined,
-    );
+    const otherOnly = (["model", "session-id", "langfuse-url", "langfuse-public-key", "langfuse-secret-key"] as const).filter(typed);
     if (otherOnly.length > 0) {
       throw new HarnessError(`${otherOnly.map((k) => `--${k}`).join(", ")} do not apply to --format sft`, "USAGE");
     }
@@ -2351,7 +2415,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
       mask: maskPolicyFor("sft", args.values),
     });
   }
-  const sftOnly = (["min-score", "exit", "full-conversation"] as const).filter((k) => args.values[k] !== undefined);
+  const sftOnly = (["min-score", "exit", "full-conversation"] as const).filter(typed);
   if (sftOnly.length > 0) {
     throw new HarnessError(`${sftOnly.map((k) => `--${k}`).join(", ")} only applies to --format sft (got '${format}')`, "USAGE");
   }
@@ -2384,6 +2448,8 @@ async function cmdEmit(rest: string[]): Promise<number> {
     throw new HarnessError(`--input '${input}' must be an event array or {events: [...]}`, "IO");
   }
   const events = stream.data as unknown as AgentEvent[];
+  // #95: --attr / --attr-env enrichers (fail open: bad entries warn, never abort).
+  const attributes = emitEnrichAttributes(args.values.attr, args.values["attr-env"]);
 
   // When --input is a full RunResult (not just an event stream), inherit its
   // sessionId/agent/model so callers don't have to restate them per-flag.
@@ -2413,6 +2479,11 @@ async function cmdEmit(rest: string[]): Promise<number> {
     (typeof runResult.model === "string" && runResult.model !== "" && runResult.model) ||
     (typeof firstToken.model === "string" && firstToken.model !== "" && firstToken.model) ||
     "unknown-model";
+  const enriched = await emitUserEnricher(args.values.enricher, format, events, {
+    sessionId: args.values["session-id"] ?? defaultSessionId,
+    agent: args.values.agent ?? defaultAgent,
+    model: args.values.model ?? defaultModel,
+  }, attributes);
 
   let body: string;
   if (format === "atif") {
@@ -2422,6 +2493,7 @@ async function cmdEmit(rest: string[]): Promise<number> {
       modelName: args.values.model ?? defaultModel,
       sessionId,
       ...(stamped ? { extra: { privacy } } : {}),
+      attributes: enriched.attributes,
     });
     if (args.values.out) {
       const doc = writer.finalize(args.values.out);
@@ -2459,6 +2531,8 @@ async function cmdEmit(rest: string[]): Promise<number> {
         model: args.values.model ?? defaultModel,
         ...(resourceAttributes !== undefined ? { resourceAttributes } : {}),
         ...captureStamp,
+        attributes,
+        spanAttributes: enriched.spanAttributes,
       });
     } catch (e) {
       throw new HarnessError(
@@ -2489,6 +2563,8 @@ async function cmdEmit(rest: string[]): Promise<number> {
       model: args.values.model ?? defaultModel,
       ...(resourceAttributes !== undefined ? { resourceAttributes } : {}),
       ...captureStamp,
+      attributes,
+      spanAttributes: enriched.spanAttributes,
     });
     body = JSON.stringify(doc, null, 2) + "\n";
     if (args.values.out) await fs.writeFile(args.values.out, body);
@@ -2575,7 +2651,7 @@ function subcommandHelp(cmd: string): string {
 }
 
 /** #41: the commands whose option tables define the config file sections. */
-const CONFIG_COMMANDS = { run: cmdRun, stats: cmdStats, web: cmdWeb, serve: cmdServe };
+const CONFIG_COMMANDS = { run: cmdRun, stats: cmdStats, web: cmdWeb, serve: cmdServe, emit: cmdEmit };
 
 async function main(argvIn: string[]): Promise<number> {
   const { argv, config } = takeConfigFlag(argvIn);

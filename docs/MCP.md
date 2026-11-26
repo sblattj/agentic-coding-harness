@@ -159,6 +159,7 @@ Emit a recorded run as an artifact.
 | format | string | yes | `atif` \| `otel` \| `langfuse` |
 | out | string | no | write to path |
 | endpoint | string | no | POST target (langfuse) |
+| attributes | object | no | static custom attributes (#95): every OTel/Langfuse span + OTLP resource, ATIF `extra.attributes`; no env mapping and no `enricher` module over MCP (an `enricher` argument is ignored with a warning) ([CONFIG.md](CONFIG.md#export-enrichers)) |
 
 Returns `{ path }`, or the artifact body when no `out`.
 

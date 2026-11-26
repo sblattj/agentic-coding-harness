@@ -10,6 +10,7 @@ import { readAllRecords } from "../core/store.ts";
 import { AtifWriter } from "../emitters/atif.ts";
 import { toOtlpJson } from "../emitters/otel.ts";
 import { emitToLangfuse } from "../emitters/langfuse.ts";
+import { sanitizeEnrichAttributes } from "../emitters/enrich.ts";
 import { loadTrials } from "../report/model.ts";
 import { readVersion, renderReport } from "../report/html.ts";
 import { aggregate, type AggregatableRecord } from "../cli/lib.ts";
@@ -112,6 +113,13 @@ const EmitSchema = z.object({
   endpoint: z.string().min(1).optional(),
   mask: z.enum(MASK_MODES).optional(),
   privacy: z.enum(PRIVACY_MODES).optional(),
+  // #95: static enricher attributes only. No env mapping here: a client-chosen
+  // env var name plus a client-chosen out/endpoint would let any MCP client
+  // read the server's environment.
+  attributes: z.unknown().optional(),
+  // #95: a user enricher module runs local code, so it is CLI/config only;
+  // over MCP it is ignored with a warning.
+  enricher: z.unknown().optional(),
 });
 
 async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promise<unknown> {
@@ -149,6 +157,13 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
     throw new Error(`runFile: '${a.runFile}' must be an event array or {events: [...]}`);
   }
   const events = stream.data as unknown as AgentEvent[];
+  const enrich = sanitizeEnrichAttributes(a.attributes);
+  if (a.enricher !== undefined) {
+    enrich.warnings.push("enricher is not accepted over MCP (it would run local code); ignored. Use `ach emit --enricher` instead");
+  }
+  for (const w of enrich.warnings) process.stderr.write(`harness_emit: warning: ${w}\n`);
+  const attributes = Object.keys(enrich.attributes).length > 0 ? enrich.attributes : undefined;
+  const warn = enrich.warnings.length > 0 ? { warnings: enrich.warnings } : {};
 
   if (a.format === "atif") {
     const writer = AtifWriter.fromEvents(events, {
@@ -156,6 +171,7 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
       version: "0.2.0",
       modelName: "unknown-model",
       ...(privacy !== "off" ? { extra: { privacy } } : {}),
+      attributes,
     });
     if (a.out) {
       writer.finalize(a.out);
@@ -163,9 +179,9 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
       if (!ok) {
         throw new Error(`out: ATIF validation failed for '${a.out}':\n${errors.join("\n")}`);
       }
-      return { format: a.format, out: a.out, detail: "validated", ...stamp };
+      return { format: a.format, out: a.out, detail: "validated", ...stamp, ...warn };
     }
-    return { format: a.format, detail: JSON.stringify(writer.toTrajectory()).length + " bytes rendered", ...stamp };
+    return { format: a.format, detail: JSON.stringify(writer.toTrajectory()).length + " bytes rendered", ...stamp, ...warn };
   }
 
   if (a.format === "langfuse") {
@@ -187,6 +203,7 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
         agentName: "unknown-agent",
         model: "unknown-model",
         ...resourceAttributes,
+        attributes,
       });
     } catch (e) {
       throw new Error(`endpoint: langfuse ingest to '${baseUrl}' failed: ${e instanceof Error ? e.message : e}`);
@@ -205,6 +222,7 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
       sent: true,
       ...stamp,
       detail: `posted ${result.spanCount} spans to ${result.url} — trace ${result.traceId} (HTTP ${result.status})`,
+      ...warn,
     };
   }
 
@@ -213,14 +231,15 @@ async function harnessEmit(args: Record<string, unknown>, opts: ToolOpts): Promi
     agentName: "unknown-agent",
     model: "unknown-model",
     ...resourceAttributes,
+    attributes,
   });
   const body = JSON.stringify(doc, null, 2) + "\n";
   if (a.out) {
     await fs.mkdir(path.dirname(path.resolve(a.out)), { recursive: true });
     await fs.writeFile(a.out, body);
-    return { format: a.format, out: a.out, detail: "wrote", ...stamp };
+    return { format: a.format, out: a.out, detail: "wrote", ...stamp, ...warn };
   }
-  return { format: a.format, detail: body.length + " bytes rendered", ...stamp };
+  return { format: a.format, detail: body.length + " bytes rendered", ...stamp, ...warn };
 }
 
 // ---------------------------------------------------------------- stats
@@ -354,6 +373,11 @@ export function registerInspectTools(server: McpServer, opts: ToolOpts): void {
         endpoint: { type: "string", description: "Langfuse OTLP base URL override" },
         mask: { type: "string", enum: [...MASK_MODES], description: "Secret masking: none | preview (list findings, write and send nothing) | all (mask before export); default from config/env, else none" },
         privacy: { type: "string", enum: [...PRIVACY_MODES], description: "Privacy mode (docs/MASKING.md): off | redact (paths to basenames, $HOME to ~) | anon (also drops prompt text, hashes run/session ids); default from config/env, else off" },
+        attributes: {
+          type: "object",
+          additionalProperties: { type: "string" },
+          description: "Custom attributes stamped on every OTel/Langfuse span and the OTLP resource, or ATIF extra.attributes (#95)",
+        },
       },
       required: ["runFile", "format"],
     },

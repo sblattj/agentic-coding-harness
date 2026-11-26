@@ -344,7 +344,7 @@ describe("stateDir and the parseArgs hook", () => {
       parseArgs({ args: rest, options: {}, allowPositionals: true });
       return 0;
     };
-    const commands: SectionCommands = { run: fakeRun, stats: stub, web: stub, serve: stub };
+    const commands: SectionCommands = { run: fakeRun, stats: stub, web: stub, serve: stub, emit: stub };
     const tables = await captureTables(commands);
     assert.deepEqual(Object.keys(tables.run), ["brand-new", "new-list", "loud"]);
     assert.ok(Object.keys((configJsonSchema(tables).properties as Record<string, { properties?: object }>).run!.properties!).includes("brandNew"));
@@ -375,7 +375,7 @@ describe("stateDir and the parseArgs hook", () => {
       parseArgs({ args: rest, options: {} });
       return 0;
     };
-    const commands: SectionCommands = { run: stub, stats: stub, web: fakeWeb, serve: stub };
+    const commands: SectionCommands = { run: stub, stats: stub, web: fakeWeb, serve: stub, emit: stub };
     const cfg = path.join(tmp, "alias.json");
     await writeJson(cfg, { web: { stateDir: "/from/file" } });
     await applyConfig("web", cfg, commands);
@@ -430,7 +430,7 @@ describe("--set coerces by the target key's type (#41)", () => {
       properties: Record<string, { properties?: Record<string, unknown> }>;
     };
     const camel = (f: string) => f.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
-    const all = new Set(["run", "stats", "web", "serve"].flatMap((s) => Object.keys(schema.properties[s]!.properties!)));
+    const all = new Set(["run", "stats", "web", "serve", "emit"].flatMap((s) => Object.keys(schema.properties[s]!.properties!)));
     for (const f of [...NUMERIC_FLAGS, ...PATH_FLAGS]) assert.ok(all.has(camel(f)), `${f} is not a config key`);
   });
 });
@@ -497,7 +497,7 @@ describe("web state-dir mirrors the env var; path values resolve against the con
       got = parseArgs({ args: rest, options: { dir: { type: "string" }, "state-dir": { type: "string" } }, allowPositionals: true }).values;
       return 0;
     };
-    const commands: SectionCommands = { run: stub, stats: stub, web, serve: stub };
+    const commands: SectionCommands = { run: stub, stats: stub, web, serve: stub, emit: stub };
     const cfg = await writeJson(path.join(tmp, "web-mirror", "c.json"), { web: { stateDir: "st", dir: "d" } });
     const saved = process.env.AGENTIC_CODING_HARNESS_STATE_DIR;
     try {

@@ -247,6 +247,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 - **MCP server** — `ach mcp` (stdio JSON-RPC; `ach serve` for streamable HTTP), 10 tools (`harness_run{,_async,_status,_events,_cancel}`, `harness_kiro_preflight`, `report/emit/stats/agents`) so any MCP
   client launches runs and reads usage; see [docs/MCP.md](docs/MCP.md).
 - **Emitters** — ATIF v1.7 trajectories (self-validating), OpenTelemetry `gen_ai` spans, Langfuse via OTLP.
+  Custom static or env-sourced attributes (`--attr`, `--attr-env`, or the config file's `emit` section) ride on every exported span; `--enricher` adds a JS module for dynamic per-span attributes.
 - **Single-file HTML reports** — charts + timelines comparing every agent in a trial dir.
 - **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini/agy/prime transcript
   dirs plus the opencode SQLite store; `stats` aggregates totals/byAgent/byDay over machine
@@ -482,6 +483,9 @@ ach smoke <message-file> [--account EMAIL] [--stub jira=JIRA_BASE_URL]... [--all
             # fix the message in place, print the friction table; exit 0 clean, 1 friction, 2 usage (docs/SMOKE.md)
 ach emit --input events.json --format atif|otel|langfuse|sft [--out path]
             [--agent A] [--model M] [--session-id SID]
+            [--attr team=platform]... [--attr-env ci.build_id=BUILD_NUMBER]... [--enricher ./enrich.mjs]
+            (custom attributes on every OTel/Langfuse span + OTLP resource, ATIF extra.attributes;
+             set them once in the config file's emit section; docs/CONFIG.md#export-enrichers)
             (sft: OpenAI chat JSONL for fine-tuning; --input may be a trials dir;
              [--min-score N] [--exit success] [--agent A] [--full-conversation]; docs/SFT-EXPORT.md)
             (langfuse auth: --langfuse-url/--langfuse-public-key/--langfuse-secret-key or env)
