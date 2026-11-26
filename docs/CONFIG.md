@@ -64,6 +64,11 @@ is not an error. A missing `--config` / `AGENTIC_CODING_HARNESS_CONFIG` file is.
   `default` sits below `--capture-mode` / `run.captureMode` and `ACH_CAPTURE_MODE`; an
   `agents` entry beats all of them for that agent, in both directions. See
   [CAPTURE.md](CAPTURE.md).
+- `alerts`: alert rules (#74). `{ "rules": [...] }`, each rule an `error_rate` (N of the last M
+  runs failed, or K in a row) or `idle` (an in-flight run recorded no event for X seconds) rule
+  with `webhook` and/or `desktop` destinations and an optional `cooldownSec`. `ach watch`
+  evaluates them live; `ach alerts --dry-run` replays them over history. A later file's
+  `alerts.rules` replaces an earlier one's whole. See [ALERTS.md](ALERTS.md).
 - `$schema`: optional, ignored by `ach`; point it at the published schema for editor validation
   and autocomplete.
 

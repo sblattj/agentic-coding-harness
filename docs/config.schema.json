@@ -1827,6 +1827,195 @@
       "additionalProperties": false,
       "description": "secret masking before export (#71): see docs/MASKING.md"
     },
+    "alerts": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "description": "alert rules evaluated by `ach watch` and `ach alerts` (docs/ALERTS.md)",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$",
+                    "description": "unique rule name (state key, shown in every hit)"
+                  },
+                  "agent": {
+                    "description": "only runs of this agent",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "cooldownSec": {
+                    "description": "minimum seconds between two delivered hits of this rule (default 600)",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "destinations": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "webhook"
+                            },
+                            "url": {
+                              "type": "string",
+                              "pattern": "^https?:\\/\\/\\S+$",
+                              "description": "receiver URL; the POST uses the #64 envelope with type \"alert\" (docs/EVENT-WEBHOOK.md)"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "url"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "desktop"
+                            },
+                            "sound": {
+                              "description": "play the platform alert sound",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "description": "where a hit goes: webhook and/or desktop"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "error_rate"
+                  },
+                  "failures": {
+                    "description": "fire when this many of the last `window` runs failed",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "window": {
+                    "description": "how many recent runs with a verdict `failures` counts over",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "consecutive": {
+                    "description": "fire when this many runs in a row failed",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "name",
+                  "destinations",
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$",
+                    "description": "unique rule name (state key, shown in every hit)"
+                  },
+                  "agent": {
+                    "description": "only runs of this agent",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "cooldownSec": {
+                    "description": "minimum seconds between two delivered hits of this rule (default 600)",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "destinations": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "webhook"
+                            },
+                            "url": {
+                              "type": "string",
+                              "pattern": "^https?:\\/\\/\\S+$",
+                              "description": "receiver URL; the POST uses the #64 envelope with type \"alert\" (docs/EVENT-WEBHOOK.md)"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "url"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "desktop"
+                            },
+                            "sound": {
+                              "description": "play the platform alert sound",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "description": "where a hit goes: webhook and/or desktop"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "idle"
+                  },
+                  "idleSec": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "fire when an in-flight run records no event for this many seconds"
+                  }
+                },
+                "required": [
+                  "name",
+                  "destinations",
+                  "type",
+                  "idleSec"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "alert rules engine (#74): error_rate and idle rules with webhook and desktop destinations"
+    },
     "contentCapture": {
       "description": "content-capture policy applied at record time (#72): full | metadata | off; a bare tier is the default",
       "anyOf": [

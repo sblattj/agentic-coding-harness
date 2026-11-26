@@ -41,6 +41,7 @@ import {
 import { EXIT_CODES } from "./exit-codes.ts";
 import { DEFAULT_MASK_MODE, MASK_ENV, MASK_SINKS, MaskConfigSchema, SINK_DEFAULT_MASK_MODE, type MaskConfig } from "../core/masking.ts";
 import { DEFAULT_PRIVACY_MODE, PRIVACY_ENV } from "../core/privacy.ts";
+import { ALERTS_KEY, AlertsConfigSchema, alertsConfigProblems, parseAlertsConfig, type AlertRule } from "../core/alert-rules.ts";
 
 export const CONFIG_ENV = "AGENTIC_CODING_HARNESS_CONFIG";
 export const STATE_DIR_ENV = "AGENTIC_CODING_HARNESS_STATE_DIR";
@@ -561,8 +562,12 @@ export function validateConfig(file: LoadedFile, tables: SectionTables): void {
 /** Every problem in one file, as messages (empty = valid). */
 export function configProblems(file: LoadedFile, tables: SectionTables): string[] {
   const problems: string[] = [];
-  const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS, PROFILES_KEY, MASK_KEY, CONTENT_CAPTURE_KEY];
+  const topKeys = ["$schema", "stateDir", ...CONFIG_SECTIONS, PROFILES_KEY, MASK_KEY, CONTENT_CAPTURE_KEY, ALERTS_KEY];
   for (const [section, body] of Object.entries(file.data)) {
+    if (section === ALERTS_KEY) {
+      problems.push(...alertsConfigProblems(body, ALERTS_KEY).map((m) => `config ${file.path}: ${m}`));
+      continue;
+    }
     if (section === CONTENT_CAPTURE_KEY) {
       problems.push(...capturePolicyProblems(body, CONTENT_CAPTURE_KEY).map((m) => `config ${file.path}: ${m}`));
       continue;
@@ -707,6 +712,11 @@ export function mergeFiles(files: LoadedFile[], tables: SectionTables): Map<stri
         if (typeof body === "string" && body !== "") out.set("stateDir", { value: resolveStateDir(body, f.path), file: f.path });
         continue;
       }
+      // #74: `alerts.<key>` entries (today only `rules`, replaced whole), later file wins.
+      if (section === ALERTS_KEY) {
+        if (alertsConfigProblems(body, ALERTS_KEY).length === 0) for (const [k, v] of Object.entries(body as Record<string, unknown>)) out.set(`${ALERTS_KEY}.${k}`, { value: v, file: f.path });
+        continue;
+      }
       // #71: `mask.<key>` entries, later file wins per key; invalid ones are validation's.
       if (section === MASK_KEY) {
         if (isObject(body) && MaskConfigSchema.safeParse(body).success) for (const [k, v] of Object.entries(body)) out.set(`${MASK_KEY}.${k}`, { value: v, file: f.path });
@@ -819,6 +829,7 @@ export async function applyConfig(cmd: string, explicit: string | undefined, com
   armed = null;
   lastResolution = null;
   loadedMask = undefined;
+  loadedAlerts = [];
   activeCapturePolicy = {};
   const files = loadConfigFiles({ explicit });
   activeCapturePolicy = capturePolicyFromFiles(files);
@@ -840,6 +851,7 @@ export async function applyConfig(cmd: string, explicit: string | undefined, com
   for (const f of files) validateConfig(f, tables);
   const merged = mergeFiles(files, tables);
   loadedMask = maskConfigFrom(merged);
+  loadedAlerts = alertRulesFrom(merged);
   const sd = merged.get("stateDir");
   if (sd !== undefined && !isSet(process.env[STATE_DIR_ENV])) process.env[STATE_DIR_ENV] = sd.value as string;
   if (!(CONFIG_SECTIONS as readonly string[]).includes(cmd)) return;
@@ -867,6 +879,22 @@ export function maskConfigFrom(merged: Map<string, FileValue>): MaskConfig | und
   const out: Record<string, unknown> = {};
   for (const [k, v] of merged) if (k.startsWith(`${MASK_KEY}.`)) out[k.slice(MASK_KEY.length + 1)] = v.value;
   return Object.keys(out).length > 0 ? (out as MaskConfig) : undefined;
+}
+
+// ---------------------------------------------------------------- alert rules (#74)
+
+let loadedAlerts: AlertRule[] = [];
+
+/** The merged `alerts.rules` `applyConfig` loaded for this invocation; [] when no file sets any. */
+export function loadedAlertRules(): AlertRule[] {
+  return loadedAlerts;
+}
+
+/** The `alerts.<key>` entries of merged config values, parsed (validation already passed). */
+export function alertRulesFrom(merged: Map<string, FileValue>): AlertRule[] {
+  const body: Record<string, unknown> = {};
+  for (const [k, v] of merged) if (k.startsWith(`${ALERTS_KEY}.`)) body[k.slice(ALERTS_KEY.length + 1)] = v.value;
+  return Object.keys(body).length > 0 ? parseAlertsConfig(body) : [];
 }
 
 // ---------------------------------------------------------------- content capture (#72)
@@ -1066,6 +1094,7 @@ export function configZodSchema(tables: SectionTables) {
     ...sections,
     ...(profilesSchema !== undefined ? { [PROFILES_KEY]: profilesSchema } : {}),
     [MASK_KEY]: MaskConfigSchema.optional(),
+    [ALERTS_KEY]: AlertsConfigSchema.optional(),
     [CONTENT_CAPTURE_KEY]: z
       .union([
         z.enum(CAPTURE_MODES),

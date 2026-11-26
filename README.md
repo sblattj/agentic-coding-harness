@@ -249,6 +249,7 @@ $ ach emit --format langfuse --input …       # post spans to Langfuse / OTel /
 - **Emitters** — ATIF v1.7 trajectories (self-validating), OpenTelemetry `gen_ai` spans, Langfuse via OTLP.
   Custom static or env-sourced attributes (`--attr`, `--attr-env`, or the config file's `emit` section) ride on every exported span; `--enricher` adds a JS module for dynamic per-span attributes.
 - **HTTP event tap**: `ach run --event-webhook <url>` POSTs `start`, `exit`, `budget` and periodic `usage` events as versioned JSON (`{schemaVersion, runId, type, timestamp, payload}`), optionally HMAC-signed, queued off the event stream with a bounded retry budget so a dead receiver never fails or stalls the run; `ach watch --event-webhook` posts its live deltas. See [docs/EVENT-WEBHOOK.md](docs/EVENT-WEBHOOK.md).
+- **Alert rules**: the config file's `alerts` key holds `error_rate` (N of the last M runs failed, or K in a row) and `idle` (a live run has gone quiet for X seconds) rules that `ach watch` evaluates every poll and sends to a webhook (`type: "alert"` envelope) or a desktop notification, with per-episode debounce and a per-rule cooldown; `ach alerts --dry-run` shows which rules would have fired on your run history. See [docs/ALERTS.md](docs/ALERTS.md).
 - **W3C trace context**: a run joins an incoming `TRACEPARENT` (or starts a trace), stamps `trace` on its record, hands its agent child and `--verify` checker a `TRACEPARENT` naming the run's span, and the OTel/Langfuse exports reuse those ids; the run summary and `ach web` show the copyable traceparent. See [docs/TRACE-CONTEXT.md](docs/TRACE-CONTEXT.md).
 - **Single-file HTML reports** — charts + timelines comparing every agent in a trial dir.
 - **`watch` / `stats`** — live per-session token deltas across claude/codex/gemini/agy/prime transcript
@@ -456,6 +457,10 @@ ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify conf
 ach preflight --agent kiro-ide [--kiro-ide-cdp host:port] [--json]  # read-only CDP rows, same as doctor
 ach watch [--transcript-dir <root>]... [--rewrite FROM=TO]...   # live per-session token deltas
             [--event-webhook URL]   # also POST each delta as a `usage` event (docs/EVENT-WEBHOOK.md)
+            # also evaluates the config file's alert rules every poll (docs/ALERTS.md)
+ach alerts [--dry-run | --once] [--json] [--offline]
+            # validate alert rules; --dry-run replays them over history, sends nothing;
+            # --once evaluates now and sends new hits (cron)
 ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D] [--json] [--state-only]
             [--transcript-dir <root>]... [--state-dir <stateDir>]... [--rewrite FROM=TO]...
             [--origin all|native|imported|transcript]

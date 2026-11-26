@@ -27,6 +27,14 @@ export const WEBHOOK_EVENT_TYPES = ["start", "exit", "budget", "usage"] as const
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
 /** Default filter: every lifecycle event (the tap never posts raw agent events). */
 export const DEFAULT_WEBHOOK_EVENTS: readonly WebhookEventType[] = WEBHOOK_EVENT_TYPES;
+/**
+ * #74: the alert rules engine (src/core/alert-rules.ts) posts its rule hits
+ * as this envelope type through the same delivery. It is not a run lifecycle
+ * event, so `--webhook-events` never names it and a run's tap never posts it.
+ */
+export const ALERT_WEBHOOK_EVENT = "alert" as const;
+/** Every envelope `type` a receiver can see. */
+export type WebhookEnvelopeType = WebhookEventType | typeof ALERT_WEBHOOK_EVENT;
 
 /** `sha256=<hex HMAC-SHA256 of the raw body>`, GitHub style. Sent only when a secret is set. */
 export const WEBHOOK_SIGNATURE_HEADER = "x-ach-signature-256";
@@ -63,7 +71,7 @@ export const DEFAULT_WEBHOOK_USAGE_INTERVAL_MS = 60_000;
 export interface WebhookEnvelope<P = Record<string, unknown>> {
   schemaVersion: typeof WEBHOOK_SCHEMA_VERSION;
   runId: string;
-  type: WebhookEventType;
+  type: WebhookEnvelopeType;
   /** ISO 8601, when the event happened. */
   timestamp: string;
   payload: P;
@@ -142,7 +150,7 @@ export interface WebhookRunStats {
 export interface EventWebhookOptions {
   url: string;
   secret?: string | undefined;
-  events?: ReadonlySet<WebhookEventType>;
+  events?: ReadonlySet<WebhookEnvelopeType>;
   /** `mask.webhook` / `mask.mode` / `--mask` (#71); default: nothing masked. */
   mask?: MaskPolicy;
   retry?: Partial<WebhookRetryPolicy>;
@@ -158,13 +166,13 @@ export interface EventWebhookOptions {
 }
 
 export interface EventWebhook {
-  readonly events: ReadonlySet<WebhookEventType>;
+  readonly events: ReadonlySet<WebhookEnvelopeType>;
   readonly usageIntervalMs: number;
   readonly flushMs: number;
   /** True when `type` passes the filter (callers skip building payloads otherwise). */
-  wants(type: WebhookEventType): boolean;
+  wants(type: WebhookEnvelopeType): boolean;
   /** Queue one event. Never blocks, never throws. */
-  post(runId: string, type: WebhookEventType, payload: Record<string, unknown>, at?: number): void;
+  post(runId: string, type: WebhookEnvelopeType, payload: Record<string, unknown>, at?: number): void;
   /**
    * Wait for the queue to drain, at most `flushMs`. On the deadline the
    * in-flight POST is aborted and the rest is dropped. Logs the per-run
@@ -176,7 +184,7 @@ export interface EventWebhook {
 
 interface Delivery {
   runId: string;
-  type: WebhookEventType;
+  type: WebhookEnvelopeType;
   body: string;
   id: string;
 }
@@ -208,7 +216,7 @@ const errText = (err: unknown): string => {
 export function createEventWebhook(opts: EventWebhookOptions): EventWebhook {
   const url = parseWebhookUrl(opts.url).toString();
   const origin = webhookOrigin(url);
-  const events: ReadonlySet<WebhookEventType> = opts.events ?? new Set(DEFAULT_WEBHOOK_EVENTS);
+  const events: ReadonlySet<WebhookEnvelopeType> = opts.events ?? new Set(DEFAULT_WEBHOOK_EVENTS);
   const retry: WebhookRetryPolicy = { ...DEFAULT_WEBHOOK_RETRY, ...(opts.retry ?? {}) };
   const flushMs = opts.flushMs ?? DEFAULT_WEBHOOK_FLUSH_MS;
   const usageIntervalMs = opts.usageIntervalMs ?? DEFAULT_WEBHOOK_USAGE_INTERVAL_MS;

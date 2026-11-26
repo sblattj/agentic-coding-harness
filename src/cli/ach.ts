@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 // #41: config-aware drop-in for node:util parseArgs (src/cli/config.ts).
-import { applyConfig, cmdConfig, cmdProfiles, CONFIG_USAGE, PROFILES_USAGE, configuredCapturePolicy, parseArgs, profileRecord, takeConfigFlag, takeResolution, type OptionTable } from "./config.ts";
+import { applyConfig, cmdConfig, cmdProfiles, CONFIG_USAGE, PROFILES_USAGE, configuredCapturePolicy, loadedAlertRules, parseArgs, profileRecord, takeConfigFlag, takeResolution, type OptionTable } from "./config.ts";
 import { parseCaptureMode } from "../core/capture.ts";
 import { fileURLToPath } from "node:url";
 import { flushAndExit, trackStdioBackpressure } from "./stdio-flush.ts";
@@ -78,6 +78,7 @@ import { MASK_OPTIONS, maskForExport } from "../core/masking.ts";
 import { PRIVACY_OPTIONS, privacyId } from "../core/privacy.ts";
 import { maskPolicyFor, noteMasked, notePrivacy, writeMaskPreview } from "./mask-cli.ts";
 import { EVENT_WEBHOOK_OPTIONS, eventWebhookFromFlags } from "./event-webhook-cli.ts";
+import { cmdAlerts, createAlertRunner } from "./alerts-cli.ts";
 import { cmdScrub } from "./scrub.ts";
 import { cmdExport, EXPORT_USAGE_LINES, STATS_ARGV } from "./export.ts";
 import {
@@ -402,6 +403,13 @@ usage:
                  --rewrite maps that root path, e.g. /mnt/c=C:)
             [--event-webhook URL [--webhook-events usage]]  (#64: POST each per-poll usage
                  delta; watch has no run start, exit or budget; see docs/EVENT-WEBHOOK.md)
+                (#74: with \`alerts.rules\` in the config file, every poll also evaluates
+                 the error_rate and idle rules and sends hits; see docs/ALERTS.md)
+  ach alerts [--dry-run | --once] [--json] [--offline]
+                (#74: no mode = validate and list the config file's alert rules;
+                 --dry-run replays the run registry and prints which rules would have
+                 fired and when, sending nothing; --once evaluates the registry now and
+                 sends new hits, for cron; see docs/ALERTS.md)
   ach stats [--agent A] [--days N | --since DATE [--until DATE] | --last D]
             [--tz Z] [--by day|week|month] [--json] [--state-only] [--include-unavailable]
             [--compare prev|prev:<dur>] [--offline]
@@ -1484,6 +1492,9 @@ async function cmdWatch(rest: string[]): Promise<number> {
   if (webhook !== undefined && !webhook.wants("usage")) {
     process.stderr.write("[warn] watch: --webhook-events excludes usage, the only event watch posts (it has no run start, exit or budget); nothing will be posted\n");
   }
+  // #74: alert rules from the config file; evaluated once per poll below.
+  const alertRules = loadedAlertRules();
+  const alerts = alertRules.length > 0 ? createAlertRunner({ rules: alertRules, stateDir: stateDir(), flags: args.values, offline: args.values.offline === true }) : undefined;
   if (args.values.offline) installOfflineGuard();
   // Accepted for uniformity (#31); watch only ends on SIGINT/SIGTERM (exit 0)
   // and never reaches a verdict, so the ladder has nothing to add here.
@@ -1516,6 +1527,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
   const pricer = createPricer();
   process.stderr.write(`watch: ${sources.map((s) => `${s.agent}=${s.dir}`).join(" ")}\n`);
   process.stderr.write(`watch: state=${state}, poll=${POLL_MS / 1000}s — Ctrl-C to stop\n`);
+  if (alerts !== undefined) process.stderr.write(`watch: alerts: ${alertRules.length} rule${alertRules.length === 1 ? "" : "s"} (${alertRules.map((r) => r.name).join(", ")})\n`);
   const rewriteLine = rewritesTextLine(rewrites, WATCH_REWRITE_FIELDS);
   if (rewriteLine !== null) process.stdout.write(rewriteLine + "\n");
 
@@ -1525,7 +1537,7 @@ async function cmdWatch(rest: string[]): Promise<number> {
     stopping = true;
     // #64: queued webhook posts get the bounded flush before exit.
     void saveOffsets(offsets)
-      .then(() => webhook?.flush(watchId))
+      .then(() => Promise.all([webhook?.flush(watchId), alerts?.flush()]))
       .finally(() => flushAndExit(0));
   };
   process.on("SIGINT", stop);
@@ -1556,6 +1568,9 @@ async function cmdWatch(rest: string[]): Promise<number> {
   }
   let firstTick = true;
   const tick = async (): Promise<void> => {
+    // #74: rules first, so a transcript read error never starves them; the
+    // runner never throws and a destination failure never ends watch.
+    alerts?.tick();
     // Discover on every poll: sessions and even source directories can be
     // created after watch starts. Dedupe paths within this poll only.
     const watched: Watched[] = [];
@@ -2635,7 +2650,7 @@ const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
   "trial", "queue", "replay", "smoke", "gc", "config", "init", "attach", "desk", "lane", "listener", "update", "profiles",
-  "scrub", "export",
+  "scrub", "export", "alerts",
 ]);
 
 /** #98: commands that never get the automatic update line (stdio protocols and
@@ -2769,6 +2784,8 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdReport(rest);
     case "scrub":
       return cmdScrub(rest);
+    case "alerts":
+      return cmdAlerts(rest);
     case "export":
       // #96: stats.json is the exact stdout of `ach stats --json`, with the
       // same config-file defaults a direct `ach stats` call would get.

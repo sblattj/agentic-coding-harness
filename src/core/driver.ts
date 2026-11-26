@@ -951,6 +951,9 @@ export function createDriver(options: DriverOptions): Driver {
 
             if (rec) {
               rec.lastEvent = captureEventPreview(capture.mode, event, () => eventPreview(event));
+              // #74: the idle alert rule reads this, not updatedAt (a registry
+              // keepalive moves updatedAt with no event).
+              rec.lastEventAt = Date.now();
               if (typeof event.sessionId === 'string' && event.sessionId) rec.sessionId = event.sessionId;
             }
             // Wall near-limit warnings are event-clocked: checked per event.

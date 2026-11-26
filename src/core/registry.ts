@@ -67,6 +67,7 @@ export interface RunRecord {
     byModel?: Array<{ model: string; costUsd: number | null; tokens: number }>;
   };
   lastEvent?: string; // one-line preview of the latest event
+  lastEventAt?: number; // ms epoch of the latest agent event (#74 idle alerts); unlike updatedAt, a keepalive write never moves it
   rawTranscript?: string; // absolute path to <stateDir>/raw/<agent>-<session>.jsonl (LOCAL-PROCESS-ONLY)
   /** Dashboard mirror of RunResult.kiro (kiro runs only). */
   kiro?: Pick<KiroEffective, "transport" | "modelAck" | "nativeSessionId" | "cliVersion">;
@@ -214,6 +215,7 @@ export const RunRecordSchema = z.object({
   exitStatus: z.string().optional(),
   totals: TotalsSchema.optional(),
   lastEvent: z.string().optional(),
+  lastEventAt: z.number().optional(),
   rawTranscript: z.string().optional(),
   kiro: KiroEffectiveSchema.pick({
     transport: true,

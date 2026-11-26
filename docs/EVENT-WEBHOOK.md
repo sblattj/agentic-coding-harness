@@ -149,6 +149,17 @@ exits 0 on Ctrl-C). A filter without `usage` warns that watch will post
 nothing. On Ctrl-C, queued posts get the same bounded flush before exit.
 `--offline` with a non-loopback webhook URL is a usage error.
 
+### `alert`
+
+Not a run event: alert rules (#74, [ALERTS.md](ALERTS.md)) post through the
+same delivery with `type: "alert"`. The envelope `runId` is the run that
+tripped the rule and `timestamp` is when the condition became true. The payload
+is `{rule, ruleType, metric, threshold, value, agent, window?, runs?,
+lastEventAt?, suppressedSinceLastFire, message}`, where `metric` is
+`consecutive_failures`, `failures_in_window` or `idle_seconds`. `alert` is
+never part of `--webhook-events`: the destination URL comes from the rule, not
+from `--event-webhook`, and signing and masking work the same way.
+
 ## Delivery, retries and the backoff budget
 
 - Posts are queued in memory and sent one at a time, in order, in the
