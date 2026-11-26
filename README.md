@@ -494,6 +494,10 @@ ach report <trials-dir> [--out path] [--json] [--mask none|preview|all] [--priva
 ach scrub <file|dir>... --mask preview|all [--out-dir DIR] [--json]
             # share-time scrub of exported artifacts: preview lists every key, email and home path
             # and touches nothing; all writes <name>.masked.<ext> copies, originals unchanged (docs/MASKING.md)
+ach export --out DIR [--no-transcripts] [--include-machine-dirs] [--json] [--mask none|preview|all]
+            # full data dump: runs/ (RunRecords, byte-identical), events/ (<stateDir>/raw), transcripts/
+            # (archive warehouse), stats.json (= ach stats --json), stats.csv, manifest.json (sha256 per file,
+            # record counts, ach version); re-runs skip identical files (docs/EXPORT.md)
 ach dash [--json [--queues]] [--all] [--state-dir <stateDir>]   # live run dashboard (+ queues section) [--help-keys|--no-help] [--spark [--no-spark]] [--set-terminal-title[=FMT]]; ? help, q quits
 ach queue run <plan> [--max-concurrent N] [--max-hours H] [--dry-run]   # plan-file run queue, <= N live
             # `ach run` machine-wide, detached runs, pre/post hooks (docs/QUEUE.md); ach queue status [<id>]
@@ -1260,6 +1264,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them. Privacy modes (`--privacy redact|anon`) strip paths, prompt text and ids from shared reports and exports.
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
 - [Desks and lanes (`ach desk`, `ach lane`)](docs/DESKS.md): long-lived role agents plus goal-driven lanes that message each other, with per-desk cost.
+- [Full data export (`ach export`)](docs/EXPORT.md): everything the harness recorded in one portable, sha256-verifiable dump, for backup, migration or knowing exactly what exists before erasing it.
 - [Archive and retention](docs/ARCHIVE.md), [doctor](docs/doctor.md), [packaging and release](docs/PACKAGING.md).
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — adapter pattern (headless / ACP / tmux lanes),
   token taps, canonical token record, ATIF, OTel transport, state manifests, data-flow diagram.

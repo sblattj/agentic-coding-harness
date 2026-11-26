@@ -51,7 +51,7 @@ is not an error. A missing `--config` / `AGENTIC_CODING_HARNESS_CONFIG` file is.
 - `mask`: secret masking before export (#71). `mode` (`none` | `preview` | `all`, the default for
   every sink), `style` (`replace` | `partial`), `entropy` (`true` turns on the high-entropy
   detector), `patterns` (extra regexes), and one mode per sink to override `mode`: `atif`, `otel`,
-  `langfuse`, `sft`, `report`, `scrub`. Precedence is `--mask` > env `AGENTIC_CODING_HARNESS_MASK` >
+  `langfuse`, `sft`, `report`, `scrub`, `export`. Precedence is `--mask` > env `AGENTIC_CODING_HARNESS_MASK` >
   `mask.<sink>` > `mask.mode` > the built-in default (`none`). `ach config --set mask.otel all`
   writes one key. `mask.privacy` (`off` | `redact` | `anon`, #46) sets the privacy mode for every
   export and report; precedence is `--privacy` > env `AGENTIC_CODING_HARNESS_PRIVACY` >

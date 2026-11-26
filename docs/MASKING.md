@@ -36,7 +36,7 @@ masked once, before any emitter sees it, so message text, tool arguments, tool r
 run's session id, agent and model are all covered. Values you type yourself (`--session-id`,
 `--agent`, `--model`) are used as given.
 
-Flags (`ach emit`, `ach report`, `ach scrub`):
+Flags (`ach emit`, `ach report`, `ach scrub`, `ach export`):
 
 - `--mask none|preview|all`
 - `--mask-style replace|partial`: `replace` (default) writes `[REDACTED_API_KEY]`; `partial` keeps a
@@ -53,7 +53,13 @@ alone:
 { "mask": { "mode": "all", "style": "partial", "atif": "none", "patterns": ["ACME-\\d+"] } }
 ```
 
-Sinks: `atif`, `otel`, `langfuse`, `sft`, `report`, `scrub`. See [CONFIG.md](CONFIG.md).
+Sinks: `atif`, `otel`, `langfuse`, `sft`, `report`, `scrub`, `export`. See [CONFIG.md](CONFIG.md).
+
+`ach export --out <dir>` (#96) takes the same flags (sink `export`). With mode `none` (the
+default) every file is copied byte for byte. `preview` scans every file the dump would hold and
+writes nothing; `all` writes masked copies (JSON leaf by leaf, JSONL per line, as `ach scrub`
+does), masks `stats.json` and the manifest's absolute paths, and leaves binary files out with a
+warning. See [EXPORT.md](EXPORT.md).
 
 ## Privacy modes
 

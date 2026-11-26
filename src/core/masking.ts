@@ -41,7 +41,7 @@ export type MaskStyle = (typeof MASK_STYLES)[number];
 export const DEFAULT_MASK_STYLE: MaskStyle = "replace";
 
 /** Export sinks with their own config toggle (`mask.<sink>` in the config file). */
-export const MASK_SINKS = ["atif", "otel", "langfuse", "sft", "report", "scrub"] as const;
+export const MASK_SINKS = ["atif", "otel", "langfuse", "sft", "report", "scrub", "export"] as const;
 export type MaskSink = (typeof MASK_SINKS)[number];
 
 /** Env var that sets the global mode (beats the config file, loses to `--mask`). */
@@ -402,7 +402,7 @@ export const MaskConfigSchema = z
         }, "is not a valid regular expression"),
       )
       .optional().describe("extra regexes to mask (a named group 'secret' limits the replaced span)"),
-    ...Object.fromEntries(MASK_SINKS.map((s) => [s, z.enum(MASK_MODES).optional().describe(`mask mode for the ${s} export (beats mask.mode)`)])),
+    ...Object.fromEntries(MASK_SINKS.map((s) => [s, z.enum(MASK_MODES).optional().describe(s === "export" ? "mask mode for ach export (beats mask.mode)" : `mask mode for the ${s} export (beats mask.mode)`)])),
     privacy: z
       .enum(PRIVACY_MODES)
       .optional()

@@ -75,6 +75,7 @@ import { MASK_OPTIONS, maskForExport } from "../core/masking.ts";
 import { PRIVACY_OPTIONS, privacyId } from "../core/privacy.ts";
 import { maskPolicyFor, noteMasked, notePrivacy, writeMaskPreview } from "./mask-cli.ts";
 import { cmdScrub } from "./scrub.ts";
+import { cmdExport, EXPORT_USAGE_LINES, STATS_ARGV } from "./export.ts";
 import {
   parseClaudeTranscript,
   parseCodexRollout,
@@ -549,6 +550,7 @@ usage:
                   touches nothing; all writes <name>.masked.<ext> copies (or the
                   tree under --out-dir) with per-detector counts, never editing
                   the originals; docs/MASKING.md)
+${EXPORT_USAGE_LINES}
   ach dash [--json] [--all] [--state-only] [--state-dir <stateDir>] [--budget-usd N] [--offline]
                (live run dashboard; --json dumps RunRecords and exits; live
                 runs get a pace row: $/h + tok/min over 15m/1h, budget ETA;
@@ -1672,7 +1674,8 @@ function dedupeKey(r: {
   ]);
 }
 
-async function cmdStats(rest: string[]): Promise<number> {
+/** `write` receives the --json document (default stdout); `ach export` (#96) captures it as stats.json. */
+async function cmdStats(rest: string[], write: (chunk: string) => void = (chunk) => void process.stdout.write(chunk)): Promise<number> {
   const args = parseArgs({
     args: joinAgoTokens(rest),
     options: {
@@ -2159,7 +2162,7 @@ async function cmdStats(rest: string[]): Promise<number> {
           dayKey(window.untilMs !== undefined ? window.untilMs - 1 : Date.now(), timeZone),
         );
   if (args.values.json) {
-    process.stdout.write(
+    write(
       JSON.stringify(
         {
           total: { ...view(agg.totals), costDisagreements: disagreements.length, provenance: prov.total },
@@ -2474,7 +2477,7 @@ const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
   "trial", "queue", "replay", "smoke", "gc", "config", "init", "attach", "desk", "lane", "listener", "update", "profiles",
-  "scrub",
+  "scrub", "export",
 ]);
 
 /** #98: commands that never get the automatic update line (stdio protocols and
@@ -2608,6 +2611,20 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdReport(rest);
     case "scrub":
       return cmdScrub(rest);
+    case "export":
+      // #96: stats.json is the exact stdout of `ach stats --json`, with the
+      // same config-file defaults a direct `ach stats` call would get.
+      return cmdExport(rest, {
+        version: VERSION,
+        statsJson: async () => {
+          await applyConfig("stats", config, CONFIG_COMMANDS);
+          let text = "";
+          await cmdStats(STATS_ARGV.slice(1), (chunk) => {
+            text += chunk;
+          });
+          return text;
+        },
+      });
     case "dash":
       return cmdDash(rest);
     case "serve":
