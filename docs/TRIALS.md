@@ -364,6 +364,7 @@ Unknown keys are rejected.
 | `variant` | string, default `{agent}:{model}` | template; placeholders `{agent}` `{model}` `{task}` |
 | `budget` | `{usd?, maxTurns?, wallMs?, idleMs?}` | per-run caps, as the `ach run` flags |
 | `sandbox` | `{permissionMode?, allowedTools?, disallowedTools?, mcpConfig?}` | default sandbox policy for every cell; agent entries and tasks may override it (see "Sandbox policy in a plan") |
+| `effort` | `low\|medium\|high\|xhigh\|max`? | reasoning effort for every cell, as `ach run --effort` ([EFFORT.md](EFFORT.md)); `ach trial --effort` overrides it. Not part of the cellId: re-running at another level skips finalized cells, so use a new `--ledger` to compare levels |
 | `claude` | `{disableBackgroundTasks?}` | claude cells only: `disableBackgroundTasks: true` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` so `claude -p` waits for spawned sub-agents instead of exiting while they run (same as `--claude-no-background-tasks`) |
 | `cwd` | string? | default agent cwd for shared-workspace tasks, relative to the plan's directory (default: that directory) |
 | `setupTimeoutMs` / `verifyTimeoutMs` | int? | plan-level defaults (300000 / 120000) |
@@ -539,8 +540,10 @@ and the exit code all behave as described above.
 
 `--task`, `--repeat`, `--tasks-dir` and the four sandbox flags apply to `--suite` only; with
 `--matrix` the plan carries them (a plan-level, agent-entry or task `sandbox`, see "Sandbox
-policy in a plan"). There is no run-level `--effort` flag; the kiro-only
-`--kiro-effort` is not a suite axis.
+policy in a plan"). `--effort LEVEL` works with both `--suite` and `--matrix`: every cell
+runs at that level, mapped per agent as `ach run --effort` ([EFFORT.md](EFFORT.md)), and it
+overrides a plan's `effort`. It is one level for the whole trial, not an axis, and not part
+of the cellId.
 
 **Agents that are not installed are skipped, not failed.** The suite checks for
 each requested built-in agent's CLI on `PATH` (the same probe as the

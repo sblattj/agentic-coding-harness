@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { formatSandboxHeader } from "../core/sandbox-policy.ts";
-import { AGENTS, HarnessError, isKnownAgent, type SandboxPolicy } from "../core/types.ts";
+import { AGENTS, HarnessError, isKnownAgent, type EffortLevel, type SandboxPolicy } from "../core/types.ts";
 import { agentCliAvailability } from "../mcp/tools-run.ts";
 import { writeComparisonReport } from "./report.ts";
 import {
@@ -177,6 +177,8 @@ export function buildSuitePlan(o: {
   trials?: number;
   /** #13: plan-level sandbox policy (the `ach run` flags); omitted → no `sandbox` key. */
   sandbox?: SandboxPolicy;
+  /** #54: plan-level effort (`ach trial --effort`); omitted → no `effort` key. */
+  effort?: EffortLevel;
 }): MatrixPlan {
   return parseMatrixPlan(
     {
@@ -186,6 +188,7 @@ export function buildSuitePlan(o: {
       ...(o.models !== undefined && o.models.length > 0 ? { models: [...o.models] } : {}),
       ...(o.trials !== undefined ? { trials: o.trials } : {}),
       ...(o.sandbox !== undefined ? { sandbox: o.sandbox } : {}),
+      ...(o.effort !== undefined ? { effort: o.effort } : {}),
     },
     `suite ${o.suite}`,
   );
@@ -239,6 +242,8 @@ export interface SuiteCliOptions {
   isolate?: ExecuteMatrixCliOptions["isolate"];
   /** #13: sandbox policy from the `--permission-mode` / `--allowed-tools` / `--disallowed-tools` / `--mcp-config` flags. */
   sandbox?: SandboxPolicy;
+  /** #54: `--effort` for every cell. */
+  effort?: EffortLevel;
   /** Tests: the agent-availability probe. */
   probe?: (name: string) => { command: string | null; available: boolean };
 }
@@ -299,6 +304,7 @@ export async function runSuiteCli(o: SuiteCliOptions): Promise<number> {
     models: o.models,
     ...(trials !== undefined ? { trials } : {}),
     ...(o.sandbox !== undefined ? { sandbox: o.sandbox } : {}),
+    ...(o.effort !== undefined ? { effort: o.effort } : {}),
   });
   if (!o.json) {
     process.stderr.write(

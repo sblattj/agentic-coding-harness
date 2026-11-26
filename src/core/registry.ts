@@ -8,10 +8,12 @@ import path from "node:path";
 import { z } from "zod";
 import { findArchivedRaw } from "./warehouse-index.ts";
 import {
+  EffortProvenanceSchema,
   HermeticRunInfoSchema,
   WorktreeRunInfoSchema,
   KiroEffectiveSchema,
   UsageAvailabilitySchema,
+  type EffortProvenance,
   type HermeticRunInfo,
   type WorktreeRunInfo,
   type KiroEffective,
@@ -67,6 +69,8 @@ export interface RunRecord {
   kiro?: Pick<KiroEffective, "transport" | "modelAck" | "nativeSessionId" | "cliVersion">;
   /** Dashboard mirror of RunResult.usage. */
   usage?: UsageAvailability;
+  /** #54: requested vs applied reasoning effort; present on every run that passed `--effort`. */
+  effort?: EffortProvenance;
   // --- public run-record contract (0.9.0): provenance + labeling ---
   experiment?: string; // compare-view grouping label
   variant?: string; // compare-view variant within an experiment
@@ -207,6 +211,7 @@ export const RunRecordSchema = z.object({
     cliVersion: true,
   }).optional(),
   usage: UsageAvailabilitySchema.optional(),
+  effort: EffortProvenanceSchema.optional(),
   experiment: z.string().min(1).optional(),
   variant: z.string().min(1).optional(),
   workflow: z.string().min(1).optional(),

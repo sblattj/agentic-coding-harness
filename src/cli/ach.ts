@@ -18,18 +18,21 @@ import { fileURLToPath } from "node:url";
 import { flushAndExit, trackStdioBackpressure } from "./stdio-flush.ts";
 import {
   AcpMcpServerSchema,
+  EFFORT_LEVELS,
   HarnessError,
   isKnownAgent,
   KiroConfigSchema,
   KiroIdeConfigSchema,
   type AcpMcpServer,
   type AgentEvent,
+  type EffortLevel,
   type KiroConfig,
   type KiroIdeConfig,
   type RunResult,
   type RunSpec,
   type SandboxPolicy,
 } from "../core/types.ts";
+import { isEffortLevel } from "../core/effort.ts";
 import {
   buildRunMetrics,
   describeSandbox,
@@ -207,6 +210,12 @@ usage:
                            the agent exits; verdict on the RunRecord, failed checker exits 1; passing checker keeps the run exit code)
               [--repeat N [--parallel K]]  (N fresh sessions, one repeat group; exits with the most severe child code)
               [--experiment E] [--variant V]  (compare-view labels on the RunRecord)
+              [--effort low|medium|high|xhigh|max]  (portable reasoning effort, mapped to each
+                           agent's native mechanism: claude/agy/kiro --effort, codex -c
+                           model_reasoning_effort=, copilot --reasoning-effort, opencode --variant,
+                           cursor <model>[effort=]; gemini/prime/kiro-ide/null/custom have none and
+                           run anyway with a warning. Recorded as effort {requested, applied,
+                           mechanism} on the RunRecord; see docs/EFFORT.md)
               [--extra-args '<a b>']... [--extra-arg <token>]...  (extra CLI args for the
                            launched agent, every launchable agent; both repeatable and kept in
                            command-line order. --extra-args splits each value on spaces;
@@ -267,7 +276,7 @@ usage:
                     forces that exitStatus; AGENTIC_CODING_HARNESS_NULL_TURNS=N sets
                     the scripted turn count (default 1)
               kiro only: [--kiro-transport headless|acp] [--kiro-agent A] [--kiro-engine v1|v2|v3]
-                         [--kiro-effort E] [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
+                         [--kiro-effort E] (same argv as --effort E) [--kiro-tools all|none|a,b] [--kiro-require-mcp-startup]
                          [--kiro-startup-ms MS] [--kiro-require-model-ack]
                          [--kiro-mcp-server '<json>']...
               kiro-ide only: drives the Kiro IDE desktop app over CDP (no CLI, no token counts)
@@ -331,6 +340,7 @@ usage:
   ach trial --matrix <plan.json> [--dry-run] [--retry-failed] [--ledger PATH] [--json] [--hermetic]
                 [--isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]]
                 [--claude-no-background-tasks]
+                [--effort low|medium|high|xhigh|max]  (every cell, as ach run --effort; overrides plan effort)
                 (resumable agents x tasks x models x trials grid; every cell is one
                  run labelled experiment/variant/cellId=agent:task:model:trialN;
                  <plan>.ledger.jsonl records finalized cells, so re-running the same
@@ -338,7 +348,7 @@ usage:
                  cells re-run only with --retry-failed; unavailable-CLI and
                  provider-limit (usage/rate limit, 429) cells have no verdict and
                  run again; exit 1 only on errors or interruption; see docs/TRIALS.md)
-  ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N]
+  ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--effort E]
                 [--tasks-dir DIR] [--ledger PATH] [--dry-run] [--retry-failed] [--json] [--hermetic]
                 [--isolate [--allow-dirty] [--cleanup] [--isolate-node-modules]]
                 [--claude-no-background-tasks]
@@ -734,6 +744,12 @@ export function kiroIdeConfigFromFlags(v: {
   return parsed.data;
 }
 
+/** `--effort <level>` (#54): a usage error on anything outside EFFORT_LEVELS. */
+export function parseEffortFlag(raw: string): EffortLevel {
+  if (!isEffortLevel(raw)) throw new HarnessError(`--effort must be one of ${EFFORT_LEVELS.join("|")} (got '${raw}')`, "USAGE");
+  return raw;
+}
+
 /** `--pr N|auto` (#48): a usage error on anything else. */
 function parseRunPr(raw: string): number | "auto" {
   try {
@@ -749,6 +765,8 @@ async function cmdRun(rest: string[]): Promise<number> {
     options: {
       agent: { type: "string" },
       model: { type: "string" },
+      // #54: portable reasoning effort, mapped per agent (src/core/effort.ts).
+      effort: { type: "string" },
       resume: { type: "string" },
       pr: { type: "string" },
       "budget-usd": { type: "string" },
@@ -901,6 +919,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     // #195: an interactive run is keyed by runId before launch (live socket, .cast).
     ...(interactive !== null ? { runId: randomUUID() } : {}),
     model: args.values.model,
+    ...(args.values.effort !== undefined ? { effort: parseEffortFlag(args.values.effort) } : {}),
     resume: args.values.resume,
     ...(args.values.pr !== undefined ? { pr: parseRunPr(args.values.pr) } : {}),
     budget: { ...budget, ...alertBudget },

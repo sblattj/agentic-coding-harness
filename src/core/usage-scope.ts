@@ -53,5 +53,6 @@ export function modelProvenanceText(model: UsageAvailability["model"] | undefine
   if (model.requested !== undefined) {
     return `requested ${model.requested}${model.requestedEffort !== undefined ? ` effort ${model.requestedEffort}` : ""} (unverified: not observed)`;
   }
+  if (model.requestedEffort !== undefined) return `unknown (not observed, none requested; requested effort ${model.requestedEffort})`;
   return "unknown (not observed, none requested)";
 }

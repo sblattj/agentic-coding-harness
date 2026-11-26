@@ -111,7 +111,7 @@ harness run --agent kiro --kiro-transport acp --kiro-agent dotai \
 | `--kiro-transport` | `transport` | `headless` (default), `acp` |
 | `--kiro-agent` | `agent` | native agent name (a *mode* over ACP) |
 | `--kiro-engine` | `engine` | `v1`, `v2`, `v3` |
-| `--kiro-effort` | `effort` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `--kiro-effort` | `effort` | `low`, `medium`, `high`, `xhigh`, `max`. The generic `ach run --effort` sets the same field and produces the same argv ([EFFORT.md](EFFORT.md)); both with different values is a usage error |
 | `--kiro-tools` | `tools` | `all`, `none`, or a comma list |
 | `--kiro-require-mcp-startup` | `requireMcpStartup` | boolean; fail the run if MCP startup reports an error |
 | `--kiro-startup-ms` | `startupMs` | positive integer ms; startup/handshake budget (default 60 000) |

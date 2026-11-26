@@ -34,7 +34,7 @@ import { createPricer, type Pricer } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
 import { sandboxFromFlags } from "./run-sandbox.ts";
 import { describeSandbox, mergeSandbox, SandboxInputSchema, sandboxDropWarnings } from "../core/sandbox-policy.ts";
-import { HarnessError, isKnownAgent, type AgentAdapter, type RunSpec, type SandboxPolicy } from "../core/types.ts";
+import { EFFORT_LEVELS, HarnessError, isKnownAgent, type AgentAdapter, type EffortLevel, type RunSpec, type SandboxPolicy } from "../core/types.ts";
 import { DEFAULT_VERIFY_TIMEOUT_MS, runVerifier, type VerifyStatus } from "../core/verify.ts";
 import { isTranscriptOnlyAgent, readOnlySourceMessage } from "../monitors/transcript-sources.ts";
 import { loadCatalog, reportCatalogIssues, resolveRunAgent } from "./custom-agents.ts";
@@ -150,6 +150,8 @@ export const MatrixPlanSchema = z
     verifyTimeoutMs: PositiveInt.optional(),
     /** Plan-level sandbox policy (#13): permissionMode / allowedTools / disallowedTools / mcpConfig, as the `ach run` flags. */
     sandbox: SandboxInputSchema.optional(),
+    /** #54: portable reasoning effort for every cell, as `ach run --effort` (`ach trial --effort` overrides it). Not part of the cellId. */
+    effort: z.enum(EFFORT_LEVELS).optional(),
     /** Claude-only adapter options; ignored for other agents. */
     claude: z
       .object({
@@ -201,6 +203,8 @@ export interface MatrixCell {
   sandbox?: SandboxPolicy;
   /** Extra child env for this cell (e.g. plan `claude.disableBackgroundTasks`); not part of the cell identity. */
   env?: Record<string, string>;
+  /** #54: plan `effort` (or `ach trial --effort`); not part of the cell identity. */
+  effort?: EffortLevel;
 }
 
 /** Parse + validate a plan object; USAGE HarnessError listing every issue. */
@@ -365,6 +369,7 @@ export function expandMatrix(plan: MatrixPlan, baseDir: string): MatrixCell[] {
             experiment: plan.experiment,
             variant: renderVariant(plan.variant, agent, model, task.id),
             ...(sandbox !== undefined ? { sandbox } : {}),
+            ...(plan.effort !== undefined ? { effort: plan.effort } : {}),
             ...(agent === "claude" && plan.claude?.disableBackgroundTasks === true
               ? { env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" } }
               : {}),
@@ -827,6 +832,7 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
     cwd,
     variant: cell.variant,
     ...(cell.model !== undefined ? { model: cell.model } : {}),
+    ...(cell.effort !== undefined ? { effort: cell.effort } : {}),
     ...(cell.sandbox !== undefined ? { sandbox: cell.sandbox } : {}),
     ...(cell.env !== undefined ? { env: { ...cell.env } } : {}),
     ...(opts.budget !== undefined ? { budget: { ...opts.budget } } : {}),
@@ -1052,6 +1058,14 @@ export function formatMatrixSummary(s: MatrixSummary): string {
 /** Flags only `--suite` accepts (#51); rejected with `--matrix`. */
 const SUITE_ONLY_FLAGS = ["task", "agent", "model", "repeat", "tasks-dir", "permission-mode", "allowed-tools", "disallowed-tools", "mcp-config"] as const;
 
+/** `ach trial --effort <level>` (#54): a usage error outside EFFORT_LEVELS. */
+function parseTrialEffort(raw: string): EffortLevel {
+  if (!(EFFORT_LEVELS as readonly string[]).includes(raw)) {
+    throw new HarnessError(`trial: --effort must be one of ${EFFORT_LEVELS.join("|")} (got '${raw}')`, "USAGE");
+  }
+  return raw as EffortLevel;
+}
+
 /**
  * `ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]`
  * or `ach trial --suite NAME [--task T]... [--agent A]... [--model M]...
@@ -1066,6 +1080,8 @@ export async function cmdTrial(rest: string[]): Promise<number> {
       task: { type: "string", multiple: true },
       agent: { type: "string", multiple: true },
       model: { type: "string", multiple: true },
+      // #54: portable reasoning effort for every cell (overrides a plan's `effort`).
+      effort: { type: "string" },
       repeat: { type: "string" },
       "tasks-dir": { type: "string" },
       "dry-run": { type: "boolean", default: false },
@@ -1084,6 +1100,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     allowPositionals: false,
   });
   const isolate = isolateOptionsFromFlags(args.values, { hermetic: args.values.hermetic === true, resume: false });
+  const effort = args.values.effort !== undefined ? parseTrialEffort(args.values.effort) : undefined;
   const planFile = args.values.matrix;
   const suite = args.values.suite;
   // Same channel as `ach run`: the env var the Claude adapter honours (cells run in-process).
@@ -1096,6 +1113,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     const sandbox = sandboxFromFlags(args.values);
     return runSuiteCli({
       ...(sandbox !== undefined ? { sandbox } : {}),
+      ...(effort !== undefined ? { effort } : {}),
       suite,
       tasks: args.values.task ?? [],
       agents: args.values.agent ?? [],
@@ -1116,8 +1134,9 @@ export async function cmdTrial(rest: string[]): Promise<number> {
   for (const flag of SUITE_ONLY_FLAGS) {
     if (args.values[flag] !== undefined) throw new HarnessError(`trial: --${flag} applies to --suite only`, "USAGE");
   }
+  const loaded = loadMatrixPlan(planFile);
   return executeMatrixCli({
-    plan: loadMatrixPlan(planFile),
+    plan: effort !== undefined ? { ...loaded, effort } : loaded,
     baseDir: path.dirname(path.resolve(planFile)),
     ledgerPath: args.values.ledger !== undefined ? path.resolve(args.values.ledger) : defaultLedgerPath(planFile),
     dryRun: args.values["dry-run"],

@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "./contract.ts";
-import { KIRO_IDE_INPUT_SCHEMA, KIRO_INPUT_SCHEMA, RunArgsSchema, SANDBOX_INPUT_SCHEMA, sandboxResultParts } from "./tools-run.ts";
+import { EFFORT_INPUT_SCHEMA, KIRO_IDE_INPUT_SCHEMA, KIRO_INPUT_SCHEMA, RunArgsSchema, SANDBOX_INPUT_SCHEMA, sandboxResultParts } from "./tools-run.ts";
 import type { RunSpec as CoreRunSpec } from "../core/types.ts";
 import { createDriver, defaultAdapters } from "../core/driver.ts";
 import { unchainedLines } from "../core/hash-chain.ts";
@@ -71,6 +71,7 @@ export function toSpec(a: RunArgs, runId: string, extraArgsOverride?: string[]):
     prompt: a.prompt,
     runId,
     ...(a.model !== undefined ? { model: a.model } : {}),
+    ...(a.effort !== undefined ? { effort: a.effort } : {}),
     ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
     ...(budget.usd !== undefined ||
     budget.maxTurns !== undefined ||
@@ -128,6 +129,7 @@ export function registerJobTools(
         agent: { type: "string", enum: ["claude", "opencode", "kiro", "codex", "gemini", "agy", "prime", "kiro-ide", "copilot", "cursor", "null"], description: "Agent to run" },
         prompt: { type: "string", description: "Prompt sent to the agent" },
         model: { type: "string", description: "Model override" },
+        effort: EFFORT_INPUT_SCHEMA,
         cwd: { type: "string", description: "Working directory for the agent subprocess" },
         budgetUsd: { type: "number", description: "Abort the run once cumulative cost exceeds this USD amount" },
         maxTurns: { type: "integer", description: "Abort the run after this many agent turns" },

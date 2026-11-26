@@ -659,6 +659,33 @@ export const AcpMcpServerSchema = z
   })
   .strict();
 
+/** Portable reasoning-effort levels (#54): `--effort`, harness_run `effort`, KiroConfig.effort. */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/**
+ * Effort provenance (#54) on RunResult.effort / RunRecord.effort: present on
+ * every run that passed a portable effort. src/core/effort.ts EFFORT_TABLE
+ * decides `applied` and `mechanism`.
+ */
+export interface EffortProvenance {
+  /** The portable level the caller asked for. */
+  requested: EffortLevel;
+  /** True when the harness passed a level to the CLI through its native mechanism (not proof the model honoured it). */
+  applied: boolean;
+  /** The native flag (`--effort`, `-c model_reasoning_effort=high`, ...), `model-suffix`, `acp:effortLevel`, or `none`. */
+  mechanism: string;
+  /** The level actually sent, when it differs from `requested` (nearest supported level). */
+  level?: EffortLevel;
+}
+
+export const EffortProvenanceSchema = z.object({
+  requested: z.enum(EFFORT_LEVELS),
+  applied: z.boolean(),
+  mechanism: z.string(),
+  level: z.enum(EFFORT_LEVELS).optional(),
+});
+
 /** Kiro-specific run configuration (RunSpec.kiro). See PLAN-kiro-acp.md. */
 export interface KiroConfig {
   /** Transport: 'headless' (kiro-cli chat) or 'acp' (JSON-RPC). Default 'headless'. */
@@ -1089,6 +1116,12 @@ export interface RunSpec {
    * crash included). See src/core/run-artifacts.ts.
    */
   outputDir?: string;
+  /**
+   * Portable reasoning effort (#54): the driver maps it per agent through
+   * src/core/effort.ts EFFORT_TABLE and records RunRecord.effort. Unmapped
+   * agents run anyway, with applied:false and a warning.
+   */
+  effort?: EffortLevel;
   /** Kiro-specific configuration (ignored by other adapters). */
   kiro?: KiroConfig;
   /** Kiro IDE (CDP) configuration (ignored by other adapters). */
@@ -1165,6 +1198,7 @@ export const RunSpecSchema = z
     extraArgs: z.array(z.string()).optional(),
     stateDir: z.string().optional(),
     outputDir: z.string().optional(),
+    effort: z.enum(EFFORT_LEVELS, { error: `effort must be one of ${EFFORT_LEVELS.join("|")}` }).optional(),
     kiro: KiroConfigSchema.optional(),
     kiroIde: KiroIdeConfigSchema.optional(),
     attachments: z.array(z.string()).optional(),
@@ -1353,6 +1387,8 @@ export interface RunResult {
   durationMs: number;
   exitStatus: ExitStatus;
   warnings: string[];
+  /** #54: effort provenance; present only when RunSpec.effort was set. */
+  effort?: EffortProvenance;
   /** Requested vs effective Kiro config (kiro runs only). */
   kiro?: KiroEffective;
   /** What token/credit/usd numbers are actually known for this run. */

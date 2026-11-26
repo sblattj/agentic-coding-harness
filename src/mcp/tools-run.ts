@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { McpServer } from "./contract.ts";
 import {
   AGENTS,
+  EFFORT_LEVELS,
   KiroConfigSchema,
   KiroIdeConfigSchema,
   type AdapterCapabilities,
@@ -43,6 +44,8 @@ export const RunArgsSchema = z.object({
     }),
   prompt: z.string().min(1),
   model: z.string().optional(),
+  /** #54: portable reasoning effort, mapped per agent by the driver (src/core/effort.ts). */
+  effort: z.enum(EFFORT_LEVELS).optional(),
   cwd: z.string().optional(),
   budgetUsd: z.number().positive().optional(),
   maxTurns: z.number().int().positive().optional(),
@@ -79,6 +82,14 @@ export function sandboxResultParts(agent: string, sandbox: z.infer<typeof RunArg
   if (sandbox === undefined) return { warnings: [] };
   return { warnings: sandboxDropWarnings(agent, sandbox, { style: "field" }), echo: describeSandbox(sandbox) };
 }
+
+/** JSON Schema for the top-level `effort` tool param (#54), shared by harness_run and harness_run_async. */
+export const EFFORT_INPUT_SCHEMA = {
+  type: "string",
+  enum: [...EFFORT_LEVELS],
+  description:
+    "Portable reasoning effort, mapped to the agent's native mechanism through one table (claude/agy/kiro --effort, codex -c model_reasoning_effort=, copilot --reasoning-effort, opencode --variant, cursor <model>[effort=]). Agents with no native control (gemini, prime, kiro-ide, null) still run, with a warning; the result and RunRecord carry effort {requested, applied, mechanism}. kiro.effort is the same value for kiro and must agree with it.",
+} as const;
 
 /** JSON Schema for the `kiroIde` tool param (issue #110) — shared by harness_run
  *  and harness_run_async. */
@@ -210,6 +221,7 @@ export function toRunSpec(
   return {
     prompt: a.prompt,
     ...(a.model !== undefined ? { model: a.model } : {}),
+    ...(a.effort !== undefined ? { effort: a.effort } : {}),
     ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
     ...(budget.usd !== undefined ||
     budget.maxTurns !== undefined ||
@@ -253,6 +265,7 @@ export function registerRunTools(
         agent: { type: "string", enum: [...AGENTS], description: "Agent to run" },
         prompt: { type: "string", description: "Prompt sent to the agent" },
         model: { type: "string", description: "Model override" },
+        effort: EFFORT_INPUT_SCHEMA,
         cwd: { type: "string", description: "Working directory for the agent subprocess" },
         budgetUsd: { type: "number", description: "Abort the run once cumulative cost exceeds this USD amount" },
         maxTurns: { type: "integer", description: "Abort the run after this many agent turns" },

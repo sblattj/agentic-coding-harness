@@ -424,6 +424,7 @@ estimates; quota output uses provider-reported values when available.
 ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cursor|null|custom|descriptor> [--model M] [--resume SID]
             [--budget-usd N] [--on-budget warn|abort] [--max-turns N] [--wall-ms N] [--idle-ms N]
             [--verify CMD] [--repeat N] [--parallel K] [--exit-codes binary|ladder] [--json] "prompt"
+            [--effort low|medium|high|xhigh|max]   # one level, mapped per agent (docs/EFFORT.md)
             [--extra-args 'a b']... [--extra-arg TOKEN]...   # see "Passing extra CLI args"
             [--permission-mode MODE] [--allowed-tools LIST]... [--disallowed-tools LIST]...
             [--mcp-config PATH|JSON] [--evidence-dir DIR]   # see "Permission and sandbox flags"
@@ -434,10 +435,10 @@ ach run --agent <claude|opencode|kiro|codex|gemini|agy|prime|kiro-ide|copilot|cu
                            [--kiro-ide-user-data-dir DIR] [--kiro-ide-no-new-session]
             claude only: [--claude-default-config]   # default CLAUDE_CONFIG_DIR (keychain OAuth)
                          [--claude-no-background-tasks]  # claude -p waits for spawned sub-agents
-ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json]
+ach trial --matrix plan.json [--dry-run] [--retry-failed] [--ledger PATH] [--json] [--effort E]
             # resumable agents x tasks x models x trials grid; re-run the same command
             # after an interruption and finalized cells are skipped (docs/TRIALS.md)
-ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--tasks-dir DIR] [--ledger PATH]
+ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] [--effort E] [--tasks-dir DIR] [--ledger PATH]
             [--permission-mode M] [--allowed-tools L] [--disallowed-tools L] [--mcp-config PATH|JSON]
             # bundled task suite; missing agent CLIs skipped; HTML report next to the ledger
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
@@ -571,6 +572,19 @@ minute. A transcript tied to a run ages from the run's end; other raw files age 
 pass appends a line to `<stateDir>/gc-log.jsonl`. A pruned transcript drops out of `ach stats`
 history and leaves its run `unverifiable` in `ach audit`, unless `ach archive` snapshotted it first
 (`ach stats --with-warehouse` and `ach audit` then read the archived copy).
+
+### Reasoning effort: `--effort`
+
+`--effort low|medium|high|xhigh|max` sets one portable effort level on any agent. The
+harness maps it to the agent's own mechanism through one table: `--effort` for claude, agy
+and kiro (`--kiro-effort` still works and gives the same argv), `-c model_reasoning_effort=`
+for codex, `--reasoning-effort` for copilot, `--variant` for opencode, and a
+`<model>[effort=<level>]` model slug for cursor. Agents with no mechanism (gemini, prime,
+kiro-ide, null, custom) still run, with a warning naming the agent. Every `--effort` run
+records `effort: {requested, applied, mechanism}` on its RunRecord and fills
+`usage.model.requestedEffort`. `ach trial --effort`, a plan's `effort` key and the MCP
+`effort` param go through the same table. Full table and the help lines it relies on:
+[docs/EFFORT.md](docs/EFFORT.md).
 
 ### Passing extra CLI args to the agent: `--extra-args` / `--extra-arg`
 

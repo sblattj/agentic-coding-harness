@@ -28,6 +28,13 @@
             "number"
           ]
         },
+        "effort": {
+          "description": "ach run --effort",
+          "type": [
+            "string",
+            "number"
+          ]
+        },
         "resume": {
           "description": "ach run --resume",
           "type": [

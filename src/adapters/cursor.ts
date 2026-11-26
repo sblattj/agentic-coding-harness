@@ -1,4 +1,5 @@
 import type { AdapterCapabilities, AgentAdapter, CanonicalEvent, RunHandle, RunOptions } from './types.ts';
+import { effortModelArg } from '../core/effort.ts';
 import type {
   AdapterProfileCheck,
   AdapterProfileIssue,
@@ -605,6 +606,9 @@ export class CursorAdapter implements AgentAdapter, CoreAgentAdapter {
       spec.prompt,
       {
         ...(spec.model !== undefined ? { model: spec.model } : {}),
+        // #54: effort rides the --model argv as `<model>[effort=<level>]`
+        // (src/core/effort.ts); the parser and pricing keep the plain model.
+        ...(spec.effort !== undefined && spec.model !== undefined ? { argvModel: effortModelArg('cursor', spec.model, spec.effort) } : {}),
         ...(spec.resume !== undefined ? { resume: spec.resume } : {}),
         ...(spec.sandbox !== undefined ? { sandbox: spec.sandbox } : {}),
         ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
@@ -636,12 +640,17 @@ export class CursorAdapter implements AgentAdapter, CoreAgentAdapter {
     this.#current?.abort();
   }
 
-  #start(prompt: string, opts: RunOptions & { resume?: string; extraArgs?: string[] }, onOutput?: (chunk: string) => void): RunHandle {
+  #start(
+    prompt: string,
+    opts: RunOptions & { resume?: string; extraArgs?: string[]; argvModel?: string | undefined },
+    onOutput?: (chunk: string) => void,
+  ): RunHandle {
     const childEnv = this.#env !== undefined || opts.env !== undefined ? { ...this.#env, ...opts.env } : undefined;
+    const argvModel = opts.argvModel ?? opts.model;
     const spec: JsonlRunSpec = {
       command: this.#command,
       args: cursorArgs(prompt, {
-        ...(opts.model !== undefined ? { model: opts.model } : {}),
+        ...(argvModel !== undefined ? { model: argvModel } : {}),
         ...(opts.resume !== undefined ? { resume: opts.resume } : {}),
         ...(opts.sandbox !== undefined ? { sandbox: opts.sandbox } : {}),
         extraArgs: [...this.#extraArgs, ...(opts.extraArgs ?? [])],

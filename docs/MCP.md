@@ -77,6 +77,7 @@ Run one task on one agent. Each run is persisted to `<stateDir>/runs/<runId>.jso
 | agent | string | yes | claude / codex / opencode / gemini / agy / kiro |
 | prompt | string | yes | task prompt |
 | model | string | no | model override |
+| effort | string | no | `low` \| `medium` \| `high` \| `xhigh` \| `max`; mapped to the agent's native mechanism through the same table as `ach run --effort` ([EFFORT.md](EFFORT.md)), recorded as `effort {requested, applied, mechanism}`. Also on `harness_run_async` |
 | cwd | string | no | working directory |
 | budgetUsd | number | no | spend cap |
 | maxTurns | number | no | turn cap |

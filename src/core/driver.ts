@@ -16,6 +16,7 @@ import { gitBranchInfo } from './git-branch.ts';
 import { prContextFor, resolvePr } from './git-pr.ts';
 import { runTotalsProvenance } from './provenance.ts';
 import { parseRunSpec } from './validate.js';
+import { applyEffortToSpec, resolveEffort } from './effort.ts';
 import { composePrompt, type AttachmentManifest } from './attachments.js';
 import { readKiroSessionStore, sliceKiroSessionStore, type ParsedKiroSessionStore } from '../adapters/kiro-session-store.js';
 import type { AdapterExit, AdapterProfileCheck, AgentAdapter, AgentEvent, AgentHandle, CanonicalTokenRecord, EventTimestamp, ExitStatus, KiroEffective, RunResult, RunSpec, UsageEvent } from './types.js';
@@ -308,7 +309,14 @@ export function createDriver(options: DriverOptions): Driver {
       // Fail fast on invalid specs (#10): field-path errors, finite positive
       // timeouts, closed budget shape, and model pinning where required
       // (adapter.requiresModel / kiro.requireModelAck).
-      const parsed = parseRunSpec(agentName, spec, { requiresModel: adapter.requiresModel === true });
+      const validated = parseRunSpec(agentName, spec, { requiresModel: adapter.requiresModel === true });
+      // --- portable effort (#54) ---
+      // One table (src/core/effort.ts) maps RunSpec.effort onto the agent's
+      // native mechanism; the launched spec carries the argv fragment / kiro
+      // field, so profile validation, codex requestedEffort and outputDir's
+      // invocation all see what the CLI gets. No effort: the spec is untouched.
+      const effortResolution = validated.effort !== undefined ? resolveEffort(agentName, validated.effort, validated) : undefined;
+      const parsed = effortResolution !== undefined ? applyEffortToSpec(validated, effortResolution) : validated;
       // --- workspace confinement (issue #9) ---
       // Resolve caller-supplied paths to real paths (symlinks followed, `..`
       // collapsed) and refuse any that escape the workspace root, BEFORE
@@ -350,6 +358,7 @@ export function createDriver(options: DriverOptions): Driver {
       // Profile-validation warnings (issue #9) precede everything else: they
       // describe the config the run launched with, not what it produced.
       for (const w of profileWarnings) warnings.push(`${agentName}: profile warning — ${w.field}: ${w.message}`);
+      if (effortResolution !== undefined) warnings.push(...effortResolution.warnings);
 
       // --- run-to-directory mode (#6) ---
       // When the spec carries outputDir, mirror the whole run into it and
@@ -644,6 +653,7 @@ export function createDriver(options: DriverOptions): Driver {
             totals,
             rawTranscript: transcriptPath,
             ...(ancestorInstructions.length > 0 ? { ancestorInstructions } : {}),
+            ...(effortResolution !== undefined ? { effort: effortResolution.provenance } : {}),
             // #204 lineage: desk engine per-turn runs (and lanes) name their parent run + desk.
             ...(typeof parsed.parentRunId === 'string' && parsed.parentRunId !== '' ? { parentRunId: parsed.parentRunId } : {}),
             ...(parsed.desk !== undefined ? { desk: { stack: parsed.desk.stack, name: parsed.desk.name, kind: parsed.desk.kind } } : {}),
@@ -1099,6 +1109,12 @@ export function createDriver(options: DriverOptions): Driver {
             usage.model = { source: 'requested', requested };
           }
         }
+        // #54: the portable effort is the run's requested effort on the #140
+        // model block too (codex already read it from the injected -c flag).
+        if (effortResolution !== undefined) {
+          if (usage.model === undefined) usage.model = { source: 'unknown', requestedEffort: effortResolution.provenance.requested };
+          else if (usage.model.requestedEffort === undefined) usage.model = { ...usage.model, requestedEffort: effortResolution.provenance.requested };
+        }
         const meteredContext = contextMeter?.snapshot();
         if (meteredContext !== undefined && usage.context?.available !== true) usage.context = meteredContext;
         if (rec) {
@@ -1142,6 +1158,7 @@ export function createDriver(options: DriverOptions): Driver {
           // #78: the caller's prompt (pre-attachment), for SFT export; not in the registry record.
           ...(typeof parsed.prompt === 'string' && parsed.prompt !== '' ? { prompt: parsed.prompt } : {}),
           ...(kiroEffective !== undefined ? { kiro: kiroEffective } : {}),
+          ...(effortResolution !== undefined ? { effort: effortResolution.provenance } : {}),
           ...(attachmentManifest !== undefined ? { attachments: attachmentManifest } : {}),
           ...(ancestorInstructions.length > 0 ? { ancestorInstructions } : {}),
         };
