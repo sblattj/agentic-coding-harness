@@ -4,6 +4,8 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-11-26
+
 ### Changed
 
 - **Smaller npm package (#249).** The dashboard pages and `vendor/xterm` files are no longer copied next to `dist/cli/ach.js`. The bundle already embeds them as text imports, and the web server serves the embedded copy, so each one used to ship twice (1.03 MB). `dist/cli/ach.js` and `dist/index.js` are now minified (4.15 MB to 2.89 MB, and 1.46 MB to 0.88 MB). The packed tarball drops from 1.52 MB to 1.05 MB, and the installed package from 6.9 MB to 4.2 MB. Bins, exports and served pages are unchanged.
