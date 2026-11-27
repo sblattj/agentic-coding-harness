@@ -220,7 +220,8 @@ describe("stats --by pr", () => {
     });
 
     // Preload that makes any fetch throw: a network attempt would surface as a non-zero exit.
-    const blockNet = path.join(os.tmpdir(), "ach-pr-block-net.mjs");
+    // A per-process name: a fixed one in the shared temp dir let a concurrent suite delete it mid-run.
+    const blockNet = path.join(os.tmpdir(), `ach-pr-block-net-${process.pid}-${Date.now()}.mjs`);
     before(() => fs.writeFileSync(blockNet, "globalThis.fetch = () => { throw new Error('NETWORK BLOCKED'); };\n"));
     after(() => fs.rmSync(blockNet, { force: true }));
 
