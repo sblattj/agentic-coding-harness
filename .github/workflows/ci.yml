@@ -17,8 +17,9 @@ jobs:
   test:
     name: test (node ${{ matrix.node-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Two full suite passes (Bun off and on PATH); macOS runners take up to ~13 min for both.
-    timeout-minutes: 25
+    # Two full suite passes (Bun off and on PATH) plus the build. With ~3,800 tests a
+    # runner can take ~25 min for all of it (2 cap hits on 2026-11-27 at 25), so the cap is 40.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
