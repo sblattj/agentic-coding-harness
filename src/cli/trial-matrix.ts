@@ -35,6 +35,7 @@ import { parseCaptureMode } from "../core/capture.ts";
 import { configuredCapturePolicy } from "./config.ts";
 import { createPricer, type Pricer } from "../core/pricing.ts";
 import { stateDir as defaultStateDir } from "../core/store.ts";
+import type { PackRunInfo } from "../core/registry.ts";
 import { sandboxFromFlags } from "./run-sandbox.ts";
 import { describeSandbox, mergeSandbox, SandboxInputSchema, sandboxDropWarnings } from "../core/sandbox-policy.ts";
 import { EFFORT_LEVELS, HarnessError, isKnownAgent, type AgentAdapter, type EffortLevel, type RunSpec, type SandboxPolicy } from "../core/types.ts";
@@ -208,6 +209,8 @@ export interface MatrixCell {
   env?: Record<string, string>;
   /** #54: plan `effort` (or `ach trial --effort`); not part of the cell identity. */
   effort?: EffortLevel;
+  /** #91: `ach trial --pack` provenance stamped on the cell's RunRecord; not part of the cell identity. */
+  pack?: PackRunInfo;
 }
 
 /** Parse + validate a plan object; USAGE HarnessError listing every issue. */
@@ -855,7 +858,12 @@ async function runCell(cell: MatrixCell, opts: RunMatrixOptions): Promise<Ledger
         agent: cell.agent,
         spec,
         stateDir: opts.stateDir,
-        labels: { experiment: cell.experiment, variant: cell.variant, cellId: cell.cellId },
+        labels: {
+          experiment: cell.experiment,
+          variant: cell.variant,
+          cellId: cell.cellId,
+          ...(cell.pack !== undefined ? { pack: cell.pack } : {}),
+        },
         ...(opts.hermetic === true ? { hermetic: {} } : {}),
         ...(isolating ? { isolate: isolateOptsFor(cell, opts, env) } : {}),
         ...(cell.task.verify !== undefined
@@ -1100,6 +1108,10 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     options: {
       matrix: { type: "string" },
       suite: { type: "string" },
+      // #91: a versioned task pack (src/cli/trial-pack.ts).
+      pack: { type: "string" },
+      "packs-dir": { type: "string" },
+      "allow-drift": { type: "boolean", default: false },
       task: { type: "string", multiple: true },
       agent: { type: "string", multiple: true },
       model: { type: "string", multiple: true },
@@ -1138,6 +1150,41 @@ export async function cmdTrial(rest: string[]): Promise<number> {
   if (planFile !== undefined && suite !== undefined) {
     throw new HarnessError("trial: --matrix and --suite are mutually exclusive", "USAGE");
   }
+  const packRef = args.values.pack;
+  if (packRef !== undefined && (planFile !== undefined || suite !== undefined)) {
+    throw new HarnessError("trial: --pack cannot be combined with --matrix or --suite", "USAGE");
+  }
+  if (packRef === undefined) {
+    for (const flag of ["packs-dir"] as const) {
+      if (args.values[flag] !== undefined) throw new HarnessError(`trial: --${flag} applies to --pack only`, "USAGE");
+    }
+    if (args.values["allow-drift"]) throw new HarnessError("trial: --allow-drift applies to --pack only", "USAGE");
+  }
+  if (packRef !== undefined) {
+    // A pack runs exactly its listed tasks: no --task subset, no other task tree.
+    for (const flag of ["task", "tasks-dir"] as const) {
+      if (args.values[flag] !== undefined) throw new HarnessError(`trial: --${flag} does not apply to --pack (a pack runs exactly its listed tasks)`, "USAGE");
+    }
+    const { runPackCli } = await import("./trial-pack.ts");
+    const sandbox = sandboxFromFlags(args.values);
+    return runPackCli({
+      pack: packRef,
+      ...(args.values["packs-dir"] !== undefined ? { packsDir: args.values["packs-dir"] } : {}),
+      allowDrift: args.values["allow-drift"],
+      ...(sandbox !== undefined ? { sandbox } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+      agents: args.values.agent ?? [],
+      models: args.values.model ?? [],
+      ...(args.values.repeat !== undefined ? { repeat: args.values.repeat } : {}),
+      ...(args.values.ledger !== undefined ? { ledger: args.values.ledger } : {}),
+      dryRun: args.values["dry-run"],
+      retryFailed: args.values["retry-failed"],
+      json: args.values.json,
+      ...(args.values.hermetic ? { hermetic: true } : {}),
+      ...(isolate !== undefined ? { isolate } : {}),
+      capture,
+    });
+  }
   if (suite !== undefined) {
     const { runSuiteCli } = await import("./trial-suite.ts");
     const sandbox = sandboxFromFlags(args.values);
@@ -1160,7 +1207,7 @@ export async function cmdTrial(rest: string[]): Promise<number> {
     });
   }
   if (planFile === undefined || planFile.trim() === "") {
-    throw new HarnessError("trial requires --matrix <plan.json> or --suite <name>", "USAGE");
+    throw new HarnessError("trial requires --matrix <plan.json>, --suite <name> or --pack <path|name>@<version>", "USAGE");
   }
   for (const flag of SUITE_ONLY_FLAGS) {
     if (args.values[flag] !== undefined) throw new HarnessError(`trial: --${flag} applies to --suite only`, "USAGE");
@@ -1199,6 +1246,11 @@ export interface ExecuteMatrixCliOptions {
   /** Passed to runMatrix (see RunMatrixOptions.onOutcome). */
   onOutcome?: RunMatrixOptions["onOutcome"];
   /**
+   * #91: task-pack provenance. Every cell's RunRecord gets `info` plus its
+   * task's own hash from `taskHashes` (keyed by task id).
+   */
+  pack?: { info: Omit<PackRunInfo, "taskHash">; taskHashes: Readonly<Record<string, string>> };
+  /**
    * Runs after the grid, before the summary is printed; its result is merged
    * into the `--json` output. Text-mode output of its own goes to stdout
    * after the summary via the returned `lines`.
@@ -1216,7 +1268,14 @@ export interface ExecuteMatrixCliOptions {
  */
 export async function executeMatrixCli(o: ExecuteMatrixCliOptions): Promise<number> {
   const { plan, ledgerPath, retryFailed, json } = o;
-  const cells = expandMatrix(plan, o.baseDir);
+  const pack = o.pack;
+  const cells =
+    pack === undefined
+      ? expandMatrix(plan, o.baseDir)
+      : expandMatrix(plan, o.baseDir).map((c) => {
+          const taskHash = pack.taskHashes[c.task.id];
+          return { ...c, pack: { ...pack.info, ...(taskHash !== undefined ? { taskHash } : {}) } };
+        });
   const sandboxWarnings = matrixSandboxWarnings(cells);
   for (const w of sandboxWarnings) process.stderr.write(`[warn] ${w}\n`);
 

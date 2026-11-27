@@ -164,6 +164,11 @@ export interface SuitePaths {
  */
 export function suitePaths(suite: string, ledgerOverride?: string, stateDir: string = defaultStateDir()): SuitePaths {
   const ledger = ledgerOverride !== undefined ? path.resolve(ledgerOverride) : path.join(stateDir, "suites", `${suite}.ledger.jsonl`);
+  return siblingPaths(ledger);
+}
+
+/** The runs dir and report path that sit next to a ledger (`foo.ledger.jsonl` gives `foo.runs`, `foo.report.html`). */
+export function siblingPaths(ledger: string): SuitePaths {
   const base = ledger.replace(/(\.ledger)?\.jsonl$/i, "");
   return { ledger, runs: `${base}.runs`, report: `${base}.report.html` };
 }
@@ -213,6 +218,7 @@ export function writeCellArtifact(runsDir: string, cell: MatrixCell, outcome: Tr
     experiment: cell.experiment,
     cellId: cell.cellId,
     task: cell.task.id,
+    ...(cell.pack !== undefined ? { pack: cell.pack } : {}),
     ...(outcome.verify !== undefined ? { verify: outcome.verify } : {}),
     // #113: sync-back failed but the run settled: keep the run, attach the error.
     ...(outcome.syncError !== undefined ? { error: outcome.syncError } : {}),
@@ -330,25 +336,33 @@ export async function runSuiteCli(o: SuiteCliOptions): Promise<number> {
     onOutcome: (cell, outcome) => {
       if (outcome.result !== undefined) writeCellArtifact(paths.runs, cell, outcome);
     },
-    after: async () => {
-      // Report over this plan's tasks only; each task directory is one
-      // "trial" in the report, with every agent × model × trial run in it.
-      const roots = tasks.map((t) => path.join(paths.runs, t.task.id)).filter((d) => fs.existsSync(d));
-      if (roots.length === 0) {
-        return { json: { report: null }, lines: ["report     none (no run artifacts for these tasks)"] };
-      }
-      // #71: the config file's / env's report mask mode applies here too.
-      const r = await writeComparisonReport(roots, paths.report, maskPolicyFor("report", {}));
-      if (r.maskMode === "preview") {
-        return { json: { report: null, maskFindings: r.maskFindings }, lines: [formatPreview(r.out, r.maskFindings).trimEnd()] };
-      }
-      return {
-        json: { report: r.out, reportRuns: r.runs },
-        lines: [
-          `report     ${r.out} (${r.runs} runs · ${r.trials} task${r.trials === 1 ? "" : "s"})`,
-          ...(r.maskMode === "all" ? [formatMaskedNote(r.out, r.maskFindings).trimEnd()] : []),
-        ],
-      };
-    },
+    after: () => writeTaskSetReport(paths, tasks.map((t) => t.task.id)),
   });
+}
+
+/**
+ * The HTML comparison over one task set's artifacts (suite or pack, #91):
+ * each task directory under `paths.runs` is one "trial" in the report, with
+ * every agent x model x trial run in it. Only `taskIds` are reported.
+ */
+export async function writeTaskSetReport(
+  paths: SuitePaths,
+  taskIds: readonly string[],
+): Promise<{ json?: Record<string, unknown>; lines?: string[] }> {
+  const roots = taskIds.map((id) => path.join(paths.runs, id)).filter((d) => fs.existsSync(d));
+  if (roots.length === 0) {
+    return { json: { report: null }, lines: ["report     none (no run artifacts for these tasks)"] };
+  }
+  // #71: the config file's / env's report mask mode applies here too.
+  const r = await writeComparisonReport(roots, paths.report, maskPolicyFor("report", {}));
+  if (r.maskMode === "preview") {
+    return { json: { report: null, maskFindings: r.maskFindings }, lines: [formatPreview(r.out, r.maskFindings).trimEnd()] };
+  }
+  return {
+    json: { report: r.out, reportRuns: r.runs },
+    lines: [
+      `report     ${r.out} (${r.runs} runs · ${r.trials} task${r.trials === 1 ? "" : "s"})`,
+      ...(r.maskMode === "all" ? [formatMaskedNote(r.out, r.maskFindings).trimEnd()] : []),
+    ],
+  };
 }

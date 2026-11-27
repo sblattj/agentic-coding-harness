@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { Driver } from "../core/driver.ts";
-import { patchRunRecord, registryDir, type RepeatMembership, type RunRecord } from "../core/registry.ts";
+import { patchRunRecord, registryDir, type PackRunInfo, type RepeatMembership, type RunRecord } from "../core/registry.ts";
 import { HermeticSyncError, runHermetic, type HermeticSyncErrorInfo, type RunHermeticOptions } from "../core/hermetic.ts";
 import { finishIsolation, prepareIsolation, type IsolateOptions, type IsolatedWorkspace } from "../core/isolate.ts";
 import { repeatStats, type RepeatStats } from "../core/repeat-stats.ts";
@@ -33,6 +33,8 @@ export interface RunLabels {
   variant?: string;
   /** `ach trial --matrix` cell identity (#56): agent:task:model:trialN. */
   cellId?: string;
+  /** #91: `ach trial --pack` provenance (name, version, content hash). */
+  pack?: PackRunInfo;
 }
 
 /** Merge `patch` into the run's registry file, reading the RAW JSON (not the
@@ -133,6 +135,7 @@ export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
         ...(opts.labels?.experiment !== undefined ? { experiment: opts.labels.experiment } : {}),
         ...(opts.labels?.variant !== undefined ? { variant: opts.labels.variant } : {}),
         ...(opts.labels?.cellId !== undefined ? { cellId: opts.labels.cellId } : {}),
+        ...(opts.labels?.pack !== undefined ? { pack: opts.labels.pack } : {}),
         ...(opts.repeat !== undefined ? { repeat: opts.repeat } : {}),
         ...(partial.verify !== undefined ? { verify: partial.verify } : {}),
       };
@@ -160,6 +163,7 @@ export async function runOnce(opts: RunOnceOptions): Promise<TrialOutcome> {
     ...(opts.labels?.experiment !== undefined ? { experiment: opts.labels.experiment } : {}),
     ...(opts.labels?.variant !== undefined ? { variant: opts.labels.variant } : {}),
     ...(opts.labels?.cellId !== undefined ? { cellId: opts.labels.cellId } : {}),
+    ...(opts.labels?.pack !== undefined ? { pack: opts.labels.pack } : {}),
     ...(opts.repeat !== undefined ? { repeat: opts.repeat } : {}),
     ...(outcome.verify !== undefined ? { verify: outcome.verify } : {}),
   };

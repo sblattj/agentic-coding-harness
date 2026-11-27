@@ -316,6 +316,18 @@ ach report --registry --limit 50 --privacy anon --out site/index.html   # newest
 
 Walkthrough and the JSON schema: [docs/LEADERBOARD.md](docs/LEADERBOARD.md).
 
+For a benchmark that means the same thing next month, package the tasks as a versioned
+pack: an `ach-pack.json` with a semver `version`, pinned by `ach pack lock`.
+
+```sh
+ach pack lock ./mypack && ach pack add ./mypack
+ach trial --pack mypack@1.0.0 --agent claude --agent codex
+```
+
+A locked pack whose task content changed refuses to start and names the task
+(`--allow-drift` runs it anyway, loudly). Every run record and the HTML report cite
+`mypack@1.0.0` plus its content hash. See [docs/TASK-PACKS.md](docs/TASK-PACKS.md).
+
 ![Cross-agent comparison table showing token usage, cost, duration, and status for Claude Code, Codex CLI, Gemini CLI, OpenCode, and Kiro run on the same task](docs/assets/cli-compare.png)
 
 ## Live dashboards: terminal (`ach dash`) and web (`ach web`)
@@ -482,6 +494,11 @@ ach trial --suite core [--agent A]... [--task T]... [--model M]... [--repeat N] 
             # bundled task suite; missing agent CLIs skipped; HTML report next to the ledger
 ach trial new <name> [--with-tests] [--tasks-dir DIR=tasks] [--suite NAME=local] [--json]
             # scaffold tasks/<name>/ (task.md, task.json, failing verify.sh); refuses to overwrite
+ach trial --pack <path|name@version> [--packs-dir DIR] [--allow-drift] [--agent A]... [--model M]... [--repeat N]
+            # a versioned task pack: exactly its listed tasks; a locked pack whose content
+            # changed refuses to start; every run records pack name, version, hash (docs/TASK-PACKS.md)
+ach pack lock <path|name@version> | add <path> | list | show <path|name@version> [--packs-dir DIR] [--json]
+            # pin task content hashes (ach-pack.lock.json); publish name/version to the local registry
 ach preflight --agent kiro [--model M] [--kiro-agent A] [--json]   # verify config, no prompt
 ach preflight --agent kiro-ide [--kiro-ide-cdp host:port] [--json]  # read-only CDP rows, same as doctor
 ach watch [--transcript-dir <root>]... [--rewrite FROM=TO]...   # live per-session token deltas
@@ -1343,6 +1360,7 @@ Precedence: per-run flag > env default > built-in default. Claude enforces its t
 - [Budget/context alerts](docs/BUDGET-ALERTS.md), [status and statusline](docs/STATUS.md), [exit-code ladder](docs/EXIT-CODES.md).
 - [Smoke the instructions (`ach smoke <message-file>`)](docs/SMOKE.md).
 - [Secret masking (`--mask`, `ach scrub`)](docs/MASKING.md): redact API keys, private keys, connection strings, emails and home paths before an export leaves the machine, or scrub artifacts before sharing them. Outbound exports (`otel`, `langfuse`) mask by default; local files stay raw unless you ask (`ach config --set mask.otel none` opts otel out). Privacy modes (`--privacy redact|anon`) strip paths, prompt text and ids from shared reports and exports.
+- [Versioned task packs (`ach trial --pack name@version`, `ach pack lock`)](docs/TASK-PACKS.md): pinned, hashed task sets with drift detection for reproducible trials.
 - [Replay-case vetting (`ach replay vet <pr>`)](docs/REPLAY.md), [verified trials and regrading](docs/TRIALS.md), [custom agents](docs/CUSTOM-AGENTS.md), [transcript adapters](docs/transcript-adapters.md).
 - [Desks and lanes (`ach desk`, `ach lane`)](docs/DESKS.md): long-lived role agents plus goal-driven lanes that message each other, with per-desk cost.
 - [League tables (`ach report --registry`, `leaderboard.json`)](docs/LEADERBOARD.md): a shareable, byte-stable leaderboard (HTML + versioned JSON) from the compare rollups, run → leaderboard → share.

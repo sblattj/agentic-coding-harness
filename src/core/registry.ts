@@ -26,6 +26,28 @@ import { PROVENANCE_CLASSES, type ProvenanceMap } from "./provenance.ts";
 import type { RunSeal } from "./hash-chain.ts";
 import { RunTraceContextSchema, type RunTraceContext } from "./trace-context.ts";
 
+/**
+ * #91: the versioned task pack a run came from (`ach trial --pack name@version`).
+ * `hash` is the content hash of the pack as it ran (never the locked hash);
+ * `drift` lists the task ids whose content differed from the lockfile when the
+ * run went ahead under `--allow-drift`.
+ */
+export const PackRunInfoSchema = z.object({
+  name: z.string().min(1),
+  version: z.string().min(1),
+  hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  /** The task's own content hash (sha256:...). */
+  taskHash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+  /** `path` (an explicit manifest path) or `registry` (a packs dir entry). */
+  resolvedFrom: z.enum(["path", "registry"]),
+  /** Absolute path of the ach-pack.json that was resolved. */
+  manifestPath: z.string().min(1),
+  /** True when an ach-pack.lock.json pinned the content. */
+  locked: z.boolean(),
+  drift: z.array(z.string()).optional(),
+});
+export type PackRunInfo = z.infer<typeof PackRunInfoSchema>;
+
 // Fields marked LOCAL-PROCESS-ONLY are optional so an external producer's
 // record (source:"external") validates without inventing a local pid, cwd, or
 // transcript path; the driver always fills them for local runs.
@@ -123,6 +145,8 @@ export interface RunRecord {
   captureSource?: string;
   /** #73: W3C trace context (trace id, this run's span id, upstream parent span id). */
   trace?: RunTraceContext;
+  /** #91: the task pack (name, version, content hash) the run executed. */
+  pack?: PackRunInfo;
 }
 
 /** Desk membership of a run (#204). */
@@ -274,6 +298,7 @@ export const RunRecordSchema = z.object({
   captureMode: z.enum(["off", "metadata", "full"]).optional(),
   captureSource: z.string().optional(),
   trace: RunTraceContextSchema.optional(),
+  pack: PackRunInfoSchema.optional(),
 });
 
 export function registryDir(stateDir: string): string {

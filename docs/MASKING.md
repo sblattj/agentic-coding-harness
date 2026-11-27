@@ -112,7 +112,7 @@ ach emit --input run.json --format otel --privacy anon --mask all   # both layer
 | Mode | Removed | Survives |
 |---|---|---|
 | `off` | nothing. **The default**; output is byte-identical to releases before #46 and carries no stamp. | everything |
-| `redact` | path fields (`cwd`, `rawTranscript`, `rootDir`, `trialDir`, `tempDir`, `transcriptPath`, `repoRoot`, `repoDir`, `workDir`) become their basename; `$HOME` becomes `~` in every other string (tool arguments, tool results, messages, warnings, worktree paths); another user's home dir becomes `[REDACTED_HOME]` | prompt text, run and session ids, absolute paths outside any home dir in free text (`/tmp/x`), every number |
+| `redact` | path fields (`cwd`, `rawTranscript`, `rootDir`, `trialDir`, `tempDir`, `transcriptPath`, `repoRoot`, `repoDir`, `workDir`, `manifestPath`) become their basename; `$HOME` becomes `~` in every other string (tool arguments, tool results, messages, warnings, worktree paths); another user's home dir becomes `[REDACTED_HOME]` | prompt text, run and session ids, absolute paths outside any home dir in free text (`/tmp/x`), every number |
 | `anon` | everything `redact` removes, plus prompt text (`prompt`, `promptPreview`, `task`, and the text of user and system messages, written as `[REDACTED_PROMPT]`); run, session, parent, conversation, native (Kiro) and child session ids become `anon-<12 hex>` wherever they appear (also inside file names and attribute values); the repo dir name in `cwd` is hashed the same way | assistant messages, tool calls and tool results (home paths shortened as under `redact`), agent and model names, every number |
 
 Numbers never change: tokens, cost, credits, durations, timestamps, step and span counts come out

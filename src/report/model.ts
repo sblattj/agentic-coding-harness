@@ -15,7 +15,7 @@ import {
 } from "../core/types.ts";
 import { VerifyResultSchema, type VerifyResult } from "../core/verify.ts";
 import type { Provenance } from "../core/provenance.ts";
-import type { RunRecord } from "../core/registry.ts";
+import { PackRunInfoSchema, type PackRunInfo, type RunRecord } from "../core/registry.ts";
 import type { LeaderboardDoc } from "./leaderboard.ts";
 
 /** Tolerant RunResult view: `harness run --json` writes the full envelope, but
@@ -66,6 +66,8 @@ export interface LoadedRun {
   branch?: string;
   /** `ach verify-run` verdict of the run's hash-chained transcript (#59); absent when no RunRecord. */
   seal?: { status: "ok" | "tampered" | "unsealed" | "open"; detail: string };
+  /** #91: the task pack the run came from (artifact or RunRecord `pack`); absent outside `ach trial --pack`. */
+  pack?: PackRunInfo;
 }
 
 export interface TrialSet {
@@ -176,6 +178,7 @@ export function toLoadedRun(
   const events = Array.isArray(result.events) ? result.events : [];
   // A malformed verdict is treated as "not scored" rather than guessed at.
   const parsedVerify = VerifyResultSchema.safeParse((result as { verify?: unknown }).verify);
+  const parsedPack = PackRunInfoSchema.safeParse((result as { pack?: unknown }).pack);
   return {
     agent: typeof result.agent === "string" && result.agent ? result.agent : agent,
     trialDir,
@@ -198,6 +201,7 @@ export function toLoadedRun(
     tokensUnavailable,
     usdUnavailable,
     ...(parsedVerify.success ? { verify: parsedVerify.data as VerifyResult } : {}),
+    ...(parsedPack.success ? { pack: parsedPack.data } : {}),
   };
 }
 

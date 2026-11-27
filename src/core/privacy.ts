@@ -58,7 +58,7 @@ export const PRIVACY_OPTIONS = {
 const normKey = (k: string) => k.toLowerCase().replace(/[^a-z]/g, "");
 
 /** Keys whose absolute-path value becomes its basename under redact. */
-const PATH_KEYS = new Set(["cwd", "rawtranscript", "rootdir", "trialdir", "tempdir", "transcriptpath", "reporoot", "repodir", "workdir"]);
+const PATH_KEYS = new Set(["cwd", "rawtranscript", "rootdir", "trialdir", "tempdir", "transcriptpath", "reporoot", "repodir", "workdir", "manifestpath"]);
 /** Keys whose value names the repo dir; anon hashes the basename. */
 const REPO_KEYS = new Set(["cwd", "reporoot", "repodir", "workdir"]);
 /** Keys holding prompt text; anon replaces the value. */

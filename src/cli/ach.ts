@@ -80,6 +80,7 @@ import { maskPolicyFor, noteMasked, notePrivacy, writeMaskPreview } from "./mask
 import { EVENT_WEBHOOK_OPTIONS, eventWebhookFromFlags } from "./event-webhook-cli.ts";
 import { cmdAlerts, createAlertRunner } from "./alerts-cli.ts";
 import { cmdScrub } from "./scrub.ts";
+import { cmdPack } from "./pack.ts";
 import { cmdExport, EXPORT_USAGE_LINES, STATS_ARGV } from "./export.ts";
 import {
   parseClaudeTranscript,
@@ -404,6 +405,20 @@ usage:
                  tests/*.sh. An existing <name> is never overwritten (exit 1). The
                  verifier runs once on an empty workspace and must fail; then it
                  prints the ach trial --suite commands that run the task)
+  ach trial --pack <path|name@version> [--packs-dir DIR] [--allow-drift] [--agent A]... [--model M]...
+                [--repeat N] [--effort E] [--capture-mode C] [--ledger PATH] [--dry-run] [--retry-failed]
+                [--json] [--hermetic] [--isolate ...] [sandbox flags as --suite]
+                (a versioned task pack: exactly the tasks its ach-pack.json lists; a path,
+                 or name@version from the registry <packs dir>/<name>/<version>/ (default
+                 <stateDir>/packs, env AGENTIC_CODING_HARNESS_PACKS_DIR). A missing task
+                 fails before any agent launches; a locked pack whose content changed
+                 refuses to start and names the task, unless --allow-drift (loud warning).
+                 Every RunRecord carries pack {name, version, hash, taskHash, locked};
+                 experiment pack/<name>@<version>; see docs/TASK-PACKS.md)
+  ach pack lock <path|name@version> | add <path> | list | show <path|name@version> [--packs-dir DIR] [--json]
+                (lock: write ach-pack.lock.json with every task's content hash; add: copy a
+                 pack into the registry as <name>/<version>/, refusing to change a published
+                 version; list: registry packs; show: resolution, hashes and drift)
   ach watch [--transcript-dir <home-shaped-root>]... [--rewrite FROM=TO]...
             [--since DATE | --last D] [--tz Z] [--offline]
                 (--since/--last: print history newer than the bound on startup;
@@ -2681,7 +2696,7 @@ const SUBCOMMANDS = new Set([
   "run", "preflight", "doctor", "watch", "stats", "audit", "verify-run", "status", "statusline",
   "archive", "emit", "regrade", "report", "dash", "serve", "web", "mcp", "quota", "agents", "import",
   "trial", "queue", "replay", "smoke", "gc", "config", "init", "attach", "desk", "lane", "listener", "update", "profiles",
-  "scrub", "export", "alerts", "context",
+  "scrub", "export", "alerts", "context", "pack",
 ]);
 
 /** #98: commands that never get the automatic update line (stdio protocols and
@@ -2819,6 +2834,8 @@ async function main(argvIn: string[]): Promise<number> {
       return cmdScrub(rest);
     case "alerts":
       return cmdAlerts(rest);
+    case "pack":
+      return cmdPack(rest);
     case "export":
       // #96: stats.json is the exact stdout of `ach stats --json`, with the
       // same config-file defaults a direct `ach stats` call would get.

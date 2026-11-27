@@ -533,6 +533,42 @@ ${rows}
 `;
 }
 
+/** Task packs (#91): which pack content produced these numbers, one row per
+ *  name@version + hash. Shown only when some run came from `ach trial --pack`.
+ *  The manifest path is left out: the pack is named by its identity, not its location. */
+function renderPackTable(runs: LoadedRun[]): string {
+  if (!runs.some((r) => r.pack !== undefined)) return "";
+  const groups = new Map<string, { ref: string; hash: string; state: string; runs: number; tasks: Set<string> }>();
+  for (const r of runs) {
+    if (r.pack === undefined) continue;
+    const p = r.pack;
+    const state = !p.locked ? "unlocked" : p.drift !== undefined && p.drift.length > 0 ? `DRIFT (--allow-drift): ${p.drift.join(", ")}` : "locked";
+    const key = `${p.name}@${p.version}|${p.hash}|${state}`;
+    const g = groups.get(key) ?? { ref: `${p.name}@${p.version}`, hash: p.hash, state, runs: 0, tasks: new Set<string>() };
+    g.runs++;
+    g.tasks.add(r.trialLabel);
+    groups.set(key, g);
+  }
+  const rows = [...groups.values()]
+    .sort((a, b) => a.ref.localeCompare(b.ref) || a.hash.localeCompare(b.hash))
+    .map(
+      (g) =>
+        `      <tr><td data-v="${esc(g.ref)}" class="agent-cell">${esc(g.ref)}</td><td data-v="${esc(g.hash)}"><code>${esc(g.hash)}</code></td><td data-v="${esc(g.state)}">${esc(g.state)}</td><td data-v="${g.tasks.size}" class="num">${g.tasks.size}</td><td data-v="${g.runs}" class="num">${g.runs}</td></tr>`,
+    )
+    .join("\n");
+  return `  <section>
+    <h3>task packs</h3>
+    <p class="meta">The pack content each run executed: name@version and the content hash recorded on the run (docs/TASK-PACKS.md).</p>
+  <table class="cmp sortable" id="task-packs">
+    <thead><tr><th data-k="pack" data-t="s">pack</th><th data-k="hash" data-t="s">content hash</th><th data-k="state" data-t="s">lock</th><th data-k="tasks" data-t="n" class="num">tasks</th><th data-k="runs" data-t="n" class="num">runs</th></tr></thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>
+  </section>
+`;
+}
+
 /** Spend by git branch (#47): runs, cost and tokens per branch label. Shown
  *  only when some run carries a branch; runs without one fall in the same
  *  `(no branch)` bucket as `ach stats --by branch`. */
@@ -858,7 +894,7 @@ ${renderComparisonTable(runs, multiTrial)}
     <h3>availability</h3>
 ${renderAvailability(runs)}
   </section>
-${renderScoreHistory(runs)}${renderRepeatStats(runs)}${renderBranchTable(runs)}${renderCharts(runs)}
+${renderScoreHistory(runs)}${renderRepeatStats(runs)}${renderPackTable(runs)}${renderBranchTable(runs)}${renderCharts(runs)}
   <section>
     <h3>per-agent detail</h3>
 ${runs.map(renderAgentSection).join("\n")}

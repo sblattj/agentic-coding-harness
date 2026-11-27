@@ -11,6 +11,7 @@ whether it *worked*, and how confident you should be about that:
 | `ach regrade <run-id> --verify '<cmd>'` | #89 | re-runs a checker against a saved run without launching the agent |
 | `ach trial --matrix plan.json` | #56 | a resumable agents × tasks × models × trials grid; one run per cell, tagged `experiment`, `variant`, `cellId` |
 | `ach trial new <name>` | #88 | scaffolds a task directory whose `verify.sh` fails until you write the check ([below](#ach-trial-new-scaffold-a-task)) |
+| `ach trial --pack name@version` | #91 | a versioned task pack: exactly its listed tasks, content-hashed and lock-checked; each run tagged with `pack` (name, version, hash). See [TASK-PACKS.md](TASK-PACKS.md) |
 
 ## `--verify`: outcome scoring
 
@@ -421,6 +422,16 @@ variables `ACH_CELL_ID`, `ACH_EXPERIMENT`, `ACH_VARIANT`, `ACH_AGENT`,
 
 For example, a suite is a plan whose `tasks` are `{dir}` entries.
 `ach trial --suite` (below) is exactly that.
+
+## `ach trial --pack`: versioned task packs (#91)
+
+`ach trial --pack <path|name>@<version>` builds the same kind of plan from an
+`ach-pack.json` manifest: a named, semver-versioned task list whose content
+hashes `ach pack lock` pins. A locked pack whose content changed refuses to
+start (naming the task) unless `--allow-drift`; a task that cannot be resolved
+fails before any agent launches; every run record carries a `pack` block with
+the name, version and content hash. Authoring, locking, the registry and how
+to cite `name@version` in reports: [TASK-PACKS.md](TASK-PACKS.md).
 
 ## Hermetic trials: ancestor instruction files (#106)
 

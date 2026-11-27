@@ -165,6 +165,7 @@ export async function loadReportModel(roots: readonly string[], opts: ReportWrit
     if (record?.regrades !== undefined) run.regrades = record.regrades;
     const branch = record === null ? undefined : branchLabel(record);
     if (branch !== undefined) run.branch = branch;
+    if (run.pack === undefined && record?.pack !== undefined) run.pack = record.pack;
     // #59: per-run seal verdict, so readers know the numbers are intact.
     if (record !== null) {
       const v = verifyRunRecord(dir, record);
