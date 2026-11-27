@@ -4,6 +4,17 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-11-27
+
+### Added
+
+- Event webhook: `ach run --event-webhook <url>` (or env `AGENTIC_CODING_HARNESS_EVENT_WEBHOOK`) POSTs start, exit, budget and periodic usage events as JSON in a versioned envelope `{schemaVersion, runId, type, timestamp, payload}`. `--webhook-events` filters the types (the default never posts per token), and `ach watch --event-webhook` posts each live usage delta. Delivery is queued off the event stream with 4 attempts (250/500/1000ms backoff); the end-of-run flush waits at most 5s, and a webhook failure never changes the exit status or RunResult. With `AGENTIC_CODING_HARNESS_EVENT_WEBHOOK_SECRET` set, every POST carries `X-Ach-Signature-256: sha256=<HMAC>`. See docs/EVENT-WEBHOOK.md. Fixes #64.
+- Alert rules: an `alerts` key in the config file holds `error_rate` rules (N of the last M runs failed, or K in a row) and `idle` rules (an in-flight run records no event for X seconds), each with webhook and desktop destinations and a per-rule cooldown. `ach watch` evaluates them on every poll; `ach alerts` validates them, `--dry-run` replays them over the registry history without sending anything, and `--once` evaluates them now for cron use. Webhook alerts reuse the event-webhook delivery as envelope type `alert`. Runs now record `lastEventAt`. See docs/ALERTS.md. Fixes #74.
+
+### Changed
+
+- Webhook payloads (event and alert webhooks) are an outbound mask sink, `webhook`, and mask secrets by default like otel and langfuse. Opt out with `ach config --set mask.webhook none`, or `--mask none` for one run.
+
 ## [0.37.0] - 2026-11-26
 
 ### Changed
