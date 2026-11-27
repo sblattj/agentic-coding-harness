@@ -4,6 +4,21 @@ Sections for 0.2.0 through 0.8.0 were backfilled from the GitHub release notes a
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-11-27
+
+### Added
+
+- `ach trial new <name> [--with-tests]` scaffolds a task directory under `./tasks` (or `--tasks-dir`): `task.md`, `task.json` and a `verify.sh` that fails until you write the check; `--with-tests` adds a failing example test and a verifier that runs every `tests/*.sh`. An existing name is refused and left untouched, and the new task is validated and its verifier run once in expect-fail mode. `loadTaskDir` now reads `task.json` as well as `meta.json` (both at once is a usage error). See docs/TRIALS.md. Fixes #88.
+- `ach report` opens with a league table (one row per experiment and variant: runs, success rate, mean and median cost, tokens, wall time, folded run ids with their seal verdict), also written as a versioned `leaderboard.json` next to the HTML and passed through the same export mask and privacy gate. `ach report --registry [--limit N]` builds the run set from the registry with no trial paths. Regenerating the same data is byte-identical: the footer says "data as of" instead of a wall-clock "generated at". See docs/LEADERBOARD.md. Fixes #90.
+- Chat-style transcript view on the run page: a feed | transcript toggle (`?view=transcript`) groups each user turn with its replies, reasoning, tool calls (collapsed rows with duration and status that expand to arguments and result) and errors, live over the same socket. Content capture tiers render as "not captured", never the raw `[STRIPPED]` marker. Fixes #93.
+- Prompt-cache TTL panel in `ach stats` (text and `--json`, overall and per session) and the web run view, with every TTL tagged by honesty tier: `est` (the 5m default), `reported` (from the provider, including the Anthropic 5m/1h write split) or `measured` (the longest observed write-to-read gap on a matching prefix, a lower bound). n/a with no cache tokens. Display only; cost math is unchanged. See docs/CACHE-TTL.md. Fixes #83.
+- `ach context <runId> [--json]` breaks the latest model call's context window into prompt, assistant text, reasoning, tool calls, tool results (per tool) and the unattributed remainder, offline from the stored events. Components the adapter or capture tier did not record read n/a, never 0; estimates that overshoot the measured total are judged against a 10% tolerance. The /trio metrics pane gets a matching context composition card. See docs/CONTEXT.md. Fixes #87.
+- Versioned task packs: an `ach-pack.json` names a semver-versioned task list with a sha256 hash per task and per pack. `ach pack lock|add|list|show` lock, publish to the local registry (versions coexist), list and inspect packs. `ach trial --pack <path|name@version>` checks every hash before anything launches; drift fails unless `--allow-drift`. Each run records its pack name, version and hash, and the HTML report cites `name@version` with the hash. See docs/TASK-PACKS.md. Fixes #91.
+
+### Changed
+
+- `ach trial --pack name@version` with a bare `name@version` always resolves from the local pack registry. This departs from #91's text, which asked for a folder of that name to win first: a bare spec now never reads a folder. To run a pack from a folder, spell it as a path: `--pack ./name@1.0.0` reads the folder `./name` and requires its manifest to say version 1.0.0, and `--pack ./packs/name` reads that folder at whatever version it holds.
+
 ## [0.38.0] - 2026-11-27
 
 ### Added
