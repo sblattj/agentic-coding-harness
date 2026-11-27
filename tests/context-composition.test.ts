@@ -412,3 +412,26 @@ describe("/trio composition card (#87)", () => {
     });
   });
 });
+
+describe("/trio composition card layout (#87)", () => {
+  // The waterfall's generic `.bar i` rule is absolutely positioned with a fixed
+  // height. The card's segments share the `.bar i` shape, so without a reset each
+  // segment collapsed to its 1px min-width and the bar rendered as a sliver.
+  const css = (selector: string): string => {
+    const at = TRIO.indexOf(`\n${selector} {`);
+    assert.ok(at >= 0, `rule ${selector} not found in trio.html`);
+    return TRIO.slice(at, TRIO.indexOf("}", at));
+  };
+  it("the generic waterfall .bar i rule is absolute, so the card must override it", () => {
+    assert.match(css(".bar i"), /position:\s*absolute/);
+  });
+  it("card segments flow in the flex bar: position static, height auto", () => {
+    const rule = css(".ctxcomp .bar i");
+    assert.match(rule, /position:\s*static/);
+    assert.match(rule, /height:\s*auto/);
+  });
+  it("the chart keeps a minimum height and the metrics pane scrolls when the card adds height", () => {
+    assert.match(css(".chartbox"), /min-height:\s*[1-9]\d*px/);
+    assert.match(TRIO, /\.panel\[aria-label="metrics"\]\s*\{\s*overflow-y:\s*auto;/);
+  });
+});

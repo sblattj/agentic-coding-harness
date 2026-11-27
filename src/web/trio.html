@@ -188,10 +188,13 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3f
 .toollat .err { color: var(--red); }
 /* context composition (#87): one stacked bar over the latest call's window */
 .ctxcomp { padding: 8px 10px 0; flex: none; font: 10.5px var(--mono); color: var(--dim); }
+/* the composition card adds height: let the metrics pane scroll so the chart keeps a usable size */
+.panel[aria-label="metrics"] { overflow-y: auto; }
 .ctxcomp:empty { display: none; }
 .ctxcomp .hd { display: flex; justify-content: space-between; gap: 8px; color: var(--faint); text-transform: uppercase; letter-spacing: .1em; font-size: 9px; }
 .ctxcomp .bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--panel2); border: 1px solid var(--line); margin: 4px 0; }
-.ctxcomp .bar i { display: block; min-width: 1px; }
+/* reset the waterfall's .bar i (absolute, fixed height) so the segments flow and grow */
+.ctxcomp .bar i { display: block; position: static; top: auto; height: auto; border-radius: 0; min-width: 1px; }
 .ctxcomp .lg { display: flex; flex-wrap: wrap; gap: 2px 12px; }
 .ctxcomp .na { color: var(--faint); }
 .ctxcomp .warn { color: var(--amber); }
@@ -199,7 +202,7 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.04fr 1.3f
 .cc-reasoning { background: var(--cyan); } .cc-toolCalls { background: var(--green); }
 .cc-toolResults { background: var(--teal); } .cc-unattributed { background: var(--line2); }
 .chartwrap { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto auto; padding: 8px 10px 10px; gap: 4px; }
-.chartbox { position: relative; min-height: 0; }
+.chartbox { position: relative; min-height: 72px; }
 #chart { width: 100%; height: 100%; display: block; }
 #chart .grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 #chart .band { fill: rgba(103, 213, 245, .08); stroke: rgba(103, 213, 245, .35); stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
